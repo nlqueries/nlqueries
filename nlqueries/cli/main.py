@@ -1,0 +1,520 @@
+"""
+nlqueries.cli.main
+~~~~~~~~~~~~~~~~~~
+Entry point for the `nlqueries` command-line tool.
+
+Commands
+--------
+  connect          Test a DB connection and register it as a named connector.
+  extract-schema   Inspect a registered connector and print schema statistics.
+  process-history  Run the Query Capsule pipeline over recent query history.
+  export-kb        Generate and save the YAML knowledge base for a connector.
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote_plus
+
+import click
+import yaml
+from rich.console import Console
+from rich.table import Table
+
+from nlqueries.config import CONNECTORS_FILE, KB_PATH
+
+console = Console()
+err_console = Console(stderr=True)
+
+# ---------------------------------------------------------------------------
+# Supported DB types -> SQLAlchemy driver schemes
+# ---------------------------------------------------------------------------
+_DB_SCHEMES: dict[str, str] = {
+    "postgres":   "postgresql+psycopg2",
+    "postgresql": "postgresql+psycopg2",
+    "mysql":      "mysql+pymysql",
+    "bigquery":   "bigquery",
+    "snowflake":  "snowflake",
+}
+
+_DEFAULT_PORTS: dict[str, int] = {
+    "postgres":   5432,
+    "postgresql": 5432,
+    "mysql":      3306,
+    "bigquery":   443,
+    "snowflake":  443,
+}
+
+
+# ---------------------------------------------------------------------------
+# Connector registry helpers
+# ---------------------------------------------------------------------------
+
+def _load_connectors() -> dict:
+    if CONNECTORS_FILE.exists():
+        return yaml.safe_load(CONNECTORS_FILE.read_text()) or {}
+    return {}
+
+
+def _save_connector(connector_id: str, config: dict) -> None:
+    CONNECTORS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    connectors = _load_connectors()
+    connectors[connector_id] = config
+    CONNECTORS_FILE.write_text(yaml.dump(connectors, default_flow_style=False, sort_keys=False))
+
+
+def _require_connector(connector_id: str) -> dict:
+    connectors = _load_connectors()
+    if connector_id not in connectors:
+        raise click.ClickException(
+            f"Connector '{connector_id}' not found.\n"
+            f"  Register it first:  nlqueries connect <db-type> "
+            f"--database <db> --user <u> --password <p>\n"
+            f"  List connectors:    cat {CONNECTORS_FILE}"
+        )
+    return connectors[connector_id]
+
+
+def _build_url(
+    db_type: str,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    account: Optional[str] = None,    # Snowflake
+    project: Optional[str] = None,    # BigQuery
+) -> str:
+    db_type_l = db_type.lower()
+    scheme = _DB_SCHEMES.get(db_type_l)
+    if scheme is None:
+        raise click.ClickException(
+            f"Unsupported db-type '{db_type}'. "
+            f"Supported: {', '.join(sorted(set(_DB_SCHEMES)))}"
+        )
+
+    if db_type_l == "bigquery":
+        proj = project or database
+        return f"bigquery://{proj}"
+
+    if db_type_l == "snowflake":
+        acct = account or host
+        return (
+            f"snowflake://{quote_plus(user)}:{quote_plus(password)}"
+            f"@{acct}/{database}"
+        )
+
+    return (
+        f"{scheme}://{quote_plus(user)}:{quote_plus(password)}"
+        f"@{host}:{port}/{database}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Root group
+# ---------------------------------------------------------------------------
+
+@click.group()
+@click.version_option(package_name="nlqueries-core")
+def cli() -> None:
+    """NLQueries — natural-language query engine.
+
+    \b
+    Translate plain-English questions into SQL, build a self-updating YAML
+    knowledge base from your schema, and expose everything via MCP or CLI.
+
+    \b
+    Typical workflow:
+      1. nlqueries connect postgres --database mydb --user me --password s3cr3t
+      2. nlqueries extract-schema postgres:localhost:mydb
+      3. nlqueries process-history postgres:localhost:mydb --days 90
+      4. nlqueries export-kb postgres:localhost:mydb --output kb.yaml
+    """
+
+
+# ---------------------------------------------------------------------------
+# connect
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.argument("db_type")
+@click.option("--host",     default="localhost", show_default=True, help="Database host.")
+@click.option("--port",     default=None, type=int,                 help="Database port (default varies by db-type).")
+@click.option("--database", required=True,                          help="Database / catalog / project name.")
+@click.option("--user",     required=True,                          help="Database user.")
+@click.option("--password", required=True, hide_input=True,         help="Database password.")
+@click.option("--account",  default=None,                           help="Snowflake account identifier.")
+@click.option("--connector-id", "connector_id", default=None,       help="Name to register this connector under (auto-generated if omitted).")
+def connect(
+    db_type: str,
+    host: str,
+    port: Optional[int],
+    database: str,
+    user: str,
+    password: str,
+    account: Optional[str],
+    connector_id: Optional[str],
+) -> None:
+    """Test a database connection and register it as a named connector.
+
+    \b
+    DB_TYPE  one of: postgres, mysql, bigquery, snowflake
+
+    \b
+    Examples:
+      nlqueries connect postgres --database mydb --user alice --password secret
+      nlqueries connect snowflake --host acme.us-east-1 --database PROD --user bob --password s3cr3t
+    """
+    # Resolve port
+    resolved_port: int = port or _DEFAULT_PORTS.get(db_type.lower(), 5432)
+
+    # Build connection URL
+    try:
+        url = _build_url(db_type, host, resolved_port, database, user, password, account=account)
+    except click.ClickException:
+        raise
+
+    cid = connector_id or f"{db_type.lower()}:{host}:{database}"
+
+    console.print(f"[bold]Connecting[/bold] to {db_type} at [cyan]{host}:{resolved_port}/{database}[/cyan] …")
+
+    try:
+        # Import here so the CLI loads fast when SQLAlchemy isn't the bottleneck
+        from sqlalchemy import create_engine, text
+
+        connect_args: dict = {}
+        if db_type.lower() in ("postgres", "postgresql"):
+            connect_args["connect_timeout"] = 10
+
+        engine = create_engine(url, connect_args=connect_args)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Connection failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print(f"[bold green]✓ Connection successful.[/bold green]")
+
+    # Persist connector config (store URL — password included; remind user)
+    config = {
+        "db_type":    db_type.lower(),
+        "host":       host,
+        "port":       resolved_port,
+        "database":   database,
+        "user":       user,
+        "url":        url,          # ⚠ includes password — keep this file private
+        "registered": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_connector(cid, config)
+
+    console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
+    console.print(f"  Config saved to [dim]{CONNECTORS_FILE}[/dim]")
+    console.print(f"  [yellow]Note:[/yellow] The config file contains the database password. "
+                  f"Ensure it is not world-readable.")
+
+
+# ---------------------------------------------------------------------------
+# extract-schema
+# ---------------------------------------------------------------------------
+
+@cli.command("extract-schema")
+@click.argument("connector_id")
+def extract_schema(connector_id: str) -> None:
+    """Inspect a connector's schema and print a summary.
+
+    \b
+    CONNECTOR_ID  the name used when you ran 'nlqueries connect'
+                  (e.g. postgres:localhost:mydb)
+
+    \b
+    Prints:
+      - Number of tables / views discovered
+      - Total column count
+      - Per-table row counts (via COUNT(*), sampled up to 50 tables)
+    """
+    cfg = _require_connector(connector_id)
+
+    console.print(f"[bold]Extracting schema[/bold] for connector [cyan]{connector_id}[/cyan] …")
+
+    try:
+        from sqlalchemy import create_engine, inspect as sa_inspect, select, func, table
+
+        engine = create_engine(cfg["url"])
+
+        with engine.connect() as conn:
+            inspector = sa_inspect(engine)
+            table_names: list[str] = inspector.get_table_names()
+            view_names:  list[str] = inspector.get_view_names()
+
+            total_columns = 0
+            table_stats: list[dict] = []
+
+            for tbl in table_names:
+                cols = inspector.get_columns(tbl)
+                col_count = len(cols)
+                total_columns += col_count
+
+                # Row count (best-effort; skip on error)
+                try:
+                    stmt = select(func.count()).select_from(table(tbl))
+                    row = conn.execute(stmt).scalar()
+                    row_count: Optional[int] = int(row) if row is not None else None
+                except Exception:  # noqa: BLE001
+                    row_count = None
+
+                table_stats.append({
+                    "table":   tbl,
+                    "columns": col_count,
+                    "rows":    row_count,
+                })
+
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Schema extraction failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    # --- Print summary ---
+    console.print()
+    console.print(f"[bold green]✓ Schema extraction complete[/bold green]")
+    console.print(f"  Tables : [bold]{len(table_names)}[/bold]")
+    console.print(f"  Views  : [bold]{len(view_names)}[/bold]")
+    console.print(f"  Columns: [bold]{total_columns}[/bold] total across all tables")
+
+    if table_stats:
+        console.print()
+        tbl = Table("Table", "Columns", "Rows", show_header=True, header_style="bold cyan")
+        # Show up to 20 tables; summarise the rest
+        for stat in table_stats[:20]:
+            rows_str = str(stat["rows"]) if stat["rows"] is not None else "—"
+            tbl.add_row(stat["table"], str(stat["columns"]), rows_str)
+        if len(table_stats) > 20:
+            tbl.add_row(f"… and {len(table_stats) - 20} more", "", "")
+        console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# process-history
+# ---------------------------------------------------------------------------
+
+@cli.command("process-history")
+@click.argument("connector_id")
+@click.option(
+    "--days", default=90, show_default=True, type=int,
+    help="Number of days of query history to process.",
+)
+@click.option(
+    "--min-executions", default=3, show_default=True, type=int,
+    help="Minimum execution count for a query to be included.",
+)
+def process_history(connector_id: str, days: int, min_executions: int) -> None:
+    """Run the Query Capsule pipeline over recent query history.
+
+    \b
+    CONNECTOR_ID  the name used when you ran 'nlqueries connect'
+
+    Reads query history from the information schema (or pg_stat_statements
+    for PostgreSQL), de-duplicates and parameterises queries, clusters
+    them by intent, and emits Query Capsules — normalised, annotated query
+    templates ready for embedding and LLM context injection.
+
+    \b
+    Example:
+      nlqueries process-history postgres:localhost:mydb --days 30
+    """
+    cfg = _require_connector(connector_id)
+
+    console.print(
+        f"[bold]Processing query history[/bold] for [cyan]{connector_id}[/cyan] "
+        f"(last [bold]{days}[/bold] days) …"
+    )
+
+    try:
+        # Pipeline stages — implemented in nlqueries.processing.*
+        # Each stage is imported lazily so the CLI loads fast.
+        from nlqueries.processing import (  # type: ignore[import]
+            fetch_history,
+            filter_queries,
+            cluster_queries,
+            parameterize,
+        )
+
+        raw       = fetch_history(cfg["url"], days=days)
+        filtered  = filter_queries(raw, min_executions=min_executions)
+        clusters  = cluster_queries(filtered)
+        capsules  = parameterize(clusters)
+
+    except ImportError:
+        # Processing pipeline not yet implemented — emit a clear placeholder
+        console.print()
+        console.print("[yellow]⚠ Processing pipeline stubs not yet implemented.[/yellow]")
+        console.print("  The following stages will run once nlqueries.processing is built:")
+        console.print("    1. [dim]fetch_history[/dim]   — read pg_stat_statements / query logs")
+        console.print("    2. [dim]filter_queries[/dim]  — drop DDL, noise, low-frequency queries")
+        console.print("    3. [dim]cluster_queries[/dim] — group by structural similarity (sqlglot AST)")
+        console.print("    4. [dim]parameterize[/dim]    — extract literals → typed placeholders")
+        console.print()
+        console.print(f"  Config: connector=[bold]{connector_id}[/bold]  days={days}  min_executions={min_executions}")
+        return
+
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Pipeline failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print(f"[bold green]✓ Pipeline complete.[/bold green]")
+    console.print(f"  Raw queries fetched : {len(raw)}")
+    console.print(f"  After filtering     : {len(filtered)}")
+    console.print(f"  Clusters identified : {len(clusters)}")
+    console.print(f"  Capsules produced   : [bold]{len(capsules)}[/bold]")
+
+
+# ---------------------------------------------------------------------------
+# export-kb
+# ---------------------------------------------------------------------------
+
+@cli.command("export-kb")
+@click.argument("connector_id")
+@click.option(
+    "--output", "-o",
+    default="knowledge_base.yaml",
+    show_default=True,
+    type=click.Path(dir_okay=False, writable=True),
+    help="Path to write the YAML knowledge base.",
+)
+@click.option(
+    "--include-samples/--no-include-samples",
+    default=True, show_default=True,
+    help="Include sample rows for each table.",
+)
+@click.option(
+    "--sample-rows", default=3, show_default=True, type=int,
+    help="Number of sample rows to include per table.",
+)
+def export_kb(
+    connector_id: str,
+    output: str,
+    include_samples: bool,
+    sample_rows: int,
+) -> None:
+    """Generate and save the YAML knowledge base for a connector.
+
+    \b
+    CONNECTOR_ID  the name used when you ran 'nlqueries connect'
+
+    The knowledge base is a structured YAML file that describes your schema
+    — tables, columns, types, foreign keys, and sample rows — in a format
+    optimised for LLM context injection.
+
+    \b
+    Example:
+      nlqueries export-kb postgres:localhost:mydb --output kb.yaml
+      nlqueries export-kb postgres:localhost:mydb --output kb.yaml --sample-rows 5
+    """
+    cfg = _require_connector(connector_id)
+    out_path = Path(output)
+
+    console.print(
+        f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …"
+    )
+
+    try:
+        from sqlalchemy import create_engine, inspect as sa_inspect, text, MetaData, select, table
+
+        engine = create_engine(cfg["url"])
+        inspector = sa_inspect(engine)
+
+        table_names = inspector.get_table_names()
+        kb: dict = {
+            "meta": {
+                "connector_id": connector_id,
+                "db_type":      cfg["db_type"],
+                "database":     cfg["database"],
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "nlqueries_version": "0.1.0",
+            },
+            "tables": {},
+        }
+
+        with engine.connect() as conn:
+            for tbl_name in table_names:
+                columns = inspector.get_columns(tbl_name)
+                pk_cols = inspector.get_pk_constraint(tbl_name).get("constrained_columns", [])
+                fkeys   = inspector.get_foreign_keys(tbl_name)
+                indexes = inspector.get_indexes(tbl_name)
+
+                col_defs = [
+                    {
+                        "name":     c["name"],
+                        "type":     str(c["type"]),
+                        "nullable": c.get("nullable", True),
+                        "primary_key": c["name"] in pk_cols,
+                        **({"default": str(c["default"])} if c.get("default") is not None else {}),
+                    }
+                    for c in columns
+                ]
+
+                fkey_defs = [
+                    {
+                        "columns":            fk["constrained_columns"],
+                        "references_table":   fk["referred_table"],
+                        "references_columns": fk["referred_columns"],
+                    }
+                    for fk in fkeys
+                ]
+
+                index_defs = [
+                    {
+                        "name":    idx["name"],
+                        "columns": idx["column_names"],
+                        "unique":  idx.get("unique", False),
+                    }
+                    for idx in indexes
+                ]
+
+                samples: list[dict] = []
+                if include_samples and sample_rows > 0:
+                    try:
+                        stmt = select(text("*")).select_from(table(tbl_name)).limit(sample_rows)
+                        rows = conn.execute(stmt)
+                        col_names = list(rows.keys())
+                        samples = [dict(zip(col_names, row)) for row in rows]
+                        # Coerce non-serialisable types to strings
+                        samples = [
+                            {k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+                             for k, v in row.items()}
+                            for row in samples
+                        ]
+                    except Exception:  # noqa: BLE001
+                        samples = []
+
+                kb["tables"][tbl_name] = {
+                    "columns":      col_defs,
+                    "foreign_keys": fkey_defs,
+                    "indexes":      index_defs,
+                    **({"sample_rows": samples} if include_samples else {}),
+                }
+
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Knowledge base generation failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    # Write YAML
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as fh:
+        yaml.dump(kb, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    table_count  = len(kb["tables"])
+    column_count = sum(len(t["columns"]) for t in kb["tables"].values())
+
+    console.print(f"[bold green]✓ Knowledge base written to[/bold green] [cyan]{out_path}[/cyan]")
+    console.print(f"  Tables : [bold]{table_count}[/bold]")
+    console.print(f"  Columns: [bold]{column_count}[/bold]")
+    if include_samples:
+        console.print(f"  Sample rows per table: up to {sample_rows}")
+    console.print()
+    console.print(
+        "  [dim]Next step:[/dim] embed this knowledge base into Qdrant:\n"
+        "  [dim]  python -m nlqueries.embeddings --kb-file {out_path}[/dim]"
+    )
