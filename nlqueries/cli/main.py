@@ -508,9 +508,9 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
         # Pipeline stages — implemented in nlqueries.processing.*
         # Each stage is imported lazily so the CLI loads fast.
         from nlqueries.processing import (  # type: ignore[import]
+            cluster_queries,
             fetch_history,
             filter_queries,
-            cluster_queries,
             parameterize,
         )
 
