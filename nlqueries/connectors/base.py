@@ -83,7 +83,7 @@ class DatabaseConnector(ABC):
     """
 
     @abstractmethod
-    def connect(self, credentials: dict) -> None:
+    def connect(self, credentials: dict[str, Any]) -> None:
         """Establish a connection to the database using the given credentials."""
         ...
 

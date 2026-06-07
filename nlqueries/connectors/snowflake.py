@@ -61,7 +61,7 @@ class SnowflakeConnector(DatabaseConnector):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    def connect(self, credentials: dict) -> None:
+    def connect(self, credentials: dict[str, Any]) -> None:
         """Open a Snowflake connection from ``credentials``.
 
         Required keys: ``account``, ``user``, ``password``, ``warehouse``,
@@ -92,7 +92,7 @@ class SnowflakeConnector(DatabaseConnector):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _query(connection: Any, sql: str) -> list[dict]:
+    def _query(connection: Any, sql: str) -> list[dict[str, Any]]:
         """Run ``sql`` and return rows as a list of ``{column_name: value}`` dicts.
 
         Snowflake's driver returns column names in upper case by default
@@ -193,7 +193,9 @@ class SnowflakeConnector(DatabaseConnector):
         )
 
     @classmethod
-    def _fetch_tables(cls, connection: Any, database: str) -> dict[tuple[str, str], dict]:
+    def _fetch_tables(
+        cls, connection: Any, database: str
+    ) -> dict[tuple[str, str], dict[str, Any]]:
         """Return ``{(schema, table): {row_count, description}}`` from ``TABLES``."""
         rows = cls._query(
             connection,
@@ -205,7 +207,7 @@ class SnowflakeConnector(DatabaseConnector):
             ORDER BY table_schema, table_name
             """,
         )
-        result: dict[tuple[str, str], dict] = {}
+        result: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows:
             row_count = row["ROW_COUNT"]
             result[(row["TABLE_SCHEMA"], row["TABLE_NAME"])] = {
@@ -215,7 +217,9 @@ class SnowflakeConnector(DatabaseConnector):
         return result
 
     @classmethod
-    def _fetch_columns(cls, connection: Any, database: str) -> dict[tuple[str, str], list[dict]]:
+    def _fetch_columns(
+        cls, connection: Any, database: str
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """Return ``{(schema, table): [column dicts in ordinal order]}`` from ``COLUMNS``."""
         rows = cls._query(
             connection,
@@ -226,7 +230,7 @@ class SnowflakeConnector(DatabaseConnector):
             ORDER BY table_schema, table_name, ordinal_position
             """,
         )
-        result: dict[tuple[str, str], list[dict]] = {}
+        result: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows:
             key = (row["TABLE_SCHEMA"], row["TABLE_NAME"])
             result.setdefault(key, []).append(row)
@@ -347,7 +351,7 @@ class SnowflakeConnector(DatabaseConnector):
         return [cls._row_to_query_record(row) for row in rows]
 
     @staticmethod
-    def _row_to_query_record(row: dict) -> QueryRecord:
+    def _row_to_query_record(row: dict[str, Any]) -> QueryRecord:
         avg_duration = row["AVG_DURATION_MS"]
         last_executed = row["LAST_EXECUTED"]
         return QueryRecord(

@@ -61,7 +61,7 @@ class BigQueryConnector(DatabaseConnector):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    def connect(self, credentials: dict) -> None:
+    def connect(self, credentials: dict[str, Any]) -> None:
         """Build a BigQuery client from ``credentials``.
 
         Required keys: ``project_id``. Optional keys: ``dataset_id`` and
@@ -98,10 +98,14 @@ class BigQueryConnector(DatabaseConnector):
             return None
 
         if isinstance(service_account_json, dict):
-            return service_account.Credentials.from_service_account_info(service_account_json)
+            return service_account.Credentials.from_service_account_info(  # type: ignore[no-untyped-call]
+                service_account_json
+            )
 
         # Treat anything else (str, Path, ...) as a path to a key file.
-        return service_account.Credentials.from_service_account_file(str(service_account_json))
+        return service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
+            str(service_account_json)
+        )
 
     def _resolve_region_qualifier(self) -> str:
         """Best-effort resolution of the ``region-<location>`` qualifier for JOBS_BY_PROJECT.
@@ -293,7 +297,7 @@ class BigQueryConnector(DatabaseConnector):
         ]
 
     @staticmethod
-    def _query(client: Any, sql: str) -> list[dict]:
+    def _query(client: Any, sql: str) -> list[dict[str, Any]]:
         """Run ``sql`` as a query job and return rows as ``{column_name: value}`` dicts."""
         result = client.query(sql).result()
         return [dict(row.items()) for row in result]

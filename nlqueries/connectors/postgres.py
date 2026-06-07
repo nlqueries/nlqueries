@@ -59,7 +59,7 @@ class PostgresConnector(DatabaseConnector):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    def connect(self, credentials: dict) -> None:
+    def connect(self, credentials: dict[str, Any]) -> None:
         """Build a SQLAlchemy engine from ``credentials``.
 
         Expected keys: ``host``, ``port``, ``database``, ``user``, ``password``.
@@ -152,7 +152,7 @@ class PostgresConnector(DatabaseConnector):
         )
 
     @staticmethod
-    def _fetch_tables(conn: Any) -> dict[tuple[str, str], dict]:
+    def _fetch_tables(conn: Any) -> dict[tuple[str, str], dict[str, Any]]:
         """Return ``{(schema, table): {row_count, description}}`` using ``pg_class.reltuples``."""
         rows = conn.execute(
             text(
@@ -174,7 +174,7 @@ class PostgresConnector(DatabaseConnector):
             ),
             {"system_schemas": _SYSTEM_SCHEMAS},
         )
-        result: dict[tuple[str, str], dict] = {}
+        result: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows.mappings():
             row_estimate = row["row_estimate"]
             # reltuples is -1 for tables that have never been analysed/vacuumed.
@@ -186,7 +186,7 @@ class PostgresConnector(DatabaseConnector):
         return result
 
     @staticmethod
-    def _fetch_columns(conn: Any) -> dict[tuple[str, str], list[dict]]:
+    def _fetch_columns(conn: Any) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """Return ``{(schema, table): [column dicts in ordinal order]}``."""
         rows = conn.execute(
             text(
@@ -209,7 +209,7 @@ class PostgresConnector(DatabaseConnector):
             ),
             {"system_schemas": _SYSTEM_SCHEMAS},
         )
-        result: dict[tuple[str, str], list[dict]] = {}
+        result: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows.mappings():
             key = (row["table_schema"], row["table_name"])
             result.setdefault(key, []).append(dict(row))

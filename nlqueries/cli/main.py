@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote_plus
 
 import click
@@ -54,20 +55,20 @@ _DEFAULT_PORTS: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_connectors() -> dict:
+def _load_connectors() -> dict[str, dict[str, Any]]:
     if CONNECTORS_FILE.exists():
         return yaml.safe_load(CONNECTORS_FILE.read_text()) or {}
     return {}
 
 
-def _save_connector(connector_id: str, config: dict) -> None:
+def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     CONNECTORS_FILE.parent.mkdir(parents=True, exist_ok=True)
     connectors = _load_connectors()
     connectors[connector_id] = config
     CONNECTORS_FILE.write_text(yaml.dump(connectors, default_flow_style=False, sort_keys=False))
 
 
-def _require_connector(connector_id: str) -> dict:
+def _require_connector(connector_id: str) -> dict[str, Any]:
     connectors = _load_connectors()
     if connector_id not in connectors:
         raise click.ClickException(
@@ -294,7 +295,7 @@ def connect(
             # to a raw SQLAlchemy connectivity check.
             from sqlalchemy import create_engine, text
 
-            connect_args: dict = {}
+            connect_args: dict[str, Any] = {}
             if db_type.lower() in ("postgres", "postgresql"):
                 connect_args["connect_timeout"] = 10
 
@@ -436,16 +437,16 @@ def extract_schema(connector_id: str) -> None:
             view_names: list[str] = inspector.get_view_names()
 
             total_columns = 0
-            table_stats: list[dict] = []
+            table_stats: list[dict[str, Any]] = []
 
-            for tbl in table_names:
-                cols = inspector.get_columns(tbl)
+            for tbl_name in table_names:
+                cols = inspector.get_columns(tbl_name)
                 col_count = len(cols)
                 total_columns += col_count
 
                 # Row count (best-effort; skip on error)
                 try:
-                    stmt = select(func.count()).select_from(table(tbl))
+                    stmt = select(func.count()).select_from(table(tbl_name))
                     row = conn.execute(stmt).scalar()
                     row_count: int | None = int(row) if row is not None else None
                 except Exception:  # noqa: BLE001
@@ -453,7 +454,7 @@ def extract_schema(connector_id: str) -> None:
 
                 table_stats.append(
                     {
-                        "table": tbl,
+                        "table": tbl_name,
                         "columns": col_count,
                         "rows": row_count,
                     }
@@ -528,7 +529,7 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
     try:
         # Pipeline stages — implemented in nlqueries.processing.*
         # Each stage is imported lazily so the CLI loads fast.
-        from nlqueries.processing import (  # type: ignore[import]
+        from nlqueries.processing import (  # type: ignore[attr-defined]
             cluster_queries,
             fetch_history,
             filter_queries,
@@ -630,7 +631,7 @@ def export_kb(
         inspector = sa_inspect(engine)
 
         table_names = inspector.get_table_names()
-        kb: dict = {
+        kb: dict[str, Any] = {
             "meta": {
                 "connector_id": connector_id,
                 "db_type": cfg["db_type"],
@@ -677,7 +678,7 @@ def export_kb(
                     for idx in indexes
                 ]
 
-                samples: list[dict] = []
+                samples: list[dict[str, Any]] = []
                 if include_samples and sample_rows > 0:
                     try:
                         stmt = select(text("*")).select_from(table(tbl_name)).limit(sample_rows)
