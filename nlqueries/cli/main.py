@@ -14,18 +14,16 @@ Commands
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote_plus
 
 import click
 import yaml
+from nlqueries.config import CONNECTORS_FILE
+from nlqueries.connectors import CONNECTOR_REGISTRY
 from rich.console import Console
 from rich.table import Table
-
-from nlqueries.config import CONNECTORS_FILE, KB_PATH
-from nlqueries.connectors import CONNECTOR_REGISTRY
 
 console = Console()
 err_console = Console(stderr=True)
@@ -86,8 +84,8 @@ def _build_url(
     database: str,
     user: str,
     password: str,
-    account: Optional[str] = None,    # Snowflake
-    project: Optional[str] = None,    # BigQuery
+    account: str | None = None,    # Snowflake
+    project: str | None = None,    # BigQuery
 ) -> str:
     db_type_l = db_type.lower()
     scheme = _DB_SCHEMES.get(db_type_l)
@@ -170,17 +168,17 @@ def cli() -> None:
 def connect(
     db_type: str,
     host: str,
-    port: Optional[int],
-    database: Optional[str],
-    user: Optional[str],
-    password: Optional[str],
-    account: Optional[str],
-    warehouse: Optional[str],
-    db_schema: Optional[str],
-    project_id: Optional[str],
-    dataset_id: Optional[str],
-    service_account_json: Optional[str],
-    connector_id: Optional[str],
+    port: int | None,
+    database: str | None,
+    user: str | None,
+    password: str | None,
+    account: str | None,
+    warehouse: str | None,
+    db_schema: str | None,
+    project_id: str | None,
+    dataset_id: str | None,
+    service_account_json: str | None,
+    connector_id: str | None,
 ) -> None:
     """Test a database connection and register it as a named connector.
 
@@ -305,7 +303,7 @@ def connect(
         err_console.print(f"[bold red]✗ Connection failed:[/bold red] {exc}")
         sys.exit(1)
 
-    console.print(f"[bold green]✓ Connection successful.[/bold green]")
+    console.print("[bold green]✓ Connection successful.[/bold green]")
 
     # Persist connector config (store URL — password included; remind user)
     config = {
@@ -315,7 +313,7 @@ def connect(
         "database":   database,
         "user":       user,
         "url":        url,          # ⚠ includes password — keep this file private
-        "registered": datetime.now(timezone.utc).isoformat(),
+        "registered": datetime.now(UTC).isoformat(),
     }
     if db_type_l == "snowflake":
         config["account"] = account
@@ -332,8 +330,8 @@ def connect(
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
     console.print(f"  Config saved to [dim]{CONNECTORS_FILE}[/dim]")
-    console.print(f"  [yellow]Note:[/yellow] The config file contains the database password. "
-                  f"Ensure it is not world-readable.")
+    console.print("  [yellow]Note:[/yellow] The config file contains the database password. "
+                  "Ensure it is not world-readable.")
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +386,7 @@ def extract_schema(connector_id: str) -> None:
         total_columns = sum(len(t.columns) for t in schema.tables)
 
         console.print()
-        console.print(f"[bold green]✓ Schema extraction complete[/bold green]")
+        console.print("[bold green]✓ Schema extraction complete[/bold green]")
         console.print(f"  Database: [bold]{schema.database}[/bold]")
         console.print(f"  Tables  : [bold]{len(schema.tables)}[/bold]")
         console.print(f"  Columns : [bold]{total_columns}[/bold] total across all tables")
@@ -415,7 +413,8 @@ def extract_schema(connector_id: str) -> None:
 
     # --- Fallback: no dedicated connector registered for this db-type ---
     try:
-        from sqlalchemy import create_engine, inspect as sa_inspect, select, func, table
+        from sqlalchemy import create_engine, func, select, table
+        from sqlalchemy import inspect as sa_inspect
 
         engine = create_engine(cfg["url"])
 
@@ -436,7 +435,7 @@ def extract_schema(connector_id: str) -> None:
                 try:
                     stmt = select(func.count()).select_from(table(tbl))
                     row = conn.execute(stmt).scalar()
-                    row_count: Optional[int] = int(row) if row is not None else None
+                    row_count: int | None = int(row) if row is not None else None
                 except Exception:  # noqa: BLE001
                     row_count = None
 
@@ -452,7 +451,7 @@ def extract_schema(connector_id: str) -> None:
 
     # --- Print summary ---
     console.print()
-    console.print(f"[bold green]✓ Schema extraction complete[/bold green]")
+    console.print("[bold green]✓ Schema extraction complete[/bold green]")
     console.print(f"  Tables : [bold]{len(table_names)}[/bold]")
     console.print(f"  Views  : [bold]{len(view_names)}[/bold]")
     console.print(f"  Columns: [bold]{total_columns}[/bold] total across all tables")
@@ -542,7 +541,7 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
         err_console.print(f"[bold red]✗ Pipeline failed:[/bold red] {exc}")
         sys.exit(1)
 
-    console.print(f"[bold green]✓ Pipeline complete.[/bold green]")
+    console.print("[bold green]✓ Pipeline complete.[/bold green]")
     console.print(f"  Raw queries fetched : {len(raw)}")
     console.print(f"  After filtering     : {len(filtered)}")
     console.print(f"  Clusters identified : {len(clusters)}")
@@ -599,7 +598,8 @@ def export_kb(
     )
 
     try:
-        from sqlalchemy import create_engine, inspect as sa_inspect, text, MetaData, select, table
+        from sqlalchemy import create_engine, select, table, text
+        from sqlalchemy import inspect as sa_inspect
 
         engine = create_engine(cfg["url"])
         inspector = sa_inspect(engine)
@@ -610,7 +610,7 @@ def export_kb(
                 "connector_id": connector_id,
                 "db_type":      cfg["db_type"],
                 "database":     cfg["database"],
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "nlqueries_version": "0.1.0",
             },
             "tables": {},
@@ -658,11 +658,17 @@ def export_kb(
                         stmt = select(text("*")).select_from(table(tbl_name)).limit(sample_rows)
                         rows = conn.execute(stmt)
                         col_names = list(rows.keys())
-                        samples = [dict(zip(col_names, row)) for row in rows]
+                        samples = [dict(zip(col_names, row, strict=False)) for row in rows]
                         # Coerce non-serialisable types to strings
                         samples = [
-                            {k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
-                             for k, v in row.items()}
+                            {
+                                k: (
+                                    str(v)
+                                    if not isinstance(v, (str, int, float, bool, type(None)))
+                                    else v
+                                )
+                                for k, v in row.items()
+                            }
                             for row in samples
                         ]
                     except Exception:  # noqa: BLE001
