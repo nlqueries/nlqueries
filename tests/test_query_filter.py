@@ -9,6 +9,7 @@ Covers 20+ sample queries across the following scenarios:
   - Valid SELECT queries pass through with correct output shape
   - Structurally identical queries with different literals share a fingerprint
 """
+
 from __future__ import annotations
 
 import pytest
@@ -37,18 +38,22 @@ def _qr(sql: str, execution_count: int = 10) -> QueryRecord:
 # _is_select — unit tests for the SELECT check
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("sql, expected", [
-    ("SELECT id FROM users", True),
-    ("SELECT * FROM orders WHERE status = 'active'", True),
-    ("WITH cte AS (SELECT id FROM users) SELECT * FROM cte", True),
-    ("SELECT COUNT(*) FROM events GROUP BY event_type", True),
-    ("INSERT INTO users (name) VALUES ('Alice')", False),
-    ("UPDATE users SET status = 'inactive' WHERE id = 1", False),
-    ("DELETE FROM sessions WHERE id = 1", False),
-    ("CREATE TABLE foo AS SELECT 1", False),
-    ("DROP TABLE foo", False),
-    ("TRUNCATE TABLE audit_log", False),
-])
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        ("SELECT id FROM users", True),
+        ("SELECT * FROM orders WHERE status = 'active'", True),
+        ("WITH cte AS (SELECT id FROM users) SELECT * FROM cte", True),
+        ("SELECT COUNT(*) FROM events GROUP BY event_type", True),
+        ("INSERT INTO users (name) VALUES ('Alice')", False),
+        ("UPDATE users SET status = 'inactive' WHERE id = 1", False),
+        ("DELETE FROM sessions WHERE id = 1", False),
+        ("CREATE TABLE foo AS SELECT 1", False),
+        ("DROP TABLE foo", False),
+        ("TRUNCATE TABLE audit_log", False),
+    ],
+)
 def test_is_select(sql: str, expected: bool) -> None:
     assert _is_select(sql) == expected
 
@@ -57,18 +62,22 @@ def test_is_select(sql: str, expected: bool) -> None:
 # _has_system_schema — unit tests for system schema detection
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("sql, expected", [
-    ("SELECT table_name FROM information_schema.tables", True),
-    ("SELECT * FROM pg_catalog.pg_tables", True),
-    ("SELECT name FROM sys.tables", True),
-    ("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'", True),
-    ("SELECT * FROM pg_catalog.pg_namespace", True),
-    # Should NOT match
-    ("SELECT * FROM users", False),
-    ("SELECT * FROM system_events", False),       # 'system_events' is not 'sys.'
-    ("SELECT id FROM syscore_config", False),     # 'syscore' is not 'sys.'
-    ("SELECT * FROM products", False),
-])
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        ("SELECT table_name FROM information_schema.tables", True),
+        ("SELECT * FROM pg_catalog.pg_tables", True),
+        ("SELECT name FROM sys.tables", True),
+        ("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'", True),
+        ("SELECT * FROM pg_catalog.pg_namespace", True),
+        # Should NOT match
+        ("SELECT * FROM users", False),
+        ("SELECT * FROM system_events", False),  # 'system_events' is not 'sys.'
+        ("SELECT id FROM syscore_config", False),  # 'syscore' is not 'sys.'
+        ("SELECT * FROM products", False),
+    ],
+)
 def test_has_system_schema(sql: str, expected: bool) -> None:
     assert _has_system_schema(sql) == expected
 
@@ -112,6 +121,7 @@ def test_system_schema_queries_filtered() -> None:
 # filter_and_deduplicate — token length bounds
 # ---------------------------------------------------------------------------
 
+
 def test_too_short_query_filtered() -> None:
     # "SELECT 1" → 2 tokens → below minimum of 3
     assert filter_and_deduplicate([_qr("SELECT 1")]) == []
@@ -134,6 +144,7 @@ def test_exactly_3_token_query_passes() -> None:
 # ---------------------------------------------------------------------------
 # filter_and_deduplicate — min_executions threshold
 # ---------------------------------------------------------------------------
+
 
 def test_min_executions_filters_low_frequency() -> None:
     records = [
@@ -192,6 +203,7 @@ def test_output_shape_is_normalized_query() -> None:
 # Deduplication
 # ---------------------------------------------------------------------------
 
+
 def test_exact_duplicate_deduped_with_summed_count() -> None:
     sql = "SELECT id FROM users WHERE status = 'active'"
     result = filter_and_deduplicate([_qr(sql, 5), _qr(sql, 3)])
@@ -227,6 +239,7 @@ def test_distinct_queries_not_deduped() -> None:
 # ---------------------------------------------------------------------------
 # Fingerprint — structurally identical queries with different literals
 # ---------------------------------------------------------------------------
+
 
 def test_integer_literal_difference_same_fingerprint() -> None:
     sql1 = "SELECT * FROM users WHERE id = 1"
@@ -266,6 +279,7 @@ def test_fingerprint_strips_multiple_literals() -> None:
 # tables_referenced
 # ---------------------------------------------------------------------------
 
+
 def test_tables_referenced_single_table() -> None:
     result = filter_and_deduplicate([_qr("SELECT id FROM users WHERE status = 'active'")])
     assert result[0].tables_referenced == ["users"]
@@ -296,8 +310,7 @@ _MIXED_BATCH = [
     ("SELECT COUNT(*) FROM events WHERE event_type = 'click'", True),
     ("SELECT p.id, p.name FROM products p WHERE p.stock > 0", True),
     (
-        "SELECT u.id, u.name FROM users u"
-        " JOIN roles r ON u.role_id = r.id WHERE r.name = 'admin'",
+        "SELECT u.id, u.name FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'admin'",
         True,
     ),
     ("SELECT date_trunc('day', ts) AS day, COUNT(*) FROM logs GROUP BY 1", True),

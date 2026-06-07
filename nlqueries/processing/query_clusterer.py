@@ -111,9 +111,8 @@ def _merge_near_duplicates(clusters: list[QueryCluster]) -> list[QueryCluster]:
         while j < len(result):
             c1, c2 = result[i], result[j]
             t1, t2 = set(c1.tables_referenced), set(c2.tables_referenced)
-            if (
-                _jaccard(t1, t2) > 0.8
-                and _differ_only_in_column_order(c1.fingerprint, c2.fingerprint)
+            if _jaccard(t1, t2) > 0.8 and _differ_only_in_column_order(
+                c1.fingerprint, c2.fingerprint
             ):
                 # Keep the representative from the higher-traffic cluster.
                 rep = (

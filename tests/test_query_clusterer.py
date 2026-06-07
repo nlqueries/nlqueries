@@ -16,6 +16,7 @@ Additional coverage:
   - representative_sql comes from the highest-execution-count member
   - tables_referenced is the union of all members' tables
 """
+
 from __future__ import annotations
 
 from nlqueries.processing.query_clusterer import (
