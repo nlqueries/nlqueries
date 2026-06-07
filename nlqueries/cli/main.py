@@ -25,6 +25,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nlqueries.config import CONNECTORS_FILE, KB_PATH
+from nlqueries.connectors import CONNECTOR_REGISTRY
 
 console = Console()
 err_console = Console(stderr=True)
@@ -141,21 +142,44 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("db_type")
-@click.option("--host",     default="localhost", show_default=True, help="Database host.")
-@click.option("--port",     default=None, type=int,                 help="Database port (default varies by db-type).")
-@click.option("--database", required=True,                          help="Database / catalog / project name.")
-@click.option("--user",     required=True,                          help="Database user.")
-@click.option("--password", required=True, hide_input=True,         help="Database password.")
-@click.option("--account",  default=None,                           help="Snowflake account identifier.")
-@click.option("--connector-id", "connector_id", default=None,       help="Name to register this connector under (auto-generated if omitted).")
+@click.option("--host", default="localhost", show_default=True, help="Database host.")
+@click.option("--port", default=None, type=int, help="Database port (default varies by db-type).")
+@click.option("--database", default=None, help="Database / catalog / project name.")
+@click.option("--user", default=None, help="Database user.")
+@click.option("--password", default=None, hide_input=True, help="Database password.")
+@click.option("--account", default=None, help="Snowflake account identifier.")
+@click.option("--warehouse", default=None, help="Snowflake warehouse to use.")
+@click.option("--schema", "db_schema", default=None, help="Snowflake schema (optional).")
+@click.option("--project-id", "project_id", default=None, help="BigQuery / GCP project ID.")
+@click.option(
+    "--dataset-id", "dataset_id", default=None, help="BigQuery dataset ID (optional)."
+)
+@click.option(
+    "--service-account-json",
+    "service_account_json",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Path to a BigQuery service-account JSON key file (omit to use ADC).",
+)
+@click.option(
+    "--connector-id",
+    "connector_id",
+    default=None,
+    help="Name to register this connector under (auto-generated if omitted).",
+)
 def connect(
     db_type: str,
     host: str,
     port: Optional[int],
-    database: str,
-    user: str,
-    password: str,
+    database: Optional[str],
+    user: Optional[str],
+    password: Optional[str],
     account: Optional[str],
+    warehouse: Optional[str],
+    db_schema: Optional[str],
+    project_id: Optional[str],
+    dataset_id: Optional[str],
+    service_account_json: Optional[str],
     connector_id: Optional[str],
 ) -> None:
     """Test a database connection and register it as a named connector.
@@ -166,32 +190,116 @@ def connect(
     \b
     Examples:
       nlqueries connect postgres --database mydb --user alice --password secret
-      nlqueries connect snowflake --host acme.us-east-1 --database PROD --user bob --password s3cr3t
+      nlqueries connect snowflake --account acme-prod --database PROD --user bob \\
+          --password s3cr3t --warehouse COMPUTE_WH --schema PUBLIC
+      nlqueries connect bigquery --project-id acme-prod --dataset-id analytics \\
+          --service-account-json /path/to/key.json
     """
+    db_type_l = db_type.lower()
+
+    # Each db-type has a different minimal set of required credentials —
+    # validate them up front with a clear, actionable message rather than
+    # letting the connector fail with a confusing driver-level error.
+    if db_type_l == "bigquery":
+        project_id = project_id or database
+        if not project_id:
+            raise click.ClickException(
+                "bigquery requires --project-id (or --database).\n"
+                "  Example: nlqueries connect bigquery --project-id acme-prod "
+                "--dataset-id analytics"
+            )
+    elif db_type_l == "snowflake":
+        missing = [
+            name
+            for name, value in (
+                ("--account", account),
+                ("--warehouse", warehouse),
+                ("--database", database),
+                ("--user", user),
+                ("--password", password),
+            )
+            if not value
+        ]
+        if missing:
+            raise click.ClickException(
+                f"snowflake requires {', '.join(missing)}.\n"
+                f"  Example: nlqueries connect snowflake --account acme-prod "
+                f"--database PROD --user bob --password s3cr3t --warehouse COMPUTE_WH"
+            )
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("--database", database),
+                ("--user", user),
+                ("--password", password),
+            )
+            if not value
+        ]
+        if missing:
+            raise click.ClickException(
+                f"{db_type} requires {', '.join(missing)}.\n"
+                f"  Example: nlqueries connect {db_type_l} --database mydb "
+                f"--user alice --password secret"
+            )
+
     # Resolve port
-    resolved_port: int = port or _DEFAULT_PORTS.get(db_type.lower(), 5432)
+    resolved_port: int = port or _DEFAULT_PORTS.get(db_type_l, 5432)
 
     # Build connection URL
     try:
-        url = _build_url(db_type, host, resolved_port, database, user, password, account=account)
+        url = _build_url(
+            db_type, host, resolved_port, database or "", user or "", password or "",
+            account=account, project=project_id,
+        )
     except click.ClickException:
         raise
 
-    cid = connector_id or f"{db_type.lower()}:{host}:{database}"
+    cid = connector_id or f"{db_type_l}:{host}:{database or project_id}"
 
-    console.print(f"[bold]Connecting[/bold] to {db_type} at [cyan]{host}:{resolved_port}/{database}[/cyan] …")
+    if db_type_l == "bigquery":
+        console.print(f"[bold]Connecting[/bold] to BigQuery project [cyan]{project_id}[/cyan] …")
+    else:
+        console.print(
+            f"[bold]Connecting[/bold] to {db_type} at "
+            f"[cyan]{host}:{resolved_port}/{database}[/cyan] …"
+        )
+
+    connector_cls = CONNECTOR_REGISTRY.get(db_type_l)
 
     try:
-        # Import here so the CLI loads fast when SQLAlchemy isn't the bottleneck
-        from sqlalchemy import create_engine, text
+        if connector_cls is not None:
+            # Use the registered DatabaseConnector implementation (e.g. PostgresConnector,
+            # SnowflakeConnector). Pass through every credential field the connector might
+            # need — extra keys are simply ignored by connectors that don't use them.
+            connector = connector_cls()
+            connector.connect({
+                "host": host,
+                "port": resolved_port,
+                "database": database,
+                "user": user,
+                "password": password,
+                "account": account,
+                "warehouse": warehouse,
+                "schema": db_schema,
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "service_account_json": service_account_json,
+            })
+            if not connector.test_connection():
+                raise RuntimeError("test_connection() returned False")
+        else:
+            # No dedicated connector registered for this db-type yet — fall back
+            # to a raw SQLAlchemy connectivity check.
+            from sqlalchemy import create_engine, text
 
-        connect_args: dict = {}
-        if db_type.lower() in ("postgres", "postgresql"):
-            connect_args["connect_timeout"] = 10
+            connect_args: dict = {}
+            if db_type.lower() in ("postgres", "postgresql"):
+                connect_args["connect_timeout"] = 10
 
-        engine = create_engine(url, connect_args=connect_args)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+            engine = create_engine(url, connect_args=connect_args)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
 
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Connection failed:[/bold red] {exc}")
@@ -201,7 +309,7 @@ def connect(
 
     # Persist connector config (store URL — password included; remind user)
     config = {
-        "db_type":    db_type.lower(),
+        "db_type":    db_type_l,
         "host":       host,
         "port":       resolved_port,
         "database":   database,
@@ -209,6 +317,17 @@ def connect(
         "url":        url,          # ⚠ includes password — keep this file private
         "registered": datetime.now(timezone.utc).isoformat(),
     }
+    if db_type_l == "snowflake":
+        config["account"] = account
+        config["warehouse"] = warehouse
+        if db_schema:
+            config["schema"] = db_schema
+    if db_type_l == "bigquery":
+        config["project_id"] = project_id
+        if dataset_id:
+            config["dataset_id"] = dataset_id
+        if service_account_json:
+            config["service_account_json"] = service_account_json
     _save_connector(cid, config)
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
@@ -240,6 +359,61 @@ def extract_schema(connector_id: str) -> None:
 
     console.print(f"[bold]Extracting schema[/bold] for connector [cyan]{connector_id}[/cyan] …")
 
+    connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+
+    if connector_cls is not None:
+        # Use the registered DatabaseConnector implementation (e.g. PostgresConnector).
+        try:
+            from sqlalchemy.engine import make_url
+
+            parsed = make_url(cfg["url"])
+            connector = connector_cls()
+            connector.connect({
+                "host": parsed.host or cfg.get("host", "localhost"),
+                "port": parsed.port or cfg.get("port"),
+                "database": parsed.database or cfg.get("database"),
+                "user": parsed.username or cfg.get("user"),
+                "password": parsed.password,
+                # Snowflake-specific fields — absent from the URL, read from
+                # the persisted connector config (see `connect`).
+                "account": cfg.get("account"),
+                "warehouse": cfg.get("warehouse"),
+                "schema": cfg.get("schema"),
+            })
+            schema = connector.extract_schema()
+        except Exception as exc:  # noqa: BLE001
+            err_console.print(f"[bold red]✗ Schema extraction failed:[/bold red] {exc}")
+            sys.exit(1)
+
+        total_columns = sum(len(t.columns) for t in schema.tables)
+
+        console.print()
+        console.print(f"[bold green]✓ Schema extraction complete[/bold green]")
+        console.print(f"  Database: [bold]{schema.database}[/bold]")
+        console.print(f"  Tables  : [bold]{len(schema.tables)}[/bold]")
+        console.print(f"  Columns : [bold]{total_columns}[/bold] total across all tables")
+        console.print(f"  Extracted at: [dim]{schema.extracted_at}[/dim]")
+
+        if schema.tables:
+            console.print()
+            tbl = Table(
+                "Schema", "Table", "Columns", "Rows",
+                show_header=True, header_style="bold cyan",
+            )
+            for table_spec in schema.tables[:20]:
+                rows_str = str(table_spec.row_count) if table_spec.row_count is not None else "—"
+                tbl.add_row(
+                    table_spec.schema,
+                    table_spec.name,
+                    str(len(table_spec.columns)),
+                    rows_str,
+                )
+            if len(schema.tables) > 20:
+                tbl.add_row(f"… and {len(schema.tables) - 20} more", "", "", "")
+            console.print(tbl)
+        return
+
+    # --- Fallback: no dedicated connector registered for this db-type ---
     try:
         from sqlalchemy import create_engine, inspect as sa_inspect, select, func, table
 
@@ -353,10 +527,15 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
         console.print("  The following stages will run once nlqueries.processing is built:")
         console.print("    1. [dim]fetch_history[/dim]   — read pg_stat_statements / query logs")
         console.print("    2. [dim]filter_queries[/dim]  — drop DDL, noise, low-frequency queries")
-        console.print("    3. [dim]cluster_queries[/dim] — group by structural similarity (sqlglot AST)")
+        console.print(
+            "    3. [dim]cluster_queries[/dim] — group by structural similarity (sqlglot AST)"
+        )
         console.print("    4. [dim]parameterize[/dim]    — extract literals → typed placeholders")
         console.print()
-        console.print(f"  Config: connector=[bold]{connector_id}[/bold]  days={days}  min_executions={min_executions}")
+        console.print(
+            f"  Config: connector=[bold]{connector_id}[/bold]  "
+            f"days={days}  min_executions={min_executions}"
+        )
         return
 
     except Exception as exc:  # noqa: BLE001

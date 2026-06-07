@@ -56,6 +56,8 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4",
     "mypy>=1.10",
+    # Docker-based fixtures for connector integration tests (e.g. PostgresConnector)
+    "testcontainers[postgres]>=4.0",
 ]
 # Dialect extras for users who only need one driver
 mysql     = ["pymysql>=1.1"]
