@@ -360,7 +360,7 @@ class PostgresConnector(DatabaseConnector):
         start = time.perf_counter()
         try:
             engine = self._require_engine()
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 cursor_result = conn.execute(text(sql))
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
