@@ -56,6 +56,12 @@ CONNECTORS_FILE: Path = Path(
 """YAML file that stores registered connector configurations."""
 
 # ---------------------------------------------------------------------------
+# Query Capsules
+# ---------------------------------------------------------------------------
+CAPSULES_DIR: Path = Path(os.getenv("CAPSULES_DIR", str(Path.home() / ".nlqueries" / "capsules")))
+"""Directory where serialised QueryCapsule JSON files are stored."""
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()

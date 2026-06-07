@@ -6,6 +6,7 @@ from nlqueries.processing.parameterizer import (
     parameterize_cluster,
     parameterize_clusters,
 )
+from nlqueries.processing.pipeline import process_query_history, save_capsules
 from nlqueries.processing.query_clusterer import (
     QueryCluster,
     cluster_queries,
@@ -30,4 +31,6 @@ __all__ = [
     "parameterize",
     "parameterize_cluster",
     "parameterize_clusters",
+    "process_query_history",
+    "save_capsules",
 ]
