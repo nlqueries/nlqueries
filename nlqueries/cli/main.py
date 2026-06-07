@@ -20,10 +20,11 @@ from urllib.parse import quote_plus
 
 import click
 import yaml
-from nlqueries.config import CONNECTORS_FILE
-from nlqueries.connectors import CONNECTOR_REGISTRY
 from rich.console import Console
 from rich.table import Table
+
+from nlqueries.config import CONNECTORS_FILE
+from nlqueries.connectors import CONNECTOR_REGISTRY
 
 console = Console()
 err_console = Console(stderr=True)
