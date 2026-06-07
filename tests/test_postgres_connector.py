@@ -44,8 +44,15 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def pg_container():
-    with PostgresContainer("postgres:16-alpine") as container:
+    container = PostgresContainer("postgres:16-alpine")
+    try:
+        container.start()
+    except Exception as exc:
+        pytest.skip(f"Could not start Postgres container: {exc}")
+    try:
         yield container
+    finally:
+        container.stop()
 
 
 @pytest.fixture(scope="module")
