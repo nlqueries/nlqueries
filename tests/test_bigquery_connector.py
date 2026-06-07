@@ -27,6 +27,7 @@ CREDENTIALS = {
 # Registry
 # ---------------------------------------------------------------------------
 
+
 def test_bigquery_is_registered_under_bigquery_key():
     assert CONNECTOR_REGISTRY["bigquery"] is BigQueryConnector
 
@@ -34,6 +35,7 @@ def test_bigquery_is_registered_under_bigquery_key():
 # ---------------------------------------------------------------------------
 # connect
 # ---------------------------------------------------------------------------
+
 
 @patch("nlqueries.connectors.bigquery.bigquery.Client")
 def test_connect_uses_application_default_credentials_when_no_key_given(mock_client_cls):
@@ -148,6 +150,7 @@ def _connector_with_mock_client() -> tuple[BigQueryConnector, MagicMock]:
 # test_connection
 # ---------------------------------------------------------------------------
 
+
 def test_test_connection_returns_true_when_query_succeeds():
     connector, mock_client = _connector_with_mock_client()
     mock_job = MagicMock()
@@ -171,6 +174,7 @@ def test_test_connection_returns_false_on_driver_error(caplog):
 # ---------------------------------------------------------------------------
 # execute_query
 # ---------------------------------------------------------------------------
+
 
 def _make_row(values: dict):
     row = MagicMock()
@@ -252,6 +256,7 @@ def test_execute_query_captures_errors_without_raising():
 # ---------------------------------------------------------------------------
 # extract_schema
 # ---------------------------------------------------------------------------
+
 
 def _make_field(name: str, field_type: str, mode: str, description=None):
     field = MagicMock()

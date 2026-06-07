@@ -33,25 +33,26 @@ err_console = Console(stderr=True)
 # Supported DB types -> SQLAlchemy driver schemes
 # ---------------------------------------------------------------------------
 _DB_SCHEMES: dict[str, str] = {
-    "postgres":   "postgresql+psycopg2",
+    "postgres": "postgresql+psycopg2",
     "postgresql": "postgresql+psycopg2",
-    "mysql":      "mysql+pymysql",
-    "bigquery":   "bigquery",
-    "snowflake":  "snowflake",
+    "mysql": "mysql+pymysql",
+    "bigquery": "bigquery",
+    "snowflake": "snowflake",
 }
 
 _DEFAULT_PORTS: dict[str, int] = {
-    "postgres":   5432,
+    "postgres": 5432,
     "postgresql": 5432,
-    "mysql":      3306,
-    "bigquery":   443,
-    "snowflake":  443,
+    "mysql": 3306,
+    "bigquery": 443,
+    "snowflake": 443,
 }
 
 
 # ---------------------------------------------------------------------------
 # Connector registry helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_connectors() -> dict:
     if CONNECTORS_FILE.exists():
@@ -85,15 +86,14 @@ def _build_url(
     database: str,
     user: str,
     password: str,
-    account: str | None = None,    # Snowflake
-    project: str | None = None,    # BigQuery
+    account: str | None = None,  # Snowflake
+    project: str | None = None,  # BigQuery
 ) -> str:
     db_type_l = db_type.lower()
     scheme = _DB_SCHEMES.get(db_type_l)
     if scheme is None:
         raise click.ClickException(
-            f"Unsupported db-type '{db_type}'. "
-            f"Supported: {', '.join(sorted(set(_DB_SCHEMES)))}"
+            f"Unsupported db-type '{db_type}'. Supported: {', '.join(sorted(set(_DB_SCHEMES)))}"
         )
 
     if db_type_l == "bigquery":
@@ -102,20 +102,15 @@ def _build_url(
 
     if db_type_l == "snowflake":
         acct = account or host
-        return (
-            f"snowflake://{quote_plus(user)}:{quote_plus(password)}"
-            f"@{acct}/{database}"
-        )
+        return f"snowflake://{quote_plus(user)}:{quote_plus(password)}@{acct}/{database}"
 
-    return (
-        f"{scheme}://{quote_plus(user)}:{quote_plus(password)}"
-        f"@{host}:{port}/{database}"
-    )
+    return f"{scheme}://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{database}"
 
 
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
+
 
 @click.group()
 @click.version_option(package_name="nlqueries-core")
@@ -139,6 +134,7 @@ def cli() -> None:
 # connect
 # ---------------------------------------------------------------------------
 
+
 @cli.command()
 @click.argument("db_type")
 @click.option("--host", default="localhost", show_default=True, help="Database host.")
@@ -150,9 +146,7 @@ def cli() -> None:
 @click.option("--warehouse", default=None, help="Snowflake warehouse to use.")
 @click.option("--schema", "db_schema", default=None, help="Snowflake schema (optional).")
 @click.option("--project-id", "project_id", default=None, help="BigQuery / GCP project ID.")
-@click.option(
-    "--dataset-id", "dataset_id", default=None, help="BigQuery dataset ID (optional)."
-)
+@click.option("--dataset-id", "dataset_id", default=None, help="BigQuery dataset ID (optional).")
 @click.option(
     "--service-account-json",
     "service_account_json",
@@ -248,8 +242,14 @@ def connect(
     # Build connection URL
     try:
         url = _build_url(
-            db_type, host, resolved_port, database or "", user or "", password or "",
-            account=account, project=project_id,
+            db_type,
+            host,
+            resolved_port,
+            database or "",
+            user or "",
+            password or "",
+            account=account,
+            project=project_id,
         )
     except click.ClickException:
         raise
@@ -272,19 +272,21 @@ def connect(
             # SnowflakeConnector). Pass through every credential field the connector might
             # need — extra keys are simply ignored by connectors that don't use them.
             connector = connector_cls()
-            connector.connect({
-                "host": host,
-                "port": resolved_port,
-                "database": database,
-                "user": user,
-                "password": password,
-                "account": account,
-                "warehouse": warehouse,
-                "schema": db_schema,
-                "project_id": project_id,
-                "dataset_id": dataset_id,
-                "service_account_json": service_account_json,
-            })
+            connector.connect(
+                {
+                    "host": host,
+                    "port": resolved_port,
+                    "database": database,
+                    "user": user,
+                    "password": password,
+                    "account": account,
+                    "warehouse": warehouse,
+                    "schema": db_schema,
+                    "project_id": project_id,
+                    "dataset_id": dataset_id,
+                    "service_account_json": service_account_json,
+                }
+            )
             if not connector.test_connection():
                 raise RuntimeError("test_connection() returned False")
         else:
@@ -308,12 +310,12 @@ def connect(
 
     # Persist connector config (store URL — password included; remind user)
     config = {
-        "db_type":    db_type_l,
-        "host":       host,
-        "port":       resolved_port,
-        "database":   database,
-        "user":       user,
-        "url":        url,          # ⚠ includes password — keep this file private
+        "db_type": db_type_l,
+        "host": host,
+        "port": resolved_port,
+        "database": database,
+        "user": user,
+        "url": url,  # ⚠ includes password — keep this file private
         "registered": datetime.now(UTC).isoformat(),
     }
     if db_type_l == "snowflake":
@@ -331,13 +333,16 @@ def connect(
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
     console.print(f"  Config saved to [dim]{CONNECTORS_FILE}[/dim]")
-    console.print("  [yellow]Note:[/yellow] The config file contains the database password. "
-                  "Ensure it is not world-readable.")
+    console.print(
+        "  [yellow]Note:[/yellow] The config file contains the database password. "
+        "Ensure it is not world-readable."
+    )
 
 
 # ---------------------------------------------------------------------------
 # extract-schema
 # ---------------------------------------------------------------------------
+
 
 @cli.command("extract-schema")
 @click.argument("connector_id")
@@ -367,18 +372,20 @@ def extract_schema(connector_id: str) -> None:
 
             parsed = make_url(cfg["url"])
             connector = connector_cls()
-            connector.connect({
-                "host": parsed.host or cfg.get("host", "localhost"),
-                "port": parsed.port or cfg.get("port"),
-                "database": parsed.database or cfg.get("database"),
-                "user": parsed.username or cfg.get("user"),
-                "password": parsed.password,
-                # Snowflake-specific fields — absent from the URL, read from
-                # the persisted connector config (see `connect`).
-                "account": cfg.get("account"),
-                "warehouse": cfg.get("warehouse"),
-                "schema": cfg.get("schema"),
-            })
+            connector.connect(
+                {
+                    "host": parsed.host or cfg.get("host", "localhost"),
+                    "port": parsed.port or cfg.get("port"),
+                    "database": parsed.database or cfg.get("database"),
+                    "user": parsed.username or cfg.get("user"),
+                    "password": parsed.password,
+                    # Snowflake-specific fields — absent from the URL, read from
+                    # the persisted connector config (see `connect`).
+                    "account": cfg.get("account"),
+                    "warehouse": cfg.get("warehouse"),
+                    "schema": cfg.get("schema"),
+                }
+            )
             schema = connector.extract_schema()
         except Exception as exc:  # noqa: BLE001
             err_console.print(f"[bold red]✗ Schema extraction failed:[/bold red] {exc}")
@@ -396,8 +403,12 @@ def extract_schema(connector_id: str) -> None:
         if schema.tables:
             console.print()
             tbl = Table(
-                "Schema", "Table", "Columns", "Rows",
-                show_header=True, header_style="bold cyan",
+                "Schema",
+                "Table",
+                "Columns",
+                "Rows",
+                show_header=True,
+                header_style="bold cyan",
             )
             for table_spec in schema.tables[:20]:
                 rows_str = str(table_spec.row_count) if table_spec.row_count is not None else "—"
@@ -422,7 +433,7 @@ def extract_schema(connector_id: str) -> None:
         with engine.connect() as conn:
             inspector = sa_inspect(engine)
             table_names: list[str] = inspector.get_table_names()
-            view_names:  list[str] = inspector.get_view_names()
+            view_names: list[str] = inspector.get_view_names()
 
             total_columns = 0
             table_stats: list[dict] = []
@@ -440,11 +451,13 @@ def extract_schema(connector_id: str) -> None:
                 except Exception:  # noqa: BLE001
                     row_count = None
 
-                table_stats.append({
-                    "table":   tbl,
-                    "columns": col_count,
-                    "rows":    row_count,
-                })
+                table_stats.append(
+                    {
+                        "table": tbl,
+                        "columns": col_count,
+                        "rows": row_count,
+                    }
+                )
 
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Schema extraction failed:[/bold red] {exc}")
@@ -473,14 +486,21 @@ def extract_schema(connector_id: str) -> None:
 # process-history
 # ---------------------------------------------------------------------------
 
+
 @cli.command("process-history")
 @click.argument("connector_id")
 @click.option(
-    "--days", default=90, show_default=True, type=int,
+    "--days",
+    default=90,
+    show_default=True,
+    type=int,
     help="Number of days of query history to process.",
 )
 @click.option(
-    "--min-executions", default=3, show_default=True, type=int,
+    "--min-executions",
+    default=3,
+    show_default=True,
+    type=int,
     help="Minimum execution count for a query to be included.",
 )
 def process_history(connector_id: str, days: int, min_executions: int) -> None:
@@ -515,10 +535,10 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
             parameterize,
         )
 
-        raw       = fetch_history(cfg["url"], days=days)
-        filtered  = filter_queries(raw, min_executions=min_executions)
-        clusters  = cluster_queries(filtered)
-        capsules  = parameterize(clusters)
+        raw = fetch_history(cfg["url"], days=days)
+        filtered = filter_queries(raw, min_executions=min_executions)
+        clusters = cluster_queries(filtered)
+        capsules = parameterize(clusters)
 
     except ImportError:
         # Processing pipeline not yet implemented — emit a clear placeholder
@@ -553,10 +573,12 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
 # export-kb
 # ---------------------------------------------------------------------------
 
+
 @cli.command("export-kb")
 @click.argument("connector_id")
 @click.option(
-    "--output", "-o",
+    "--output",
+    "-o",
     default="knowledge_base.yaml",
     show_default=True,
     type=click.Path(dir_okay=False, writable=True),
@@ -564,11 +586,15 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
 )
 @click.option(
     "--include-samples/--no-include-samples",
-    default=True, show_default=True,
+    default=True,
+    show_default=True,
     help="Include sample rows for each table.",
 )
 @click.option(
-    "--sample-rows", default=3, show_default=True, type=int,
+    "--sample-rows",
+    default=3,
+    show_default=True,
+    type=int,
     help="Number of sample rows to include per table.",
 )
 def export_kb(
@@ -594,9 +620,7 @@ def export_kb(
     cfg = _require_connector(connector_id)
     out_path = Path(output)
 
-    console.print(
-        f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …"
-    )
+    console.print(f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …")
 
     try:
         from sqlalchemy import create_engine, select, table, text
@@ -609,8 +633,8 @@ def export_kb(
         kb: dict = {
             "meta": {
                 "connector_id": connector_id,
-                "db_type":      cfg["db_type"],
-                "database":     cfg["database"],
+                "db_type": cfg["db_type"],
+                "database": cfg["database"],
                 "generated_at": datetime.now(UTC).isoformat(),
                 "nlqueries_version": "0.1.0",
             },
@@ -621,13 +645,13 @@ def export_kb(
             for tbl_name in table_names:
                 columns = inspector.get_columns(tbl_name)
                 pk_cols = inspector.get_pk_constraint(tbl_name).get("constrained_columns", [])
-                fkeys   = inspector.get_foreign_keys(tbl_name)
+                fkeys = inspector.get_foreign_keys(tbl_name)
                 indexes = inspector.get_indexes(tbl_name)
 
                 col_defs = [
                     {
-                        "name":     c["name"],
-                        "type":     str(c["type"]),
+                        "name": c["name"],
+                        "type": str(c["type"]),
                         "nullable": c.get("nullable", True),
                         "primary_key": c["name"] in pk_cols,
                         **({"default": str(c["default"])} if c.get("default") is not None else {}),
@@ -637,8 +661,8 @@ def export_kb(
 
                 fkey_defs = [
                     {
-                        "columns":            fk["constrained_columns"],
-                        "references_table":   fk["referred_table"],
+                        "columns": fk["constrained_columns"],
+                        "references_table": fk["referred_table"],
                         "references_columns": fk["referred_columns"],
                     }
                     for fk in fkeys
@@ -646,9 +670,9 @@ def export_kb(
 
                 index_defs = [
                     {
-                        "name":    idx["name"],
+                        "name": idx["name"],
                         "columns": idx["column_names"],
-                        "unique":  idx.get("unique", False),
+                        "unique": idx.get("unique", False),
                     }
                     for idx in indexes
                 ]
@@ -676,9 +700,9 @@ def export_kb(
                         samples = []
 
                 kb["tables"][tbl_name] = {
-                    "columns":      col_defs,
+                    "columns": col_defs,
                     "foreign_keys": fkey_defs,
-                    "indexes":      index_defs,
+                    "indexes": index_defs,
                     **({"sample_rows": samples} if include_samples else {}),
                 }
 
@@ -691,7 +715,7 @@ def export_kb(
     with out_path.open("w", encoding="utf-8") as fh:
         yaml.dump(kb, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-    table_count  = len(kb["tables"])
+    table_count = len(kb["tables"])
     column_count = sum(len(t["columns"]) for t in kb["tables"].values())
 
     console.print(f"[bold green]✓ Knowledge base written to[/bold green] [cyan]{out_path}[/cyan]")

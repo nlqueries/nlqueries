@@ -31,6 +31,7 @@ CREDENTIALS = {
 # Registry
 # ---------------------------------------------------------------------------
 
+
 def test_snowflake_is_registered_under_snowflake_key():
     assert CONNECTOR_REGISTRY["snowflake"] is SnowflakeConnector
 
@@ -38,6 +39,7 @@ def test_snowflake_is_registered_under_snowflake_key():
 # ---------------------------------------------------------------------------
 # connect / test_connection
 # ---------------------------------------------------------------------------
+
 
 @patch("nlqueries.connectors.snowflake.snowflake.connector.connect")
 def test_connect_builds_connection_with_expected_kwargs(mock_connect):
@@ -132,6 +134,7 @@ def test_test_connection_returns_false_on_driver_error(caplog):
 # execute_query
 # ---------------------------------------------------------------------------
 
+
 def test_execute_query_returns_columns_and_rows():
     connector, mock_connection = _connector_with_mock_connection()
     mock_cursor = MagicMock()
@@ -186,29 +189,69 @@ def test_execute_query_captures_errors_without_raising():
 # ---------------------------------------------------------------------------
 
 _TABLES_ROWS = [
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "CUSTOMERS", "ROW_COUNT": 2,
-     "COMMENT": "Customer accounts"},
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "CUSTOMERS",
+        "ROW_COUNT": 2,
+        "COMMENT": "Customer accounts",
+    },
     {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "ORDERS", "ROW_COUNT": 5, "COMMENT": None},
 ]
 
 _COLUMNS_ROWS = [
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "CUSTOMERS", "COLUMN_NAME": "ID",
-     "DATA_TYPE": "NUMBER", "IS_NULLABLE": "NO", "COMMENT": "Primary key"},
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "CUSTOMERS", "COLUMN_NAME": "EMAIL",
-     "DATA_TYPE": "TEXT", "IS_NULLABLE": "NO", "COMMENT": None},
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "ORDERS", "COLUMN_NAME": "ID",
-     "DATA_TYPE": "NUMBER", "IS_NULLABLE": "NO", "COMMENT": None},
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "ORDERS", "COLUMN_NAME": "CUSTOMER_ID",
-     "DATA_TYPE": "NUMBER", "IS_NULLABLE": "NO", "COMMENT": None},
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "CUSTOMERS",
+        "COLUMN_NAME": "ID",
+        "DATA_TYPE": "NUMBER",
+        "IS_NULLABLE": "NO",
+        "COMMENT": "Primary key",
+    },
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "CUSTOMERS",
+        "COLUMN_NAME": "EMAIL",
+        "DATA_TYPE": "TEXT",
+        "IS_NULLABLE": "NO",
+        "COMMENT": None,
+    },
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "ORDERS",
+        "COLUMN_NAME": "ID",
+        "DATA_TYPE": "NUMBER",
+        "IS_NULLABLE": "NO",
+        "COMMENT": None,
+    },
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "ORDERS",
+        "COLUMN_NAME": "CUSTOMER_ID",
+        "DATA_TYPE": "NUMBER",
+        "IS_NULLABLE": "NO",
+        "COMMENT": None,
+    },
 ]
 
 _CONSTRAINT_ROWS = [
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "CUSTOMERS",
-     "CONSTRAINT_TYPE": "PRIMARY KEY", "COLUMN_NAME": "ID"},
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "ORDERS",
-     "CONSTRAINT_TYPE": "PRIMARY KEY", "COLUMN_NAME": "ID"},
-    {"TABLE_SCHEMA": "PUBLIC", "TABLE_NAME": "ORDERS",
-     "CONSTRAINT_TYPE": "FOREIGN KEY", "COLUMN_NAME": "CUSTOMER_ID"},
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "CUSTOMERS",
+        "CONSTRAINT_TYPE": "PRIMARY KEY",
+        "COLUMN_NAME": "ID",
+    },
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "ORDERS",
+        "CONSTRAINT_TYPE": "PRIMARY KEY",
+        "COLUMN_NAME": "ID",
+    },
+    {
+        "TABLE_SCHEMA": "PUBLIC",
+        "TABLE_NAME": "ORDERS",
+        "CONSTRAINT_TYPE": "FOREIGN KEY",
+        "COLUMN_NAME": "CUSTOMER_ID",
+    },
 ]
 
 

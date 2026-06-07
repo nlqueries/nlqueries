@@ -123,8 +123,7 @@ class BigQueryConnector(DatabaseConnector):
                     return f"region-{location.lower()}"
             except Exception:  # noqa: BLE001 — fall through to the default
                 logger.debug(
-                    "Could not resolve dataset location for region qualification; "
-                    "defaulting to %s",
+                    "Could not resolve dataset location for region qualification; defaulting to %s",
                     _DEFAULT_REGION_QUALIFIER,
                 )
         return _DEFAULT_REGION_QUALIFIER
@@ -327,8 +326,7 @@ class BigQueryConnector(DatabaseConnector):
             rows = [list(row.values()) for row in result] if columns else []
 
             logger.info(
-                "BigQueryConnector.execute_query metadata: total_bytes_processed=%s "
-                "(job_id=%s)",
+                "BigQueryConnector.execute_query metadata: total_bytes_processed=%s (job_id=%s)",
                 query_job.total_bytes_processed,
                 query_job.job_id,
             )
