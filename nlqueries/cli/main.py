@@ -526,48 +526,62 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
         f"(last [bold]{days}[/bold] days) …"
     )
 
+    connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+    if connector_cls is None:
+        err_console.print(
+            f"[bold red]✗ No connector registered for db_type '{cfg.get('db_type')}'.[/bold red]"
+        )
+        sys.exit(1)
+
     try:
-        # Pipeline stages — implemented in nlqueries.processing.*
-        # Each stage is imported lazily so the CLI loads fast.
-        from nlqueries.processing import (  # type: ignore[attr-defined]
-            cluster_queries,
-            fetch_history,
-            filter_queries,
-            parameterize,
+        from sqlalchemy.engine import make_url
+
+        from nlqueries.processing.pipeline import process_query_history, save_capsules
+
+        parsed = make_url(cfg["url"])
+        connector = connector_cls()
+        connector.connect(
+            {
+                "host": parsed.host or cfg.get("host", "localhost"),
+                "port": parsed.port or cfg.get("port"),
+                "database": parsed.database or cfg.get("database"),
+                "user": parsed.username or cfg.get("user"),
+                "password": parsed.password,
+                "account": cfg.get("account"),
+                "warehouse": cfg.get("warehouse"),
+                "schema": cfg.get("schema"),
+                "project_id": cfg.get("project_id"),
+                "dataset_id": cfg.get("dataset_id"),
+                "service_account_json": cfg.get("service_account_json"),
+            }
         )
 
-        raw = fetch_history(cfg["url"], days=days)
-        filtered = filter_queries(raw, min_executions=min_executions)
-        clusters = cluster_queries(filtered)
-        capsules = parameterize(clusters)
+        # Schema extraction is best-effort; the pipeline works without it
+        # but uses SchemaSpec column types to sharpen placeholder typing.
+        schema = None
+        try:
+            schema = connector.extract_schema()
+        except Exception:  # noqa: BLE001
+            console.print(
+                "  [yellow]⚠ Schema extraction failed — "
+                "placeholder types may default to VARCHAR.[/yellow]"
+            )
 
-    except ImportError:
-        # Processing pipeline not yet implemented — emit a clear placeholder
-        console.print()
-        console.print("[yellow]⚠ Processing pipeline stubs not yet implemented.[/yellow]")
-        console.print("  The following stages will run once nlqueries.processing is built:")
-        console.print("    1. [dim]fetch_history[/dim]   — read pg_stat_statements / query logs")
-        console.print("    2. [dim]filter_queries[/dim]  — drop DDL, noise, low-frequency queries")
-        console.print(
-            "    3. [dim]cluster_queries[/dim] — group by structural similarity (sqlglot AST)"
+        capsules = process_query_history(
+            connector,
+            schema=schema,
+            days=days,
+            min_executions=min_executions,
         )
-        console.print("    4. [dim]parameterize[/dim]    — extract literals → typed placeholders")
-        console.print()
-        console.print(
-            f"  Config: connector=[bold]{connector_id}[/bold]  "
-            f"days={days}  min_executions={min_executions}"
-        )
-        return
+        out_path = save_capsules(capsules, connector_id)
 
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Pipeline failed:[/bold red] {exc}")
         sys.exit(1)
 
     console.print("[bold green]✓ Pipeline complete.[/bold green]")
-    console.print(f"  Raw queries fetched : {len(raw)}")
-    console.print(f"  After filtering     : {len(filtered)}")
-    console.print(f"  Clusters identified : {len(clusters)}")
-    console.print(f"  Capsules produced   : [bold]{len(capsules)}[/bold]")
+    console.print(f"  Capsules produced : [bold]{len(capsules)}[/bold]")
+    console.print(f"  Saved to          : [dim]{out_path}[/dim]")
 
 
 # ---------------------------------------------------------------------------
