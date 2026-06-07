@@ -1,0 +1,5 @@
+{
+  "tests/test_snowflake_connector.py::test_snowflake_is_registered_under_snowflake_key": true,
+  "tests/test_snowflake_connector.py": true,
+  "tests/test_connector_interface.py": true
+}
