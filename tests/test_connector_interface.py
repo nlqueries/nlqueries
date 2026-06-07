@@ -45,9 +45,7 @@ def test_subclass_implementing_all_methods_can_be_instantiated(missing_methods, 
             return []
 
         def execute_query(self, sql: str) -> QueryResult:
-            return QueryResult(
-                columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None
-            )
+            return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
 
     connector = CompleteConnector()
     assert isinstance(connector, DatabaseConnector) is expected

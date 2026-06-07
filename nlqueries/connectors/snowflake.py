@@ -193,9 +193,7 @@ class SnowflakeConnector(DatabaseConnector):
         )
 
     @classmethod
-    def _fetch_tables(
-        cls, connection: Any, database: str
-    ) -> dict[tuple[str, str], dict[str, Any]]:
+    def _fetch_tables(cls, connection: Any, database: str) -> dict[tuple[str, str], dict[str, Any]]:
         """Return ``{(schema, table): {row_count, description}}`` from ``TABLES``."""
         rows = cls._query(
             connection,

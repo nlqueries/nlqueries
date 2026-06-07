@@ -41,6 +41,7 @@ pytestmark = pytest.mark.skipif(
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def pg_container():
     with PostgresContainer("postgres:16-alpine") as container:
@@ -114,6 +115,7 @@ def seeded_connector(credentials):
 # Registry
 # ---------------------------------------------------------------------------
 
+
 def test_postgres_is_registered_under_postgres_key():
     assert CONNECTOR_REGISTRY["postgres"] is PostgresConnector
 
@@ -121,6 +123,7 @@ def test_postgres_is_registered_under_postgres_key():
 # ---------------------------------------------------------------------------
 # connect / test_connection
 # ---------------------------------------------------------------------------
+
 
 def test_connect_builds_engine_and_test_connection_succeeds(credentials):
     connector = PostgresConnector()
@@ -155,6 +158,7 @@ def test_methods_behave_before_connect_is_called():
 # execute_query
 # ---------------------------------------------------------------------------
 
+
 def test_execute_query_returns_columns_and_rows(connector):
     result = connector.execute_query("SELECT 1 AS one, 'two' AS two")
 
@@ -180,6 +184,7 @@ def test_execute_query_captures_errors_without_raising(connector):
 # ---------------------------------------------------------------------------
 # extract_schema
 # ---------------------------------------------------------------------------
+
 
 def test_extract_schema_returns_full_schema_spec(seeded_connector):
     schema = seeded_connector.extract_schema()
@@ -222,6 +227,7 @@ def test_extract_schema_row_counts_are_present_after_analyze(seeded_connector):
 # ---------------------------------------------------------------------------
 # extract_query_history
 # ---------------------------------------------------------------------------
+
 
 def test_extract_query_history_returns_empty_list_when_extension_missing(connector, caplog):
     # The default postgres:16-alpine image does not ship pg_stat_statements,
