@@ -18,13 +18,10 @@ Additional coverage:
 """
 from __future__ import annotations
 
-import pytest
-
 from nlqueries.processing.query_clusterer import (
     QueryCluster,
     _differ_only_in_column_order,
     _jaccard,
-    _merge_near_duplicates,
     cluster_queries,
 )
 from nlqueries.processing.query_filter import (
@@ -32,7 +29,6 @@ from nlqueries.processing.query_filter import (
     _make_fingerprint,
     _normalize,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -191,9 +187,24 @@ def test_fingerprint_identical_execution_count_summed() -> None:
 def test_priority_score_is_sum_of_execution_counts() -> None:
     fp = _fp("SELECT id FROM products WHERE stock = 1")
     members = [
-        _nq("SELECT id FROM products WHERE stock = 1", fingerprint=fp, execution_count=3, tables=["products"]),
-        _nq("SELECT id FROM products WHERE stock = 2", fingerprint=fp, execution_count=7, tables=["products"]),
-        _nq("SELECT id FROM products WHERE stock = 3", fingerprint=fp, execution_count=5, tables=["products"]),
+        _nq(
+            "SELECT id FROM products WHERE stock = 1",
+            fingerprint=fp,
+            execution_count=3,
+            tables=["products"],
+        ),
+        _nq(
+            "SELECT id FROM products WHERE stock = 2",
+            fingerprint=fp,
+            execution_count=7,
+            tables=["products"],
+        ),
+        _nq(
+            "SELECT id FROM products WHERE stock = 3",
+            fingerprint=fp,
+            execution_count=5,
+            tables=["products"],
+        ),
     ]
     cluster = cluster_queries(members)[0]
     assert cluster.execution_count == 3 + 7 + 5  # 15
@@ -204,9 +215,24 @@ def test_clusters_sorted_by_execution_count_descending() -> None:
     fp_b = _fp("SELECT id FROM orders WHERE id = 1")
     fp_c = _fp("SELECT id FROM products WHERE id = 1")
     queries = [
-        _nq("SELECT id FROM users WHERE id = 1", fingerprint=fp_a, execution_count=5, tables=["users"]),
-        _nq("SELECT id FROM orders WHERE id = 1", fingerprint=fp_b, execution_count=30, tables=["orders"]),
-        _nq("SELECT id FROM products WHERE id = 1", fingerprint=fp_c, execution_count=15, tables=["products"]),
+        _nq(
+            "SELECT id FROM users WHERE id = 1",
+            fingerprint=fp_a,
+            execution_count=5,
+            tables=["users"],
+        ),
+        _nq(
+            "SELECT id FROM orders WHERE id = 1",
+            fingerprint=fp_b,
+            execution_count=30,
+            tables=["orders"],
+        ),
+        _nq(
+            "SELECT id FROM products WHERE id = 1",
+            fingerprint=fp_c,
+            execution_count=15,
+            tables=["products"],
+        ),
     ]
     result = cluster_queries(queries)
     assert len(result) == 3
@@ -224,8 +250,16 @@ def test_zero_table_overlap_clusters_not_merged() -> None:
     fp1 = _fp("SELECT id, name FROM users WHERE status = 'active'")
     fp2 = _fp("SELECT id, name FROM orders WHERE status = 'active'")
     queries = [
-        _nq(_norm("SELECT id, name FROM users WHERE status = 'active'"), fingerprint=fp1, tables=["users"]),
-        _nq(_norm("SELECT name, id FROM orders WHERE status = 'active'"), fingerprint=fp2, tables=["orders"]),
+        _nq(
+            _norm("SELECT id, name FROM users WHERE status = 'active'"),
+            fingerprint=fp1,
+            tables=["users"],
+        ),
+        _nq(
+            _norm("SELECT name, id FROM orders WHERE status = 'active'"),
+            fingerprint=fp2,
+            tables=["orders"],
+        ),
     ]
     result = cluster_queries(queries)
     # Jaccard({"users"}, {"orders"}) = 0 → must NOT merge
@@ -254,8 +288,18 @@ def test_near_duplicate_merge_column_order() -> None:
     fp2 = _fp("SELECT name, id FROM users WHERE status = 'active'")
     # fp1 and fp2 should differ only in column order; same table "users"
     queries = [
-        _nq(_norm("SELECT id, name FROM users WHERE status = 'active'"), fingerprint=fp1, execution_count=10, tables=["users"]),
-        _nq(_norm("SELECT name, id FROM users WHERE status = 'active'"), fingerprint=fp2, execution_count=6, tables=["users"]),
+        _nq(
+            _norm("SELECT id, name FROM users WHERE status = 'active'"),
+            fingerprint=fp1,
+            execution_count=10,
+            tables=["users"],
+        ),
+        _nq(
+            _norm("SELECT name, id FROM users WHERE status = 'active'"),
+            fingerprint=fp2,
+            execution_count=6,
+            tables=["users"],
+        ),
     ]
     result = cluster_queries(queries)
     assert len(result) == 1
@@ -266,8 +310,18 @@ def test_near_duplicate_merge_column_order() -> None:
 def test_near_duplicate_merge_picks_higher_execution_representative() -> None:
     fp1 = _fp("SELECT id, name FROM users WHERE active = 1")
     fp2 = _fp("SELECT name, id FROM users WHERE active = 1")
-    low = _nq(_norm("SELECT id, name FROM users WHERE active = 1"), fingerprint=fp1, execution_count=3, tables=["users"])
-    high = _nq(_norm("SELECT name, id FROM users WHERE active = 1"), fingerprint=fp2, execution_count=20, tables=["users"])
+    low = _nq(
+        _norm("SELECT id, name FROM users WHERE active = 1"),
+        fingerprint=fp1,
+        execution_count=3,
+        tables=["users"],
+    )
+    high = _nq(
+        _norm("SELECT name, id FROM users WHERE active = 1"),
+        fingerprint=fp2,
+        execution_count=20,
+        tables=["users"],
+    )
     result = cluster_queries([low, high])
     assert len(result) == 1
     assert result[0].representative_sql == high.normalized_sql
@@ -279,8 +333,16 @@ def test_no_merge_when_where_clause_differs() -> None:
     # WHERE clauses become identical after literal stripping ('?' in both)
     # so these SHOULD merge (same structure after stripping, just column order differs)
     queries = [
-        _nq(_norm("SELECT id, name FROM users WHERE status = 'active'"), fingerprint=fp1, tables=["users"]),
-        _nq(_norm("SELECT name, id FROM users WHERE status = 'inactive'"), fingerprint=fp2, tables=["users"]),
+        _nq(
+            _norm("SELECT id, name FROM users WHERE status = 'active'"),
+            fingerprint=fp1,
+            tables=["users"],
+        ),
+        _nq(
+            _norm("SELECT name, id FROM users WHERE status = 'inactive'"),
+            fingerprint=fp2,
+            tables=["users"],
+        ),
     ]
     result = cluster_queries(queries)
     # Both fingerprints have status = '?' → identical except column order → merge
@@ -288,13 +350,21 @@ def test_no_merge_when_where_clause_differs() -> None:
 
 
 def test_no_merge_below_jaccard_threshold() -> None:
-    # Tables are {"users", "orders", "products", "a", "b"} vs {"users", "x", "y", "z", "w"}
+    # Tables are {"users","orders","products","a","b"} vs {"users","x","y","z","w"}
     # Intersection = {"users"} → Jaccard = 1/9 ≈ 0.11 < 0.8
     fp1 = _fp("SELECT id, name FROM users WHERE id = 1")
     fp2 = _fp("SELECT name, id FROM users WHERE id = 1")
     queries = [
-        _nq(_norm("SELECT id, name FROM users WHERE id = 1"), fingerprint=fp1, tables=["users", "orders", "products", "a", "b"]),
-        _nq(_norm("SELECT name, id FROM users WHERE id = 1"), fingerprint=fp2, tables=["users", "x", "y", "z", "w"]),
+        _nq(
+            _norm("SELECT id, name FROM users WHERE id = 1"),
+            fingerprint=fp1,
+            tables=["users", "orders", "products", "a", "b"],
+        ),
+        _nq(
+            _norm("SELECT name, id FROM users WHERE id = 1"),
+            fingerprint=fp2,
+            tables=["users", "x", "y", "z", "w"],
+        ),
     ]
     result = cluster_queries(queries)
     assert len(result) == 2
@@ -319,7 +389,11 @@ def test_tables_referenced_is_union_of_members() -> None:
 def test_tables_referenced_is_sorted() -> None:
     fp = _fp("SELECT id FROM users WHERE id = 1")
     queries = [
-        _nq("SELECT id FROM users WHERE id = 1", fingerprint=fp, tables=["zebra", "apple", "mango"]),
+        _nq(
+            "SELECT id FROM users WHERE id = 1",
+            fingerprint=fp,
+            tables=["zebra", "apple", "mango"],
+        ),
     ]
     result = cluster_queries(queries)
     assert result[0].tables_referenced == sorted(result[0].tables_referenced)

@@ -12,7 +12,6 @@ Covers 20+ sample queries across the following scenarios:
 from __future__ import annotations
 
 import pytest
-
 from nlqueries.connectors.base import QueryRecord
 from nlqueries.processing.query_filter import (
     NormalizedQuery,
@@ -157,8 +156,14 @@ def test_min_executions_default_allows_all() -> None:
 
 _VALID_SELECTS = [
     "SELECT id, name FROM users WHERE status = 'active'",
-    "SELECT o.id, o.total, u.name FROM orders o JOIN users u ON o.user_id = u.id WHERE o.status = 'pending'",
-    "SELECT date_trunc('month', created_at) AS month, COUNT(*) AS cnt FROM events GROUP BY 1 ORDER BY 1",
+    (
+        "SELECT o.id, o.total, u.name FROM orders o"
+        " JOIN users u ON o.user_id = u.id WHERE o.status = 'pending'"
+    ),
+    (
+        "SELECT date_trunc('month', created_at) AS month, COUNT(*) AS cnt"
+        " FROM events GROUP BY 1 ORDER BY 1"
+    ),
     "SELECT p.name, p.price FROM products p WHERE p.price > 100.0 AND p.category = 'electronics'",
     "SELECT COUNT(*) AS total FROM orders WHERE created_at >= '2024-01-01'",
     "SELECT AVG(price) FROM products WHERE category = 'books'",
@@ -290,7 +295,11 @@ _MIXED_BATCH = [
     ("SELECT order_id, total FROM orders WHERE status = 'shipped' AND total > 50", True),
     ("SELECT COUNT(*) FROM events WHERE event_type = 'click'", True),
     ("SELECT p.id, p.name FROM products p WHERE p.stock > 0", True),
-    ("SELECT u.id, u.name FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'admin'", True),
+    (
+        "SELECT u.id, u.name FROM users u"
+        " JOIN roles r ON u.role_id = r.id WHERE r.name = 'admin'",
+        True,
+    ),
     ("SELECT date_trunc('day', ts) AS day, COUNT(*) FROM logs GROUP BY 1", True),
     ("SELECT AVG(price) FROM products WHERE category = 'books'", True),
     # Duplicate of first valid entry (should be deduped, not counted twice)
