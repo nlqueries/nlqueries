@@ -510,7 +510,15 @@ def extract_schema(connector_id: str) -> None:
     show_default=True,
     help="Annotate capsules with LLM-generated intent descriptions.",
 )
-def process_history(connector_id: str, days: int, min_executions: int, annotate: bool) -> None:
+@click.option(
+    "--embed/--no-embed",
+    default=False,
+    show_default=True,
+    help="Upsert capsules into the Qdrant vector store after processing (requires Qdrant).",
+)
+def process_history(
+    connector_id: str, days: int, min_executions: int, annotate: bool, embed: bool
+) -> None:
     """Run the Query Capsule pipeline over recent query history.
 
     \b
@@ -575,6 +583,8 @@ def process_history(connector_id: str, days: int, min_executions: int, annotate:
 
         if annotate:
             console.print("  LLM annotation enabled — this may take a moment …")
+        if embed:
+            console.print("  Embedding enabled — capsules will be upserted into Qdrant …")
 
         capsules = process_query_history(
             connector,
@@ -582,6 +592,7 @@ def process_history(connector_id: str, days: int, min_executions: int, annotate:
             days=days,
             min_executions=min_executions,
             annotate=annotate,
+            embed=embed,
         )
         out_path = save_capsules(capsules, connector_id)
 
@@ -594,6 +605,8 @@ def process_history(connector_id: str, days: int, min_executions: int, annotate:
     console.print(f"  Capsules produced : [bold]{len(capsules)}[/bold]")
     if annotate:
         console.print(f"  Annotated         : [bold]{annotated}[/bold] / {len(capsules)}")
+    if embed:
+        console.print(f"  Embedded          : [bold]{len(capsules)}[/bold] capsules into Qdrant")
     console.print(f"  Saved to          : [dim]{out_path}[/dim]")
 
 
