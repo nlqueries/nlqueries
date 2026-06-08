@@ -35,8 +35,11 @@ QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "nlqueries")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 """Anthropic API key for Claude-based query generation and summarisation."""
 
-LLM_MODEL: str = os.getenv("LLM_MODEL", "claude-3-5-haiku-20241022")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "claude-sonnet-4-5")
 """Default Anthropic model used for query generation."""
+
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "anthropic")
+"""LLM provider to use. Resolved by nlqueries.llm.get_llm_client()."""
 
 # ---------------------------------------------------------------------------
 # Knowledge base

@@ -504,7 +504,13 @@ def extract_schema(connector_id: str) -> None:
     type=int,
     help="Minimum execution count for a query to be included.",
 )
-def process_history(connector_id: str, days: int, min_executions: int) -> None:
+@click.option(
+    "--annotate/--no-annotate",
+    default=True,
+    show_default=True,
+    help="Annotate capsules with LLM-generated intent descriptions.",
+)
+def process_history(connector_id: str, days: int, min_executions: int, annotate: bool) -> None:
     """Run the Query Capsule pipeline over recent query history.
 
     \b
@@ -567,11 +573,15 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
                 "placeholder types may default to VARCHAR.[/yellow]"
             )
 
+        if annotate:
+            console.print("  LLM annotation enabled — this may take a moment …")
+
         capsules = process_query_history(
             connector,
             schema=schema,
             days=days,
             min_executions=min_executions,
+            annotate=annotate,
         )
         out_path = save_capsules(capsules, connector_id)
 
@@ -579,8 +589,11 @@ def process_history(connector_id: str, days: int, min_executions: int) -> None:
         err_console.print(f"[bold red]✗ Pipeline failed:[/bold red] {exc}")
         sys.exit(1)
 
+    annotated = sum(1 for c in capsules if c.intent)
     console.print("[bold green]✓ Pipeline complete.[/bold green]")
     console.print(f"  Capsules produced : [bold]{len(capsules)}[/bold]")
+    if annotate:
+        console.print(f"  Annotated         : [bold]{annotated}[/bold] / {len(capsules)}")
     console.print(f"  Saved to          : [dim]{out_path}[/dim]")
 
 
@@ -743,3 +756,62 @@ def export_kb(
         "  [dim]Next step:[/dim] embed this knowledge base into Qdrant:\n"
         "  [dim]  python -m nlqueries.embeddings --kb-file {out_path}[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# annotate
+# ---------------------------------------------------------------------------
+
+
+@cli.command("annotate")
+@click.argument("connector_id")
+def annotate(connector_id: str) -> None:
+    """Annotate saved Query Capsules with LLM-generated intent descriptions.
+
+    \b
+    CONNECTOR_ID  the name used when you ran 'nlqueries connect'
+
+    Loads capsules saved by 'process-history' and calls the configured LLM to
+    fill in the intent field with a concise business-question description.
+
+    \b
+    Example:
+      nlqueries annotate postgres:localhost:mydb
+    """
+    _require_connector(connector_id)
+
+    console.print(f"[bold]Annotating capsules[/bold] for [cyan]{connector_id}[/cyan] …")
+
+    try:
+        from nlqueries.llm import get_llm_client
+        from nlqueries.processing.intent_annotator import annotate_capsules
+        from nlqueries.processing.pipeline import load_capsules, save_capsules
+
+        capsules = load_capsules(connector_id)
+
+    except FileNotFoundError as exc:
+        err_console.print(f"[bold red]✗ {exc}[/bold red]")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Failed to load capsules:[/bold red] {exc}")
+        sys.exit(1)
+
+    if not capsules:
+        console.print("[yellow]⚠ No capsules to annotate. Run process-history first.[/yellow]")
+        return
+
+    console.print(f"  Found [bold]{len(capsules)}[/bold] capsules to annotate.")
+
+    try:
+        llm = get_llm_client()
+        annotate_capsules(capsules, llm)
+        out_path = save_capsules(capsules, connector_id)
+
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Annotation failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    annotated = sum(1 for c in capsules if c.intent)
+    console.print("[bold green]✓ Annotation complete.[/bold green]")
+    console.print(f"  Annotated : [bold]{annotated}[/bold] / {len(capsules)} capsules")
+    console.print(f"  Saved to  : [dim]{out_path}[/dim]")
