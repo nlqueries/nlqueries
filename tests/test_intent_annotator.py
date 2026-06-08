@@ -1,4 +1,5 @@
 """Tests for nlqueries.processing.intent_annotator (Task 4.1.2)."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator

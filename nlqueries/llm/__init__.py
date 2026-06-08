@@ -18,8 +18,5 @@ def get_llm_client() -> LLMClient:
     """
     provider = config.LLM_PROVIDER
     if provider not in _REGISTRY:
-        raise ValueError(
-            f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}"
-        )
+        raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
     return _REGISTRY[provider]()
-

@@ -780,9 +780,7 @@ def annotate(connector_id: str) -> None:
     """
     _require_connector(connector_id)
 
-    console.print(
-        f"[bold]Annotating capsules[/bold] for [cyan]{connector_id}[/cyan] …"
-    )
+    console.print(f"[bold]Annotating capsules[/bold] for [cyan]{connector_id}[/cyan] …")
 
     try:
         from nlqueries.llm import get_llm_client

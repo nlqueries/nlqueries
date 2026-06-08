@@ -1,4 +1,5 @@
 """Tests for the LLMClient abstract interface and AnthropicClient implementation."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
