@@ -15,12 +15,17 @@ def generate_knowledge_base(
     capsules: list[QueryCapsule],
     agent_name: str,
     existing_kb: dict[str, Any] | None = None,
+    embed: bool = False,
 ) -> dict[str, Any]:
     """Build a structured knowledge-base dict from a schema and query capsules.
 
     When *existing_kb* is supplied, manually written table and column
     descriptions found there take precedence over the auto-generated ones
     from *schema*, preserving human edits across regenerations.
+
+    When *embed* is ``True``, table and column descriptions are also upserted
+    into the Qdrant collection ``agent_{agent_name}_schema`` (Qdrant must be
+    reachable).
     """
     existing_table_descs: dict[str, str] = {}
     existing_col_descs: dict[str, dict[str, str]] = {}
@@ -69,7 +74,7 @@ def generate_knowledge_base(
         for cap in capsules
     ]
 
-    return {
+    kb: dict[str, Any] = {
         "schema": {"tables": tables},
         "business_context": {
             "glossary": [],
@@ -77,6 +82,15 @@ def generate_knowledge_base(
         },
         "query_capsules": query_capsules,
     }
+
+    if embed and schema.tables:
+        from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_schema
+
+        collection = f"agent_{agent_name}_schema"
+        ensure_collection(collection)
+        upsert_schema(collection, schema, agent_id=agent_name)
+
+    return kb
 
 
 def save_knowledge_base(kb: dict[str, Any], path: str) -> None:

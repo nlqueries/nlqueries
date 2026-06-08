@@ -1,8 +1,8 @@
 """
 nlqueries.embeddings.qdrant_store
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Qdrant vector-store helpers for QueryCapsule upsert and nearest-neighbour
-search.
+Qdrant vector-store helpers for QueryCapsule and schema upsert and
+nearest-neighbour search.
 
 Public API
 ----------
@@ -16,14 +16,23 @@ Public API
 ``search(collection, query, top_k)``
     Embed *query*, run a nearest-neighbour search, and return the top-k
     ``QueryCapsule`` objects reconstructed from the stored payload.
+
+``upsert_schema(collection, schema, agent_id)``
+    Embed table and column descriptions from a ``SchemaSpec`` and upsert
+    into Qdrant with ``type`` payloads of ``"table"`` or ``"column"``.
+
+``search_schema(collection, query, top_k)``
+    Embed *query*, filter by ``type IN ["table", "column"]``, and return
+    matching payloads with scores.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from nlqueries import config
+from nlqueries.connectors.base import SchemaSpec
 from nlqueries.processing.parameterizer import QueryCapsule
 
 if TYPE_CHECKING:
@@ -49,6 +58,12 @@ def _get_client() -> _QdrantClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _schema_point_id(key: str) -> int:
+    """Derive a stable integer point-ID from a schema key string."""
+    digest = hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()  # noqa: S324
+    return int(digest[:16], 16)
 
 
 def _capsule_id(capsule: QueryCapsule, index: int) -> int:
@@ -179,3 +194,109 @@ def search(
             )
         )
     return capsules
+
+
+def upsert_schema(
+    collection: str,
+    schema: SchemaSpec,
+    agent_id: str = "",
+) -> None:
+    """Embed and upsert schema descriptions into *collection*.
+
+    One point is created per table; an additional point is created for each
+    column that has a non-empty description.
+
+    Table embedding text: ``"{table}: {description}. Columns: {name type, ...}"``
+    Column embedding text: ``"{table}.{col} ({type}): {description}"``
+
+    Payload for tables:  ``{agent_id, table_name, type: "table"}``
+    Payload for columns: ``{agent_id, table_name, column_name, type: "column"}``
+
+    Args:
+        collection: Target Qdrant collection name.
+        schema:     Schema whose tables and columns will be embedded.
+        agent_id:   Optional agent / connector identifier stored in payload.
+    """
+    if not schema.tables:
+        return
+
+    from qdrant_client.models import PointStruct
+
+    from nlqueries.embeddings.embedder import embed_batch
+
+    texts: list[str] = []
+    payloads: list[dict[str, Any]] = []
+
+    for table in schema.tables:
+        col_summary = ", ".join(f"{col.name} {col.type}" for col in table.columns)
+        if table.description:
+            table_text = f"{table.name}: {table.description}. Columns: {col_summary}"
+        else:
+            table_text = f"{table.name}. Columns: {col_summary}"
+        texts.append(table_text)
+        payloads.append({"agent_id": agent_id, "table_name": table.name, "type": "table"})
+
+        for col in table.columns:
+            if col.description:
+                col_text = f"{table.name}.{col.name} ({col.type}): {col.description}"
+                texts.append(col_text)
+                payloads.append(
+                    {
+                        "agent_id": agent_id,
+                        "table_name": table.name,
+                        "column_name": col.name,
+                        "type": "column",
+                    }
+                )
+
+    vectors = embed_batch(texts)
+    client = _get_client()
+    points = [
+        PointStruct(
+            id=_schema_point_id(
+                f"{payloads[i]['type']}:{agent_id}:{payloads[i]['table_name']}"
+                f":{payloads[i].get('column_name', '')}"
+            ),
+            vector=vectors[i],
+            payload=payloads[i],
+        )
+        for i in range(len(texts))
+    ]
+    client.upsert(collection_name=collection, points=points)
+
+
+def search_schema(
+    collection: str,
+    query: str,
+    top_k: int = 10,
+) -> list[dict[str, Any]]:
+    """Embed *query* and search for matching schema objects in *collection*.
+
+    Only points whose ``type`` payload field is ``"table"`` or ``"column"``
+    are returned.
+
+    Args:
+        collection: Qdrant collection to search.
+        query:      Natural-language query string to embed.
+        top_k:      Maximum number of results to return.
+
+    Returns:
+        ``list[dict]`` each containing the stored payload plus a ``"score"`` key,
+        ordered by relevance descending.
+    """
+    from qdrant_client.models import FieldCondition, Filter, MatchAny
+
+    from nlqueries.embeddings.embedder import embed_text
+
+    vector = embed_text(query)
+    query_filter = Filter(
+        must=[FieldCondition(key="type", match=MatchAny(any=["table", "column"]))]
+    )
+    client = _get_client()
+    response = client.query_points(
+        collection_name=collection,
+        query=vector,
+        query_filter=query_filter,
+        limit=top_k,
+    )
+    return [{**(hit.payload or {}), "score": hit.score} for hit in response.points]
