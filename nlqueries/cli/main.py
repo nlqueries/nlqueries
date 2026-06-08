@@ -663,6 +663,75 @@ def export_kb(
 
     console.print(f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …")
 
+    connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+
+    if connector_cls is not None:
+        # Registered connector path — use SchemaSpec + kb_generator
+        try:
+            from sqlalchemy.engine import make_url
+
+            from nlqueries.knowledge.kb_generator import (
+                generate_knowledge_base,
+                save_knowledge_base,
+            )
+            from nlqueries.processing.pipeline import load_capsules
+
+            parsed = make_url(cfg["url"])
+            connector = connector_cls()
+            connector.connect(
+                {
+                    "host": parsed.host or cfg.get("host", "localhost"),
+                    "port": parsed.port or cfg.get("port"),
+                    "database": parsed.database or cfg.get("database"),
+                    "user": parsed.username or cfg.get("user"),
+                    "password": parsed.password,
+                    "account": cfg.get("account"),
+                    "warehouse": cfg.get("warehouse"),
+                    "schema": cfg.get("schema"),
+                    "project_id": cfg.get("project_id"),
+                    "dataset_id": cfg.get("dataset_id"),
+                    "service_account_json": cfg.get("service_account_json"),
+                }
+            )
+            schema = connector.extract_schema()
+
+            # Preserve manual annotations from a previously generated KB
+            existing_kb: dict[str, Any] | None = None
+            if out_path.exists():
+                existing_kb = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+
+            # Load capsules produced by process-history (best-effort)
+            capsules = []
+            try:
+                capsules = load_capsules(connector_id)
+            except FileNotFoundError:
+                console.print(
+                    "  [yellow]⚠ No capsules found — run process-history first "
+                    "to include query_capsules in the KB.[/yellow]"
+                )
+
+            kb: dict[str, Any] = generate_knowledge_base(
+                schema, capsules, agent_name=connector_id, existing_kb=existing_kb
+            )
+            save_knowledge_base(kb, str(out_path))
+
+        except Exception as exc:  # noqa: BLE001
+            err_console.print(f"[bold red]✗ Knowledge base generation failed:[/bold red] {exc}")
+            sys.exit(1)
+
+        table_count = len(kb["schema"]["tables"])
+        column_count = sum(len(t["columns"]) for t in kb["schema"]["tables"])
+        capsule_count = len(kb["query_capsules"])
+
+        console.print(
+            f"[bold green]✓ Knowledge base written to[/bold green] [cyan]{out_path}[/cyan]"
+        )
+        console.print(f"  Tables   : [bold]{table_count}[/bold]")
+        console.print(f"  Columns  : [bold]{column_count}[/bold]")
+        console.print(f"  Capsules : [bold]{capsule_count}[/bold]")
+        return
+
+    # Fallback: no registered connector — raw SQLAlchemy introspection
     try:
         from sqlalchemy import create_engine, select, table, text
         from sqlalchemy import inspect as sa_inspect
@@ -671,7 +740,7 @@ def export_kb(
         inspector = sa_inspect(engine)
 
         table_names = inspector.get_table_names()
-        kb: dict[str, Any] = {
+        kb_fallback: dict[str, Any] = {
             "meta": {
                 "connector_id": connector_id,
                 "db_type": cfg["db_type"],
@@ -725,7 +794,6 @@ def export_kb(
                         rows = conn.execute(stmt)
                         col_names = list(rows.keys())
                         samples = [dict(zip(col_names, row, strict=False)) for row in rows]
-                        # Coerce non-serialisable types to strings
                         samples = [
                             {
                                 k: (
@@ -740,7 +808,7 @@ def export_kb(
                     except Exception:  # noqa: BLE001
                         samples = []
 
-                kb["tables"][tbl_name] = {
+                kb_fallback["tables"][tbl_name] = {
                     "columns": col_defs,
                     "foreign_keys": fkey_defs,
                     "indexes": index_defs,
@@ -754,10 +822,10 @@ def export_kb(
     # Write YAML
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as fh:
-        yaml.dump(kb, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        yaml.dump(kb_fallback, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-    table_count = len(kb["tables"])
-    column_count = sum(len(t["columns"]) for t in kb["tables"].values())
+    table_count = len(kb_fallback["tables"])
+    column_count = sum(len(t["columns"]) for t in kb_fallback["tables"].values())
 
     console.print(f"[bold green]✓ Knowledge base written to[/bold green] [cyan]{out_path}[/cyan]")
     console.print(f"  Tables : [bold]{table_count}[/bold]")
