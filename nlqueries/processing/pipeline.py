@@ -24,6 +24,7 @@ import dataclasses
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from nlqueries.config import CAPSULES_DIR
 from nlqueries.connectors.base import DatabaseConnector, SchemaSpec
@@ -115,7 +116,7 @@ def load_capsules(connector_id: str) -> list[QueryCapsule]:
             f"No saved capsules for connector '{connector_id}'. "
             "Run 'nlqueries process-history' first."
         )
-    data: list[dict] = json.loads(path.read_text(encoding="utf-8"))
+    data: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))
     return [
         QueryCapsule(
             template_sql=item["template_sql"],
