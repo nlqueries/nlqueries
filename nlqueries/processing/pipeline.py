@@ -5,10 +5,11 @@ Full Query History Processor pipeline: extract → filter → cluster → parame
 
 Public API
 ----------
-``process_query_history(connector, schema, days, min_executions, annotate)``
+``process_query_history(connector, schema, days, min_executions, annotate, embed)``
     Run all pipeline stages and return a list of ``QueryCapsule`` objects.
     When ``annotate=True`` an LLM client is obtained via ``get_llm_client()``
     and each capsule's ``intent`` field is filled before returning.
+    When ``embed=True`` the capsules are upserted into the Qdrant vector store.
 
 ``save_capsules(capsules, connector_id)``
     Serialise capsules to ``~/.nlqueries/capsules/{connector_id}.json``
@@ -39,6 +40,7 @@ def process_query_history(
     days: int = 90,
     min_executions: int = 1,
     annotate: bool = False,
+    embed: bool = False,
 ) -> list[QueryCapsule]:
     """Run the full Query History Processor pipeline.
 
@@ -49,6 +51,7 @@ def process_query_history(
     3. **Cluster** — ``cluster_queries(normalized)``
     4. **Parameterize** — ``parameterize_clusters(clusters, schema)``
     5. **Annotate** (optional) — fill ``QueryCapsule.intent`` via LLM
+    6. **Embed** (optional) — upsert capsules into Qdrant vector store
 
     Args:
         connector:       A connected ``DatabaseConnector`` instance.
@@ -58,6 +61,9 @@ def process_query_history(
         min_executions:  Minimum execution count; lower-frequency queries are dropped.
         annotate:        When ``True``, call the LLM annotator (via ``get_llm_client()``)
                          to fill ``capsule.intent`` for every capsule before returning.
+        embed:           When ``True``, upsert capsules into the Qdrant vector store
+                         after the annotation step (Qdrant is optional; defaults to
+                         ``False``).
 
     Returns:
         ``list[QueryCapsule]`` sorted by frequency descending, capped at 1 000.
@@ -72,6 +78,12 @@ def process_query_history(
 
         llm = get_llm_client()
         annotate_capsules(capsules, llm)
+    if embed and capsules:
+        from nlqueries.config import QDRANT_COLLECTION  # deferred — Qdrant optional
+        from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_capsules
+
+        ensure_collection(QDRANT_COLLECTION)
+        upsert_capsules(QDRANT_COLLECTION, capsules)
     return capsules
 
 
