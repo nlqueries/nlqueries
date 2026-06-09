@@ -318,3 +318,168 @@ def test_get_llm_client_raises_on_unknown_provider():
     ):
         mock_llm_cfg.LLM_PROVIDER = "unknown_provider"
         get_llm_client()
+
+
+# ---------------------------------------------------------------------------
+# LiteLLMClient — construction
+# ---------------------------------------------------------------------------
+
+
+def test_litellm_client_uses_default_model_from_config():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    with patch("nlqueries.llm.litellm_client.config") as mock_cfg:
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        client = LiteLLMClient()
+    assert client._model == "anthropic/claude-sonnet-4-5"
+
+
+def test_litellm_client_accepts_custom_model():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    with patch("nlqueries.llm.litellm_client.config") as mock_cfg:
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        client = LiteLLMClient(model="openai/gpt-4o")
+    assert client._model == "openai/gpt-4o"
+
+
+def test_litellm_client_is_llm_client_subclass():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    with patch("nlqueries.llm.litellm_client.config") as mock_cfg:
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        client = LiteLLMClient()
+    assert isinstance(client, LLMClient)
+
+
+# ---------------------------------------------------------------------------
+# LiteLLMClient.complete()
+# ---------------------------------------------------------------------------
+
+
+def _make_litellm_response(text: str) -> MagicMock:
+    message = MagicMock()
+    message.content = text
+    choice = MagicMock()
+    choice.message = message
+    response = MagicMock()
+    response.choices = [choice]
+    return response
+
+
+def _make_litellm_stream(tokens: list[str]) -> list[MagicMock]:
+    chunks = []
+    for token in tokens:
+        delta = MagicMock()
+        delta.content = token
+        choice = MagicMock()
+        choice.delta = delta
+        chunk = MagicMock()
+        chunk.choices = [choice]
+        chunks.append(chunk)
+    return chunks
+
+
+def test_litellm_complete_returns_string():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    with (
+        patch("nlqueries.llm.litellm_client.litellm.completion", return_value=_make_litellm_response("hello")),
+        patch("nlqueries.llm.litellm_client.config") as mock_cfg,
+    ):
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        result = LiteLLMClient().complete(system="sys", user="usr")
+
+    assert result == "hello"
+    assert isinstance(result, str)
+
+
+def test_litellm_complete_passes_system_and_user_as_messages():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    mock_completion = MagicMock(return_value=_make_litellm_response("ok"))
+    with (
+        patch("nlqueries.llm.litellm_client.litellm.completion", mock_completion),
+        patch("nlqueries.llm.litellm_client.config") as mock_cfg,
+    ):
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        LiteLLMClient().complete(system="my system", user="my question")
+
+    messages = mock_completion.call_args.kwargs["messages"]
+    assert messages[0] == {"role": "system", "content": "my system"}
+    assert messages[1] == {"role": "user", "content": "my question"}
+
+
+def test_litellm_complete_returns_empty_string_on_none_content():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    response = _make_litellm_response(None)
+    response.choices[0].message.content = None
+    with (
+        patch("nlqueries.llm.litellm_client.litellm.completion", return_value=response),
+        patch("nlqueries.llm.litellm_client.config") as mock_cfg,
+    ):
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        result = LiteLLMClient().complete(system="sys", user="usr")
+
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# LiteLLMClient.stream()
+# ---------------------------------------------------------------------------
+
+
+def test_litellm_stream_yields_tokens():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    with (
+        patch("nlqueries.llm.litellm_client.litellm.completion", return_value=_make_litellm_stream(["hello", " ", "world"])),
+        patch("nlqueries.llm.litellm_client.config") as mock_cfg,
+    ):
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        tokens = list(LiteLLMClient().stream(system="sys", user="usr"))
+
+    assert tokens == ["hello", " ", "world"]
+
+
+def test_litellm_stream_skips_none_deltas():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    chunks = _make_litellm_stream(["tok1", "tok2"])
+    # insert a chunk with None content between the two real tokens
+    null_delta = MagicMock()
+    null_delta.content = None
+    null_choice = MagicMock()
+    null_choice.delta = null_delta
+    null_chunk = MagicMock()
+    null_chunk.choices = [null_choice]
+    chunks.insert(1, null_chunk)
+
+    with (
+        patch("nlqueries.llm.litellm_client.litellm.completion", return_value=chunks),
+        patch("nlqueries.llm.litellm_client.config") as mock_cfg,
+    ):
+        mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        tokens = list(LiteLLMClient().stream(system="sys", user="usr"))
+
+    assert tokens == ["tok1", "tok2"]
+
+
+# ---------------------------------------------------------------------------
+# get_llm_client() — litellm provider
+# ---------------------------------------------------------------------------
+
+
+def test_get_llm_client_returns_litellm_client_when_configured():
+    from nlqueries.llm.litellm_client import LiteLLMClient
+
+    with (
+        patch("nlqueries.llm.litellm_client.config") as mock_litellm_cfg,
+        patch("nlqueries.llm.config") as mock_llm_cfg,
+    ):
+        mock_litellm_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
+        mock_llm_cfg.LLM_PROVIDER = "litellm"
+        client = get_llm_client()
+
+    assert isinstance(client, LiteLLMClient)
