@@ -2,16 +2,18 @@
 nlqueries.orchestrator.orchestrator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Single-agent orchestrator: loads a knowledge base, assembles the LLM prompt,
-and streams response tokens back to the caller.
+streams natural-language reasoning, then yields a validated SQL final chunk.
 
 Public API
 ----------
 ``Orchestrator``
-    Call ``handle_question(question, agent_id)`` to get an async token stream.
+    Call ``handle_question(question, agent_id, dialect)`` to get an async
+    token stream ending in a structured JSON SQL chunk.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -21,14 +23,18 @@ import yaml
 from nlqueries import config
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt
+from nlqueries.orchestrator.sql_generation import generate_sql
 
 
 class Orchestrator:
     """Single-agent orchestrator for NLQueries.
 
-    Each invocation of ``handle_question`` independently loads the agent's
-    YAML knowledge base, assembles an LLM prompt via ``assemble_prompt``,
-    and streams response tokens from the configured ``LLMClient``.
+    Each invocation of ``handle_question`` independently:
+
+    1. Loads the agent's YAML knowledge base.
+    2. Streams a natural-language reasoning response from the LLM.
+    3. Calls :func:`generate_sql` to produce a validated SQL statement and
+       yields it as a structured JSON final chunk.
 
     Multi-agent routing is out of scope for v1 and will be added in Phase 2
     (Sprint 12).
@@ -38,20 +44,27 @@ class Orchestrator:
         self,
         question: str,
         agent_id: str,
+        dialect: str = "postgres",
     ) -> AsyncGenerator[str, None]:
-        """Translate *question* into a token stream from the LLM.
+        """Translate *question* into a reasoning stream followed by a SQL chunk.
 
-        Loads the YAML knowledge base for *agent_id*, assembles a grounding
-        prompt, calls ``LLMClient.stream()``, and yields each response token
-        in the order it arrives.
+        Yields tokens from the LLM's natural-language reasoning response first,
+        then yields a single JSON string::
+
+            {"type": "sql", "sql": "...", "is_valid": true,
+             "validation_error": null, "dialect": "postgres", "attempt_count": 1}
 
         Args:
             question: The natural-language question from the user.
             agent_id: Identifier of the agent whose knowledge base to use.
                       Must match a file under ``config.KB_PATH``.
+            dialect:  SQL dialect for generation and validation.
+                      One of ``"postgres"``, ``"snowflake"``, ``"bigquery"``.
+                      Defaults to ``"postgres"``.
 
         Yields:
-            String tokens from the LLM response, in arrival order.
+            String tokens from the LLM reasoning response, then a final JSON
+            chunk with the validated SQL result.
 
         Raises:
             FileNotFoundError: When no knowledge base file exists for
@@ -65,9 +78,24 @@ class Orchestrator:
             top_k_capsules=5,
             collection=collection,
         )
+
+        # Step 1: stream natural-language reasoning ---------------------------
         llm = get_llm_client()
         for token in llm.stream(system_prompt, user_prompt):
             yield token
+
+        # Step 2: generate validated SQL, yield as structured final chunk -----
+        result = generate_sql(question, kb, dialect)
+        yield json.dumps(
+            {
+                "type": "sql",
+                "sql": result.sql,
+                "is_valid": result.is_valid,
+                "validation_error": result.validation_error,
+                "dialect": result.dialect,
+                "attempt_count": result.attempt_count,
+            }
+        )
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:
         """Load and return the YAML knowledge base for *agent_id*.

@@ -908,7 +908,14 @@ def annotate(connector_id: str) -> None:
 @cli.command("ask")
 @click.argument("agent_id")
 @click.argument("question")
-def ask(agent_id: str, question: str) -> None:
+@click.option(
+    "--dialect",
+    default="postgres",
+    show_default=True,
+    type=click.Choice(["postgres", "snowflake", "bigquery"]),
+    help="SQL dialect used for generation and AST validation.",
+)
+def ask(agent_id: str, question: str, dialect: str) -> None:
     """Ask an agent a natural-language question and stream the response.
 
     \b
@@ -917,8 +924,13 @@ def ask(agent_id: str, question: str) -> None:
     QUESTION  the natural-language question, in quotes
 
     \b
+    Streams a natural-language reasoning response, then prints the
+    generated and validated SQL as a final structured JSON line.
+
+    \b
     Example:
-      nlqueries ask postgres:localhost:mydb "How many orders were placed last month?"
+      nlqueries ask postgres:localhost:mydb "How many orders last month?"
+      nlqueries ask my_agent "Top customers by revenue" --dialect snowflake
     """
     from nlqueries.orchestrator import Orchestrator
 
@@ -926,7 +938,7 @@ def ask(agent_id: str, question: str) -> None:
 
     async def _stream() -> None:
         try:
-            async for token in orchestrator.handle_question(question, agent_id):
+            async for token in orchestrator.handle_question(question, agent_id, dialect=dialect):
                 click.echo(token, nl=False)
             click.echo()  # final newline
         except FileNotFoundError as exc:
