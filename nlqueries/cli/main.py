@@ -9,10 +9,12 @@ Commands
   extract-schema   Inspect a registered connector and print schema statistics.
   process-history  Run the Query Capsule pipeline over recent query history.
   export-kb        Generate and save the YAML knowledge base for a connector.
+  ask              Ask an agent a natural-language question and stream the response.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -896,3 +898,42 @@ def annotate(connector_id: str) -> None:
     console.print("[bold green]✓ Annotation complete.[/bold green]")
     console.print(f"  Annotated : [bold]{annotated}[/bold] / {len(capsules)} capsules")
     console.print(f"  Saved to  : [dim]{out_path}[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# ask
+# ---------------------------------------------------------------------------
+
+
+@cli.command("ask")
+@click.argument("agent_id")
+@click.argument("question")
+def ask(agent_id: str, question: str) -> None:
+    """Ask an agent a natural-language question and stream the response.
+
+    \b
+    AGENT_ID  the agent identifier whose knowledge base to query
+              (must have been generated with 'nlqueries export-kb')
+    QUESTION  the natural-language question, in quotes
+
+    \b
+    Example:
+      nlqueries ask postgres:localhost:mydb "How many orders were placed last month?"
+    """
+    from nlqueries.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator()
+
+    async def _stream() -> None:
+        try:
+            async for token in orchestrator.handle_question(question, agent_id):
+                click.echo(token, nl=False)
+            click.echo()  # final newline
+        except FileNotFoundError as exc:
+            err_console.print(f"[bold red]✗ {exc}[/bold red]")
+            sys.exit(1)
+        except Exception as exc:  # noqa: BLE001
+            err_console.print(f"[bold red]✗ {exc}[/bold red]")
+            sys.exit(1)
+
+    asyncio.run(_stream())
