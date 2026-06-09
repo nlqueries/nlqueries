@@ -949,3 +949,64 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
             sys.exit(1)
 
     asyncio.run(_stream())
+
+
+# ---------------------------------------------------------------------------
+# feedback-stats
+# ---------------------------------------------------------------------------
+
+
+@cli.command("feedback-stats")
+@click.argument("agent_id")
+def feedback_stats(agent_id: str) -> None:
+    """Show feedback statistics for an agent from the local JSONL store.
+
+    \b
+    AGENT_ID  the agent identifier whose feedback to summarise
+
+    Reads from ~/.nlqueries/feedback/<agent-id>.jsonl and prints a summary
+    of thumbs-up / thumbs-down counts plus the most recent corrections.
+
+    \b
+    Example:
+      nlqueries feedback-stats postgres:localhost:mydb
+    """
+    from nlqueries.feedback.store import load_feedback
+
+    records = load_feedback(agent_id)
+
+    if not records:
+        console.print(
+            f"[yellow]No feedback found for agent [bold]{agent_id!r}[/bold].[/yellow]\n"
+            "  Submit feedback via the chat UI or the enterprise API first."
+        )
+        return
+
+    up_count = sum(1 for r in records if r.rating == "up")
+    down_count = sum(1 for r in records if r.rating == "down")
+    corrections = [r for r in records if r.corrected_sql]
+
+    console.print(f"[bold]Feedback stats[/bold] for agent [cyan]{agent_id}[/cyan]")
+    console.print(f"  Total entries : [bold]{len(records)}[/bold]")
+    console.print(f"  Thumbs up     : [bold green]{up_count}[/bold green]")
+    console.print(f"  Thumbs down   : [bold red]{down_count}[/bold red]")
+
+    if corrections:
+        console.print(f"\n  Corrections   : [bold]{len(corrections)}[/bold]")
+        tbl = Table(
+            "Question",
+            "Generated SQL",
+            "Corrected SQL",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        for rec in corrections[-5:]:  # show up to 5 most recent
+            q = rec.question[:60] + "…" if len(rec.question) > 60 else rec.question
+            gen = rec.generated_sql[:50] + "…" if len(rec.generated_sql) > 50 else rec.generated_sql
+            cor = (
+                rec.corrected_sql[:50] + "…"
+                if rec.corrected_sql and len(rec.corrected_sql) > 50
+                else (rec.corrected_sql or "")
+            )
+            tbl.add_row(q, gen, cor)
+        console.print(tbl)
