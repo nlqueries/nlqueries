@@ -191,7 +191,7 @@ def _extract_sql(text: str) -> str:
             candidates.append(idx)
 
     if candidates:
-        return text[min(candidates):].strip()
+        return text[min(candidates) :].strip()
 
     return text
 
