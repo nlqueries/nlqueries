@@ -4,9 +4,11 @@ from __future__ import annotations
 from nlqueries import config
 from nlqueries.llm.anthropic_client import AnthropicClient
 from nlqueries.llm.client import LLMClient
+from nlqueries.llm.litellm_client import LiteLLMClient
 
 _REGISTRY: dict[str, type[LLMClient]] = {
     "anthropic": AnthropicClient,
+    "litellm": LiteLLMClient,
 }
 
 
