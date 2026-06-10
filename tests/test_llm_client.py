@@ -384,7 +384,10 @@ def test_litellm_complete_returns_string():
     from nlqueries.llm.litellm_client import LiteLLMClient
 
     with (
-        patch("nlqueries.llm.litellm_client.litellm.completion", return_value=_make_litellm_response("hello")),
+        patch(
+            "nlqueries.llm.litellm_client.litellm.completion",
+            return_value=_make_litellm_response("hello"),
+        ),
         patch("nlqueries.llm.litellm_client.config") as mock_cfg,
     ):
         mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
@@ -434,7 +437,10 @@ def test_litellm_stream_yields_tokens():
     from nlqueries.llm.litellm_client import LiteLLMClient
 
     with (
-        patch("nlqueries.llm.litellm_client.litellm.completion", return_value=_make_litellm_stream(["hello", " ", "world"])),
+        patch(
+            "nlqueries.llm.litellm_client.litellm.completion",
+            return_value=_make_litellm_stream(["hello", " ", "world"]),
+        ),
         patch("nlqueries.llm.litellm_client.config") as mock_cfg,
     ):
         mock_cfg.LLM_MODEL = "anthropic/claude-sonnet-4-5"
