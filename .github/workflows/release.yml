@@ -1,0 +1,154 @@
+name: Release — PyPI Publish
+
+# Triggered on a pushed tag of the form v<major>.<minor>.<patch>
+# (e.g. v0.2.0, v1.0.0-rc1).  No stored secrets required — uses
+# PyPI's Trusted Publishing (OIDC) via pypa/gh-action-pypi-publish.
+#
+# Required one-time setup in PyPI:
+#   1. Go to https://pypi.org/manage/project/nlqueries-core/settings/publishing/
+#   2. Add a "GitHub Actions" publisher:
+#      - Owner:      nlqueries
+#      - Repository: nlqueries
+#      - Workflow:   release.yml
+#      - Environment: pypi
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: read
+  id-token: write   # required for OIDC trusted publishing
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Run the full CI suite before publishing (belt-and-suspenders)
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI checks (lint + tests)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+        working-directory: ${{ github.workspace }}
+
+      - name: Ruff lint
+        run: ruff check .
+        working-directory: ${{ github.workspace }}
+
+      - name: Ruff format check
+        run: ruff format --check .
+        working-directory: ${{ github.workspace }}
+
+      - name: Mypy
+        run: mypy nlqueries/
+        working-directory: ${{ github.workspace }}
+
+      - name: Pytest
+        run: pytest --tb=short -q
+        working-directory: ${{ github.workspace }}
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+
+  # ---------------------------------------------------------------------------
+  # 2. Build the source distribution and wheel
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build distribution packages
+    runs-on: ubuntu-latest
+    needs: [ci]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+        working-directory: ${{ github.workspace }}
+
+      - name: Store distribution packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish to PyPI using OIDC trusted publishing (no stored secrets)
+  # ---------------------------------------------------------------------------
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nlqueries-core
+
+    steps:
+      - name: Download distribution packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No api_token needed — trusted publishing uses OIDC
+        with:
+          print-hash: true
+
+  # ---------------------------------------------------------------------------
+  # 4. Create a GitHub Release with the built artifacts attached
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [publish-pypi]
+    permissions:
+      contents: write   # required to create releases
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for changelog extraction
+
+      - name: Download distribution packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Extract tag name
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            dist/* \
+            --title "nlqueries-core ${{ steps.tag.outputs.tag }}" \
+            --generate-notes \
+            --verify-tag
