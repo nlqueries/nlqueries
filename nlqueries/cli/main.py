@@ -68,6 +68,7 @@ def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     connectors = _load_connectors()
     connectors[connector_id] = config
     CONNECTORS_FILE.write_text(yaml.dump(connectors, default_flow_style=False, sort_keys=False))
+    CONNECTORS_FILE.chmod(0o600)
 
 
 def _require_connector(connector_id: str) -> dict[str, Any]:
