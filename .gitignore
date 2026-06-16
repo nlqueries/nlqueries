@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Probe artifacts (created by partial-execution tools)
+*.probe
