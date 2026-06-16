@@ -68,7 +68,12 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: pip-audit
-        run: pip install pip-audit && pip-audit
+        run: |
+          pip install pip-audit
+          # --skip-editable: nlqueries-core is installed as -e . and is not on PyPI.
+          # CVE-2025-3000: affects torch (transitive via sentence-transformers); no upstream
+          #   fix is available yet. Review and remove this ignore once torch publishes a patch.
+          pip-audit --skip-editable --ignore-vuln CVE-2025-3000
 
   # -------------------------------------------------------------------------
   # 3. Lint & type-check
