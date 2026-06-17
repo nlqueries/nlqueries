@@ -1,8 +1,8 @@
 """
 nlqueries.embeddings.qdrant_store
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Qdrant vector-store helpers for QueryCapsule and schema upsert and
-nearest-neighbour search.
+Qdrant vector-store helpers for QueryCapsule, schema, and document chunk
+upsert and nearest-neighbour search.
 
 Public API
 ----------
@@ -24,6 +24,17 @@ Public API
 ``search_schema(collection, query, top_k)``
     Embed *query*, filter by ``type IN ["table", "column"]``, and return
     matching payloads with scores.
+
+``upsert_chunks(collection, chunks)``
+    Embed each ``DocumentChunk``'s text and upsert into Qdrant.
+    Collection naming convention: ``doc_{source_id}_chunks``.
+
+``search_chunks(collection, query, top_k, source_id_filter)``
+    Embed *query* and return the top-k most similar ``DocumentChunk`` objects.
+    Optionally filter by ``source_id``.
+
+``delete_chunks(collection, source_id)``
+    Delete all chunks belonging to *source_id* from the collection.
 """
 
 from __future__ import annotations
@@ -33,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from nlqueries import config
 from nlqueries.connectors.base import SchemaSpec
+from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
 
 if TYPE_CHECKING:
@@ -300,3 +312,135 @@ def search_schema(
         limit=top_k,
     )
     return [{**(hit.payload or {}), "score": hit.score} for hit in response.points]
+
+
+# ---------------------------------------------------------------------------
+# Document chunk API (Task 9.2)
+# Collection naming convention: doc_{source_id}_chunks
+# ---------------------------------------------------------------------------
+
+DOCUMENT_VECTOR_SIZE = 384  # same as existing sentence-transformer model
+
+
+def upsert_chunks(
+    collection: str,
+    chunks: list[DocumentChunk],
+) -> None:
+    """Embed each chunk's text and upsert into Qdrant.
+
+    Calls ``ensure_collection`` before upserting so callers do not need to
+    create the collection manually.  Each point payload includes all
+    ``DocumentChunk`` fields: ``chunk_id``, ``source_id``, ``source_name``,
+    ``page_number``, ``chunk_index``, ``text``, ``metadata``.
+
+    Args:
+        collection: Target collection name (convention: ``doc_{source_id}_chunks``).
+        chunks:     Document chunks to embed and store.
+    """
+    if not chunks:
+        return
+
+    from qdrant_client.models import PointStruct
+
+    from nlqueries.embeddings.embedder import embed_batch
+
+    ensure_collection(collection, DOCUMENT_VECTOR_SIZE)
+
+    texts = [c.text for c in chunks]
+    vectors = embed_batch(texts)
+
+    client = _get_client()
+    points = [
+        PointStruct(
+            id=int(chunk.chunk_id, 16),
+            vector=vectors[idx],
+            payload={
+                "chunk_id": chunk.chunk_id,
+                "source_id": chunk.source_id,
+                "source_name": chunk.source_name,
+                "page_number": chunk.page_number,
+                "chunk_index": chunk.chunk_index,
+                "text": chunk.text,
+                "metadata": chunk.metadata,
+            },
+        )
+        for idx, chunk in enumerate(chunks)
+    ]
+    client.upsert(collection_name=collection, points=points)
+
+
+def search_chunks(
+    collection: str,
+    query: str,
+    top_k: int = 5,
+    source_id_filter: str | None = None,
+) -> list[DocumentChunk]:
+    """Embed *query* and return the top-k most similar ``DocumentChunk`` objects.
+
+    When *source_id_filter* is provided, only chunks whose ``source_id``
+    matches are considered.
+
+    Args:
+        collection:       Qdrant collection to search.
+        query:            Natural-language query string to embed.
+        top_k:            Maximum number of results to return.
+        source_id_filter: Restrict results to this source ID when set.
+
+    Returns:
+        ``list[DocumentChunk]`` of length ≤ *top_k*, ordered by relevance.
+    """
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    from nlqueries.embeddings.embedder import embed_text
+
+    vector = embed_text(query)
+    query_filter: Filter | None = None
+    if source_id_filter is not None:
+        query_filter = Filter(
+            must=[FieldCondition(key="source_id", match=MatchValue(value=source_id_filter))]
+        )
+
+    client = _get_client()
+    response = client.query_points(
+        collection_name=collection,
+        query=vector,
+        query_filter=query_filter,
+        limit=top_k,
+    )
+
+    result: list[DocumentChunk] = []
+    for hit in response.points:
+        p = hit.payload or {}
+        result.append(
+            DocumentChunk(
+                chunk_id=str(p.get("chunk_id", "")),
+                source_id=str(p.get("source_id", "")),
+                source_name=str(p.get("source_name", "")),
+                page_number=p.get("page_number"),
+                chunk_index=int(p.get("chunk_index", 0)),
+                text=str(p.get("text", "")),
+                metadata=dict(p.get("metadata") or {}),
+            )
+        )
+    return result
+
+
+def delete_chunks(collection: str, source_id: str) -> None:
+    """Delete all chunks belonging to *source_id* from *collection*.
+
+    Uses a Qdrant filter on the ``source_id`` payload field so only chunks
+    for the given document are removed; other documents in the collection
+    are untouched.
+
+    Args:
+        collection: Qdrant collection name.
+        source_id:  The source identifier whose chunks should be deleted.
+    """
+    from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
+
+    filter_ = Filter(must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))])
+    client = _get_client()
+    client.delete(
+        collection_name=collection,
+        points_selector=FilterSelector(filter=filter_),
+    )
