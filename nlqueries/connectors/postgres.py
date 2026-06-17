@@ -73,7 +73,16 @@ class PostgresConnector(DatabaseConnector):
             port=credentials.get("port", 5432),
             database=credentials["database"],
         )
-        self._engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 10})
+        connect_args: dict[str, Any] = {"connect_timeout": 10}
+        ssl_mode = credentials.get("ssl_mode", "prefer")
+        connect_args["sslmode"] = ssl_mode
+        if ssl_ca_cert := credentials.get("ssl_ca_cert"):
+            connect_args["sslrootcert"] = ssl_ca_cert
+        if ssl_client_cert := credentials.get("ssl_client_cert"):
+            connect_args["sslcert"] = ssl_client_cert
+        if ssl_client_key := credentials.get("ssl_client_key"):
+            connect_args["sslkey"] = ssl_client_key
+        self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

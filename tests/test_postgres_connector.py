@@ -4,6 +4,9 @@ Tests for PostgresConnector (nlqueries.connectors.postgres).
 These are integration tests backed by a real, ephemeral PostgreSQL instance
 spun up in Docker via testcontainers. They are skipped automatically when
 Docker is not available (e.g. in CI environments without a Docker daemon).
+
+SSL unit tests live in test_postgres_ssl.py — they use unittest.mock and
+require no live database.
 """
 
 from __future__ import annotations
