@@ -1,4 +1,4 @@
-"""Tests for nlqueries.embeddings.qdrant_store — upsert_schema and search_schema (Task 4.3.3)."""
+"""Tests for nlqueries.embeddings.qdrant_store — schema, capsule, and document chunk functions."""
 
 from __future__ import annotations
 
@@ -451,3 +451,207 @@ def test_integration_schema_upsert_and_search() -> None:
             QdrantClient(url=url).delete_collection(collection)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — document chunk functions (Task 9.2)
+# ---------------------------------------------------------------------------
+
+
+def _make_chunk(
+    chunk_id: str = "a1b2c3d4e5f6a7b8",
+    source_id: str = "src-001",
+    source_name: str = "report.pdf",
+    page_number: int | None = 1,
+    chunk_index: int = 0,
+    text: str = "Sample chunk text.",
+    metadata: dict | None = None,
+):
+    from nlqueries.document_connectors.base import DocumentChunk
+
+    return DocumentChunk(
+        chunk_id=chunk_id,
+        source_id=source_id,
+        source_name=source_name,
+        page_number=page_number,
+        chunk_index=chunk_index,
+        text=text,
+        metadata=metadata if metadata is not None else {"connector": "pdf"},
+    )
+
+
+class TestUpsertChunks:
+    def test_upsert_chunks_calls_upsert_with_correct_payload(self) -> None:
+        """upsert_chunks stores all DocumentChunk fields in the Qdrant payload."""
+        chunk = _make_chunk(
+            chunk_id="aabbccddeeff0011",
+            source_id="src-001",
+            source_name="doc.pdf",
+            page_number=3,
+            chunk_index=2,
+            text="Hello world content.",
+            metadata={"connector": "pdf", "total_pages": 5},
+        )
+        fake_vec = [0.1] * _VECTOR_SIZE
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value.collections = []
+
+        with (
+            patch("nlqueries.embeddings.qdrant_store._client", mock_client),
+            patch("nlqueries.embeddings.embedder.embed_batch", return_value=[fake_vec]),
+        ):
+            from nlqueries.embeddings.qdrant_store import upsert_chunks
+
+            upsert_chunks("doc_src-001_chunks", [chunk])
+
+        mock_client.upsert.assert_called_once()
+        _, kwargs = mock_client.upsert.call_args
+        assert kwargs["collection_name"] == "doc_src-001_chunks"
+        assert len(kwargs["points"]) == 1
+        payload = kwargs["points"][0].payload
+        assert payload["chunk_id"] == "aabbccddeeff0011"
+        assert payload["source_id"] == "src-001"
+        assert payload["source_name"] == "doc.pdf"
+        assert payload["page_number"] == 3
+        assert payload["chunk_index"] == 2
+        assert payload["text"] == "Hello world content."
+        assert payload["metadata"]["connector"] == "pdf"
+
+    def test_upsert_chunks_skips_empty_list(self) -> None:
+        """upsert_chunks with an empty list must not call upsert."""
+        mock_client = MagicMock()
+        with patch("nlqueries.embeddings.qdrant_store._client", mock_client):
+            from nlqueries.embeddings.qdrant_store import upsert_chunks
+
+            upsert_chunks("doc_src-001_chunks", [])
+        mock_client.upsert.assert_not_called()
+
+    def test_upsert_chunks_calls_ensure_collection(self) -> None:
+        """upsert_chunks must call ensure_collection before upserting."""
+        chunk = _make_chunk()
+        fake_vec = [0.0] * _VECTOR_SIZE
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value.collections = []
+
+        with (
+            patch("nlqueries.embeddings.qdrant_store._client", mock_client),
+            patch("nlqueries.embeddings.embedder.embed_batch", return_value=[fake_vec]),
+        ):
+            from nlqueries.embeddings.qdrant_store import upsert_chunks
+
+            upsert_chunks("doc_src-001_chunks", [chunk])
+
+        mock_client.get_collections.assert_called()
+
+
+class TestSearchChunks:
+    def _make_hit(
+        self,
+        chunk_id: str = "aabbccddeeff0011",
+        source_id: str = "src-001",
+        page_number: int | None = 1,
+        chunk_index: int = 0,
+        text: str = "chunk text",
+        score: float = 0.9,
+    ) -> MagicMock:
+        hit = MagicMock()
+        hit.payload = {
+            "chunk_id": chunk_id,
+            "source_id": source_id,
+            "source_name": "doc.pdf",
+            "page_number": page_number,
+            "chunk_index": chunk_index,
+            "text": text,
+            "metadata": {"connector": "pdf"},
+        }
+        hit.score = score
+        return hit
+
+    def _make_response(self, hits: list[MagicMock]) -> MagicMock:
+        r = MagicMock()
+        r.points = hits
+        return r
+
+    def test_search_chunks_returns_reconstructed_chunks(self) -> None:
+        """search_chunks must return a list[DocumentChunk] reconstructed from the payload."""
+        from nlqueries.document_connectors.base import DocumentChunk
+
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = self._make_response(
+            [
+                self._make_hit(chunk_id="aabb000000000001", text="first chunk"),
+                self._make_hit(chunk_id="aabb000000000002", text="second chunk"),
+            ]
+        )
+        fake_vec = [0.1] * _VECTOR_SIZE
+
+        with (
+            patch("nlqueries.embeddings.qdrant_store._client", mock_client),
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=fake_vec),
+        ):
+            from nlqueries.embeddings.qdrant_store import search_chunks
+
+            results = search_chunks("doc_src-001_chunks", "some query")
+
+        assert len(results) == 2
+        assert all(isinstance(r, DocumentChunk) for r in results)
+        assert results[0].text == "first chunk"
+        assert results[1].text == "second chunk"
+
+    def test_source_id_filter_applied_in_search(self) -> None:
+        """search_chunks must pass a filter to Qdrant when source_id_filter is given."""
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = self._make_response([])
+        fake_vec = [0.0] * _VECTOR_SIZE
+
+        with (
+            patch("nlqueries.embeddings.qdrant_store._client", mock_client),
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=fake_vec),
+        ):
+            from nlqueries.embeddings.qdrant_store import search_chunks
+
+            search_chunks("doc_src-001_chunks", "query", source_id_filter="src-001")
+
+        _, kwargs = mock_client.query_points.call_args
+        assert kwargs.get("query_filter") is not None
+
+    def test_no_source_id_filter_passes_none_to_qdrant(self) -> None:
+        """search_chunks must not add a filter when source_id_filter is None."""
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = self._make_response([])
+        fake_vec = [0.0] * _VECTOR_SIZE
+
+        with (
+            patch("nlqueries.embeddings.qdrant_store._client", mock_client),
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=fake_vec),
+        ):
+            from nlqueries.embeddings.qdrant_store import search_chunks
+
+            search_chunks("doc_src-001_chunks", "query")
+
+        _, kwargs = mock_client.query_points.call_args
+        assert kwargs.get("query_filter") is None
+
+
+class TestDeleteChunks:
+    def test_delete_chunks_filters_by_source_id(self) -> None:
+        """delete_chunks must call client.delete with a filter on source_id."""
+        mock_client = MagicMock()
+
+        with patch("nlqueries.embeddings.qdrant_store._client", mock_client):
+            from nlqueries.embeddings.qdrant_store import delete_chunks
+
+            delete_chunks("doc_src-001_chunks", "src-001")
+
+        mock_client.delete.assert_called_once()
+        _, kwargs = mock_client.delete.call_args
+        assert kwargs["collection_name"] == "doc_src-001_chunks"
+        selector = kwargs["points_selector"]
+        # FilterSelector wraps a Filter — verify the filter has a condition on source_id
+        filter_ = selector.filter
+        assert filter_ is not None
+        must_conditions = filter_.must
+        assert len(must_conditions) == 1
+        condition = must_conditions[0]
+        assert condition.key == "source_id"
+        assert condition.match.value == "src-001"
