@@ -185,7 +185,7 @@ def test_empty_pages_are_skipped() -> None:
 
     pages = [
         _make_mock_page(1, "Real content on page one. " * 10),
-        _make_mock_page(2, ""),   # blank / scanned page
+        _make_mock_page(2, ""),  # blank / scanned page
         _make_mock_page(3, "   "),  # whitespace-only
     ]
     mock_pdf = _make_mock_pdf(pages)

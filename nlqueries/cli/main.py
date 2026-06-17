@@ -524,8 +524,7 @@ def doc_ingest(source_id: str, file_path: str) -> None:
             f"No document connector registered for '{suffix}'. "
             f"Supported extensions: "
             + ", ".join(
-                f".{key}" if not key.startswith(".") else key
-                for key in DOCUMENT_CONNECTOR_REGISTRY
+                f".{key}" if not key.startswith(".") else key for key in DOCUMENT_CONNECTOR_REGISTRY
             )
         )
 
@@ -549,6 +548,7 @@ def doc_ingest(source_id: str, file_path: str) -> None:
     if chunks:
         pages = sorted({c.page_number for c in chunks if c.page_number is not None})
         console.print(f"  Pages covered   : [bold]{len(pages)}[/bold]")
+
 
 # ---------------------------------------------------------------------------
 # process-history
