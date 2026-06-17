@@ -487,6 +487,70 @@ def extract_schema(connector_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# doc-ingest
+# ---------------------------------------------------------------------------
+
+
+@cli.command("doc-ingest")
+@click.argument("source_id")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+def doc_ingest(source_id: str, file_path: str) -> None:
+    """Ingest a document file and print the number of chunks produced.
+
+    \b
+    SOURCE_ID  opaque identifier for this document (e.g. a UUID or slug).
+               Used to generate deterministic chunk IDs and for Qdrant filtering.
+    FILE_PATH  path to the document file to ingest (must exist)
+
+    \b
+    Supported formats (requires the [docs] extra):
+      .pdf — PDF documents via pdfplumber
+
+    \b
+    Example:
+      nlqueries doc-ingest my-policy-doc-v1 /path/to/policy.pdf
+    """
+    from nlqueries.document_connectors import DOCUMENT_CONNECTOR_REGISTRY
+
+    src = Path(file_path)
+    suffix = src.suffix.lower()
+
+    connector_key = next(
+        (key for key, cls in DOCUMENT_CONNECTOR_REGISTRY.items() if cls().supports(src)),
+        None,
+    )
+    if connector_key is None:
+        raise click.ClickException(
+            f"No document connector registered for '{suffix}'. "
+            f"Supported extensions: "
+            + ", ".join(
+                f".{key}" if not key.startswith(".") else key for key in DOCUMENT_CONNECTOR_REGISTRY
+            )
+        )
+
+    connector = DOCUMENT_CONNECTOR_REGISTRY[connector_key]()
+    console.print(
+        f"[bold]Ingesting[/bold] [cyan]{src.name}[/cyan] "
+        f"(source_id=[bold]{source_id}[/bold], connector=[bold]{connector_key}[/bold]) …"
+    )
+
+    try:
+        chunks = connector.ingest(src, source_id)
+    except ImportError as exc:
+        err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Ingestion failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print("[bold green]✓ Ingestion complete.[/bold green]")
+    console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
+    if chunks:
+        pages = sorted({c.page_number for c in chunks if c.page_number is not None})
+        console.print(f"  Pages covered   : [bold]{len(pages)}[/bold]")
+
+
+# ---------------------------------------------------------------------------
 # process-history
 # ---------------------------------------------------------------------------
 
