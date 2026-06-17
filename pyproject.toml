@@ -63,6 +63,8 @@ dev = [
 # Dialect extras for users who only need one driver
 mysql     = ["pymysql>=1.1"]
 openai    = ["openai>=1.0"]
+# Document ingestion connectors (PDF, Word, Excel, etc.)
+docs      = ["pdfplumber>=0.11", "langchain-text-splitters>=0.3"]
 
 [project.scripts]
 nlqueries = "nlqueries.cli.main:cli"
