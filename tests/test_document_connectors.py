@@ -376,3 +376,163 @@ def test_word_connector_registry_contains_word() -> None:
 
     assert "word" in DOCUMENT_CONNECTOR_REGISTRY
     assert DOCUMENT_CONNECTOR_REGISTRY["word"] is WordConnector
+
+
+# ===========================================================================
+# ExcelConnector tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers — build in-memory openpyxl sheet mocks without a real file
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_sheet(title: str, rows: list[tuple[Any, ...]]) -> MagicMock:
+    sheet = MagicMock()
+    sheet.title = title
+    sheet.iter_rows = MagicMock(return_value=iter(rows))
+    return sheet
+
+
+def _make_mock_workbook(sheets: list[MagicMock]) -> MagicMock:
+    wb = MagicMock()
+    wb.worksheets = sheets
+    wb.close = MagicMock()
+    return wb
+
+
+# ---------------------------------------------------------------------------
+# Fixture: stub out openpyxl for Excel tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _stub_excel_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject a lightweight stub for openpyxl so tests run without the [docs] extras."""
+    openpyxl_mod = MagicMock()
+    openpyxl_mod.load_workbook = MagicMock(return_value=MagicMock())
+    monkeypatch.setitem(sys.modules, "openpyxl", openpyxl_mod)
+
+
+# ---------------------------------------------------------------------------
+# test_excel_connector_chunks_each_sheet
+# ---------------------------------------------------------------------------
+
+
+def test_excel_connector_chunks_each_sheet(_stub_excel_deps: None) -> None:
+    """A workbook with 2 sheets produces chunks from both sheets with page_number 1 and 2."""
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    sheet1 = _make_mock_sheet(
+        "Sales",
+        [
+            ("Product", "Revenue", "Units"),  # header row
+            ("Widget A", 1000, 50),
+            ("Widget B", 2000, 100),
+        ],
+    )
+    sheet2 = _make_mock_sheet(
+        "Inventory",
+        [
+            ("Item", "Stock"),  # header row
+            ("Widget A", 200),
+            ("Widget B", 150),
+        ],
+    )
+    mock_wb = _make_mock_workbook([sheet1, sheet2])
+
+    with patch("openpyxl.load_workbook", return_value=mock_wb):
+        connector = ExcelConnector()
+        chunks = connector.ingest(Path("data.xlsx"), source_id="excel-src-001")
+
+    assert len(chunks) >= 2, f"Expected at least 2 chunks, got {len(chunks)}"
+
+    page_numbers = {c.page_number for c in chunks}
+    assert 1 in page_numbers
+    assert 2 in page_numbers
+
+    sheet_names = {c.metadata["sheet_name"] for c in chunks}
+    assert "Sales" in sheet_names
+    assert "Inventory" in sheet_names
+
+    for chunk in chunks:
+        assert chunk.source_id == "excel-src-001"
+        assert chunk.source_name == "data.xlsx"
+        assert chunk.metadata["connector"] == "excel"
+        assert "row_range" in chunk.metadata
+        assert "file_path" in chunk.metadata
+
+
+# ---------------------------------------------------------------------------
+# test_excel_row_batch_produces_text
+# ---------------------------------------------------------------------------
+
+
+def test_excel_row_batch_produces_text(_stub_excel_deps: None) -> None:
+    """Batch text contains column header names and row values."""
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    sheet = _make_mock_sheet(
+        "People",
+        [
+            ("Name", "Age", "City"),  # header row
+            ("Alice", 30, "New York"),
+            ("Bob", 25, "Chicago"),
+        ],
+    )
+    mock_wb = _make_mock_workbook([sheet])
+
+    with patch("openpyxl.load_workbook", return_value=mock_wb):
+        connector = ExcelConnector()
+        chunks = connector.ingest(Path("people.xlsx"), source_id="excel-src-002")
+
+    assert len(chunks) == 1
+    text = chunks[0].text
+
+    # Column headers must appear as prefixes in the row text
+    assert "Name" in text
+    assert "Age" in text
+    assert "City" in text
+
+    # Row values must appear
+    assert "Alice" in text
+    assert "Bob" in text
+    assert "New York" in text
+    assert "Chicago" in text
+
+    # row_range should reflect the data rows (not the header)
+    assert chunks[0].metadata["row_range"] == "2-3"
+    assert chunks[0].page_number == 1
+
+
+# ---------------------------------------------------------------------------
+# test_excel_supports_xlsx_only
+# ---------------------------------------------------------------------------
+
+
+def test_excel_supports_xlsx_only() -> None:
+    """.xlsx is accepted; .xls and .csv are rejected."""
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    connector = ExcelConnector()
+
+    assert connector.supports(Path("data.xlsx")) is True
+    assert connector.supports("UPPER.XLSX") is True  # case-insensitive
+    assert connector.supports(Path("data.xls")) is False
+    assert connector.supports(Path("data.csv")) is False
+    assert connector.supports(Path("data.docx")) is False
+    assert connector.supports(Path("data.pdf")) is False
+
+
+# ---------------------------------------------------------------------------
+# test_document_connector_registry_contains_excel
+# ---------------------------------------------------------------------------
+
+
+def test_document_connector_registry_contains_excel() -> None:
+    """DOCUMENT_CONNECTOR_REGISTRY must have an 'excel' key pointing to ExcelConnector."""
+    from nlqueries.document_connectors import DOCUMENT_CONNECTOR_REGISTRY
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    assert "excel" in DOCUMENT_CONNECTOR_REGISTRY
+    assert DOCUMENT_CONNECTOR_REGISTRY["excel"] is ExcelConnector

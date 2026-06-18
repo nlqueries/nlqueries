@@ -64,7 +64,7 @@ dev = [
 mysql     = ["pymysql>=1.1"]
 openai    = ["openai>=1.0"]
 # Document ingestion connectors (PDF, Word, Excel, etc.)
-docs      = ["pdfplumber>=0.11", "langchain-text-splitters>=0.3", "python-docx>=1.1"]
+docs      = ["pdfplumber>=0.11", "langchain-text-splitters>=0.3", "python-docx>=1.1", "openpyxl>=3.1"]
 
 [project.scripts]
 nlqueries = "nlqueries.cli.main:cli"
