@@ -12,14 +12,17 @@ Usage:
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.pdf import PdfConnector
+from nlqueries.document_connectors.word import WordConnector
 
 DOCUMENT_CONNECTOR_REGISTRY: dict[str, type[DocumentConnector]] = {
     "pdf": PdfConnector,
+    "word": WordConnector,
 }
 
 __all__ = [
     "DocumentChunk",
     "DocumentConnector",
     "PdfConnector",
+    "WordConnector",
     "DOCUMENT_CONNECTOR_REGISTRY",
 ]
