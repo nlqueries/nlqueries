@@ -1017,6 +1017,87 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# doc-ask
+# ---------------------------------------------------------------------------
+
+
+@cli.command("doc-ask")
+@click.argument("collection")
+@click.argument("question")
+@click.option(
+    "--source-id",
+    "source_id",
+    default=None,
+    help="Restrict retrieval to a specific document source ID.",
+)
+@click.option(
+    "--top-k",
+    "top_k",
+    default=5,
+    show_default=True,
+    type=int,
+    help="Number of document chunks to retrieve.",
+)
+def doc_ask(collection: str, question: str, source_id: str | None, top_k: int) -> None:
+    """Ask a question against an ingested document collection.
+
+    \b
+    COLLECTION  Qdrant collection name (convention: doc_{source_id}_chunks)
+    QUESTION    The natural-language question, in quotes
+
+    \b
+    Streams the LLM answer to stdout, then prints a formatted citations block.
+
+    \b
+    Example:
+      nlqueries doc-ask doc_my-policy-uuid_chunks "What is the refund policy?"
+      nlqueries doc-ask doc_my-policy-uuid_chunks "Refund window?" --source-id my-policy-uuid
+    """
+    import json as _json
+
+    from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
+
+    orchestrator = DocumentOrchestrator()
+
+    async def _stream() -> None:
+        citations: list[dict[str, Any]] = []
+        try:
+            async for token in orchestrator.handle_question(
+                question,
+                collection,
+                source_id=source_id,
+                top_k=top_k,
+            ):
+                try:
+                    parsed = _json.loads(token)
+                    if isinstance(parsed, dict) and parsed.get("type") == "citations":
+                        citations.extend(parsed.get("citations", []))
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                click.echo(token, nl=False)
+            click.echo()  # final newline after streamed answer
+
+            if citations:
+                console.print("\n[bold cyan]Citations:[/bold cyan]")
+                for i, cite in enumerate(citations, 1):
+                    source = cite.get("source_name", "")
+                    page = cite.get("page_number")
+                    excerpt = cite.get("excerpt", "")
+                    location = f"page {page}" if page is not None else "no page"
+                    console.print(f"  [bold]{i}.[/bold] {source} ({location})")
+                    if excerpt:
+                        short = excerpt[:120] + "…" if len(excerpt) > 120 else excerpt
+                        console.print(f"     [dim]{short}[/dim]")
+
+        except Exception as exc:  # noqa: BLE001
+            err_console.print(f"[bold red]✗ {exc}[/bold red]")
+            sys.exit(1)
+
+    asyncio.run(_stream())
+
+
+# ---------------------------------------------------------------------------
 # feedback-stats
 # ---------------------------------------------------------------------------
 
