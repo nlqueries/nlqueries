@@ -1,8 +1,8 @@
 """
-Tests for nlqueries.document_connectors — PdfConnector + registry.
+Tests for nlqueries.document_connectors — PdfConnector + WordConnector + registry.
 
-All tests mock pdfplumber and langchain_text_splitters so no live PDF file
-or installed extras are required.
+All tests mock heavy dependencies (pdfplumber, langchain_text_splitters, python-docx)
+so no live files or installed extras are required.
 """
 
 from __future__ import annotations
@@ -222,3 +222,157 @@ def test_document_chunk_metadata_fields() -> None:
     assert meta["connector"] == "pdf"
     assert meta["file_path"] == str(source_path)
     assert meta["total_pages"] == 1
+
+
+# ===========================================================================
+# WordConnector tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers — build in-memory python-docx paragraphs without a real file
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_paragraph(text: str, style_name: str = "Normal") -> MagicMock:
+    para = MagicMock()
+    para.text = text
+    style = MagicMock()
+    style.name = style_name
+    para.style = style
+    return para
+
+
+def _make_mock_doc(paragraphs: list[MagicMock]) -> MagicMock:
+    doc = MagicMock()
+    doc.paragraphs = paragraphs
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# Fixture: stub out python-docx and langchain_text_splitters for Word tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _stub_word_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject lightweight stubs for python-docx and langchain_text_splitters."""
+
+    # --- python-docx stub ---
+    docx_mod = MagicMock()
+
+    def _document(path: str) -> MagicMock:
+        # Per-test patch replaces this; stub makes the module importable.
+        return MagicMock()
+
+    docx_mod.Document = _document
+    monkeypatch.setitem(sys.modules, "docx", docx_mod)
+
+    # --- langchain_text_splitters (reuse the same _FakeSplitter) ---
+    splitter_mod = sys.modules.get("langchain_text_splitters", MagicMock())
+
+    class _FakeSplitter:
+        def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100) -> None:
+            self._size = chunk_size
+
+        def split_text(self, text: str) -> list[str]:
+            if not text:
+                return []
+            return [text[i : i + self._size] for i in range(0, len(text), self._size)]
+
+    splitter_mod.RecursiveCharacterTextSplitter = _FakeSplitter
+    monkeypatch.setitem(sys.modules, "langchain_text_splitters", splitter_mod)
+
+
+# ---------------------------------------------------------------------------
+# test_word_connector_chunks_by_heading
+# ---------------------------------------------------------------------------
+
+
+def test_word_connector_chunks_by_heading(_stub_word_deps: None) -> None:
+    """A document with 3 headings produces 3 sections with correct section_heading metadata."""
+    from nlqueries.document_connectors.word import WordConnector
+
+    paragraphs = [
+        _make_mock_paragraph("Introduction", "Heading 1"),
+        _make_mock_paragraph("Intro body text. " * 5),
+        _make_mock_paragraph("Background", "Heading 2"),
+        _make_mock_paragraph("Background body text. " * 5),
+        _make_mock_paragraph("Conclusion", "Heading 1"),
+        _make_mock_paragraph("Conclusion body text. " * 5),
+    ]
+    mock_doc = _make_mock_doc(paragraphs)
+
+    with patch("docx.Document", return_value=mock_doc):
+        connector = WordConnector()
+        chunks = connector.ingest(Path("report.docx"), source_id="word-src-001")
+
+    assert len(chunks) >= 3, f"Expected at least 3 chunks, got {len(chunks)}"
+
+    headings_seen = [c.metadata["section_heading"] for c in chunks]
+    assert "Introduction" in headings_seen
+    assert "Background" in headings_seen
+    assert "Conclusion" in headings_seen
+
+    for chunk in chunks:
+        assert chunk.source_id == "word-src-001"
+        assert chunk.source_name == "report.docx"
+        assert chunk.page_number is None
+        assert chunk.metadata["connector"] == "word"
+
+
+# ---------------------------------------------------------------------------
+# test_word_connector_no_headings_produces_chunks
+# ---------------------------------------------------------------------------
+
+
+def test_word_connector_no_headings_produces_chunks(_stub_word_deps: None) -> None:
+    """A plain-text document with no headings produces at least 1 chunk."""
+    from nlqueries.document_connectors.word import WordConnector
+
+    paragraphs = [
+        _make_mock_paragraph("First paragraph. " * 10),
+        _make_mock_paragraph("Second paragraph. " * 10),
+        _make_mock_paragraph("Third paragraph. " * 10),
+    ]
+    mock_doc = _make_mock_doc(paragraphs)
+
+    with patch("docx.Document", return_value=mock_doc):
+        connector = WordConnector()
+        chunks = connector.ingest(Path("plain.docx"), source_id="word-src-002")
+
+    assert len(chunks) >= 1, "Expected at least one chunk for a plain-text document"
+    assert chunks[0].metadata["section_heading"] == "untitled"
+    assert chunks[0].page_number is None
+
+
+# ---------------------------------------------------------------------------
+# test_word_supports_docx_only
+# ---------------------------------------------------------------------------
+
+
+def test_word_supports_docx_only() -> None:
+    """.docx is accepted; .pdf and .doc (old binary format) are rejected."""
+    from nlqueries.document_connectors.word import WordConnector
+
+    connector = WordConnector()
+
+    assert connector.supports(Path("report.docx")) is True
+    assert connector.supports("UPPER.DOCX") is True  # case-insensitive
+    assert connector.supports(Path("report.pdf")) is False
+    assert connector.supports(Path("report.doc")) is False
+    assert connector.supports(Path("data.xlsx")) is False
+    assert connector.supports(Path("notes.txt")) is False
+
+
+# ---------------------------------------------------------------------------
+# test_word_connector_registry_contains_word
+# ---------------------------------------------------------------------------
+
+
+def test_word_connector_registry_contains_word() -> None:
+    """DOCUMENT_CONNECTOR_REGISTRY must have a 'word' key pointing to WordConnector."""
+    from nlqueries.document_connectors import DOCUMENT_CONNECTOR_REGISTRY
+    from nlqueries.document_connectors.word import WordConnector
+
+    assert "word" in DOCUMENT_CONNECTOR_REGISTRY
+    assert DOCUMENT_CONNECTOR_REGISTRY["word"] is WordConnector
