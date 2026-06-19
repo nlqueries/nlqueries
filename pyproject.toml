@@ -44,6 +44,9 @@ dependencies = [
     "anthropic>=0.28",
     "litellm>=1.0",
 
+    # Multi-agent orchestration
+    "langgraph>=0.2",
+
     # MCP server
     "mcp>=1.0",
 
