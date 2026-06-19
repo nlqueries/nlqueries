@@ -294,7 +294,8 @@ class TestMultiAgentOrchestratorExtra:
         assert final["agent_type"] == "unclear"
 
     def test_hybrid_routes_to_sql_then_document(self) -> None:
-        """Hybrid intent routes through both sql_node and document_node."""
+        """Hybrid intent runs both SQL and Document agents concurrently (Sprint 13)."""
+        from nlqueries.orchestrator.result_merger import HybridQueryResult
 
         sql_instance = MagicMock()
         sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
@@ -303,6 +304,14 @@ class TestMultiAgentOrchestratorExtra:
 
         sql_called: list[bool] = []
         doc_called: list[bool] = []
+
+        mock_hybrid = HybridQueryResult(
+            sql_answer="SQL rows",
+            sql_table=None,
+            document_answer="Doc excerpts",
+            citations=[],
+            merged_answer="Merged hybrid answer.",
+        )
 
         async def run() -> list[str]:
             with (
@@ -318,6 +327,10 @@ class TestMultiAgentOrchestratorExtra:
                     "nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator",
                     side_effect=lambda: (doc_called.append(True), doc_instance)[1],
                 ),
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.merge_results",
+                    return_value=mock_hybrid,
+                ),
             ):
                 orch = MultiAgentOrchestrator()
                 tokens: list[str] = []
@@ -332,9 +345,10 @@ class TestMultiAgentOrchestratorExtra:
         tokens = asyncio.run(run())
         assert sql_called, "SQL orchestrator must be called for hybrid intent"
         assert doc_called, "Document orchestrator must be called for hybrid intent"
-        # Stub: hybrid returns SQL result with agent_type='hybrid'
+        # Sprint 13: hybrid returns a unified hybrid chunk, not the SQL stub
         final = json.loads(tokens[-1])
         assert final["agent_type"] == "hybrid"
+        assert final["type"] == "hybrid"
 
     def test_handle_question_returns_async_generator(self) -> None:
         """handle_question returns an async generator."""
