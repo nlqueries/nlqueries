@@ -673,3 +673,171 @@ def test_document_connector_registry_contains_notion() -> None:
 
     assert "notion" in DOCUMENT_CONNECTOR_REGISTRY
     assert DOCUMENT_CONNECTOR_REGISTRY["notion"] is NotionConnector
+
+
+# ===========================================================================
+# ConfluenceConnector tests
+# ===========================================================================
+
+
+@pytest.fixture()
+def _stub_confluence_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject lightweight stubs for atlassian and bs4 so tests run without [wiki] extras."""
+
+    # --- atlassian stub ---
+    atlassian_mod = MagicMock()
+    monkeypatch.setitem(sys.modules, "atlassian", atlassian_mod)
+
+    # --- bs4 stub with a minimal BeautifulSoup ---
+    bs4_mod = MagicMock()
+
+    class _FakeSoup:
+        def __init__(self, markup: str, parser: str = "html.parser") -> None:
+            self._markup = markup
+
+        def get_text(self, separator: str = "", strip: bool = False) -> str:
+            import re
+
+            text = re.sub(r"<[^>]+>", separator, self._markup)
+            if strip:
+                text = text.strip()
+            return text
+
+    bs4_mod.BeautifulSoup = _FakeSoup
+    monkeypatch.setitem(sys.modules, "bs4", bs4_mod)
+
+
+def _make_cql_result(page_id: str, title: str, web_ui: str) -> dict[str, Any]:
+    return {
+        "content": {
+            "id": page_id,
+            "title": title,
+            "_links": {"webui": web_ui},
+        }
+    }
+
+
+def _make_page_body(html: str) -> dict[str, Any]:
+    return {"body": {"storage": {"value": html}}}
+
+
+# ---------------------------------------------------------------------------
+# test_confluence_connector_fetches_all_space_pages
+# ---------------------------------------------------------------------------
+
+
+def test_confluence_connector_fetches_all_space_pages(_stub_confluence_deps: None) -> None:
+    """CQL results are iterated and each page produces chunks with correct metadata."""
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.return_value = {
+        "results": [
+            _make_cql_result("111", "Page One", "/spaces/ENG/pages/111"),
+            _make_cql_result("222", "Page Two", "/spaces/ENG/pages/222"),
+        ]
+    }
+    mock_client.get_page_by_id.side_effect = [
+        _make_page_body("<p>Content of page one. " + "word " * 20 + "</p>"),
+        _make_page_body("<p>Content of page two. " + "word " * 20 + "</p>"),
+    ]
+
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        chunks = connector.ingest("ENG", source_id="src-conf-001")
+
+    assert len(chunks) >= 2
+    page_ids_seen = {c.metadata["page_id"] for c in chunks}
+    assert "111" in page_ids_seen
+    assert "222" in page_ids_seen
+
+    for chunk in chunks:
+        assert chunk.source_id == "src-conf-001"
+        assert chunk.source_name == "ENG"
+        assert chunk.page_number is None
+        assert chunk.metadata["connector"] == "confluence"
+        assert chunk.metadata["space_key"] == "ENG"
+
+
+# ---------------------------------------------------------------------------
+# test_html_stripped_from_body
+# ---------------------------------------------------------------------------
+
+
+def test_html_stripped_from_body(_stub_confluence_deps: None) -> None:
+    """HTML tags are stripped so only plain text appears in chunk content."""
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.return_value = {
+        "results": [_make_cql_result("999", "Tech Spec", "/spaces/ENG/pages/999")]
+    }
+    mock_client.get_page_by_id.return_value = _make_page_body(
+        "<h1>Overview</h1><p>This is the <strong>important</strong> section.</p>"
+    )
+
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        chunks = connector.ingest("ENG", source_id="src-conf-002")
+
+    assert chunks, "Expected at least one chunk from non-empty page"
+    combined = " ".join(c.text for c in chunks)
+    # HTML tags must not appear in chunk text
+    assert "<h1>" not in combined
+    assert "<p>" not in combined
+    assert "<strong>" not in combined
+    # Prose content must be present
+    assert "Overview" in combined or "important" in combined or "section" in combined
+
+
+# ---------------------------------------------------------------------------
+# test_incremental_sync_adds_cql_date_filter
+# ---------------------------------------------------------------------------
+
+
+def test_incremental_sync_adds_cql_date_filter(_stub_confluence_deps: None) -> None:
+    """Passing `since` includes lastModified > date filter in the CQL query."""
+    from datetime import UTC
+
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.return_value = {"results": []}
+
+    since = datetime(2024, 3, 15, 9, 30, tzinfo=UTC)
+
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        chunks = connector.ingest("ENG", source_id="src-conf-003", since=since)
+
+    assert chunks == []
+    call_args = mock_client.cql.call_args
+    cql_query: str = call_args[0][0] if call_args[0] else call_args[1].get("cql", "")
+    assert "lastModified" in cql_query
+    assert "2024-03-15" in cql_query
+
+
+# ---------------------------------------------------------------------------
+# test_document_connector_registry_contains_confluence
+# ---------------------------------------------------------------------------
+
+
+def test_document_connector_registry_contains_confluence() -> None:
+    """DOCUMENT_CONNECTOR_REGISTRY must have a 'confluence' key pointing to ConfluenceConnector."""
+    from nlqueries.document_connectors import DOCUMENT_CONNECTOR_REGISTRY
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    assert "confluence" in DOCUMENT_CONNECTOR_REGISTRY
+    assert DOCUMENT_CONNECTOR_REGISTRY["confluence"] is ConfluenceConnector

@@ -1176,6 +1176,99 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# doc-sync-confluence
+# ---------------------------------------------------------------------------
+
+
+@cli.command("doc-sync-confluence")
+@click.argument("source_id")
+@click.argument("space_key")
+@click.option(
+    "--base-url",
+    "base_url",
+    required=True,
+    help="Confluence base URL (e.g. https://example.atlassian.net).",
+)
+@click.option("--username", "username", required=True, help="Confluence username (email).")
+@click.option(
+    "--since",
+    "since_ts",
+    default=None,
+    help=(
+        "Only fetch pages modified after this ISO 8601 timestamp "
+        "(e.g. 2024-01-15T00:00:00+00:00). Omit for a full sync."
+    ),
+)
+def doc_sync_confluence(
+    source_id: str,
+    space_key: str,
+    base_url: str,
+    username: str,
+    since_ts: str | None,
+) -> None:
+    """Sync a Confluence space and print the number of chunks produced.
+
+    \b
+    SOURCE_ID  Opaque identifier for this document source (e.g. a UUID or slug).
+               Used to generate deterministic chunk IDs and for Qdrant filtering.
+    SPACE_KEY  Confluence space key to sync (e.g. ENG).
+
+    \b
+    The Confluence API token is read from the CONFLUENCE_API_TOKEN environment variable.
+
+    \b
+    Examples:
+      CONFLUENCE_API_TOKEN=... nlqueries doc-sync-confluence my-src ENG \\
+          --base-url https://acme.atlassian.net --username alice@acme.com
+      nlqueries doc-sync-confluence my-src ENG --base-url https://acme.atlassian.net \\
+          --username alice@acme.com --since 2024-01-15T00:00:00+00:00
+    """
+    import os
+
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    api_token = os.environ.get("CONFLUENCE_API_TOKEN", "")
+    if not api_token:
+        raise click.ClickException(
+            "CONFLUENCE_API_TOKEN environment variable is not set.\n"
+            "  Set it first:  export CONFLUENCE_API_TOKEN=<your-api-token>"
+        )
+
+    since: datetime | None = None
+    if since_ts:
+        try:
+            since = datetime.fromisoformat(since_ts)
+        except ValueError as exc:
+            raise click.ClickException(
+                f"Invalid --since value: {since_ts!r}. "
+                "Expected ISO 8601 format, e.g. 2024-01-15T00:00:00+00:00."
+            ) from exc
+
+    connector = ConfluenceConnector(base_url=base_url, username=username, api_token=api_token)
+    console.print(
+        f"[bold]Syncing Confluence space[/bold] [cyan]{space_key}[/cyan] "
+        f"(source_id=[bold]{source_id}[/bold]) …"
+    )
+
+    try:
+        chunks = connector.ingest(space_key, source_id, since=since)
+    except ImportError as exc:
+        err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Sync failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print("[bold green]✓ Sync complete.[/bold green]")
+    console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
+    if not chunks and since is not None:
+        console.print(
+            "  [yellow]⚠ No chunks — space may have no pages modified "
+            "after the given timestamp.[/yellow]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # feedback-stats
 # ---------------------------------------------------------------------------
 
