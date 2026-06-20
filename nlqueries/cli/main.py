@@ -1098,6 +1098,84 @@ def doc_ask(collection: str, question: str, source_id: str | None, top_k: int) -
 
 
 # ---------------------------------------------------------------------------
+# doc-sync-notion
+# ---------------------------------------------------------------------------
+
+
+@cli.command("doc-sync-notion")
+@click.argument("source_id")
+@click.argument("page_id")
+@click.option(
+    "--since",
+    "since_ts",
+    default=None,
+    help=(
+        "Only produce chunks if the page was modified after this ISO 8601 timestamp "
+        "(e.g. 2024-01-15T00:00:00+00:00). Omit for a full sync."
+    ),
+)
+def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
+    """Sync a Notion page and print the number of chunks produced.
+
+    \b
+    SOURCE_ID  Opaque identifier for this document source (e.g. a UUID or slug).
+               Used to generate deterministic chunk IDs and for Qdrant filtering.
+    PAGE_ID    Notion page ID or database ID to sync.
+
+    \b
+    The Notion API token is read from the NOTION_API_TOKEN environment variable.
+
+    \b
+    Examples:
+      NOTION_API_TOKEN=secret_... nlqueries doc-sync-notion my-wiki-src abc123def456
+      nlqueries doc-sync-notion my-wiki-src abc123 --since 2024-01-15T00:00:00+00:00
+    """
+    import os
+
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    api_token = os.environ.get("NOTION_API_TOKEN", "")
+    if not api_token:
+        raise click.ClickException(
+            "NOTION_API_TOKEN environment variable is not set.\n"
+            "  Set it first:  export NOTION_API_TOKEN=<your-integration-token>"
+        )
+
+    since: datetime | None = None
+    if since_ts:
+        try:
+            since = datetime.fromisoformat(since_ts)
+        except ValueError as exc:
+            raise click.ClickException(
+                f"Invalid --since value: {since_ts!r}. "
+                "Expected ISO 8601 format, e.g. 2024-01-15T00:00:00+00:00."
+            ) from exc
+
+    connector = NotionConnector(api_token=api_token)
+    console.print(
+        f"[bold]Syncing Notion page[/bold] [cyan]{page_id}[/cyan] "
+        f"(source_id=[bold]{source_id}[/bold]) …"
+    )
+
+    try:
+        chunks = connector.ingest(page_id, source_id, since=since)
+    except ImportError as exc:
+        err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Sync failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print("[bold green]✓ Sync complete.[/bold green]")
+    console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
+    if not chunks and since is not None:
+        console.print(
+            "  [yellow]⚠ No chunks — page may not have been modified "
+            "after the given timestamp.[/yellow]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # feedback-stats
 # ---------------------------------------------------------------------------
 
