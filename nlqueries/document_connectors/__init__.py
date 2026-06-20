@@ -11,6 +11,7 @@ Usage:
 """
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
+from nlqueries.document_connectors.confluence import ConfluenceConnector
 from nlqueries.document_connectors.excel import ExcelConnector
 from nlqueries.document_connectors.notion import NotionConnector
 from nlqueries.document_connectors.pdf import PdfConnector
@@ -21,6 +22,7 @@ DOCUMENT_CONNECTOR_REGISTRY: dict[str, type[DocumentConnector]] = {
     "word": WordConnector,
     "excel": ExcelConnector,
     "notion": NotionConnector,
+    "confluence": ConfluenceConnector,
 }
 
 __all__ = [
@@ -30,5 +32,6 @@ __all__ = [
     "WordConnector",
     "ExcelConnector",
     "NotionConnector",
+    "ConfluenceConnector",
     "DOCUMENT_CONNECTOR_REGISTRY",
 ]
