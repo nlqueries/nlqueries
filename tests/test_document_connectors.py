@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -536,3 +537,139 @@ def test_document_connector_registry_contains_excel() -> None:
 
     assert "excel" in DOCUMENT_CONNECTOR_REGISTRY
     assert DOCUMENT_CONNECTOR_REGISTRY["excel"] is ExcelConnector
+
+
+# ===========================================================================
+# NotionConnector tests
+# ===========================================================================
+
+
+@pytest.fixture()
+def _stub_notion_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject a lightweight stub for notion_client so tests run without the [wiki] extra."""
+    notion_mod = MagicMock()
+    monkeypatch.setitem(sys.modules, "notion_client", notion_mod)
+
+
+def _make_notion_page(
+    last_edited_time: str = "2024-06-01T10:00:00.000Z",
+    title_text: str = "Test Page",
+) -> dict[str, Any]:
+    return {
+        "last_edited_time": last_edited_time,
+        "properties": {
+            "Name": {
+                "type": "title",
+                "title": [{"plain_text": title_text}],
+            }
+        },
+    }
+
+
+def _make_blocks_response(
+    texts: list[str],
+    has_more: bool = False,
+) -> dict[str, Any]:
+    results = [
+        {
+            "type": "paragraph",
+            "paragraph": {"rich_text": [{"plain_text": t}]},
+        }
+        for t in texts
+    ]
+    return {"results": results, "has_more": has_more, "next_cursor": None}
+
+
+# ---------------------------------------------------------------------------
+# test_notion_connector_chunks_page_blocks
+# ---------------------------------------------------------------------------
+
+
+def test_notion_connector_chunks_page_blocks(_stub_notion_deps: None) -> None:
+    """Blocks from a Notion page are concatenated and split into chunks."""
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    mock_client = MagicMock()
+    mock_client.pages.retrieve.return_value = _make_notion_page()
+    mock_client.blocks.children.list.return_value = _make_blocks_response(
+        [
+            "Introduction paragraph. " * 10,
+            "Background section content. " * 10,
+            "Conclusion and summary. " * 10,
+        ]
+    )
+
+    with patch("notion_client.Client", return_value=mock_client):
+        connector = NotionConnector(api_token="test-token")
+        chunks = connector.ingest("page-abc-123", source_id="src-notion-001")
+
+    assert len(chunks) >= 1
+    for chunk in chunks:
+        assert chunk.source_id == "src-notion-001"
+        assert chunk.source_name == "page-abc-123"
+        assert chunk.page_number is None
+        assert chunk.metadata["connector"] == "notion"
+        assert chunk.metadata["page_id"] == "page-abc-123"
+
+
+# ---------------------------------------------------------------------------
+# test_incremental_sync_filters_by_last_edited_time
+# ---------------------------------------------------------------------------
+
+
+def test_incremental_sync_filters_by_last_edited_time(_stub_notion_deps: None) -> None:
+    """ingest() returns [] when the page's last_edited_time is not after `since`."""
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    # Page was last edited on 2024-01-10 — before since=2024-01-15.
+    mock_client = MagicMock()
+    mock_client.pages.retrieve.return_value = _make_notion_page(
+        last_edited_time="2024-01-10T10:00:00.000Z"
+    )
+
+    since = datetime(2024, 1, 15, tzinfo=UTC)
+
+    with patch("notion_client.Client", return_value=mock_client):
+        connector = NotionConnector(api_token="test-token")
+        chunks = connector.ingest("page-abc-123", source_id="src-notion-002", since=since)
+
+    assert chunks == []
+    mock_client.blocks.children.list.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# test_page_title_in_metadata
+# ---------------------------------------------------------------------------
+
+
+def test_page_title_in_metadata(_stub_notion_deps: None) -> None:
+    """Page title extracted from Notion properties appears in every chunk's metadata."""
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    mock_client = MagicMock()
+    mock_client.pages.retrieve.return_value = _make_notion_page(title_text="My Engineering Runbook")
+    mock_client.blocks.children.list.return_value = _make_blocks_response(
+        ["Step 1: do something. " * 5]
+    )
+
+    with patch("notion_client.Client", return_value=mock_client):
+        connector = NotionConnector(api_token="test-token")
+        chunks = connector.ingest("page-runbook-001", source_id="src-notion-003")
+
+    assert len(chunks) >= 1
+    assert chunks[0].metadata["page_title"] == "My Engineering Runbook"
+    assert chunks[0].metadata["last_edited_time"] == "2024-06-01T10:00:00.000Z"
+
+
+# ---------------------------------------------------------------------------
+# test_document_connector_registry_contains_notion
+# ---------------------------------------------------------------------------
+
+
+def test_document_connector_registry_contains_notion() -> None:
+    """DOCUMENT_CONNECTOR_REGISTRY must have a 'notion' key pointing to NotionConnector."""
+    from nlqueries.document_connectors import DOCUMENT_CONNECTOR_REGISTRY
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    assert "notion" in DOCUMENT_CONNECTOR_REGISTRY
+    assert DOCUMENT_CONNECTOR_REGISTRY["notion"] is NotionConnector
