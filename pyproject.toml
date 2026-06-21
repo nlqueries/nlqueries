@@ -40,6 +40,11 @@ dependencies = [
     "sentence-transformers>=3.0",
     "qdrant-client>=1.9",
 
+    # OIDC token verification
+    "PyJWT>=2.8",
+    "cryptography>=42.0",
+    "httpx>=0.27",
+
     # LLM
     "anthropic>=0.28",
     "litellm>=1.0",

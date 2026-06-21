@@ -966,6 +966,63 @@ def annotate(connector_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# verify-oidc-token
+# ---------------------------------------------------------------------------
+
+
+@cli.command("verify-oidc-token")
+@click.argument("discovery_url")
+@click.argument("client_id")
+@click.argument("id_token")
+def verify_oidc_token(discovery_url: str, client_id: str, id_token: str) -> None:
+    """Verify an OIDC ID token and print the decoded claims as JSON.
+
+    \b
+    DISCOVERY_URL  OIDC provider well-known endpoint
+                   (e.g. https://accounts.google.com/.well-known/openid-configuration)
+    CLIENT_ID      OAuth2 client ID the token was issued for
+    ID_TOKEN       The raw JWT ID token string to verify
+
+    \b
+    Useful for debugging OIDC setups — confirms the token signature, expiry,
+    audience, and issuer are all valid before wiring up the enterprise SSO flow.
+
+    \b
+    Example:
+      nlqueries verify-oidc-token \\
+        https://accounts.google.com/.well-known/openid-configuration \\
+        my-client-id \\
+        eyJhbGci...
+    """
+    import json as _json
+
+    from nlqueries.auth.oidc_token import OidcTokenVerifier, OidcVerificationError
+
+    try:
+        verifier = OidcTokenVerifier(discovery_url)
+        claims = verifier.verify(id_token, client_id)
+    except OidcVerificationError as exc:
+        err_console.print(f"[bold red]✗ OIDC verification failed:[/bold red] {exc}")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Unexpected error:[/bold red] {exc}")
+        sys.exit(1)
+
+    output = {
+        "sub": claims.sub,
+        "email": claims.email,
+        "name": claims.name,
+        "given_name": claims.given_name,
+        "family_name": claims.family_name,
+        "picture": claims.picture,
+        "email_verified": claims.email_verified,
+        "raw": claims.raw,
+    }
+    console.print_json(_json.dumps(output, default=str))
+    console.print("[bold green]✓ Token verified successfully.[/bold green]")
+
+
+# ---------------------------------------------------------------------------
 # ask
 # ---------------------------------------------------------------------------
 
