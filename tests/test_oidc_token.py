@@ -339,18 +339,24 @@ class TestDiscoveryErrors:
         """Discovery doc without 'jwks_uri' raises OidcVerificationError at init."""
         bad_doc = {"issuer": ISSUER}  # no jwks_uri
 
-        with patch(
-            "nlqueries.auth.oidc_token.httpx.get",
-            return_value=_mock_http_response(bad_doc),
-        ), pytest.raises(OidcVerificationError, match="jwks_uri"):
+        with (
+            patch(
+                "nlqueries.auth.oidc_token.httpx.get",
+                return_value=_mock_http_response(bad_doc),
+            ),
+            pytest.raises(OidcVerificationError, match="jwks_uri"),
+        ):
             OidcTokenVerifier(DISCOVERY_URL)
 
     def test_discovery_http_error_raises_oidc_error(self) -> None:
         """HTTP failure on discovery fetch raises OidcVerificationError."""
         import httpx as _httpx
 
-        with patch(
-            "nlqueries.auth.oidc_token.httpx.get",
-            side_effect=_httpx.ConnectError("connection refused"),
-        ), pytest.raises(OidcVerificationError, match="discovery"):
+        with (
+            patch(
+                "nlqueries.auth.oidc_token.httpx.get",
+                side_effect=_httpx.ConnectError("connection refused"),
+            ),
+            pytest.raises(OidcVerificationError, match="discovery"),
+        ):
             OidcTokenVerifier(DISCOVERY_URL)
