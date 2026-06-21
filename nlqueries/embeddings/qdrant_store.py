@@ -40,12 +40,14 @@ Public API
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import TYPE_CHECKING, Any
 
 from nlqueries import config
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
+from nlqueries.telemetry import chunk_search_latency, get_tracer
 
 if TYPE_CHECKING:
     from qdrant_client import QdrantClient as _QdrantClient
@@ -344,29 +346,34 @@ def upsert_chunks(
 
     from nlqueries.embeddings.embedder import embed_batch
 
-    ensure_collection(collection, DOCUMENT_VECTOR_SIZE)
+    tracer = get_tracer()
+    with tracer.start_as_current_span("qdrant_store.upsert_chunks") as span:
+        span.set_attribute("collection", collection)
+        span.set_attribute("chunk_count", len(chunks))
 
-    texts = [c.text for c in chunks]
-    vectors = embed_batch(texts)
+        ensure_collection(collection, DOCUMENT_VECTOR_SIZE)
 
-    client = _get_client()
-    points = [
-        PointStruct(
-            id=int(chunk.chunk_id, 16),
-            vector=vectors[idx],
-            payload={
-                "chunk_id": chunk.chunk_id,
-                "source_id": chunk.source_id,
-                "source_name": chunk.source_name,
-                "page_number": chunk.page_number,
-                "chunk_index": chunk.chunk_index,
-                "text": chunk.text,
-                "metadata": chunk.metadata,
-            },
-        )
-        for idx, chunk in enumerate(chunks)
-    ]
-    client.upsert(collection_name=collection, points=points)
+        texts = [c.text for c in chunks]
+        vectors = embed_batch(texts)
+
+        client = _get_client()
+        points = [
+            PointStruct(
+                id=int(chunk.chunk_id, 16),
+                vector=vectors[idx],
+                payload={
+                    "chunk_id": chunk.chunk_id,
+                    "source_id": chunk.source_id,
+                    "source_name": chunk.source_name,
+                    "page_number": chunk.page_number,
+                    "chunk_index": chunk.chunk_index,
+                    "text": chunk.text,
+                    "metadata": chunk.metadata,
+                },
+            )
+            for idx, chunk in enumerate(chunks)
+        ]
+        client.upsert(collection_name=collection, points=points)
 
 
 def search_chunks(
@@ -393,36 +400,48 @@ def search_chunks(
 
     from nlqueries.embeddings.embedder import embed_text
 
-    vector = embed_text(query)
-    query_filter: Filter | None = None
-    if source_id_filter is not None:
-        query_filter = Filter(
-            must=[FieldCondition(key="source_id", match=MatchValue(value=source_id_filter))]
-        )
+    tracer = get_tracer()
+    start_ms = time.perf_counter() * 1000
+    with tracer.start_as_current_span("qdrant_store.search_chunks") as span:
+        span.set_attribute("collection", collection)
+        span.set_attribute("top_k", top_k)
+        if source_id_filter is not None:
+            span.set_attribute("source_id_filter", source_id_filter)
 
-    client = _get_client()
-    response = client.query_points(
-        collection_name=collection,
-        query=vector,
-        query_filter=query_filter,
-        limit=top_k,
-    )
-
-    result: list[DocumentChunk] = []
-    for hit in response.points:
-        p = hit.payload or {}
-        result.append(
-            DocumentChunk(
-                chunk_id=str(p.get("chunk_id", "")),
-                source_id=str(p.get("source_id", "")),
-                source_name=str(p.get("source_name", "")),
-                page_number=p.get("page_number"),
-                chunk_index=int(p.get("chunk_index", 0)),
-                text=str(p.get("text", "")),
-                metadata=dict(p.get("metadata") or {}),
+        vector = embed_text(query)
+        query_filter: Filter | None = None
+        if source_id_filter is not None:
+            query_filter = Filter(
+                must=[FieldCondition(key="source_id", match=MatchValue(value=source_id_filter))]
             )
+
+        client = _get_client()
+        response = client.query_points(
+            collection_name=collection,
+            query=vector,
+            query_filter=query_filter,
+            limit=top_k,
         )
-    return result
+
+        result: list[DocumentChunk] = []
+        for hit in response.points:
+            p = hit.payload or {}
+            result.append(
+                DocumentChunk(
+                    chunk_id=str(p.get("chunk_id", "")),
+                    source_id=str(p.get("source_id", "")),
+                    source_name=str(p.get("source_name", "")),
+                    page_number=p.get("page_number"),
+                    chunk_index=int(p.get("chunk_index", 0)),
+                    text=str(p.get("text", "")),
+                    metadata=dict(p.get("metadata") or {}),
+                )
+            )
+
+        elapsed_ms = time.perf_counter() * 1000 - start_ms
+        chunk_search_latency.record(elapsed_ms, {"collection": collection})
+        span.set_attribute("result_count", len(result))
+        return result
 
 
 def delete_chunks(collection: str, source_id: str) -> None:

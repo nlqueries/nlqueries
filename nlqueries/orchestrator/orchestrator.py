@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -24,6 +25,7 @@ from nlqueries import config
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt
 from nlqueries.orchestrator.sql_generation import generate_sql
+from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
 
 class Orchestrator:
@@ -70,32 +72,46 @@ class Orchestrator:
             FileNotFoundError: When no knowledge base file exists for
                                *agent_id*.
         """
-        kb = self._load_knowledge_base(agent_id)
-        collection = f"agent_{agent_id}_schema"
-        system_prompt, user_prompt = assemble_prompt(
-            question,
-            kb,
-            top_k_capsules=5,
-            collection=collection,
-        )
+        tracer = get_tracer()
+        start_ms = time.perf_counter() * 1000
+        with tracer.start_as_current_span("orchestrator.handle_question") as span:
+            span.set_attribute("agent_id", agent_id)
+            span.set_attribute("dialect", dialect)
 
-        # Step 1: stream natural-language reasoning ---------------------------
-        llm = get_llm_client()
-        for token in llm.stream(system_prompt, user_prompt):
-            yield token
+            kb = self._load_knowledge_base(agent_id)
+            collection = f"agent_{agent_id}_schema"
+            system_prompt, user_prompt = assemble_prompt(
+                question,
+                kb,
+                top_k_capsules=5,
+                collection=collection,
+            )
 
-        # Step 2: generate validated SQL, yield as structured final chunk -----
-        result = generate_sql(question, kb, dialect)
-        yield json.dumps(
-            {
-                "type": "sql",
-                "sql": result.sql,
-                "is_valid": result.is_valid,
-                "validation_error": result.validation_error,
-                "dialect": result.dialect,
-                "attempt_count": result.attempt_count,
-            }
-        )
+            # Step 1: stream natural-language reasoning -----------------------
+            llm = get_llm_client()
+            for token in llm.stream(system_prompt, user_prompt):
+                yield token
+
+            # Step 2: generate validated SQL, yield as structured final chunk -
+            result = generate_sql(question, kb, dialect)
+            span.set_attribute("sql_valid", result.is_valid)
+            span.set_attribute("attempt_count", result.attempt_count)
+            span.set_attribute("intent_type", "sql")
+
+            elapsed_ms = time.perf_counter() * 1000 - start_ms
+            query_counter.add(1, {"dialect": dialect, "agent_type": "sql"})
+            query_latency.record(elapsed_ms, {"dialect": dialect, "agent_type": "sql"})
+
+            yield json.dumps(
+                {
+                    "type": "sql",
+                    "sql": result.sql,
+                    "is_valid": result.is_valid,
+                    "validation_error": result.validation_error,
+                    "dialect": result.dialect,
+                    "attempt_count": result.attempt_count,
+                }
+            )
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:
         """Load and return the YAML knowledge base for *agent_id*.

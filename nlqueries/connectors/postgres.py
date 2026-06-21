@@ -25,6 +25,7 @@ from nlqueries.connectors.base import (
     SchemaSpec,
     TableSpec,
 )
+from nlqueries.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -366,37 +367,42 @@ class PostgresConnector(DatabaseConnector):
         ``QueryResult.error`` rather than propagating, so callers can treat
         query execution as always returning a result object.
         """
+        tracer = get_tracer()
         start = time.perf_counter()
-        try:
-            engine = self._require_engine()
-            with engine.begin() as conn:
-                cursor_result = conn.execute(text(sql))
+        with tracer.start_as_current_span("postgres_connector.execute_query") as span:
+            span.set_attribute("db.system", "postgresql")
+            try:
+                engine = self._require_engine()
+                with engine.begin() as conn:
+                    cursor_result = conn.execute(text(sql))
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+
+                    if cursor_result.returns_rows:
+                        columns = list(cursor_result.keys())
+                        rows = [list(row) for row in cursor_result.fetchall()]
+                    else:
+                        columns = []
+                        rows = []
+
+                    span.set_attribute("db.row_count", len(rows))
+                    return QueryResult(
+                        columns=columns,
+                        rows=rows,
+                        row_count=len(rows),
+                        execution_time_ms=elapsed_ms,
+                        error=None,
+                    )
+            except Exception as exc:  # noqa: BLE001 — surfaced via QueryResult.error, not raised
                 elapsed_ms = (time.perf_counter() - start) * 1000
-
-                if cursor_result.returns_rows:
-                    columns = list(cursor_result.keys())
-                    rows = [list(row) for row in cursor_result.fetchall()]
-                else:
-                    columns = []
-                    rows = []
-
+                span.set_attribute("error", True)
+                logger.exception("PostgresConnector.execute_query failed")
                 return QueryResult(
-                    columns=columns,
-                    rows=rows,
-                    row_count=len(rows),
+                    columns=[],
+                    rows=[],
+                    row_count=0,
                     execution_time_ms=elapsed_ms,
-                    error=None,
+                    error=str(exc),
                 )
-        except Exception as exc:  # noqa: BLE001 — surfaced via QueryResult.error, not raised
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.exception("PostgresConnector.execute_query failed")
-            return QueryResult(
-                columns=[],
-                rows=[],
-                row_count=0,
-                execution_time_ms=elapsed_ms,
-                error=str(exc),
-            )
 
 
 def _utc_now_iso() -> str:
