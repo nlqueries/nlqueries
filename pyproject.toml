@@ -47,6 +47,10 @@ dependencies = [
     # Multi-agent orchestration
     "langgraph>=0.2",
 
+    # OpenTelemetry — tracing and metrics (no-op when no exporter is configured)
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp>=1.24",
+
     # MCP server
     "mcp>=1.0",
 

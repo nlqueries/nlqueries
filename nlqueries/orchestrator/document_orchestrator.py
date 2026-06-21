@@ -14,11 +14,13 @@ Public API
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncGenerator
 
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.document_retrieval import retrieve_for_question
 from nlqueries.orchestrator.prompt_assembly import assemble_document_prompt
+from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
 
 class DocumentOrchestrator:
@@ -70,25 +72,39 @@ class DocumentOrchestrator:
             String tokens from the LLM response, then a final JSON citations
             chunk.
         """
-        retrieval_result = retrieve_for_question(
-            question,
-            collection,
-            top_k=top_k,
-            source_id_filter=source_id,
-        )
+        tracer = get_tracer()
+        start_ms = time.perf_counter() * 1000
+        with tracer.start_as_current_span("document_orchestrator.handle_question") as span:
+            span.set_attribute("collection", collection)
+            span.set_attribute("intent_type", "document")
+            span.set_attribute("top_k", top_k)
+            if source_id is not None:
+                span.set_attribute("source_id", source_id)
 
-        system_prompt, user_prompt = assemble_document_prompt(question, retrieval_result)
+            retrieval_result = retrieve_for_question(
+                question,
+                collection,
+                top_k=top_k,
+                source_id_filter=source_id,
+            )
 
-        llm = get_llm_client()
-        for token in llm.stream(system_prompt, user_prompt):
-            yield token
+            system_prompt, user_prompt = assemble_document_prompt(question, retrieval_result)
 
-        citations_payload = [
-            {
-                "source_name": c.source_name,
-                "page_number": c.page_number,
-                "excerpt": c.excerpt,
-            }
-            for c in retrieval_result.citations
-        ]
-        yield json.dumps({"type": "citations", "citations": citations_payload})
+            llm = get_llm_client()
+            for token in llm.stream(system_prompt, user_prompt):
+                yield token
+
+            citations_payload = [
+                {
+                    "source_name": c.source_name,
+                    "page_number": c.page_number,
+                    "excerpt": c.excerpt,
+                }
+                for c in retrieval_result.citations
+            ]
+
+            elapsed_ms = time.perf_counter() * 1000 - start_ms
+            query_counter.add(1, {"agent_type": "document"})
+            query_latency.record(elapsed_ms, {"agent_type": "document"})
+
+            yield json.dumps({"type": "citations", "citations": citations_payload})
