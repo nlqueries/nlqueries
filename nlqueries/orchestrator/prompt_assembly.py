@@ -193,6 +193,38 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Multi-turn prompt assembly with conversation history (Task 18.1)
+# ---------------------------------------------------------------------------
+
+
+def assemble_prompt_with_history(
+    question: str,
+    knowledge_base: dict[str, Any],
+    history: list[dict[str, str]],
+    top_k_capsules: int = 5,
+) -> tuple[str, str, list[dict[str, str]]]:
+    """Assemble a (system_prompt, user_prompt, prior_messages) triple for multi-turn chat.
+
+    The system prompt is identical to :func:`assemble_prompt`.
+    ``prior_messages`` is the ``history`` list passed through unchanged — it is
+    ready to pass as the ``messages`` parameter before the current user message
+    in an Anthropic API call.
+
+    Args:
+        question:       The current user question.
+        knowledge_base: Parsed YAML KB dict.
+        history:        Prior turns from
+                        :meth:`~ConversationSession.to_prompt_messages`.
+        top_k_capsules: Number of capsules to embed in the system prompt.
+
+    Returns:
+        ``(system_prompt, current_user_prompt, prior_messages_for_api)``
+    """
+    system_prompt, user_prompt = assemble_prompt(question, knowledge_base, top_k_capsules)
+    return system_prompt, user_prompt, history
+
+
+# ---------------------------------------------------------------------------
 # Document Q&A prompt assembly (Task 11.1)
 # ---------------------------------------------------------------------------
 
