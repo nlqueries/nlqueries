@@ -1,0 +1,203 @@
+"""
+nlqueries.orchestrator.sync_runner
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Synchronous (non-streaming) query runner that drives MultiAgentOrchestrator
+to completion and returns a single structured AgentQueryResult.
+
+This is the adapter layer between the streaming orchestrator and the REST API
+/ SDK callers who want a complete result in one call.
+
+Public API
+----------
+``AgentQueryResult``
+    Structured result of a completed agent query.
+``run_query``
+    Async function that drives :class:`MultiAgentOrchestrator` to completion.
+``run_query_sync``
+    Synchronous wrapper around ``run_query`` via ``asyncio.run()``; for SDK
+    users who do not have an async runtime.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from nlqueries.connectors.base import QueryResult
+from nlqueries.orchestrator.conversation import ConversationTurn
+from nlqueries.orchestrator.document_retrieval import Citation
+from nlqueries.orchestrator.followup_resolver import resolve_followup
+from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+
+
+@dataclass
+class AgentQueryResult:
+    """Structured result returned by :func:`run_query`."""
+
+    question: str
+    resolved_question: str  # after follow-up resolution
+    agent_type: str  # "sql" | "document" | "hybrid" | "unclear"
+    answer: str  # natural-language answer text (all streamed tokens joined)
+    sql: str | None  # generated SQL if agent_type in ("sql", "hybrid")
+    sql_result: QueryResult | None  # raw SQL rows if executed
+    citations: list[Citation]  # empty list if agent_type == "sql"
+    merged_answer: str | None  # set only for hybrid
+    latency_ms: int  # total time from question to result
+    session_id: str | None
+
+
+def _parse_final_chunk(
+    tokens: list[str],
+) -> tuple[list[str], str, str | None, list[Citation], str | None, QueryResult | None]:
+    """Parse the last token as a structured JSON chunk.
+
+    Returns:
+        (text_tokens, agent_type, sql, citations, merged_answer, sql_result)
+    """
+    agent_type = "unclear"
+    sql: str | None = None
+    citations: list[Citation] = []
+    merged_answer: str | None = None
+    sql_result: QueryResult | None = None
+    text_tokens = tokens
+
+    if not tokens:
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+
+    try:
+        parsed: Any = json.loads(tokens[-1])
+    except (json.JSONDecodeError, TypeError):
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+
+    if not isinstance(parsed, dict) or "agent_type" not in parsed:
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+
+    agent_type = str(parsed.get("agent_type", "unclear"))
+    text_tokens = tokens[:-1]
+
+    if agent_type == "sql":
+        sql = parsed.get("sql") or None
+
+    elif agent_type == "document":
+        citations = [
+            Citation(
+                chunk_id="",
+                source_name=str(c.get("source_name", "")),
+                page_number=c.get("page_number"),
+                chunk_index=0,
+                excerpt=str(c.get("excerpt", "")),
+                relevance_score=0.0,
+            )
+            for c in parsed.get("citations", [])
+        ]
+
+    elif agent_type == "hybrid":
+        merged_answer = parsed.get("merged_answer") or None
+        text_tokens = []  # hybrid: NL answer IS the merged_answer field
+        citations = [
+            Citation(
+                chunk_id="",
+                source_name=str(c.get("source_name", "")),
+                page_number=c.get("page_number"),
+                chunk_index=0,
+                excerpt=str(c.get("excerpt", "")),
+                relevance_score=0.0,
+            )
+            for c in parsed.get("citations", [])
+        ]
+        sql_table: dict[str, Any] | None = parsed.get("sql_table")
+        if sql_table and isinstance(sql_table, dict):
+            sql_result = QueryResult(
+                columns=sql_table.get("columns") or [],
+                rows=sql_table.get("rows") or [],
+                row_count=int(sql_table.get("row_count", 0)),
+                execution_time_ms=float(sql_table.get("execution_time_ms", 0.0)),
+                error=sql_table.get("error"),
+            )
+
+    return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+
+
+async def run_query(
+    question: str,
+    agent_id: str,
+    available_types: Sequence[str] = ("sql",),
+    dialect: str = "postgres",
+    session_id: str | None = None,
+    history: list[ConversationTurn] | None = None,
+) -> AgentQueryResult:
+    """Drive MultiAgentOrchestrator to completion, collecting all yielded
+    tokens and the final structured chunk, then return an AgentQueryResult.
+
+    Follow-up references in *question* are resolved via
+    :func:`~nlqueries.orchestrator.followup_resolver.resolve_followup` before
+    the question is passed to the orchestrator.
+
+    Args:
+        question:        Natural-language question from the user.
+        agent_id:        Agent identifier (used for KB lookup and Qdrant collection).
+        available_types: Agent types enabled for this agent (default: ``("sql",)``).
+        dialect:         SQL dialect forwarded to the SQL sub-agent.
+        session_id:      Optional session identifier — passed through to the result.
+        history:         Prior conversation turns for follow-up resolution.
+
+    Returns:
+        :class:`AgentQueryResult` with all streamed tokens joined and structured
+        fields extracted from the final chunk.  ``latency_ms`` is the wall-clock
+        time from function entry to return.
+    """
+    start = time.monotonic()
+
+    # Resolve follow-up references before routing.
+    resolved = resolve_followup(question, history or [])
+    resolved_question = resolved.resolved
+
+    # Drive the orchestrator to completion; collect every yielded token.
+    orchestrator = MultiAgentOrchestrator()
+    tokens: list[str] = []
+    async for token in orchestrator.handle_question(
+        resolved_question,
+        agent_id,
+        available_types=list(available_types),
+        dialect=dialect,
+        history=None,  # already resolved above; avoids double LLM call
+    ):
+        tokens.append(token)
+
+    # Split text tokens from the final structured chunk.
+    text_tokens, agent_type, sql, citations, merged_answer, sql_result = _parse_final_chunk(tokens)
+
+    # Natural-language answer: join text tokens; for hybrid use merged_answer.
+    answer = merged_answer if agent_type == "hybrid" and merged_answer else "".join(text_tokens)
+
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    return AgentQueryResult(
+        question=question,
+        resolved_question=resolved_question,
+        agent_type=agent_type,
+        answer=answer,
+        sql=sql,
+        sql_result=sql_result,
+        citations=citations,
+        merged_answer=merged_answer,
+        latency_ms=latency_ms,
+        session_id=session_id,
+    )
+
+
+def run_query_sync(
+    question: str,
+    agent_id: str,
+    **kwargs: Any,
+) -> AgentQueryResult:
+    """Synchronous wrapper: calls ``asyncio.run(run_query(...))``.
+
+    Convenience for SDK users who do not have an async runtime.  Cannot be
+    called from within a running event loop — use :func:`run_query` there.
+    """
+    return asyncio.run(run_query(question, agent_id, **kwargs))
