@@ -1233,6 +1233,95 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# query
+# ---------------------------------------------------------------------------
+
+
+@cli.command("query")
+@click.argument("agent_id")
+@click.argument("question")
+@click.option(
+    "--dialect",
+    default="postgres",
+    show_default=True,
+    type=click.Choice(["postgres", "snowflake", "bigquery"]),
+    help="SQL dialect used for generation.",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Output the full result as raw JSON.",
+)
+def query(agent_id: str, question: str, dialect: str, output_json: bool) -> None:
+    """Run a synchronous agent query and print the result.
+
+    \b
+    AGENT_ID  the agent identifier whose knowledge base to query
+    QUESTION  the natural-language question, in quotes
+
+    \b
+    Calls the MultiAgentOrchestrator synchronously, waits for the complete
+    answer, and prints a formatted summary (or raw JSON with --json).
+
+    \b
+    Examples:
+      nlqueries query my_agent "How many orders last month?"
+      nlqueries query my_agent "Top customers by revenue" --json
+    """
+    import json as _json
+
+    from nlqueries.orchestrator.sync_runner import AgentQueryResult, run_query_sync
+
+    try:
+        result: AgentQueryResult = run_query_sync(question, agent_id, dialect=dialect)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Query failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    if output_json:
+        output = {
+            "question": result.question,
+            "resolved_question": result.resolved_question,
+            "agent_type": result.agent_type,
+            "answer": result.answer,
+            "sql": result.sql,
+            "sql_result": (
+                {
+                    "columns": result.sql_result.columns,
+                    "rows": result.sql_result.rows,
+                    "row_count": result.sql_result.row_count,
+                    "execution_time_ms": result.sql_result.execution_time_ms,
+                    "error": result.sql_result.error,
+                }
+                if result.sql_result
+                else None
+            ),
+            "citations": [
+                {
+                    "source_name": c.source_name,
+                    "page_number": c.page_number,
+                    "excerpt": c.excerpt,
+                }
+                for c in result.citations
+            ],
+            "merged_answer": result.merged_answer,
+            "latency_ms": result.latency_ms,
+            "session_id": result.session_id,
+        }
+        console.print_json(_json.dumps(output, default=str))
+    else:
+        console.print(f"[bold]Agent type :[/bold] {result.agent_type}")
+        console.print(f"[bold]Answer     :[/bold] {result.answer}")
+        if result.sql:
+            console.print(f"[bold]SQL        :[/bold] [dim]{result.sql}[/dim]")
+        if result.citations:
+            console.print(f"[bold]Citations  :[/bold] {len(result.citations)} source(s)")
+        console.print(f"[bold]Latency    :[/bold] {result.latency_ms} ms")
+
+
+# ---------------------------------------------------------------------------
 # doc-sync-confluence
 # ---------------------------------------------------------------------------
 
