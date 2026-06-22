@@ -34,8 +34,10 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from nlqueries.connectors.base import QueryResult
+from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
+from nlqueries.orchestrator.followup_resolver import resolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent
 from nlqueries.orchestrator.orchestrator import Orchestrator
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
@@ -291,6 +293,7 @@ class MultiAgentOrchestrator:
         agent_id: str,
         available_types: Sequence[str] = ("sql",),
         dialect: str = "postgres",
+        history: list[ConversationTurn] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -304,19 +307,29 @@ class MultiAgentOrchestrator:
             {"type": "hybrid", "agent_type": "hybrid",
              "merged_answer": "...", "sql_table": {...}, "citations": [...]}
 
+        When *history* is provided, the question is first passed through
+        :func:`~nlqueries.orchestrator.followup_resolver.resolve_followup` so
+        that pronoun and contextual references are resolved into a fully
+        self-contained question before intent classification.
+
         Args:
             question:        Natural-language question from the user.
             agent_id:        Identifier of the agent (used for KB and Qdrant collection).
             available_types: Agent types enabled for this agent.
                              Defaults to ``("sql",)`` for backward compatibility.
             dialect:         SQL dialect forwarded to the SQL agent.
+            history:         Prior conversation turns for follow-up resolution.
+                             ``None`` (default) disables follow-up resolution.
 
         Yields:
             String tokens from the agent response, then a final JSON chunk
             with ``"agent_type"`` set to ``"sql"``, ``"document"``, or ``"hybrid"``.
         """
+        resolved = resolve_followup(question, history or [])
+        effective_question = resolved.resolved
+
         initial_state: AgentState = {
-            "question": question,
+            "question": effective_question,
             "agent_id": agent_id,
             "available_types": list(available_types),
             "dialect": dialect,
