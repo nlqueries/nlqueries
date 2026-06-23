@@ -1415,6 +1415,66 @@ def doc_sync_confluence(
 
 
 # ---------------------------------------------------------------------------
+# cache
+# ---------------------------------------------------------------------------
+
+
+@cli.group("cache")
+def cache_group() -> None:
+    """Manage the semantic query cache for an agent.
+
+    \b
+    The semantic cache stores recent answers in Qdrant and serves them for
+    semantically similar future questions (cosine similarity >= 0.97).
+
+    \b
+    Commands:
+      nlqueries cache stats <agent-id>  — show cache statistics
+      nlqueries cache clear <agent-id>  — invalidate (delete) all cached entries
+    """
+
+
+@cache_group.command("stats")
+@click.argument("agent_id")
+def cache_stats(agent_id: str) -> None:
+    """Show semantic cache statistics for AGENT_ID.
+
+    \b
+    AGENT_ID  the agent identifier whose cache to inspect
+
+    \b
+    Example:
+      nlqueries cache stats postgres:localhost:mydb
+    """
+    from nlqueries.cache.semantic_cache import SemanticCache
+
+    cache = SemanticCache(agent_id)
+    info = cache.stats()
+    console.print(f"[bold]Cache stats[/bold] for agent [cyan]{agent_id}[/cyan]")
+    console.print(f"  Collection   : [bold]{info['collection']}[/bold]")
+    console.print(f"  Total entries: [bold]{info['total_entries']}[/bold]")
+
+
+@cache_group.command("clear")
+@click.argument("agent_id")
+def cache_clear(agent_id: str) -> None:
+    """Invalidate (delete) all cached entries for AGENT_ID.
+
+    \b
+    AGENT_ID  the agent identifier whose cache to clear
+
+    \b
+    Example:
+      nlqueries cache clear postgres:localhost:mydb
+    """
+    from nlqueries.cache.semantic_cache import SemanticCache
+
+    cache = SemanticCache(agent_id)
+    cache.invalidate(agent_id)
+    console.print(f"[bold green]✓ Cache cleared[/bold green] for agent [cyan]{agent_id}[/cyan]")
+
+
+# ---------------------------------------------------------------------------
 # feedback-stats
 # ---------------------------------------------------------------------------
 
