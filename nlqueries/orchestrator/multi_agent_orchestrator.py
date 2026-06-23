@@ -8,6 +8,11 @@ Sprint 13 update: the hybrid branch now runs SQL and Document agents
 **concurrently** via ``asyncio.gather()`` (replacing the Sprint 12 stub) and
 merges their results via :func:`~nlqueries.orchestrator.result_merger.merge_results`.
 
+Sprint 21 update: a semantic cache (backed by Qdrant) is checked before
+running the graph.  Cache hits bypass the LLM entirely and return the stored
+answer word-by-word.  Cache misses run normally and store the result so
+subsequent similar questions can be served from cache.
+
 Public API
 ----------
 ``MultiAgentOrchestrator``
@@ -27,12 +32,15 @@ Graph topology::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from nlqueries.cache.semantic_cache import SemanticCache
 from nlqueries.connectors.base import QueryResult
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
@@ -55,6 +63,22 @@ class AgentState(TypedDict):
     final_answer: str | None
     error: str | None
     hybrid_result: HybridQueryResult | None  # populated for hybrid intent (Sprint 13)
+
+
+# ---------------------------------------------------------------------------
+# Internal carrier used to pass result fields to SemanticCache.put()
+# without importing AgentQueryResult (which would create a circular import).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CacheData:
+    """Minimal carrier whose attributes match the AgentQueryResult Protocol."""
+
+    resolved_question: str
+    agent_type: str
+    answer: str
+    sql: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +297,9 @@ class MultiAgentOrchestrator:
     ``asyncio.gather()`` and synthesises a unified answer via
     :func:`~nlqueries.orchestrator.result_merger.merge_results`.
 
+    Sprint 21: a semantic cache is consulted before routing.  Cache hits
+    bypass the LLM and return the stored answer immediately.
+
     Exposes the same async-generator interface as :class:`Orchestrator`.
 
     Graph topology::
@@ -312,6 +339,12 @@ class MultiAgentOrchestrator:
         that pronoun and contextual references are resolved into a fully
         self-contained question before intent classification.
 
+        Sprint 21: the resolved question is looked up in the semantic cache
+        before running the LangGraph pipeline.  On a cache hit the stored
+        answer is yielded word-by-word and the final JSON chunk includes
+        ``"from_cache": True``.  On a miss the result is stored in the cache
+        after the pipeline completes.
+
         Args:
             question:        Natural-language question from the user.
             agent_id:        Identifier of the agent (used for KB and Qdrant collection).
@@ -328,6 +361,36 @@ class MultiAgentOrchestrator:
         resolved = resolve_followup(question, history or [])
         effective_question = resolved.resolved
 
+        # ------------------------------------------------------------------
+        # Semantic cache check (Sprint 21)
+        # ------------------------------------------------------------------
+        _cache = SemanticCache(agent_id)
+        _cached = _cache.get(effective_question)
+        if _cached is not None:
+            # Serve cached answer word-by-word to simulate streaming.
+            for _word in _cached.answer.split():
+                yield _word + " "
+            # Build a final structured chunk that mirrors the live format.
+            _hit_chunk: dict[str, Any] = {
+                "agent_type": _cached.agent_type,
+                "from_cache": True,
+            }
+            if _cached.agent_type == "sql":
+                _hit_chunk["type"] = "sql"
+                if _cached.sql:
+                    _hit_chunk["sql"] = _cached.sql
+            elif _cached.agent_type == "document":
+                _hit_chunk["type"] = "citations"
+                _hit_chunk["citations"] = []
+            elif _cached.agent_type == "hybrid":
+                _hit_chunk["type"] = "hybrid"
+                _hit_chunk["merged_answer"] = _cached.answer
+            yield json.dumps(_hit_chunk)
+            return
+
+        # ------------------------------------------------------------------
+        # Cache miss: run the LangGraph pipeline
+        # ------------------------------------------------------------------
         initial_state: AgentState = {
             "question": effective_question,
             "agent_id": agent_id,
@@ -346,6 +409,47 @@ class MultiAgentOrchestrator:
 
         intent = final_state.get("intent")
 
+        # ------------------------------------------------------------------
+        # Pre-extract fields for caching before yielding (Sprint 21)
+        # ------------------------------------------------------------------
+        _cache_agent_type = "unclear"
+        _cache_answer = ""
+        _cache_sql: str | None = None
+
+        if intent == IntentType.sql:
+            _raw = final_state.get("sql_result")
+            if _raw:
+                _toks: list[str] = json.loads(_raw)
+                _cache_agent_type = "sql"
+                _cache_answer = "".join(_toks[:-1])
+                if _toks:
+                    with contextlib.suppress(json.JSONDecodeError, AttributeError, TypeError):
+                        _cache_sql = json.loads(_toks[-1]).get("sql")
+        elif intent == IntentType.document:
+            _raw = final_state.get("document_result")
+            if _raw:
+                _toks = json.loads(_raw)
+                _cache_agent_type = "document"
+                _cache_answer = "".join(_toks[:-1])
+        elif intent == IntentType.hybrid:
+            _hr = final_state.get("hybrid_result")
+            if _hr is not None:
+                _cache_agent_type = "hybrid"
+                _cache_answer = _hr.merged_answer or ""
+
+        if _cache_agent_type != "unclear":
+            _data = _CacheData(
+                resolved_question=effective_question,
+                agent_type=_cache_agent_type,
+                answer=_cache_answer,
+                sql=_cache_sql,
+            )
+            with contextlib.suppress(Exception):
+                _cache.put(effective_question, _data)
+
+        # ------------------------------------------------------------------
+        # Yield tokens (unchanged from pre-Sprint-21)
+        # ------------------------------------------------------------------
         if intent == IntentType.sql:
             raw = final_state.get("sql_result")
             if raw:
