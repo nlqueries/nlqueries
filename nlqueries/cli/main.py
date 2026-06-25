@@ -901,11 +901,23 @@ def process_history(
     type=int,
     help="Number of sample rows to include per table.",
 )
+@click.option(
+    "--describe-columns/--no-describe-columns",
+    default=False,
+    show_default=True,
+    help=(
+        "Use the LLM to auto-populate column descriptions from sample data. "
+        "Skips surrogate-key columns (PKs, FKs, *_id/*_uuid/*_key). "
+        "Manually written descriptions in an existing KB always win. "
+        "Requires LLM_API_KEY to be set."
+    ),
+)
 def export_kb(
     connector_id: str,
     output: str | None,
     include_samples: bool,
     sample_rows: int,
+    describe_columns: bool,
 ) -> None:
     """Generate and save the YAML knowledge base for a connector.
 
@@ -941,6 +953,9 @@ def export_kb(
         try:
             from sqlalchemy.engine import make_url
 
+            from nlqueries.knowledge.kb_generator import (
+                describe_columns as _describe_columns,
+            )
             from nlqueries.knowledge.kb_generator import (
                 generate_knowledge_base,
                 save_knowledge_base,
@@ -981,8 +996,43 @@ def export_kb(
                     "to include query_capsules in the KB.[/yellow]"
                 )
 
+            # Optional: LLM-generated column descriptions from sample data
+            llm_column_descriptions: dict[str, dict[str, str]] | None = None
+            if describe_columns:
+                has_llm_key = bool(
+                    os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY")
+                )
+                if not has_llm_key:
+                    console.print(
+                        "  [yellow]⚠ --describe-columns skipped: "
+                        "LLM_API_KEY / ANTHROPIC_API_KEY not set.[/yellow]"
+                    )
+                else:
+                    from nlqueries.llm import get_llm_client
+
+                    llm = get_llm_client()
+                    llm_column_descriptions = {}
+                    for tbl in schema.tables:
+                        result = connector.execute_query(
+                            f"SELECT * FROM {tbl.name} LIMIT {sample_rows}"
+                        )
+                        if result.error:
+                            continue
+                        descs = _describe_columns(tbl, result.rows, result.columns, llm)
+                        if descs:
+                            llm_column_descriptions[tbl.name] = descs
+                    described = sum(len(v) for v in llm_column_descriptions.values())
+                    console.print(
+                        f"  [dim]LLM described {described} column(s) "
+                        f"across {len(llm_column_descriptions)} table(s).[/dim]"
+                    )
+
             kb: dict[str, Any] = generate_knowledge_base(
-                schema, capsules, agent_name=connector_id, existing_kb=existing_kb
+                schema,
+                capsules,
+                agent_name=connector_id,
+                existing_kb=existing_kb,
+                llm_column_descriptions=llm_column_descriptions,
             )
             save_knowledge_base(kb, str(out_path))
 
