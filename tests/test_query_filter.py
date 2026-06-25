@@ -8,6 +8,11 @@ Covers 20+ sample queries across the following scenarios:
   - Duplicate queries are deduplicated (execution_count summed)
   - Valid SELECT queries pass through with correct output shape
   - Structurally identical queries with different literals share a fingerprint
+  - System/driver commands (SHOW, SET, …) are pre-filtered before sqlglot
+  - pg_* catalog table queries are filtered out
+  - Pure session-function SELECTs are filtered out
+  - pg_stat_statements $N parameters are normalised to literals
+  - _stats dict tracks drop reasons per category
 """
 
 from __future__ import annotations
@@ -19,8 +24,11 @@ from nlqueries.processing.query_filter import (
     _extract_tables,
     _has_system_schema,
     _is_select,
+    _is_system_command,
+    _is_system_query,
     _make_fingerprint,
     _normalize,
+    _pg_params_to_literals,
     filter_and_deduplicate,
 )
 
@@ -351,3 +359,215 @@ def test_mixed_batch_of_20_queries() -> None:
     assert len(result) == len(surviving_normalized)
     assert all(isinstance(nq, NormalizedQuery) for nq in result)
     assert all(nq.execution_count >= 1 for nq in result)
+
+
+# ---------------------------------------------------------------------------
+# _is_system_command — pre-filter for SHOW/SET/etc. driver commands (#7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        ("SHOW TRANSACTION ISOLATION LEVEL", True),
+        ("show standard_conforming_strings", True),
+        ("SET client_encoding = 'UTF8'", True),
+        ("set search_path TO public", True),
+        ("RESET ALL", True),
+        ("BEGIN", True),
+        ("COMMIT", True),
+        ("ROLLBACK", True),
+        ("DEALLOCATE stmt_1", True),
+        ("DECLARE cur CURSOR FOR SELECT 1", True),
+        ("DISCARD ALL", True),
+        # Should NOT be system commands
+        ("SELECT id FROM users", False),
+        ("INSERT INTO t VALUES (1)", False),
+        ("SELECT SHOW FROM events", False),  # 'SHOW' in a SELECT column alias
+    ],
+)
+def test_is_system_command(sql: str, expected: bool) -> None:
+    assert _is_system_command(sql) == expected
+
+
+def test_system_commands_filtered_before_sqlglot() -> None:
+    """SHOW/SET commands must be dropped without reaching sqlglot (no warnings)."""
+    commands = [
+        "SHOW TRANSACTION ISOLATION LEVEL",
+        "show standard_conforming_strings",
+        "SET client_encoding = 'UTF8'",
+        "BEGIN",
+        "COMMIT",
+    ]
+    result = filter_and_deduplicate([_qr(sql) for sql in commands])
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _is_system_query — pg_* catalog and session-function filter (#13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        # pg_* catalog tables accessed by drivers without pg_catalog. prefix
+        ("SELECT t.oid, typarray FROM pg_type t WHERE t.typname = 'int4'", True),
+        ("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'", True),
+        ("SELECT usesuper FROM pg_user WHERE usename = current_user", True),
+        ("SELECT query, calls FROM pg_stat_statements LIMIT 100", True),
+        ("SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%'", True),
+        ("SELECT relname FROM pg_class WHERE relkind = 'r'", True),
+        # Pure session-function SELECTs
+        ("SELECT CURRENT_DATABASE() AS a, CURRENT_SCHEMAS(false) AS b", True),
+        ("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_USER()", True),
+        ("SELECT current_user", True),
+        ("SELECT VERSION()", True),
+        # Should NOT be system queries — these are real business queries
+        ("SELECT id FROM users WHERE active = true", False),
+        ("SELECT SUM(amount) FROM payments GROUP BY currency", False),
+        ("SELECT * FROM products WHERE category = 'electronics'", False),
+    ],
+)
+def test_is_system_query(sql: str, expected: bool) -> None:
+    assert _is_system_query(sql) == expected
+
+
+def test_pg_catalog_table_queries_filtered() -> None:
+    pg_queries = [
+        "SELECT t.oid, typarray FROM pg_type t WHERE typname = 'int4'",
+        "SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'",
+        "SELECT usesuper FROM pg_user WHERE usename = 'alice'",
+        "SELECT query FROM pg_stat_statements ORDER BY calls DESC",
+    ]
+    result = filter_and_deduplicate([_qr(sql) for sql in pg_queries])
+    assert result == []
+
+
+def test_session_function_only_queries_filtered() -> None:
+    session_queries = [
+        "SELECT CURRENT_DATABASE() AS a, CURRENT_SCHEMAS(false) AS b",
+        "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_USER()",
+    ]
+    result = filter_and_deduplicate([_qr(sql) for sql in session_queries])
+    assert result == []
+
+
+def test_business_queries_not_filtered_as_system() -> None:
+    """Real business queries must survive the system-query filter."""
+    business = [
+        "SELECT id, name FROM customers WHERE region = 'us-east'",
+        "SELECT SUM(amount) FROM payments WHERE status = 'completed'",
+        "SELECT COUNT(*) FROM orders WHERE created_at >= '2024-01-01'",
+    ]
+    result = filter_and_deduplicate([_qr(sql) for sql in business])
+    assert len(result) == len(business)
+
+
+# ---------------------------------------------------------------------------
+# _pg_params_to_literals — $N placeholder substitution (#14 Part B)
+# ---------------------------------------------------------------------------
+
+
+def test_pg_params_to_literals_replaces_positional_params() -> None:
+    sql = "SELECT customer_id, NTILE($1) OVER (ORDER BY amount DESC) FROM payment"
+    assert _pg_params_to_literals(sql) == (
+        "SELECT customer_id, NTILE(0) OVER (ORDER BY amount DESC) FROM payment"
+    )
+
+
+def test_pg_params_to_literals_multiple_params() -> None:
+    sql = "SELECT id FROM users WHERE age > $1 AND country = $2"
+    assert _pg_params_to_literals(sql) == "SELECT id FROM users WHERE age > 0 AND country = 0"
+
+
+def test_pg_params_to_literals_no_params_unchanged() -> None:
+    sql = "SELECT id FROM users WHERE status = 'active'"
+    assert _pg_params_to_literals(sql) == sql
+
+
+def test_ntile_with_pg_param_survives_filter() -> None:
+    """A window function using $N (from pg_stat_statements) must not be silently dropped."""
+    sql = (
+        "SELECT customer_id, SUM(amount) AS spend, "
+        "NTILE($1) OVER(ORDER BY SUM(amount) DESC) AS spend_quartile "
+        "FROM payment GROUP BY customer_id"
+    )
+    result = filter_and_deduplicate([_qr(sql)])
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# _stats dict — drop reason counters (#14 Part A)
+# ---------------------------------------------------------------------------
+
+
+def test_stats_considered_equals_total_records() -> None:
+    records = [
+        _qr("SELECT id FROM users", execution_count=5),
+        _qr("INSERT INTO t VALUES (1)", execution_count=5),
+        _qr("SHOW server_version", execution_count=5),
+    ]
+    stats: dict[str, int] = {}
+    filter_and_deduplicate(records, _stats=stats)
+    assert stats["considered"] == 3
+
+
+def test_stats_too_few_executions_counted() -> None:
+    records = [
+        _qr("SELECT id FROM orders", execution_count=1),
+        _qr("SELECT name FROM products", execution_count=5),
+    ]
+    stats: dict[str, int] = {}
+    filter_and_deduplicate(records, min_executions=3, _stats=stats)
+    assert stats["too_few_executions"] == 1
+
+
+def test_stats_system_command_counted() -> None:
+    records = [
+        _qr("SHOW TRANSACTION ISOLATION LEVEL"),
+        _qr("SET client_encoding = 'UTF8'"),
+        _qr("SELECT id FROM users"),
+    ]
+    stats: dict[str, int] = {}
+    filter_and_deduplicate(records, _stats=stats)
+    assert stats["system_command"] == 2
+
+
+def test_stats_system_schema_counted() -> None:
+    records = [
+        _qr("SELECT * FROM pg_type WHERE typname = 'int4'"),
+        _qr("SELECT CURRENT_DATABASE()"),
+        _qr("SELECT id FROM customers"),
+    ]
+    stats: dict[str, int] = {}
+    filter_and_deduplicate(records, _stats=stats)
+    assert stats["system_schema"] == 2
+
+
+def test_stats_not_select_counted() -> None:
+    records = [
+        _qr("INSERT INTO t VALUES (1)"),
+        _qr("UPDATE users SET active = false WHERE id = 1"),
+        _qr("SELECT id FROM users"),
+    ]
+    stats: dict[str, int] = {}
+    filter_and_deduplicate(records, _stats=stats)
+    assert stats["not_select"] == 2
+
+
+def test_stats_duplicate_counted() -> None:
+    sql = "SELECT id FROM users WHERE status = 'active'"
+    records = [_qr(sql, 5), _qr(sql, 3)]
+    stats: dict[str, int] = {}
+    result = filter_and_deduplicate(records, _stats=stats)
+    assert len(result) == 1
+    assert stats["duplicate"] == 1
+    assert result[0].execution_count == 8
+
+
+def test_stats_none_leaves_function_unchanged() -> None:
+    """Passing _stats=None must not break anything — existing callers unaffected."""
+    records = [_qr("SELECT id FROM users")]
+    result = filter_and_deduplicate(records, _stats=None)
+    assert len(result) == 1

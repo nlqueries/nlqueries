@@ -35,11 +35,44 @@ QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "nlqueries")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 """Anthropic API key for Claude-based query generation and summarisation."""
 
-LLM_MODEL: str = os.getenv("LLM_MODEL", "claude-sonnet-4-5")
-"""Default Anthropic model used for query generation."""
 
-LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "anthropic")
-"""LLM provider to use. Resolved by nlqueries.llm.get_llm_client()."""
+def _detect_provider() -> str:
+    """Resolve the LLM provider from the environment.
+
+    Priority: explicit LLM_PROVIDER env var > key-based auto-detection.
+    If OPENAI_API_KEY is set (and LLM_PROVIDER is not), routes through
+    LiteLLM so the existing litellm client handles OpenAI calls.
+    """
+    explicit = os.getenv("LLM_PROVIDER", "").strip()
+    if explicit:
+        return explicit
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    if os.getenv("OPENAI_API_KEY"):
+        return "litellm"
+    return "anthropic"
+
+
+def _detect_model(provider: str) -> str:
+    """Resolve the LLM model from the environment.
+
+    Priority: explicit LLM_MODEL env var > provider default.
+    When auto-detected as litellm (OpenAI key present), defaults to
+    'openai/gpt-4o' so LiteLLM routes to OpenAI without extra config.
+    """
+    explicit = os.getenv("LLM_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
+        return "openai/gpt-4o"
+    return "claude-sonnet-4-5"
+
+
+LLM_PROVIDER: str = _detect_provider()
+"""LLM provider to use. Auto-detected from available API keys if not set explicitly."""
+
+LLM_MODEL: str = _detect_model(LLM_PROVIDER)
+"""LLM model identifier. Defaults based on detected provider if not set explicitly."""
 
 # ---------------------------------------------------------------------------
 # Knowledge base

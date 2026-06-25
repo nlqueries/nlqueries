@@ -41,6 +41,7 @@ def process_query_history(
     min_executions: int = 1,
     annotate: bool = False,
     embed: bool = False,
+    _filter_stats: dict[str, int] | None = None,
 ) -> list[QueryCapsule]:
     """Run the full Query History Processor pipeline.
 
@@ -64,12 +65,16 @@ def process_query_history(
         embed:           When ``True``, upsert capsules into the Qdrant vector store
                          after the annotation step (Qdrant is optional; defaults to
                          ``False``).
+        _filter_stats:   Optional dict populated in-place with per-reason drop counts
+                         from the filter stage (see ``filter_and_deduplicate``).
 
     Returns:
         ``list[QueryCapsule]`` sorted by frequency descending, capped at 1 000.
     """
     records = connector.extract_query_history(days=days)
-    normalized = filter_and_deduplicate(records, min_executions=min_executions)
+    normalized = filter_and_deduplicate(
+        records, min_executions=min_executions, _stats=_filter_stats
+    )
     clusters = cluster_queries(normalized)
     capsules = parameterize_clusters(clusters, schema=schema)
     if annotate and capsules:
