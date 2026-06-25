@@ -15,6 +15,8 @@ Commands
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,8 +28,26 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from nlqueries.config import CONNECTORS_FILE
+# Suppress the HuggingFace Hub unauthenticated-request advisory that fires on
+# every embedding call even when the model is fully cached locally.  Setting
+# the env var before any HF import is the official suppression mechanism;
+# setdefault means a user-supplied value is never overridden.
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+
+from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL
 from nlqueries.connectors import CONNECTOR_REGISTRY
+
+# Warn when running on an unsupported Python version.  langchain/langgraph
+# depend on a pydantic.v1 shim that broke in Python 3.14.
+if sys.version_info >= (3, 14):
+    import warnings
+
+    warnings.warn(
+        "Python 3.14+ is not fully supported. Some orchestration features may "
+        "fail due to pydantic.v1 incompatibility in langchain/langgraph. "
+        "Python 3.11 or 3.12 is recommended.",
+        stacklevel=1,
+    )
 
 console = Console()
 err_console = Console(stderr=True)
@@ -602,6 +622,34 @@ def process_history(
     """
     cfg = _require_connector(connector_id)
 
+    # Preflight: LLM API key required when --annotate is on (the default).
+    has_llm_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if annotate and not has_llm_key:
+        err_console.print(
+            "[bold red]✗ --annotate requires an LLM API key.[/bold red]\n"
+            "  Set [bold]ANTHROPIC_API_KEY[/bold] or [bold]OPENAI_API_KEY[/bold] "
+            "before running this command.\n"
+            "  To skip annotation, run with [bold]--no-annotate[/bold]."
+        )
+        sys.exit(1)
+
+    # Preflight: Qdrant must be reachable when --embed is on.
+    if embed:
+        import httpx as _httpx
+
+        try:
+            _httpx.get(f"{QDRANT_URL}/healthz", timeout=3.0).raise_for_status()
+        except Exception:  # noqa: BLE001
+            err_console.print(
+                f"[bold red]✗ --embed requires Qdrant to be running at "
+                f"{QDRANT_URL}[/bold red]\n"
+                "  Start it with: [bold]docker run -d --name qdrant "
+                "-p 6333:6333 qdrant/qdrant[/bold]\n"
+                "  Or skip embedding with [bold]--no-embed[/bold] and run it later.\n"
+                "  See Appendix B in the guide for full setup instructions."
+            )
+            sys.exit(1)
+
     console.print(
         f"[bold]Processing query history[/bold] for [cyan]{connector_id}[/cyan] "
         f"(last [bold]{days}[/bold] days) …"
@@ -653,6 +701,7 @@ def process_history(
         if embed:
             console.print("  Embedding enabled — capsules will be upserted into Qdrant …")
 
+        filter_stats: dict[str, int] = {}
         capsules = process_query_history(
             connector,
             schema=schema,
@@ -660,6 +709,7 @@ def process_history(
             min_executions=min_executions,
             annotate=annotate,
             embed=embed,
+            _filter_stats=filter_stats,
         )
         out_path = save_capsules(capsules, connector_id)
 
@@ -668,13 +718,45 @@ def process_history(
         sys.exit(1)
 
     annotated = sum(1 for c in capsules if c.intent)
+    sys_dropped = filter_stats.get("system_command", 0) + filter_stats.get("system_schema", 0)
+
     console.print("[bold green]✓ Pipeline complete.[/bold green]")
-    console.print(f"  Capsules produced : [bold]{len(capsules)}[/bold]")
+
+    # Filter breakdown — helps diagnose why capsule count is low.
+    if filter_stats:
+        console.print(f"  Queries scanned     : [bold]{filter_stats.get('considered', 0)}[/bold]")
+        if filter_stats.get("too_few_executions"):
+            console.print(
+                f"  Dropped (low freq)  : [bold]{filter_stats['too_few_executions']}[/bold]"
+                f"  [dim](lower with --min-executions 1)[/dim]"
+            )
+        if sys_dropped:
+            console.print(f"  Dropped (system)    : [bold]{sys_dropped}[/bold]")
+        if filter_stats.get("not_select"):
+            console.print(f"  Dropped (non-SELECT): [bold]{filter_stats['not_select']}[/bold]")
+        if filter_stats.get("normalize_failed"):
+            console.print(
+                f"  Dropped (parse err) : [bold]{filter_stats['normalize_failed']}[/bold]"
+            )
+        if filter_stats.get("duplicate"):
+            console.print(f"  Duplicates merged   : [bold]{filter_stats['duplicate']}[/bold]")
+
+    console.print(f"  Capsules produced   : [bold]{len(capsules)}[/bold]")
     if annotate:
-        console.print(f"  Annotated         : [bold]{annotated}[/bold] / {len(capsules)}")
+        console.print(f"  Annotated           : [bold]{annotated}[/bold] / {len(capsules)}")
     if embed:
-        console.print(f"  Embedded          : [bold]{len(capsules)}[/bold] capsules into Qdrant")
-    console.print(f"  Saved to          : [dim]{out_path}[/dim]")
+        console.print(f"  Embedded            : [bold]{len(capsules)}[/bold] capsules into Qdrant")
+    console.print(f"  Saved to            : [dim]{out_path}[/dim]")
+
+    # Warn when all queries appear to be internal driver queries.
+    if len(capsules) == 0 and sys_dropped > 0:
+        console.print(
+            "\n  [yellow]⚠ No capsules produced — all queries appear to be internal "
+            "PostgreSQL driver queries.[/yellow]\n"
+            "  Run real business queries against your database first, then re-run "
+            "process-history.\n"
+            "  See 'Fresh or lightly-used databases' in the guide for examples."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -687,10 +769,14 @@ def process_history(
 @click.option(
     "--output",
     "-o",
-    default="knowledge_base.yaml",
-    show_default=True,
+    default=None,
+    show_default=False,
     type=click.Path(dir_okay=False, writable=True),
-    help="Path to write the YAML knowledge base.",
+    help=(
+        "Path to write the YAML knowledge base. "
+        "Defaults to ~/.nlqueries/knowledge_base/<connector_id>.yaml "
+        "(the same location that 'ask' and 'query' read from)."
+    ),
 )
 @click.option(
     "--include-samples/--no-include-samples",
@@ -707,7 +793,7 @@ def process_history(
 )
 def export_kb(
     connector_id: str,
-    output: str,
+    output: str | None,
     include_samples: bool,
     sample_rows: int,
 ) -> None:
@@ -722,11 +808,18 @@ def export_kb(
 
     \b
     Example:
-      nlqueries export-kb postgres:localhost:mydb --output kb.yaml
+      nlqueries export-kb postgres:localhost:mydb
       nlqueries export-kb postgres:localhost:mydb --output kb.yaml --sample-rows 5
     """
     cfg = _require_connector(connector_id)
-    out_path = Path(output)
+
+    # Derive the canonical path used by `ask` and `query` when no --output given.
+    if output is None:
+        safe_id = re.sub(r"[^\w.-]", "_", connector_id)
+        out_path = KB_PATH / f"{safe_id}.yaml"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_path = Path(output)
 
     console.print(f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …")
 
