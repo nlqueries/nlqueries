@@ -592,6 +592,16 @@ def doc_ingest(source_id: str, file_path: str) -> None:
     help="Minimum execution count for a query to be included.",
 )
 @click.option(
+    "--max-queries",
+    default=None,
+    show_default=False,
+    type=int,
+    help=(
+        "Maximum number of queries to fetch from the database history "
+        f"(default: {500}, override with QUERY_HISTORY_LIMIT env var)."
+    ),
+)
+@click.option(
     "--annotate/--no-annotate",
     default=True,
     show_default=True,
@@ -604,7 +614,12 @@ def doc_ingest(source_id: str, file_path: str) -> None:
     help="Upsert capsules into the Qdrant vector store after processing (requires Qdrant).",
 )
 def process_history(
-    connector_id: str, days: int, min_executions: int, annotate: bool, embed: bool
+    connector_id: str,
+    days: int,
+    min_executions: int,
+    max_queries: int | None,
+    annotate: bool,
+    embed: bool,
 ) -> None:
     """Run the Query Capsule pipeline over recent query history.
 
@@ -701,12 +716,17 @@ def process_history(
         if embed:
             console.print("  Embedding enabled — capsules will be upserted into Qdrant …")
 
+        from nlqueries.config import QUERY_HISTORY_LIMIT
+
+        effective_limit = max_queries if max_queries is not None else QUERY_HISTORY_LIMIT
+
         filter_stats: dict[str, int] = {}
         capsules = process_query_history(
             connector,
             schema=schema,
             days=days,
             min_executions=min_executions,
+            limit=effective_limit,
             annotate=annotate,
             embed=embed,
             _filter_stats=filter_stats,
@@ -724,7 +744,14 @@ def process_history(
 
     # Filter breakdown — helps diagnose why capsule count is low.
     if filter_stats:
-        console.print(f"  Queries scanned     : [bold]{filter_stats.get('considered', 0)}[/bold]")
+        considered = filter_stats.get("considered", 0)
+        cap_reached = considered >= effective_limit
+        cap_note = (
+            f"  [yellow](cap reached — raise with --max-queries {effective_limit * 2})[/yellow]"
+            if cap_reached
+            else ""
+        )
+        console.print(f"  Queries scanned     : [bold]{considered}[/bold]{cap_note}")
         if filter_stats.get("too_few_executions"):
             console.print(
                 f"  Dropped (low freq)  : [bold]{filter_stats['too_few_executions']}[/bold]"

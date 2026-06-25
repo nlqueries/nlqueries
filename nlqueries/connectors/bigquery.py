@@ -28,8 +28,6 @@ from nlqueries.connectors.base import (
 
 logger = logging.getLogger(__name__)
 
-# Maximum number of query-history rows to return.
-_QUERY_HISTORY_LIMIT = 500
 
 # Region used to qualify INFORMATION_SCHEMA.JOBS_BY_PROJECT when the
 # connected dataset's location can't be determined (e.g. no dataset_id given).
@@ -233,14 +231,13 @@ class BigQueryConnector(DatabaseConnector):
     # extract_query_history
     # ------------------------------------------------------------------
 
-    def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
         """Return the top SELECT queries (by job count) from the last ``days`` days.
 
         Queries ``INFORMATION_SCHEMA.JOBS_BY_PROJECT`` (qualified by a
         ``region-<location>`` prefix — see :meth:`_resolve_region_qualifier`),
         filtered to completed ``SELECT`` query jobs, grouped by query text,
-        and ordered by job count descending. Returns up to
-        :data:`_QUERY_HISTORY_LIMIT` records.
+        and ordered by job count descending. Returns up to ``limit`` records.
 
         Returns an empty list (with a logged warning) if the view is not
         accessible — e.g. the caller's IAM role lacks
@@ -267,7 +264,7 @@ class BigQueryConnector(DatabaseConnector):
                   AND query IS NOT NULL
                 GROUP BY query
                 ORDER BY job_count DESC
-                LIMIT {_QUERY_HISTORY_LIMIT}
+                LIMIT {limit}
                 """,
             )
         except Exception:

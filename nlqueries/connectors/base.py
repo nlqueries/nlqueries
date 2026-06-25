@@ -98,8 +98,12 @@ class DatabaseConnector(ABC):
         ...
 
     @abstractmethod
-    def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
-        """Return recent query history covering the last ``days`` days."""
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
+        """Return recent query history covering the last ``days`` days.
+
+        At most ``limit`` records are returned, ordered by execution count
+        descending so the most-used queries are always included.
+        """
         ...
 
     @abstractmethod

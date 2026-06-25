@@ -95,6 +95,12 @@ CONNECTORS_FILE: Path = Path(
 # Query Capsules
 # ---------------------------------------------------------------------------
 CAPSULES_DIR: Path = Path(os.getenv("CAPSULES_DIR", str(Path.home() / ".nlqueries" / "capsules")))
+
+# ---------------------------------------------------------------------------
+# Query history
+# ---------------------------------------------------------------------------
+QUERY_HISTORY_LIMIT: int = int(os.getenv("QUERY_HISTORY_LIMIT", "500"))
+"""Maximum number of queries to fetch from the database's query history view."""
 """Directory where serialised QueryCapsule JSON files are stored."""
 
 # ---------------------------------------------------------------------------
