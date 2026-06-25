@@ -91,6 +91,23 @@ def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     CONNECTORS_FILE.chmod(0o600)
 
 
+def _resolve_alias(value: str) -> str:
+    """Resolve a connector alias to its full connector ID.
+
+    If ``value`` is already a registered connector ID it is returned as-is.
+    If it matches an ``alias`` field on any connector entry the real ID is
+    returned instead.  Falls through unchanged when neither matches so the
+    caller receives a clear "not found" error from ``_require_connector``.
+    """
+    connectors = _load_connectors()
+    if value in connectors:
+        return value
+    for cid, cfg in connectors.items():
+        if cfg.get("alias") == value:
+            return cid
+    return value
+
+
 def _require_connector(connector_id: str) -> dict[str, Any]:
     connectors = _load_connectors()
     if connector_id not in connectors:
@@ -98,7 +115,7 @@ def _require_connector(connector_id: str) -> dict[str, Any]:
             f"Connector '{connector_id}' not found.\n"
             f"  Register it first:  nlqueries connect <db-type> "
             f"--database <db> --user <u> --password <p>\n"
-            f"  List connectors:    cat {CONNECTORS_FILE}"
+            f"  List connectors:    nlqueries connectors"
         )
     return connectors[connector_id]
 
@@ -364,6 +381,70 @@ def connect(
 
 
 # ---------------------------------------------------------------------------
+# alias
+# ---------------------------------------------------------------------------
+
+
+@cli.command("alias")
+@click.argument("connector_id")
+@click.argument("alias_name")
+def set_alias(connector_id: str, alias_name: str) -> None:
+    """Set a short alias for a connector ID.
+
+    \b
+    CONNECTOR_ID  the full connector identifier (e.g. postgres:localhost:mydb)
+    ALIAS_NAME    the short name to use instead (e.g. mydb)
+
+    \b
+    Once set, every command that accepts a connector or agent ID will also
+    accept the alias transparently.
+
+    \b
+    Example:
+      nlqueries alias postgres:localhost:dvdrental dvdrental
+      nlqueries ask dvdrental "How many customers?"
+    """
+    connector_id = _resolve_alias(connector_id)
+    cfg = _require_connector(connector_id)
+    cfg["alias"] = alias_name
+    _save_connector(connector_id, cfg)
+    console.print(
+        f"  [bold green]✓[/bold green] Alias [bold]{alias_name!r}[/bold] "
+        f"→ [dim]{connector_id}[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# connectors
+# ---------------------------------------------------------------------------
+
+
+@cli.command("connectors")
+def list_connectors() -> None:
+    """List all registered connectors and their aliases."""
+    from rich.table import Table as _Table
+
+    connectors = _load_connectors()
+    if not connectors:
+        console.print("[dim]No connectors registered. Run 'nlqueries connect' first.[/dim]")
+        console.print(f"[dim]Config file: {CONNECTORS_FILE}[/dim]")
+        return
+
+    tbl = _Table(show_header=True, header_style="bold cyan")
+    tbl.add_column("Connector ID")
+    tbl.add_column("Type")
+    tbl.add_column("Alias")
+
+    for cid, cfg in connectors.items():
+        alias = cfg.get("alias", "")
+        db_type = cfg.get("db_type", "")
+        tbl.add_row(cid, db_type, f"[bold]{alias}[/bold]" if alias else "[dim]—[/dim]")
+
+    console.print(tbl)
+    console.print(f"[dim]Config: {CONNECTORS_FILE}[/dim]")
+
+
+# ---------------------------------------------------------------------------
 # extract-schema
 # ---------------------------------------------------------------------------
 
@@ -383,6 +464,7 @@ def extract_schema(connector_id: str) -> None:
       - Total column count
       - Per-table row counts (via COUNT(*), sampled up to 50 tables)
     """
+    connector_id = _resolve_alias(connector_id)
     cfg = _require_connector(connector_id)
 
     console.print(f"[bold]Extracting schema[/bold] for connector [cyan]{connector_id}[/cyan] …")
@@ -635,6 +717,7 @@ def process_history(
     Example:
       nlqueries process-history postgres:localhost:mydb --days 30
     """
+    connector_id = _resolve_alias(connector_id)
     cfg = _require_connector(connector_id)
 
     # Preflight: LLM API key required when --annotate is on (the default).
@@ -838,6 +921,7 @@ def export_kb(
       nlqueries export-kb postgres:localhost:mydb
       nlqueries export-kb postgres:localhost:mydb --output kb.yaml --sample-rows 5
     """
+    connector_id = _resolve_alias(connector_id)
     cfg = _require_connector(connector_id)
 
     # Derive the canonical path used by `ask` and `query` when no --output given.
@@ -1046,6 +1130,7 @@ def annotate(connector_id: str) -> None:
     Example:
       nlqueries annotate postgres:localhost:mydb
     """
+    connector_id = _resolve_alias(connector_id)
     _require_connector(connector_id)
 
     console.print(f"[bold]Annotating capsules[/bold] for [cyan]{connector_id}[/cyan] …")
@@ -1178,6 +1263,7 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
       nlqueries ask postgres:localhost:mydb "How many orders last month?"
       nlqueries ask my_agent "Top customers by revenue" --dialect snowflake
     """
+    agent_id = _resolve_alias(agent_id)
     import json as _json
 
     from nlqueries.orchestrator import Orchestrator
@@ -1429,6 +1515,7 @@ def query(agent_id: str, question: str, dialect: str, execute_sql: bool, output_
       nlqueries query my_agent "Top customers by revenue" --no-execute
       nlqueries query my_agent "Top customers by revenue" --json
     """
+    agent_id = _resolve_alias(agent_id)
     import json as _json
 
     from rich.table import Table
