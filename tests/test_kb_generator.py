@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
-from nlqueries.knowledge.kb_generator import generate_knowledge_base, save_knowledge_base
+from nlqueries.knowledge.kb_generator import (
+    describe_columns,
+    generate_knowledge_base,
+    save_knowledge_base,
+)
 from nlqueries.processing.parameterizer import Placeholder, QueryCapsule
 
 # ---------------------------------------------------------------------------
@@ -285,3 +291,153 @@ def test_save_knowledge_base_uses_yaml_settings(tmp_path: Path):
     assert "café" in raw
     # default_flow_style=False means no inline dicts on single line
     assert "{" not in raw
+
+
+# ---------------------------------------------------------------------------
+# describe_columns helper tests
+# ---------------------------------------------------------------------------
+
+
+def _pk_column(name: str) -> ColumnSpec:
+    return ColumnSpec(
+        name=name,
+        type="INT",
+        nullable=False,
+        is_primary_key=True,
+        is_foreign_key=False,
+        references=None,
+        description=None,
+    )
+
+
+def _fk_column(name: str) -> ColumnSpec:
+    return ColumnSpec(
+        name=name,
+        type="INT",
+        nullable=True,
+        is_primary_key=False,
+        is_foreign_key=True,
+        references=None,
+        description=None,
+    )
+
+
+def _plain_column(name: str, col_type: str = "VARCHAR") -> ColumnSpec:
+    return ColumnSpec(
+        name=name,
+        type=col_type,
+        nullable=True,
+        is_primary_key=False,
+        is_foreign_key=False,
+        references=None,
+        description=None,
+    )
+
+
+def _mock_llm(response_json: dict) -> MagicMock:
+    llm = MagicMock()
+    llm.complete.return_value = json.dumps(response_json)
+    return llm
+
+
+def test_describe_columns_returns_valid_descriptions():
+    tbl = _make_table(
+        "orders",
+        columns=[
+            _pk_column("id"),
+            _plain_column("status"),
+            _plain_column("total_amount", "NUMERIC"),
+        ],
+    )
+    llm = _mock_llm(
+        {"status": "Current fulfillment state of the order", "total_amount": "Invoice total in USD"}
+    )
+    col_names = ["id", "status", "total_amount"]
+    result = describe_columns(tbl, [["1", "shipped", "99.99"]], col_names, llm)
+    assert "status" in result
+    assert "total_amount" in result
+    assert "id" not in result  # PK skipped
+
+
+def test_describe_columns_skips_primary_keys():
+    tbl = _make_table("orders", columns=[_pk_column("order_id"), _plain_column("note")])
+    llm = _mock_llm({"note": "Customer delivery note"})
+    result = describe_columns(tbl, [["1", "leave at door"]], ["order_id", "note"], llm)
+    assert "order_id" not in result
+
+
+def test_describe_columns_skips_foreign_keys():
+    tbl = _make_table("orders", columns=[_fk_column("customer_id"), _plain_column("status")])
+    llm = _mock_llm({"status": "Lifecycle state of the order"})
+    result = describe_columns(tbl, [["42", "pending"]], ["customer_id", "status"], llm)
+    assert "customer_id" not in result
+
+
+def test_describe_columns_skips_id_suffixed_columns():
+    tbl = _make_table("orders", columns=[_plain_column("user_id"), _plain_column("amount")])
+    llm = _mock_llm({"amount": "Payment amount in cents"})
+    result = describe_columns(tbl, [["7", "5000"]], ["user_id", "amount"], llm)
+    assert "user_id" not in result
+
+
+def test_describe_columns_drops_too_long_descriptions():
+    tbl = _make_table("orders", columns=[_plain_column("status")])
+    long_desc = "This column stores the current state of the order lifecycle management system"
+    llm = _mock_llm({"status": long_desc})
+    result = describe_columns(tbl, [["active"]], ["status"], llm)
+    # > 15 words — should be dropped
+    assert "status" not in result
+
+
+def test_describe_columns_drops_generic_descriptions():
+    tbl = _make_table("orders", columns=[_plain_column("note")])
+    llm = _mock_llm({"note": "This column stores data for the note field"})
+    result = describe_columns(tbl, [["some note"]], ["note"], llm)
+    assert "note" not in result
+
+
+def test_describe_columns_returns_empty_on_llm_error():
+    tbl = _make_table("orders", columns=[_plain_column("status")])
+    llm = MagicMock()
+    llm.complete.side_effect = RuntimeError("API error")
+    result = describe_columns(tbl, [["active"]], ["status"], llm)
+    assert result == {}
+
+
+def test_describe_columns_empty_when_all_cols_skippable():
+    tbl = _make_table("orders", columns=[_pk_column("id"), _fk_column("user_id")])
+    llm = MagicMock()
+    result = describe_columns(tbl, [], [], llm)
+    assert result == {}
+    llm.complete.assert_not_called()
+
+
+def test_llm_column_descriptions_applied_in_generate_knowledge_base():
+    cols = [_pk_column("id"), _plain_column("status")]
+    schema = _make_schema([_make_table("orders", columns=cols)])
+    llm_descs = {"orders": {"status": "Current order status"}}
+    kb = generate_knowledge_base(schema, [], agent_name="agent1", llm_column_descriptions=llm_descs)
+    status_col = next(c for c in kb["schema"]["tables"][0]["columns"] if c["name"] == "status")
+    assert status_col["description"] == "Current order status"
+
+
+def test_manual_description_wins_over_llm():
+    existing_kb = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "orders",
+                    "description": "",
+                    "columns": [{"name": "status", "description": "Manual: human-reviewed label"}],
+                }
+            ]
+        }
+    }
+    cols = [_plain_column("status")]
+    schema = _make_schema([_make_table("orders", columns=cols)])
+    llm_descs = {"orders": {"status": "LLM generated description"}}
+    kb = generate_knowledge_base(
+        schema, [], agent_name="agent1", existing_kb=existing_kb, llm_column_descriptions=llm_descs
+    )
+    status_col = next(c for c in kb["schema"]["tables"][0]["columns"] if c["name"] == "status")
+    assert status_col["description"] == "Manual: human-reviewed label"
