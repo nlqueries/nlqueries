@@ -1139,23 +1139,53 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
     QUESTION  the natural-language question, in quotes
 
     \b
-    Streams a natural-language reasoning response, then prints the
-    generated and validated SQL as a final structured JSON line.
+    In interactive (TTY) mode: prints the natural-language reasoning
+    response, then prints the validated SQL as a formatted line.
+    The raw structured JSON chunk is suppressed.
+
+    When stdout is redirected (pipe/file): emits all tokens including
+    the final JSON chunk so scripts can parse it (e.g. | tail -1 | jq .sql).
 
     \b
     Example:
       nlqueries ask postgres:localhost:mydb "How many orders last month?"
       nlqueries ask my_agent "Top customers by revenue" --dialect snowflake
     """
+    import json as _json
+
     from nlqueries.orchestrator import Orchestrator
 
     orchestrator = Orchestrator()
 
     async def _stream() -> None:
         try:
-            async for token in orchestrator.handle_question(question, agent_id, dialect=dialect):
-                click.echo(token, nl=False)
-            click.echo()  # final newline
+            if sys.stdout.isatty():
+                # TTY: buffer tokens, strip the final JSON chunk, print cleanly.
+                tokens: list[str] = []
+                async for token in orchestrator.handle_question(
+                    question, agent_id, dialect=dialect
+                ):
+                    tokens.append(token)
+                sql: str | None = None
+                text_tokens = tokens
+                if tokens:
+                    try:
+                        last = _json.loads(tokens[-1])
+                        if isinstance(last, dict) and last.get("type") == "sql":
+                            text_tokens = tokens[:-1]
+                            sql = last.get("sql") or None
+                    except (ValueError, TypeError):
+                        pass
+                click.echo("".join(text_tokens))
+                if sql:
+                    console.print(f"\n[bold]SQL:[/bold] [dim]{sql}[/dim]")
+            else:
+                # Pipe / redirected: emit raw tokens including the JSON chunk.
+                async for token in orchestrator.handle_question(
+                    question, agent_id, dialect=dialect
+                ):
+                    click.echo(token, nl=False)
+                click.echo()
         except FileNotFoundError as exc:
             err_console.print(f"[bold red]✗ {exc}[/bold red]")
             sys.exit(1)
@@ -1341,13 +1371,22 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
     help="SQL dialect used for generation.",
 )
 @click.option(
+    "--execute/--no-execute",
+    "execute_sql",
+    default=True,
+    show_default=True,
+    help="Execute the generated SQL against the database and display rows.",
+)
+@click.option(
     "--json",
     "output_json",
     is_flag=True,
     default=False,
     help="Output the full result as raw JSON.",
 )
-def query(agent_id: str, question: str, dialect: str, output_json: bool) -> None:
+def query(
+    agent_id: str, question: str, dialect: str, execute_sql: bool, output_json: bool
+) -> None:
     """Run a synchronous agent query and print the result.
 
     \b
@@ -1355,16 +1394,21 @@ def query(agent_id: str, question: str, dialect: str, output_json: bool) -> None
     QUESTION  the natural-language question, in quotes
 
     \b
-    Calls the MultiAgentOrchestrator synchronously, waits for the complete
-    answer, and prints a formatted summary (or raw JSON with --json).
+    Generates SQL via the MultiAgentOrchestrator, then executes it against
+    the registered connector and displays the result rows as a table.
+    Use --no-execute to skip execution and see only the generated SQL.
 
     \b
     Examples:
       nlqueries query my_agent "How many orders last month?"
+      nlqueries query my_agent "Top customers by revenue" --no-execute
       nlqueries query my_agent "Top customers by revenue" --json
     """
     import json as _json
 
+    from rich.table import Table
+
+    from nlqueries.connectors.base import QueryResult
     from nlqueries.orchestrator.sync_runner import AgentQueryResult, run_query_sync
 
     try:
@@ -1372,6 +1416,37 @@ def query(agent_id: str, question: str, dialect: str, output_json: bool) -> None
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Query failed:[/bold red] {exc}")
         sys.exit(1)
+
+    # Execute the generated SQL against the registered connector.
+    sql_result: QueryResult | None = result.sql_result
+    if execute_sql and result.sql and result.agent_type == "sql" and sql_result is None:
+        try:
+            from sqlalchemy.engine import make_url
+
+            cfg = _require_connector(agent_id)
+            connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+            if connector_cls is None:
+                err_console.print(
+                    f"[yellow]⚠ No connector registered for db_type "
+                    f"'{cfg.get('db_type')}' — skipping execution.[/yellow]"
+                )
+            else:
+                parsed = make_url(cfg["url"])
+                connector = connector_cls()
+                connector.connect(
+                    {
+                        "host": parsed.host or cfg.get("host", "localhost"),
+                        "port": parsed.port or cfg.get("port"),
+                        "database": parsed.database or cfg.get("database"),
+                        "user": parsed.username or cfg.get("user"),
+                        "password": parsed.password,
+                        "account": cfg.get("account"),
+                        "project": cfg.get("project"),
+                    }
+                )
+                sql_result = connector.execute_query(result.sql)
+        except Exception as exc:  # noqa: BLE001
+            err_console.print(f"[bold red]✗ SQL execution failed:[/bold red] {exc}")
 
     if output_json:
         output = {
@@ -1382,13 +1457,13 @@ def query(agent_id: str, question: str, dialect: str, output_json: bool) -> None
             "sql": result.sql,
             "sql_result": (
                 {
-                    "columns": result.sql_result.columns,
-                    "rows": result.sql_result.rows,
-                    "row_count": result.sql_result.row_count,
-                    "execution_time_ms": result.sql_result.execution_time_ms,
-                    "error": result.sql_result.error,
+                    "columns": sql_result.columns,
+                    "rows": sql_result.rows,
+                    "row_count": sql_result.row_count,
+                    "execution_time_ms": sql_result.execution_time_ms,
+                    "error": sql_result.error,
                 }
-                if result.sql_result
+                if sql_result
                 else None
             ),
             "citations": [
@@ -1406,9 +1481,26 @@ def query(agent_id: str, question: str, dialect: str, output_json: bool) -> None
         console.print_json(_json.dumps(output, default=str))
     else:
         console.print(f"[bold]Agent type :[/bold] {result.agent_type}")
-        console.print(f"[bold]Answer     :[/bold] {result.answer}")
         if result.sql:
             console.print(f"[bold]SQL        :[/bold] [dim]{result.sql}[/dim]")
+        if sql_result:
+            if sql_result.error:
+                err_console.print(
+                    f"[bold red]✗ Execution error:[/bold red] {sql_result.error}"
+                )
+            else:
+                tbl = Table(show_header=True, header_style="bold cyan")
+                for col in sql_result.columns:
+                    tbl.add_column(col)
+                for row in sql_result.rows:
+                    tbl.add_row(*[str(v) if v is not None else "" for v in row])
+                console.print(tbl)
+                console.print(
+                    f"[dim]{sql_result.row_count} row(s) "
+                    f"in {sql_result.execution_time_ms:.1f} ms[/dim]"
+                )
+        elif result.agent_type != "sql":
+            console.print(f"[bold]Answer     :[/bold] {result.answer}")
         if result.citations:
             console.print(f"[bold]Citations  :[/bold] {len(result.citations)} source(s)")
         console.print(f"[bold]Latency    :[/bold] {result.latency_ms} ms")
