@@ -1384,9 +1384,7 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
     default=False,
     help="Output the full result as raw JSON.",
 )
-def query(
-    agent_id: str, question: str, dialect: str, execute_sql: bool, output_json: bool
-) -> None:
+def query(agent_id: str, question: str, dialect: str, execute_sql: bool, output_json: bool) -> None:
     """Run a synchronous agent query and print the result.
 
     \b
@@ -1485,9 +1483,7 @@ def query(
             console.print(f"[bold]SQL        :[/bold] [dim]{result.sql}[/dim]")
         if sql_result:
             if sql_result.error:
-                err_console.print(
-                    f"[bold red]✗ Execution error:[/bold red] {sql_result.error}"
-                )
+                err_console.print(f"[bold red]✗ Execution error:[/bold red] {sql_result.error}")
             else:
                 tbl = Table(show_header=True, header_style="bold cyan")
                 for col in sql_result.columns:
