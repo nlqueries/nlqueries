@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from nlqueries.connectors.base import SchemaSpec, TableSpec
+from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.processing.parameterizer import QueryCapsule
 
 # Column name suffixes that indicate surrogate/technical keys with no business meaning.
@@ -27,7 +27,7 @@ _GENERIC_PHRASES = (
 _MAX_DESC_WORDS = 15
 
 
-def _should_skip_column(col: Any) -> bool:
+def _should_skip_column(col: ColumnSpec) -> bool:
     """Return True for columns whose descriptions cannot be inferred from data."""
     if col.is_primary_key or col.is_foreign_key:
         return True
