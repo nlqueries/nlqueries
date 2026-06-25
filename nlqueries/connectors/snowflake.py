@@ -30,9 +30,6 @@ logger = logging.getLogger(__name__)
 # Schemas that are part of Snowflake / the catalog itself, never user data.
 _SYSTEM_SCHEMAS = ("INFORMATION_SCHEMA",)
 
-# Maximum number of query-history rows to return.
-_QUERY_HISTORY_LIMIT = 500
-
 
 class SnowflakeConnector(DatabaseConnector):
     """Connector for Snowflake.
@@ -269,7 +266,7 @@ class SnowflakeConnector(DatabaseConnector):
     # extract_query_history
     # ------------------------------------------------------------------
 
-    def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
         """Return the top queries (by execution count) from the last ``days`` days.
 
         Tries ``SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY`` first (account-wide,
@@ -280,14 +277,14 @@ class SnowflakeConnector(DatabaseConnector):
         is always accessible but only retains the last 7 days and is scoped
         to the current account/session context.
 
-        Returns up to :data:`_QUERY_HISTORY_LIMIT` records, ordered by
-        execution count descending. Returns an empty list (with a logged
-        warning) if both sources are inaccessible.
+        Returns up to ``limit`` records, ordered by execution count descending.
+        Returns an empty list (with a logged warning) if both sources are
+        inaccessible.
         """
         connection = self._require_connection()
 
         try:
-            return self._fetch_query_history_account_usage(connection, days)
+            return self._fetch_query_history_account_usage(connection, days, limit)
         except Exception:
             logger.warning(
                 "extract_query_history: SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY is not "
@@ -298,7 +295,7 @@ class SnowflakeConnector(DatabaseConnector):
             )
 
         try:
-            return self._fetch_query_history_information_schema(connection, days)
+            return self._fetch_query_history_information_schema(connection, days, limit)
         except Exception:
             logger.exception(
                 "extract_query_history: INFORMATION_SCHEMA.QUERY_HISTORY is also "
@@ -307,7 +304,9 @@ class SnowflakeConnector(DatabaseConnector):
             return []
 
     @classmethod
-    def _fetch_query_history_account_usage(cls, connection: Any, days: int) -> list[QueryRecord]:
+    def _fetch_query_history_account_usage(
+        cls, connection: Any, days: int, limit: int
+    ) -> list[QueryRecord]:
         rows = cls._query(
             connection,
             f"""
@@ -320,14 +319,14 @@ class SnowflakeConnector(DatabaseConnector):
             WHERE start_time >= DATEADD('day', -{int(days)}, CURRENT_TIMESTAMP())
             GROUP BY query_text
             ORDER BY execution_count DESC
-            LIMIT {_QUERY_HISTORY_LIMIT}
+            LIMIT {limit}
             """,
         )
         return [cls._row_to_query_record(row) for row in rows]
 
     @classmethod
     def _fetch_query_history_information_schema(
-        cls, connection: Any, days: int
+        cls, connection: Any, days: int, limit: int
     ) -> list[QueryRecord]:
         rows = cls._query(
             connection,
@@ -343,7 +342,7 @@ class SnowflakeConnector(DatabaseConnector):
             ))
             GROUP BY query_text
             ORDER BY execution_count DESC
-            LIMIT {_QUERY_HISTORY_LIMIT}
+            LIMIT {limit}
             """,
         )
         return [cls._row_to_query_record(row) for row in rows]

@@ -32,9 +32,6 @@ logger = logging.getLogger(__name__)
 # Schemas that are part of Postgres / the catalog itself, never user data.
 _SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
 
-# Maximum number of query-history rows to pull from pg_stat_statements.
-_QUERY_HISTORY_LIMIT = 500
-
 
 class PostgresConnector(DatabaseConnector):
     """Connector for PostgreSQL databases.
@@ -287,15 +284,15 @@ class PostgresConnector(DatabaseConnector):
     # extract_query_history
     # ------------------------------------------------------------------
 
-    def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
         """Return the top ``pg_stat_statements`` queries by execution count.
 
         ``pg_stat_statements`` accumulates statistics since the extension's
         last reset rather than tracking individual execution timestamps, so
         ``days`` cannot be used as a precise SQL filter; it is accepted for
         interface compatibility and to size logging/messaging. Up to
-        :data:`_QUERY_HISTORY_LIMIT` queries are returned, ordered by
-        execution count (``calls``) descending.
+        ``limit`` queries are returned, ordered by execution count
+        (``calls``) descending.
 
         If the ``pg_stat_statements`` extension is not installed, this logs
         a warning and returns an empty list rather than raising.
@@ -327,7 +324,7 @@ class PostgresConnector(DatabaseConnector):
                         LIMIT :limit
                         """
                     ),
-                    {"limit": _QUERY_HISTORY_LIMIT},
+                    {"limit": limit},
                 )
             except Exception:
                 # Postgres < 13 named the column `mean_time` instead of `mean_exec_time`.
@@ -340,7 +337,7 @@ class PostgresConnector(DatabaseConnector):
                         LIMIT :limit
                         """
                     ),
-                    {"limit": _QUERY_HISTORY_LIMIT},
+                    {"limit": limit},
                 )
 
             return [

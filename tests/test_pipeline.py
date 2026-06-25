@@ -117,7 +117,7 @@ class _MockConnector(DatabaseConnector):
     def extract_schema(self) -> SchemaSpec:
         return _make_schema()
 
-    def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
         return self._records
 
     def execute_query(self, sql: str) -> QueryResult:

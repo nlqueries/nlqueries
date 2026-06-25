@@ -39,6 +39,7 @@ def process_query_history(
     schema: SchemaSpec | None = None,
     days: int = 90,
     min_executions: int = 1,
+    limit: int = 500,
     annotate: bool = False,
     embed: bool = False,
     _filter_stats: dict[str, int] | None = None,
@@ -60,6 +61,7 @@ def process_query_history(
                          When ``None`` string literals default to ``VARCHAR``.
         days:            Number of days of query history to process.
         min_executions:  Minimum execution count; lower-frequency queries are dropped.
+        limit:           Maximum number of queries to fetch from the database history.
         annotate:        When ``True``, call the LLM annotator (via ``get_llm_client()``)
                          to fill ``capsule.intent`` for every capsule before returning.
         embed:           When ``True``, upsert capsules into the Qdrant vector store
@@ -71,7 +73,7 @@ def process_query_history(
     Returns:
         ``list[QueryCapsule]`` sorted by frequency descending, capped at 1 000.
     """
-    records = connector.extract_query_history(days=days)
+    records = connector.extract_query_history(days=days, limit=limit)
     normalized = filter_and_deduplicate(
         records, min_executions=min_executions, _stats=_filter_stats
     )
