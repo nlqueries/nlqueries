@@ -49,6 +49,9 @@ dependencies = [
     "anthropic>=0.28",
     "litellm>=1.0",
 
+    # Credential storage
+    "keyring>=24.0",
+
     # Multi-agent orchestration
     "langgraph>=0.2",
 

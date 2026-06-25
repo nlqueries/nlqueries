@@ -91,6 +91,53 @@ def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     CONNECTORS_FILE.chmod(0o600)
 
 
+_KEYRING_SERVICE = "nlqueries"
+
+
+def _save_password(connector_id: str, password: str) -> bool:
+    """Store *password* in the OS keychain for *connector_id*. Returns True on success."""
+    try:
+        import keyring as _kr  # noqa: PLC0415
+
+        _kr.set_password(_KEYRING_SERVICE, connector_id, password)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _load_password(connector_id: str, cfg: dict[str, Any]) -> str | None:
+    """Return the connector password from the OS keychain or the stored URL (legacy)."""
+    if cfg.get("password_storage") == "keychain":
+        try:
+            import keyring as _kr  # noqa: PLC0415
+
+            return _kr.get_password(_KEYRING_SERVICE, connector_id)
+        except Exception:  # noqa: BLE001
+            return None
+    # Legacy path: password embedded in the SQLAlchemy URL.
+    try:
+        from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
+
+        return _mu(cfg["url"]).password
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
+    """Return the connection URL with the password injected from the keychain when needed."""
+    url: str = cfg["url"]
+    if cfg.get("password_storage") == "keychain":
+        pwd = _load_password(connector_id, cfg)
+        if pwd is not None:
+            try:
+                from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
+
+                url = _mu(url).set(password=pwd).render_as_string(hide_password=False)
+            except Exception:  # noqa: BLE001
+                pass
+    return url
+
+
 def _resolve_alias(value: str) -> str:
     """Resolve a connector alias to its full connector ID.
 
@@ -182,7 +229,22 @@ def cli() -> None:
 @click.option("--port", default=None, type=int, help="Database port (default varies by db-type).")
 @click.option("--database", default=None, help="Database / catalog / project name.")
 @click.option("--user", default=None, help="Database user.")
-@click.option("--password", default=None, hide_input=True, help="Database password.")
+@click.option(
+    "--password",
+    default=None,
+    hide_input=True,
+    help=(
+        "Database password. Omit to be prompted interactively "
+        "(the value never appears in shell history)."
+    ),
+)
+@click.option(
+    "--password-env",
+    "password_env",
+    default=None,
+    metavar="VAR",
+    help="Read the password from environment variable VAR instead of the command line.",
+)
 @click.option("--account", default=None, help="Snowflake account identifier.")
 @click.option("--warehouse", default=None, help="Snowflake warehouse to use.")
 @click.option("--schema", "db_schema", default=None, help="Snowflake schema (optional).")
@@ -208,6 +270,7 @@ def connect(
     database: str | None,
     user: str | None,
     password: str | None,
+    password_env: str | None,
     account: str | None,
     warehouse: str | None,
     db_schema: str | None,
@@ -230,6 +293,21 @@ def connect(
           --service-account-json /path/to/key.json
     """
     db_type_l = db_type.lower()
+
+    # ------------------------------------------------------------------
+    # Resolve the password without letting it hit shell history.
+    # Priority: --password-env VAR > --password <value> > interactive prompt.
+    # BigQuery uses service-account auth and never needs a password.
+    # ------------------------------------------------------------------
+    if db_type_l != "bigquery":
+        if password_env is not None:
+            password = os.environ.get(password_env) or ""
+            if not password:
+                raise click.ClickException(
+                    f"Environment variable '{password_env}' is not set or is empty."
+                )
+        elif password is None:
+            password = click.prompt("Database password", hide_input=True, default="")
 
     # Each db-type has a different minimal set of required credentials —
     # validate them up front with a clear, actionable message rather than
@@ -349,16 +427,34 @@ def connect(
 
     console.print("[bold green]✓ Connection successful.[/bold green]")
 
-    # Persist connector config (store URL — password included; remind user)
-    config = {
+    # ------------------------------------------------------------------
+    # Persist connector config.  Try to store the password in the OS keychain
+    # so it never lives in plain text on disk.  Fall back to the old URL-
+    # embedded format if keyring is unavailable (e.g. headless CI).
+    # ------------------------------------------------------------------
+    stored_in_keychain = False
+    if password:
+        stored_in_keychain = _save_password(cid, password)
+
+    # Build the URL to store — strip the password when keychain is available.
+    if stored_in_keychain:
+        from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
+
+        stored_url = str(_mu(url).set(password=None))
+    else:
+        stored_url = url
+
+    config: dict[str, Any] = {
         "db_type": db_type_l,
         "host": host,
         "port": resolved_port,
         "database": database,
         "user": user,
-        "url": url,  # ⚠ includes password — keep this file private
+        "url": stored_url,
         "registered": datetime.now(UTC).isoformat(),
     }
+    if stored_in_keychain:
+        config["password_storage"] = "keychain"
     if db_type_l == "snowflake":
         config["account"] = account
         config["warehouse"] = warehouse
@@ -374,10 +470,15 @@ def connect(
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
     console.print(f"  Config saved to [dim]{CONNECTORS_FILE}[/dim]")
-    console.print(
-        "  [yellow]Note:[/yellow] The config file contains the database password. "
-        "Ensure it is not world-readable."
-    )
+    if stored_in_keychain:
+        console.print(
+            "  [green]✓ Password stored in OS keychain[/green] (not written to the config file)."
+        )
+    else:
+        console.print(
+            "  [yellow]Note:[/yellow] keyring unavailable — password stored in config file. "
+            "Ensure it is not world-readable."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +513,79 @@ def set_alias(connector_id: str, alias_name: str) -> None:
         f"  [bold green]✓[/bold green] Alias [bold]{alias_name!r}[/bold] "
         f"→ [dim]{connector_id}[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# update-password
+# ---------------------------------------------------------------------------
+
+
+@cli.command("update-password")
+@click.argument("connector_id")
+@click.option(
+    "--password-env",
+    "password_env",
+    default=None,
+    metavar="VAR",
+    help="Read new password from environment variable VAR instead of prompting.",
+)
+def update_password(connector_id: str, password_env: str | None) -> None:
+    """Rotate the password for a registered connector.
+
+    \b
+    CONNECTOR_ID  the connector to update (alias accepted)
+
+    \b
+    Prompts for the new password interactively (hidden input) unless
+    --password-env VAR is given, in which case the value is read from
+    that environment variable.
+
+    \b
+    The connector's connection is not re-tested — run 'nlqueries extract-schema
+    <CONNECTOR_ID>' afterwards to verify the new credential works.
+
+    \b
+    Example:
+      nlqueries update-password postgres:localhost:mydb
+      nlqueries update-password mydb --password-env DB_PASSWORD
+    """
+    connector_id = _resolve_alias(connector_id)
+    cfg = _require_connector(connector_id)
+
+    if password_env is not None:
+        new_password = os.environ.get(password_env) or ""
+        if not new_password:
+            raise click.ClickException(
+                f"Environment variable '{password_env}' is not set or is empty."
+            )
+    else:
+        new_password = click.prompt(
+            f"New password for '{connector_id}'", hide_input=True, confirmation_prompt=True
+        )
+
+    stored = _save_password(connector_id, new_password)
+    if stored:
+        # Ensure the config marks this connector as using keychain storage and
+        # the stored URL does not contain the old password.
+        if cfg.get("password_storage") != "keychain":
+            cfg["password_storage"] = "keychain"
+            try:
+                from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
+
+                cfg["url"] = str(_mu(cfg["url"]).set(password=None))
+            except Exception:  # noqa: BLE001
+                pass
+            _save_connector(connector_id, cfg)
+        console.print(
+            f"  [bold green]✓[/bold green] Password updated in OS keychain "
+            f"for [cyan]{connector_id}[/cyan]."
+        )
+    else:
+        console.print(
+            "  [yellow]⚠ keyring unavailable — cannot store password securely.[/yellow]\n"
+            "  Set the password manually in the connector URL inside "
+            f"[dim]{CONNECTORS_FILE}[/dim]."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +658,7 @@ def extract_schema(connector_id: str) -> None:
                     "port": parsed.port or cfg.get("port"),
                     "database": parsed.database or cfg.get("database"),
                     "user": parsed.username or cfg.get("user"),
-                    "password": parsed.password,
+                    "password": _load_password(connector_id, cfg),
                     # Snowflake-specific fields — absent from the URL, read from
                     # the persisted connector config (see `connect`).
                     "account": cfg.get("account"),
@@ -534,7 +708,7 @@ def extract_schema(connector_id: str) -> None:
         from sqlalchemy import create_engine, func, select, table
         from sqlalchemy import inspect as sa_inspect
 
-        engine = create_engine(cfg["url"])
+        engine = create_engine(_get_full_url(connector_id, cfg))
 
         with engine.connect() as conn:
             inspector = sa_inspect(engine)
@@ -773,7 +947,7 @@ def process_history(
                 "port": parsed.port or cfg.get("port"),
                 "database": parsed.database or cfg.get("database"),
                 "user": parsed.username or cfg.get("user"),
-                "password": parsed.password,
+                "password": _load_password(connector_id, cfg),
                 "account": cfg.get("account"),
                 "warehouse": cfg.get("warehouse"),
                 "schema": cfg.get("schema"),
@@ -970,7 +1144,7 @@ def export_kb(
                     "port": parsed.port or cfg.get("port"),
                     "database": parsed.database or cfg.get("database"),
                     "user": parsed.username or cfg.get("user"),
-                    "password": parsed.password,
+                    "password": _load_password(connector_id, cfg),
                     "account": cfg.get("account"),
                     "warehouse": cfg.get("warehouse"),
                     "schema": cfg.get("schema"),
@@ -1057,7 +1231,7 @@ def export_kb(
         from sqlalchemy import create_engine, select, table, text
         from sqlalchemy import inspect as sa_inspect
 
-        engine = create_engine(cfg["url"])
+        engine = create_engine(_get_full_url(connector_id, cfg))
         inspector = sa_inspect(engine)
 
         table_names = inspector.get_table_names()
@@ -1601,7 +1775,7 @@ def query(agent_id: str, question: str, dialect: str, execute_sql: bool, output_
                         "port": parsed.port or cfg.get("port"),
                         "database": parsed.database or cfg.get("database"),
                         "user": parsed.username or cfg.get("user"),
-                        "password": parsed.password,
+                        "password": _load_password(agent_id, cfg),
                         "account": cfg.get("account"),
                         "project": cfg.get("project"),
                     }
