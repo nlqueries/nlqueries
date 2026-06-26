@@ -109,6 +109,15 @@ def ensure_collection(name: str, vector_size: int = 384) -> None:
 
     client = _get_client()
     existing = {c.name for c in client.get_collections().collections}
+    import sys  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+
+    print(  # noqa: T201
+        f"[ensure_collection] name={name!r} found={name in existing}"
+        f" thread={threading.current_thread().name} existing={sorted(existing)[:5]}",
+        file=sys.stderr,
+        flush=True,
+    )
     if name not in existing:
         client.create_collection(
             collection_name=name,
