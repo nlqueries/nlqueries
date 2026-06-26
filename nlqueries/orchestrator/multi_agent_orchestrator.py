@@ -444,8 +444,15 @@ class MultiAgentOrchestrator:
                 answer=_cache_answer,
                 sql=_cache_sql,
             )
-            with contextlib.suppress(Exception):
-                _cache.put(effective_question, _data)
+            # Run the synchronous cache write in a thread-pool executor so it
+            # does not conflict with the running asyncio event loop (sync
+            # QdrantClient uses httpx.Client which raises when called from
+            # inside a running loop).
+            try:
+                _loop = asyncio.get_running_loop()
+                await _loop.run_in_executor(None, _cache.put, effective_question, _data)
+            except Exception:  # noqa: BLE001
+                pass
 
         # ------------------------------------------------------------------
         # Yield tokens (unchanged from pre-Sprint-21)

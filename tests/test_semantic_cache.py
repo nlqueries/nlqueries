@@ -364,3 +364,58 @@ class TestOrchestratorSkipsLlmOnCacheHit:
         assert final_chunk.get("from_cache") is True
         assert final_chunk.get("agent_type") == "sql"
         assert "There were" in full_response
+
+
+# ---------------------------------------------------------------------------
+# test_cache_write_called_from_async_context (regression for #30)
+# ---------------------------------------------------------------------------
+
+
+class TestCacheWriteFromOrchestratorAsyncContext:
+    def test_put_called_after_successful_sql_response(self) -> None:
+        """Cache.put() is invoked via run_in_executor when the orchestrator produces
+        a SQL result inside asyncio.run() — regression test for the sync/async
+        conflict where the sync QdrantClient conflicted with the running event loop
+        and the write was silently swallowed by contextlib.suppress(Exception)."""
+        sql_token = json.dumps(
+            {
+                "answer": "Five languages exist.",
+                "sql": "SELECT COUNT(*) FROM language",
+                "agent_type": "sql",
+            }
+        )
+        final_state = {
+            # intent must be present so the sql extraction branch is entered
+            "intent": "sql",
+            "sql_result": json.dumps(["Five languages ", "exist. ", sql_token]),
+        }
+
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = None  # force a cache miss
+
+        mock_graph = MagicMock()
+        mock_graph.ainvoke = AsyncMock(return_value=final_state)
+
+        async def _drive() -> None:
+            from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+
+            orch = MultiAgentOrchestrator()
+            orch._graph = mock_graph
+            async for _ in orch.handle_question("How many languages?", "agent1"):
+                pass
+
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                return_value=mock_cache,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.resolve_followup",
+                return_value=MagicMock(resolved="How many languages?"),
+            ),
+        ):
+            asyncio.run(_drive())
+
+        # put() must have been called exactly once with the resolved question
+        mock_cache.put.assert_called_once()
+        assert mock_cache.put.call_args[0][0] == "How many languages?"
