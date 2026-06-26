@@ -455,7 +455,7 @@ class MultiAgentOrchestrator:
                 _loop = asyncio.get_running_loop()
                 await _loop.run_in_executor(None, _cache.put, effective_question, _data)
             except Exception as _cache_err:  # noqa: BLE001
-                _log.warning("Semantic cache write failed: %s", _cache_err, exc_info=True)
+                _log.warning("Semantic cache write failed: %s", _cache_err)
 
         # ------------------------------------------------------------------
         # Yield tokens (unchanged from pre-Sprint-21)

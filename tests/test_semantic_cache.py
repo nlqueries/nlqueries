@@ -485,3 +485,27 @@ class TestCacheWriteFromOrchestratorAsyncContext:
         # put() must have been called exactly once with the resolved question
         mock_cache.put.assert_called_once()
         assert mock_cache.put.call_args[0][0] == "How many languages?"
+
+
+# ---------------------------------------------------------------------------
+# Agent-ID sanitization (fix for connector IDs that contain colons)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentIdSanitization:
+    def test_connector_id_with_colons_produces_valid_collection(self) -> None:
+        """connector IDs like 'postgres:localhost:dvdrental' must not reach Qdrant as-is."""
+        cache = SemanticCache("postgres:localhost:dvdrental")
+        assert ":" not in cache._collection
+        assert cache._collection == "cache_postgres_localhost_dvdrental"
+
+    def test_plain_agent_id_unchanged(self) -> None:
+        """Simple IDs like 'dvdrental' must stay unchanged after sanitization."""
+        cache = SemanticCache("dvdrental")
+        assert cache._collection == "cache_dvdrental"
+
+    def test_slashes_also_sanitized(self) -> None:
+        """Slashes (forward slash in some connector URLs) are also replaced."""
+        cache = SemanticCache("myschema/mydb")
+        assert "/" not in cache._collection
+        assert cache._collection == "cache_myschema_mydb"

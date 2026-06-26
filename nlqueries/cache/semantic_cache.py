@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -35,6 +36,9 @@ from nlqueries.embeddings.qdrant_store import ensure_collection
 CACHE_COLLECTION_PREFIX = "cache_"
 CACHE_VECTOR_SIZE = 384
 SIMILARITY_THRESHOLD = 0.97
+
+# Qdrant collection names must not contain ":" or other special chars.
+_SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_\-]")
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +128,8 @@ class SemanticCache:
     """
 
     def __init__(self, agent_id: str, ttl_hours: int = 24) -> None:
-        self._collection = f"{CACHE_COLLECTION_PREFIX}{agent_id}"
+        safe_id = _SAFE_ID_RE.sub("_", agent_id)
+        self._collection = f"{CACHE_COLLECTION_PREFIX}{safe_id}"
         self._ttl_hours = ttl_hours
 
     # ------------------------------------------------------------------
@@ -215,10 +220,6 @@ class SemanticCache:
                       or the internal ``_CacheData`` carrier used by the
                       orchestrator).
         """
-        import logging as _logging
-
-        _logging.getLogger(__name__).debug("cache.put collection=%r", self._collection)
-
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
         ensure_collection(self._collection, CACHE_VECTOR_SIZE)
