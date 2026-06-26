@@ -1020,6 +1020,7 @@ def process_history(
     """
     if not verbose:
         import logging as _logging
+
         for _noisy in ("sqlglot", "LiteLLM", "litellm", "httpx"):
             _logging.getLogger(_noisy).setLevel(_logging.ERROR)
 
@@ -2023,9 +2024,7 @@ def query(
         console.print_json(json.dumps(output, default=str))
     else:
         if result.resolved_question and result.resolved_question != question:
-            console.print(
-                f"[dim]Resolved   : {result.resolved_question}[/dim]"
-            )
+            console.print(f"[dim]Resolved   : {result.resolved_question}[/dim]")
         console.print(f"[bold]Agent type :[/bold] {result.agent_type}")
         if result.sql:
             console.print(f"[bold]SQL        :[/bold] [dim]{result.sql}[/dim]")
