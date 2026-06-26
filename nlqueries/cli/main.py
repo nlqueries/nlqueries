@@ -15,6 +15,7 @@ Commands
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -136,6 +137,56 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
             except Exception:  # noqa: BLE001
                 pass
     return url
+
+
+def _session_path(agent_id: str) -> Path:
+    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    path = Path.home() / ".nlqueries" / "sessions" / f"{safe_id}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _load_session(agent_id: str) -> list[Any]:
+    """Return stored ConversationTurn objects for *agent_id*, newest last."""
+    from datetime import datetime as _dt
+
+    from nlqueries.orchestrator.conversation import ConversationTurn
+
+    path = _session_path(agent_id)
+    if not path.exists():
+        return []
+    turns: list[ConversationTurn] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw = json.loads(line)
+            turns.append(
+                ConversationTurn(
+                    role=raw["role"],
+                    content=raw["content"],
+                    agent_type=raw.get("agent_type"),
+                    sql=raw.get("sql"),
+                    timestamp=_dt.fromisoformat(raw["timestamp"]),
+                )
+            )
+        except (KeyError, ValueError):
+            continue
+    return turns
+
+
+def _save_turn(agent_id: str, role: str, content: str, **kwargs: Any) -> None:
+    """Append a single ConversationTurn to the session JSONL file."""
+    record = {
+        "role": role,
+        "content": content,
+        "agent_type": kwargs.get("agent_type"),
+        "sql": kwargs.get("sql"),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    with _session_path(agent_id).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
 
 
 def _resolve_alias(value: str) -> str:
@@ -589,6 +640,75 @@ def update_password(connector_id: str, password_env: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# feedback
+# ---------------------------------------------------------------------------
+
+
+@cli.command("feedback")
+@click.argument("agent_id")
+@click.option("--question", required=True, help="The natural-language question that was asked.")
+@click.option(
+    "--generated-sql",
+    "generated_sql",
+    default="",
+    help="The SQL the agent produced (optional — leave blank if unknown).",
+)
+@click.option(
+    "--corrected-sql",
+    "corrected_sql",
+    default=None,
+    help="The correct SQL (supply for thumbs-down corrections).",
+)
+@click.option("--thumbs-up", "rating", flag_value="up", help="Mark the answer as correct.")
+@click.option("--thumbs-down", "rating", flag_value="down", help="Mark the answer as incorrect.")
+def submit_feedback(
+    agent_id: str,
+    question: str,
+    generated_sql: str,
+    corrected_sql: str | None,
+    rating: str | None,
+) -> None:
+    """Record thumbs-up or thumbs-down feedback for a query answer.
+
+    \b
+    AGENT_ID  the agent whose answer you are rating (alias accepted)
+
+    \b
+    Examples:
+      nlqueries feedback dvdrental --question "Top customers?" --thumbs-up
+      nlqueries feedback dvdrental \\
+        --question "How many films have more than one actor?" \\
+        --thumbs-down \\
+        --corrected-sql "SELECT COUNT(*) FROM (SELECT film_id FROM film_actor
+          GROUP BY film_id HAVING COUNT(actor_id) > 1) sub"
+    """
+    if not rating:
+        raise click.UsageError("Provide either --thumbs-up or --thumbs-down.")
+
+    agent_id = _resolve_alias(agent_id)
+
+    from nlqueries.feedback.models import QueryFeedback
+    from nlqueries.feedback.store import record_feedback
+
+    fb = QueryFeedback(
+        question=question,
+        generated_sql=generated_sql,
+        corrected_sql=corrected_sql,
+        rating=rating,
+        agent_id=agent_id,
+    )
+    record_feedback(fb)
+
+    symbol = "[bold green]✓[/bold green]" if rating == "up" else "[bold red]✗[/bold red]"
+    label = "thumbs-up" if rating == "up" else "thumbs-down"
+    console.print(f"  {symbol} Feedback recorded ({label}) for [cyan]{agent_id}[/cyan]")
+    if corrected_sql:
+        console.print(
+            f"  [dim]Correction saved. Re-run 'nlqueries export-kb {agent_id}' to apply it.[/dim]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # connectors
 # ---------------------------------------------------------------------------
 
@@ -853,7 +973,7 @@ def doc_ingest(source_id: str, file_path: str) -> None:
     show_default=False,
     type=int,
     help=(
-        "Maximum number of queries to fetch from the database history "
+        "Maximum number of useful queries to return after filtering "
         f"(default: {500}, override with QUERY_HISTORY_LIMIT env var)."
     ),
 )
@@ -869,6 +989,12 @@ def doc_ingest(source_id: str, file_path: str) -> None:
     show_default=True,
     help="Upsert capsules into the Qdrant vector store after processing (requires Qdrant).",
 )
+@click.option(
+    "--verbose/--no-verbose",
+    default=False,
+    show_default=True,
+    help="Print sqlglot parse warnings and LLM provider log lines. Off by default.",
+)
 def process_history(
     connector_id: str,
     days: int,
@@ -876,6 +1002,7 @@ def process_history(
     max_queries: int | None,
     annotate: bool,
     embed: bool,
+    verbose: bool,
 ) -> None:
     """Run the Query Capsule pipeline over recent query history.
 
@@ -891,6 +1018,11 @@ def process_history(
     Example:
       nlqueries process-history postgres:localhost:mydb --days 30
     """
+    if not verbose:
+        import logging as _logging
+        for _noisy in ("sqlglot", "LiteLLM", "litellm", "httpx"):
+            _logging.getLogger(_noisy).setLevel(_logging.ERROR)
+
     connector_id = _resolve_alias(connector_id)
     cfg = _require_connector(connector_id)
 
@@ -1002,9 +1134,11 @@ def process_history(
     # Filter breakdown — helps diagnose why capsule count is low.
     if filter_stats:
         considered = filter_stats.get("considered", 0)
-        cap_reached = considered >= effective_limit
+        useful = filter_stats.get("useful", 0)
+        cap_reached = useful > effective_limit
         cap_note = (
-            f"  [yellow](cap reached — raise with --max-queries {effective_limit * 2})[/yellow]"
+            f"  [yellow](cap reached — {useful} useful found; "
+            f"raise with --max-queries {effective_limit * 2})[/yellow]"
             if cap_reached
             else ""
         )
@@ -1169,6 +1303,37 @@ def export_kb(
                     "  [yellow]⚠ No capsules found — run process-history first "
                     "to include query_capsules in the KB.[/yellow]"
                 )
+
+            # Inject thumbs-down corrections as high-priority capsules so the
+            # LLM sees the correct pattern before any auto-generated ones.
+            try:
+                from nlqueries.feedback.store import load_feedback
+                from nlqueries.processing.parameterizer import QueryCapsule
+
+                feedback_records = load_feedback(connector_id)
+                correction_count = 0
+                for fb in feedback_records:
+                    if fb.rating == "down" and fb.corrected_sql:
+                        capsules.insert(
+                            0,
+                            QueryCapsule(
+                                template_sql=fb.corrected_sql,
+                                placeholders=[],
+                                tables=[],
+                                columns=[],
+                                frequency=999,
+                                auto_description=f"User correction for: {fb.question}",
+                                intent=f"Correction: {fb.question}",
+                            ),
+                        )
+                        correction_count += 1
+                if correction_count:
+                    console.print(
+                        f"  [dim]Incorporated {correction_count} feedback "
+                        f"correction(s) as high-priority capsules.[/dim]"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
             # Optional: LLM-generated column descriptions from sample data
             llm_column_descriptions: dict[str, dict[str, str]] | None = None
@@ -1721,7 +1886,28 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
     default=False,
     help="Output the full result as raw JSON.",
 )
-def query(agent_id: str, question: str, dialect: str, execute_sql: bool, output_json: bool) -> None:
+@click.option(
+    "--session/--no-session",
+    default=True,
+    show_default=True,
+    help="Carry conversation context across queries to support follow-up questions.",
+)
+@click.option(
+    "--new-session",
+    "new_session",
+    is_flag=True,
+    default=False,
+    help="Start a fresh conversation, discarding prior context.",
+)
+def query(
+    agent_id: str,
+    question: str,
+    dialect: str,
+    execute_sql: bool,
+    output_json: bool,
+    session: bool,
+    new_session: bool,
+) -> None:
     """Run a synchronous agent query and print the result.
 
     \b
@@ -1740,18 +1926,38 @@ def query(agent_id: str, question: str, dialect: str, execute_sql: bool, output_
       nlqueries query my_agent "Top customers by revenue" --json
     """
     agent_id = _resolve_alias(agent_id)
-    import json as _json
 
     from rich.table import Table
 
     from nlqueries.connectors.base import QueryResult
     from nlqueries.orchestrator.sync_runner import AgentQueryResult, run_query_sync
 
+    # Session / conversational context
+    history: list[Any] = []
+    if session:
+        if new_session:
+            _session_path(agent_id).unlink(missing_ok=True)
+        else:
+            history = _load_session(agent_id)
+
     try:
-        result: AgentQueryResult = run_query_sync(question, agent_id, dialect=dialect)
+        result: AgentQueryResult = run_query_sync(
+            question, agent_id, dialect=dialect, history=history
+        )
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Query failed:[/bold red] {exc}")
         sys.exit(1)
+
+    # Persist this exchange to the session file so follow-up questions work.
+    if session:
+        _save_turn(agent_id, "user", question)
+        _save_turn(
+            agent_id,
+            "assistant",
+            result.answer or result.merged_answer or "",
+            agent_type=result.agent_type,
+            sql=result.sql,
+        )
 
     # Execute the generated SQL against the registered connector.
     sql_result: QueryResult | None = result.sql_result
@@ -1814,8 +2020,12 @@ def query(agent_id: str, question: str, dialect: str, execute_sql: bool, output_
             "latency_ms": result.latency_ms,
             "session_id": result.session_id,
         }
-        console.print_json(_json.dumps(output, default=str))
+        console.print_json(json.dumps(output, default=str))
     else:
+        if result.resolved_question and result.resolved_question != question:
+            console.print(
+                f"[dim]Resolved   : {result.resolved_question}[/dim]"
+            )
         console.print(f"[bold]Agent type :[/bold] {result.agent_type}")
         if result.sql:
             console.print(f"[bold]SQL        :[/bold] [dim]{result.sql}[/dim]")

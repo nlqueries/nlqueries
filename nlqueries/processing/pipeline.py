@@ -61,7 +61,7 @@ def process_query_history(
                          When ``None`` string literals default to ``VARCHAR``.
         days:            Number of days of query history to process.
         min_executions:  Minimum execution count; lower-frequency queries are dropped.
-        limit:           Maximum number of queries to fetch from the database history.
+        limit:           Maximum number of useful queries to return after filtering.
         annotate:        When ``True``, call the LLM annotator (via ``get_llm_client()``)
                          to fill ``capsule.intent`` for every capsule before returning.
         embed:           When ``True``, upsert capsules into the Qdrant vector store
@@ -73,10 +73,17 @@ def process_query_history(
     Returns:
         ``list[QueryCapsule]`` sorted by frequency descending, capped at 1 000.
     """
-    records = connector.extract_query_history(days=days, limit=limit)
+    # Fetch more rows than needed so the cap can be applied *after* filtering
+    # out DDL/system statements (SET, ALTER, pg_* queries, etc.).  A 3× factor
+    # gives the filter stage enough headroom without fetching excessive data.
+    raw_limit = min(limit * 3, 10_000)
+    records = connector.extract_query_history(days=days, limit=raw_limit)
     normalized = filter_and_deduplicate(
         records, min_executions=min_executions, _stats=_filter_stats
     )
+    if _filter_stats is not None:
+        _filter_stats["useful"] = len(normalized)
+    normalized = normalized[:limit]
     clusters = cluster_queries(normalized)
     capsules = parameterize_clusters(clusters, schema=schema)
     if annotate and capsules:
