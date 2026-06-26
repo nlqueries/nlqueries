@@ -2299,6 +2299,7 @@ def cache_stats(agent_id: str) -> None:
     """
     from nlqueries.cache.semantic_cache import SemanticCache
 
+    agent_id = _resolve_alias(agent_id)
     cache = SemanticCache(agent_id)
     info = cache.stats()
     console.print(f"[bold]Cache stats[/bold] for agent [cyan]{agent_id}[/cyan]")
@@ -2320,6 +2321,7 @@ def cache_clear(agent_id: str) -> None:
     """
     from nlqueries.cache.semantic_cache import SemanticCache
 
+    agent_id = _resolve_alias(agent_id)
     cache = SemanticCache(agent_id)
     cache.invalidate(agent_id)
     console.print(f"[bold green]✓ Cache cleared[/bold green] for agent [cyan]{agent_id}[/cyan]")
