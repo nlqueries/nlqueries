@@ -215,6 +215,10 @@ class SemanticCache:
                       or the internal ``_CacheData`` carrier used by the
                       orchestrator).
         """
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug("cache.put collection=%r", self._collection)
+
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
         ensure_collection(self._collection, CACHE_VECTOR_SIZE)
