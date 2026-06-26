@@ -314,6 +314,16 @@ def cli() -> None:
     default=None,
     help="Name to register this connector under (auto-generated if omitted).",
 )
+@click.option(
+    "--alias",
+    "alias",
+    default=None,
+    metavar="NAME",
+    help=(
+        "Short alias for this connector (e.g. 'prod'). "
+        "Can also be set later with `nlqueries alias`."
+    ),
+)
 def connect(
     db_type: str,
     host: str,
@@ -329,6 +339,7 @@ def connect(
     dataset_id: str | None,
     service_account_json: str | None,
     connector_id: str | None,
+    alias: str | None,
 ) -> None:
     """Test a database connection and register it as a named connector.
 
@@ -506,6 +517,8 @@ def connect(
     }
     if stored_in_keychain:
         config["password_storage"] = "keychain"
+    if alias:
+        config["alias"] = alias
     if db_type_l == "snowflake":
         config["account"] = account
         config["warehouse"] = warehouse
@@ -520,6 +533,8 @@ def connect(
     _save_connector(cid, config)
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
+    if alias:
+        console.print(f"  Alias               : [bold]{alias}[/bold]")
     console.print(f"  Config saved to [dim]{CONNECTORS_FILE}[/dim]")
     if stored_in_keychain:
         console.print(
@@ -1070,7 +1085,7 @@ def process_history(
     try:
         from sqlalchemy.engine import make_url
 
-        from nlqueries.processing.pipeline import process_query_history, save_capsules
+        from nlqueries.processing.pipeline import save_capsules
 
         parsed = make_url(cfg["url"])
         connector = connector_cls()
@@ -1101,26 +1116,71 @@ def process_history(
                 "placeholder types may default to VARCHAR.[/yellow]"
             )
 
-        if annotate:
-            console.print("  LLM annotation enabled — this may take a moment …")
-        if embed:
-            console.print("  Embedding enabled — capsules will be upserted into Qdrant …")
+        from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
         from nlqueries.config import QUERY_HISTORY_LIMIT
+        from nlqueries.processing.parameterizer import parameterize_clusters
+        from nlqueries.processing.query_clusterer import cluster_queries
+        from nlqueries.processing.query_filter import filter_and_deduplicate
 
         effective_limit = max_queries if max_queries is not None else QUERY_HISTORY_LIMIT
+        raw_limit = min(effective_limit * 3, 10_000)
 
-        filter_stats: dict[str, int] = {}
-        capsules = process_query_history(
-            connector,
-            schema=schema,
-            days=days,
-            min_executions=min_executions,
-            limit=effective_limit,
-            annotate=annotate,
-            embed=embed,
-            _filter_stats=filter_stats,
-        )
+        # Stage 1 — Extract
+        with console.status(f"  [1] Extracting query history (last {days} days) …"):
+            records = connector.extract_query_history(days=days, limit=raw_limit)
+        console.print(f"  [1] Extracted [bold]{len(records)}[/bold] raw records")
+
+        # Stage 2 — Filter + deduplicate
+        with console.status("  [2] Filtering and deduplicating …"):
+            filter_stats: dict[str, int] = {}
+            normalized = filter_and_deduplicate(
+                records, min_executions=min_executions, _stats=filter_stats
+            )
+            filter_stats["useful"] = len(normalized)
+            normalized = normalized[:effective_limit]
+        console.print(f"  [2] [bold]{len(normalized)}[/bold] useful queries kept")
+
+        # Stage 3 — Cluster + parameterize
+        with console.status("  [3] Clustering and parameterizing …"):
+            clusters = cluster_queries(normalized)
+            capsules = parameterize_clusters(clusters, schema=schema)
+        console.print(f"  [3] [bold]{len(capsules)}[/bold] query capsules produced")
+
+        # Stage 4 — Annotate (optional); per-capsule progress bar so the user
+        # can see each LLM call completing rather than waiting in silence.
+        if annotate and capsules:
+            import time as _time
+
+            from nlqueries.llm import get_llm_client
+            from nlqueries.processing.intent_annotator import annotate_capsule
+
+            _llm = get_llm_client()
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("  [4] Annotating"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                console=console,
+            ) as _prog:
+                _task = _prog.add_task("", total=len(capsules))
+                for _i, _cap in enumerate(capsules):
+                    annotate_capsule(_cap, _llm)
+                    _prog.advance(_task)
+                    # Respect the same inter-batch delay used by annotate_capsules()
+                    if (_i + 1) % 10 == 0 and _i + 1 < len(capsules):
+                        _time.sleep(1.0)
+
+        # Stage 5 — Embed (optional)
+        if embed and capsules:
+            from nlqueries.config import QDRANT_COLLECTION
+            from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_capsules
+
+            with console.status("  [5] Embedding capsules into Qdrant …"):
+                ensure_collection(QDRANT_COLLECTION)
+                upsert_capsules(QDRANT_COLLECTION, capsules)
+            console.print(f"  [5] [bold]{len(capsules)}[/bold] capsules embedded into Qdrant")
+
         out_path = save_capsules(capsules, connector_id)
 
     except Exception as exc:  # noqa: BLE001
