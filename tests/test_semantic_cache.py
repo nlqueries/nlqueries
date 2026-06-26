@@ -269,6 +269,72 @@ class TestPutDeterministicPointId:
 # ---------------------------------------------------------------------------
 
 
+class TestListEntries:
+    def _make_record(self, question: str, agent_type: str = "sql", hit_count: int = 0) -> Any:
+        record = MagicMock()
+        record.payload = {
+            "question": question,
+            "resolved_question": question,
+            "agent_type": agent_type,
+            "answer": f"Answer to: {question}",
+            "sql": f"SELECT * FROM t WHERE q = '{question}'",
+            "created_at": datetime.now(UTC).isoformat(),
+            "hit_count": hit_count,
+        }
+        return record
+
+    def test_returns_entries_sorted_newest_first(self) -> None:
+        """list_entries() returns CacheEntry objects sorted by created_at descending."""
+        from datetime import timedelta
+
+        older = self._make_record("How many users?")
+        older.payload["created_at"] = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        newer = self._make_record("How many orders?")
+        newer.payload["created_at"] = datetime.now(UTC).isoformat()
+
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([older, newer], None)
+
+        with patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client):
+            entries = SemanticCache("agent1").list_entries()
+
+        assert len(entries) == 2
+        assert entries[0].question == "How many orders?"  # newer first
+        assert entries[1].question == "How many users?"
+
+    def test_empty_collection_returns_empty_list(self) -> None:
+        """list_entries() returns [] when the collection has no points."""
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([], None)
+
+        with patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client):
+            entries = SemanticCache("agent1").list_entries()
+
+        assert entries == []
+
+    def test_qdrant_error_returns_empty_list(self) -> None:
+        """list_entries() returns [] silently if Qdrant is unreachable."""
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = RuntimeError("connection refused")
+
+        with patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client):
+            entries = SemanticCache("agent1").list_entries()
+
+        assert entries == []
+
+    def test_respects_limit(self) -> None:
+        """list_entries() passes the limit parameter to scroll()."""
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([], None)
+
+        with patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client):
+            SemanticCache("agent1").list_entries(limit=10)
+
+        mock_client.scroll.assert_called_once()
+        call_kwargs = mock_client.scroll.call_args.kwargs
+        assert call_kwargs.get("limit") == 10
+
+
 class TestInvalidate:
     def test_invalidate_calls_delete_collection(self) -> None:
         """invalidate() deletes the agent's cache collection from Qdrant."""
