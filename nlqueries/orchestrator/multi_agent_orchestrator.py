@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
@@ -49,6 +50,8 @@ from nlqueries.orchestrator.followup_resolver import resolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent
 from nlqueries.orchestrator.orchestrator import Orchestrator
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
+
+_log = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
@@ -451,8 +454,8 @@ class MultiAgentOrchestrator:
             try:
                 _loop = asyncio.get_running_loop()
                 await _loop.run_in_executor(None, _cache.put, effective_question, _data)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _cache_err:  # noqa: BLE001
+                _log.warning("Semantic cache write failed: %s", _cache_err)
 
         # ------------------------------------------------------------------
         # Yield tokens (unchanged from pre-Sprint-21)

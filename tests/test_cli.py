@@ -125,3 +125,57 @@ class TestProcessHistoryStageOutput:
         assert stage1 is not None, "Expected '[1] Extracted N raw records' in output"
         # _StubConnector returns 20 records
         assert "20" in stage1
+
+
+# ---------------------------------------------------------------------------
+# cache list command
+# ---------------------------------------------------------------------------
+
+
+class TestCacheListCommand:
+    def _make_entry_payload(self, question: str, agent_type: str = "sql") -> dict:
+        from datetime import UTC, datetime
+
+        record = MagicMock()
+        record.payload = {
+            "question": question,
+            "resolved_question": question,
+            "agent_type": agent_type,
+            "answer": f"Answer to {question}",
+            "sql": "SELECT COUNT(*) FROM film",
+            "created_at": datetime.now(UTC).isoformat(),
+            "hit_count": 2,
+        }
+        return record
+
+    def test_cache_list_shows_questions(self) -> None:
+        """cache list prints a table containing the cached question text."""
+        runner = CliRunner()
+        record = self._make_entry_payload("How many films are there?")
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([record], None)
+        mock_client.get_collection.return_value.points_count = 1
+
+        with (
+            patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+        ):
+            result = runner.invoke(cli, ["cache", "list", "dvdrental"])
+
+        assert result.exit_code == 0, result.output
+        assert "How many films are there?" in result.output
+
+    def test_cache_list_empty_shows_message(self) -> None:
+        """cache list prints a helpful message when the cache is empty."""
+        runner = CliRunner()
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([], None)
+
+        with (
+            patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+        ):
+            result = runner.invoke(cli, ["cache", "list", "dvdrental"])
+
+        assert result.exit_code == 0, result.output
+        assert "No cached entries" in result.output

@@ -247,6 +247,49 @@ class SemanticCache:
         with contextlib.suppress(Exception):
             _get_client().delete_collection(self._collection)
 
+    def list_entries(self, limit: int = 100) -> list[CacheEntry]:
+        """Return up to *limit* cached entries, ordered by creation time descending.
+
+        Uses Qdrant's ``scroll`` API to page through all points without
+        requiring a query vector.  Returns an empty list if the collection
+        does not exist or Qdrant is unreachable.
+        """
+        client = _get_client()
+        try:
+            records, _ = client.scroll(
+                collection_name=self._collection,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+        entries: list[CacheEntry] = []
+        for record in records:
+            payload = record.payload or {}
+            raw_ts = payload.get("created_at")
+            if not raw_ts:
+                continue
+            try:
+                created_at = datetime.fromisoformat(str(raw_ts))
+            except ValueError:
+                continue
+            entries.append(
+                CacheEntry(
+                    question=str(payload.get("question", "")),
+                    resolved_question=str(payload.get("resolved_question", "")),
+                    agent_type=str(payload.get("agent_type", "")),
+                    answer=str(payload.get("answer", "")),
+                    sql=payload.get("sql") or None,
+                    created_at=created_at,
+                    hit_count=int(payload.get("hit_count", 0)),
+                )
+            )
+
+        entries.sort(key=lambda e: e.created_at, reverse=True)
+        return entries
+
     def stats(self) -> dict[str, Any]:
         """Return basic statistics for this agent's cache collection.
 

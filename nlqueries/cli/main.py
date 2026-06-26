@@ -2217,9 +2217,72 @@ def cache_group() -> None:
 
     \b
     Commands:
+      nlqueries cache list  <agent-id>  — list cached questions and their SQL
       nlqueries cache stats <agent-id>  — show cache statistics
       nlqueries cache clear <agent-id>  — invalidate (delete) all cached entries
     """
+
+
+@cache_group.command("list")
+@click.argument("agent_id")
+@click.option(
+    "--limit",
+    default=50,
+    show_default=True,
+    type=int,
+    help="Maximum number of entries to display.",
+)
+def cache_list(agent_id: str, limit: int) -> None:
+    """List cached questions and their generated SQL for AGENT_ID.
+
+    \b
+    AGENT_ID  the agent identifier whose cache to inspect
+
+    \b
+    Example:
+      nlqueries cache list dvdrental
+      nlqueries cache list dvdrental --limit 20
+    """
+    from nlqueries.cache.semantic_cache import SemanticCache
+
+    agent_id = _resolve_alias(agent_id)
+    cache = SemanticCache(agent_id)
+    entries = cache.list_entries(limit=limit)
+
+    if not entries:
+        console.print(f"  No cached entries for [bold]{agent_id}[/bold]. Run a few queries first.")
+        return
+
+    tbl = Table(
+        title=f"Cached entries — {agent_id}",
+        show_header=True,
+        header_style="bold",
+        show_lines=True,
+    )
+    tbl.add_column("#", style="dim", width=4, no_wrap=True)
+    tbl.add_column("Question", min_width=28)
+    tbl.add_column("Type", width=10, no_wrap=True)
+    tbl.add_column("Hits", width=5, no_wrap=True)
+    tbl.add_column("SQL (preview)", min_width=36)
+    tbl.add_column("Cached at", width=17, no_wrap=True)
+
+    for i, entry in enumerate(entries, 1):
+        sql_text = (entry.sql or "").replace("\n", " ").strip()
+        sql_preview = sql_text[:70] + ("…" if len(sql_text) > 70 else "")
+        tbl.add_row(
+            str(i),
+            entry.question,
+            entry.agent_type,
+            str(entry.hit_count),
+            sql_preview or "[dim]—[/dim]",
+            entry.created_at.strftime("%Y-%m-%d %H:%M"),
+        )
+
+    console.print(tbl)
+    console.print(
+        f"  Showing [bold]{len(entries)}[/bold] of "
+        f"[bold]{cache.stats()['total_entries']}[/bold] total entries."
+    )
 
 
 @cache_group.command("stats")
