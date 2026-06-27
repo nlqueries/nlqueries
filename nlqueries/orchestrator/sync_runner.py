@@ -165,6 +165,7 @@ async def run_query(
         available_types=list(available_types),
         dialect=dialect,
         history=None,  # already resolved above; avoids double LLM call
+        cache_key=question,  # original question — consistent key regardless of LLM rewrite
     ):
         tokens.append(token)
 
