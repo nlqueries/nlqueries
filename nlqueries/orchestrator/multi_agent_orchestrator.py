@@ -368,12 +368,19 @@ class MultiAgentOrchestrator:
         # ------------------------------------------------------------------
         # Semantic cache check (Sprint 21)
         # ------------------------------------------------------------------
+        import sys as _sys  # noqa: PLC0415
+
         _cache = SemanticCache(agent_id)
         # Use caller-supplied cache_key when provided (e.g. run_query passes
         # the original pre-resolution question so repeated identical queries
         # always hit the same cache entry regardless of LLM rewrite variance).
         _cache_lookup_key = cache_key if cache_key is not None else effective_question
+        _dbg = f"[orch] key={_cache_lookup_key[:60]!r} effective={effective_question[:60]!r}"  # noqa: E501
+        print(_dbg, file=_sys.stderr, flush=True)
         _cached = _cache.get(_cache_lookup_key)
+        print(
+            f"[orch] cache={'HIT' if _cached is not None else 'MISS'}", file=_sys.stderr, flush=True
+        )
         if _cached is not None:
             # Serve cached answer word-by-word to simulate streaming.
             for _word in _cached.answer.split():
