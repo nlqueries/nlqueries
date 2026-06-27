@@ -33,7 +33,6 @@ _FOLLOWUP_SIGNALS: tuple[str, ...] = (
     "those",
     "these",
     "it",
-    "them",
     "the same",
     "previous",
     "last one",

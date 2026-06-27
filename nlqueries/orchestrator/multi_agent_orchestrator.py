@@ -324,6 +324,7 @@ class MultiAgentOrchestrator:
         available_types: Sequence[str] = ("sql",),
         dialect: str = "postgres",
         history: list[ConversationTurn] | None = None,
+        cache_key: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -368,7 +369,11 @@ class MultiAgentOrchestrator:
         # Semantic cache check (Sprint 21)
         # ------------------------------------------------------------------
         _cache = SemanticCache(agent_id)
-        _cached = _cache.get(effective_question)
+        # Use caller-supplied cache_key when provided (e.g. run_query passes
+        # the original pre-resolution question so repeated identical queries
+        # always hit the same cache entry regardless of LLM rewrite variance).
+        _cache_lookup_key = cache_key if cache_key is not None else effective_question
+        _cached = _cache.get(_cache_lookup_key)
         if _cached is not None:
             # Serve cached answer word-by-word to simulate streaming.
             for _word in _cached.answer.split():
@@ -453,7 +458,7 @@ class MultiAgentOrchestrator:
             # inside a running loop).
             try:
                 _loop = asyncio.get_running_loop()
-                await _loop.run_in_executor(None, _cache.put, effective_question, _data)
+                await _loop.run_in_executor(None, _cache.put, _cache_lookup_key, _data)
             except Exception as _cache_err:  # noqa: BLE001
                 _log.warning("Semantic cache write failed: %s", _cache_err)
 

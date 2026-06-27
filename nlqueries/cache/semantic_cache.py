@@ -146,21 +146,14 @@ class SemanticCache:
         Returns ``None`` when the collection does not exist, no similar entry
         is found, the top score is below threshold, or the entry has expired.
         """
-        import sys  # noqa: PLC0415
-
         client = _get_client()
 
         # Guard: collection might not exist yet.
         try:
             existing = {c.name for c in client.get_collections().collections}
             if self._collection not in existing:
-                _msg = f"[cache.get] MISS col_not_found col={self._collection!r} existing={sorted(existing)}"  # noqa: E501
-                print(_msg, file=sys.stderr, flush=True)
                 return None
-        except Exception as _e:  # noqa: BLE001
-            print(
-                f"[cache.get] MISS get_collections EXCEPTION: {_e!r}", file=sys.stderr, flush=True
-            )  # noqa: E501
+        except Exception:  # noqa: BLE001
             return None
 
         vector = embed_text(question)
@@ -171,55 +164,28 @@ class SemanticCache:
                 query=vector,
                 limit=1,
             )
-        except Exception as _e:  # noqa: BLE001
-            print(f"[cache.get] MISS query_points EXCEPTION: {_e!r}", file=sys.stderr, flush=True)  # noqa: E501
+        except Exception:  # noqa: BLE001
             return None
 
         if not response.points:
-            print(
-                f"[cache.get] MISS no_points col={self._collection!r}", file=sys.stderr, flush=True
-            )  # noqa: E501
             return None
 
         hit = response.points[0]
         if hit.score < SIMILARITY_THRESHOLD:
-            _score_msg = (
-                f"[cache.get] MISS low_score score={hit.score:.4f} threshold={SIMILARITY_THRESHOLD}"  # noqa: E501
-            )
-            print(_score_msg, file=sys.stderr, flush=True)
             return None
 
         payload = hit.payload or {}
         created_at_raw = payload.get("created_at")
         if not created_at_raw:
-            print(
-                f"[cache.get] MISS no_created_at payload_keys={list(payload.keys())}",
-                file=sys.stderr,
-                flush=True,
-            )  # noqa: E501
             return None
 
         try:
             created_at = datetime.fromisoformat(str(created_at_raw))
         except ValueError:
-            print(
-                f"[cache.get] MISS bad_created_at value={created_at_raw!r}",
-                file=sys.stderr,
-                flush=True,
-            )  # noqa: E501
             return None
 
         if datetime.now(UTC) - created_at > timedelta(hours=self._ttl_hours):
-            print(
-                f"[cache.get] MISS expired created={created_at_raw!r}", file=sys.stderr, flush=True
-            )  # noqa: E501
             return None  # expired
-
-        print(
-            f"[cache.get] HIT score={hit.score:.4f} col={self._collection!r} q={question[:60]!r}",
-            file=sys.stderr,
-            flush=True,
-        )  # noqa: E501
 
         # Increment hit_count (best-effort — do not fail the whole get on error).
         new_count = int(payload.get("hit_count", 0)) + 1
