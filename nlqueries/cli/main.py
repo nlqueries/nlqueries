@@ -2386,3 +2386,138 @@ def feedback_stats(agent_id: str) -> None:
             )
             tbl.add_row(q, gen, cor)
         console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# embed-server command group (#32 — persistent embedding daemon)
+# ---------------------------------------------------------------------------
+
+
+@cli.group("embed-server")
+def embed_server_group() -> None:
+    """Manage the persistent embedding daemon.
+
+    \b
+    The daemon loads all-MiniLM-L6-v2 once and keeps it in RAM, reducing
+    per-invocation embedding latency from ~9 s to ~10 ms.
+
+    \b
+    Commands:
+      nlqueries embed-server start   — launch daemon in background
+      nlqueries embed-server stop    — stop the daemon
+      nlqueries embed-server status  — show whether daemon is running
+    """
+
+
+@embed_server_group.command("start")
+@click.option("--port", default=8765, show_default=True, help="Port to listen on.")
+@click.option(
+    "--foreground",
+    is_flag=True,
+    default=False,
+    help="Run in foreground (blocks; useful for debugging).",
+)
+def embed_server_start(port: int, foreground: bool) -> None:
+    """Start the embedding daemon in the background.
+
+    \b
+    Example:
+      nlqueries embed-server start
+      nlqueries embed-server start --port 9000
+      nlqueries embed-server start --foreground
+    """
+    import subprocess
+    import sys
+
+    from nlqueries.embeddings.embed_server import _PID_FILE
+
+    if _PID_FILE.exists():
+        pid = int(_PID_FILE.read_text().strip())
+        console.print(
+            f"  Daemon already running (PID {pid}). "
+            "Use [bold]embed-server stop[/bold] first."
+        )
+        return
+
+    if foreground:
+        from nlqueries.embeddings.embed_server import serve
+
+        serve(port=port)
+        return
+
+    subprocess.Popen(
+        [sys.executable, "-m", "nlqueries.embeddings.embed_server", "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    console.print(
+        f"  [green]✓[/green] Embedding daemon started on port {port}. "
+        "Future queries will skip model load (~10 ms embedding instead of ~9 s)."
+    )
+
+
+@embed_server_group.command("stop")
+def embed_server_stop() -> None:
+    """Stop the embedding daemon.
+
+    \b
+    Example:
+      nlqueries embed-server stop
+    """
+    import os as _os
+    import signal as _sig
+
+    from nlqueries.embeddings.embed_server import _PID_FILE
+
+    if not _PID_FILE.exists():
+        console.print("  Daemon is not running.")
+        return
+
+    pid = int(_PID_FILE.read_text().strip())
+    try:
+        _os.kill(pid, _sig.SIGTERM)
+        console.print(f"  [green]✓[/green] Daemon stopped (PID {pid})")
+    except ProcessLookupError:
+        console.print(f"  Process {pid} not found — removing stale PID file.")
+    finally:
+        _PID_FILE.unlink(missing_ok=True)
+
+
+@embed_server_group.command("status")
+def embed_server_status() -> None:
+    """Show whether the embedding daemon is running.
+
+    \b
+    Example:
+      nlqueries embed-server status
+    """
+    import urllib.error
+    import urllib.request
+
+    from nlqueries.embeddings.embed_server import _DEFAULT_PORT, _PID_FILE
+
+    if not _PID_FILE.exists():
+        console.print(
+            "  Daemon [red]not running[/red]. "
+            "Start with [bold]nlqueries embed-server start[/bold]. "
+            "Queries will load the model per-invocation (~9 s)."
+        )
+        return
+
+    pid = int(_PID_FILE.read_text().strip())
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{_DEFAULT_PORT}/embed", timeout=1)
+    except urllib.error.HTTPError:
+        pass  # 405 on GET means the server is alive
+    except Exception:  # noqa: BLE001
+        console.print(
+            f"  PID file present (PID {pid}) but daemon is [red]not responding[/red]. "
+            "Try [bold]embed-server stop[/bold] then [bold]embed-server start[/bold]."
+        )
+        return
+
+    console.print(
+        f"  Daemon [green]running[/green] (PID {pid}, port {_DEFAULT_PORT}). "
+        "Embedding calls will use the daemon (~10 ms each)."
+    )

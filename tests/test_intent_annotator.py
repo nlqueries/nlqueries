@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
-from unittest.mock import patch
 
 import pytest
 from nlqueries.llm.client import LLMClient
 from nlqueries.processing.intent_annotator import (
-    _BATCH_DELAY,
     _BATCH_SIZE,
+    _MAX_CONCURRENT,
     _MAX_INTENT_LENGTH,
     _SYSTEM_PROMPT,
     annotate_capsule,
@@ -126,62 +126,31 @@ def test_annotate_capsule_handles_empty_tables_list():
 
 
 # ---------------------------------------------------------------------------
-# annotate_capsules — batch processing
+# annotate_capsules — concurrent batch processing
 # ---------------------------------------------------------------------------
 
 
 def test_annotate_capsules_annotates_all_20_capsules():
-    """Spec requirement: all 20 capsules must receive a non-empty intent."""
+    """All 20 capsules must receive a non-empty intent."""
     capsules = [_make_capsule(i) for i in range(20)]
-    llm = _FixedLLMClient("What is the order count by status?")
-
-    with patch("nlqueries.processing.intent_annotator.time.sleep"):
-        annotate_capsules(capsules, llm)
-
+    annotate_capsules(capsules, _FixedLLMClient("What is the order count by status?"))
     assert all(c.intent != "" for c in capsules)
 
 
 def test_annotate_capsules_all_intents_non_empty():
     capsules = [_make_capsule(i) for i in range(20)]
-    with patch("nlqueries.processing.intent_annotator.time.sleep"):
-        annotate_capsules(capsules, _FixedLLMClient("intent"))
+    annotate_capsules(capsules, _FixedLLMClient("intent"))
     assert all(c.intent for c in capsules)
 
 
-def test_annotate_capsules_returns_all_capsules():
+def test_annotate_capsules_returns_same_list():
     capsules = [_make_capsule(i) for i in range(20)]
-    with patch("nlqueries.processing.intent_annotator.time.sleep"):
-        result = annotate_capsules(capsules, _FixedLLMClient())
+    result = annotate_capsules(capsules, _FixedLLMClient())
     assert result is capsules
     assert len(result) == 20
 
 
-def test_annotate_capsules_sleeps_between_batches_not_after_last():
-    """With 20 capsules and batch_size=10 there must be exactly 1 sleep."""
-    capsules = [_make_capsule(i) for i in range(20)]
-    with patch("nlqueries.processing.intent_annotator.time.sleep") as mock_sleep:
-        annotate_capsules(capsules, _FixedLLMClient(), batch_size=10)
-    assert mock_sleep.call_count == 1
-    mock_sleep.assert_called_once_with(_BATCH_DELAY)
-
-
-def test_annotate_capsules_sleep_count_matches_batch_count_minus_one():
-    """k batches → k-1 sleeps."""
-    capsules = [_make_capsule(i) for i in range(20)]
-    with patch("nlqueries.processing.intent_annotator.time.sleep") as mock_sleep:
-        annotate_capsules(capsules, _FixedLLMClient(), batch_size=5)
-    # 20 capsules / 5 per batch = 4 batches → 3 sleeps
-    assert mock_sleep.call_count == 3
-
-
-def test_annotate_capsules_no_sleep_when_single_batch():
-    capsules = [_make_capsule(i) for i in range(5)]
-    with patch("nlqueries.processing.intent_annotator.time.sleep") as mock_sleep:
-        annotate_capsules(capsules, _FixedLLMClient(), batch_size=10)
-    assert mock_sleep.call_count == 0
-
-
-def test_annotate_capsules_default_batch_size_is_10():
+def test_annotate_capsules_default_batch_size_constant_is_10():
     assert _BATCH_SIZE == 10
 
 
@@ -192,8 +161,7 @@ def test_annotate_capsules_empty_list_returns_empty():
 
 def test_annotate_capsules_single_capsule():
     capsule = _make_capsule(0)
-    with patch("nlqueries.processing.intent_annotator.time.sleep"):
-        result = annotate_capsules([capsule], _FixedLLMClient("single"))
+    result = annotate_capsules([capsule], _FixedLLMClient("single"))
     assert len(result) == 1
     assert result[0].intent == "single"
 
@@ -201,7 +169,37 @@ def test_annotate_capsules_single_capsule():
 @pytest.mark.parametrize("n_capsules", [1, 10, 11, 20, 25])
 def test_annotate_capsules_parametrized_counts(n_capsules: int):
     capsules = [_make_capsule(i) for i in range(n_capsules)]
-    with patch("nlqueries.processing.intent_annotator.time.sleep"):
-        result = annotate_capsules(capsules, _FixedLLMClient("ok"), batch_size=10)
+    result = annotate_capsules(capsules, _FixedLLMClient("ok"))
     assert all(c.intent == "ok" for c in result)
     assert len(result) == n_capsules
+
+
+def test_annotate_capsules_runs_concurrently():
+    """At least _MAX_CONCURRENT threads must be active simultaneously."""
+    barrier = threading.Barrier(_MAX_CONCURRENT, timeout=5)
+
+    class _BarrierClient(LLMClient):
+        def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+            barrier.wait()
+            return "intent"
+
+        def stream(self, system: str, user: str) -> Iterator[str]:
+            yield "intent"
+
+    capsules = [_make_capsule(i) for i in range(_MAX_CONCURRENT)]
+    annotate_capsules(capsules, _BarrierClient())
+    assert all(c.intent == "intent" for c in capsules)
+
+
+def test_annotate_capsules_error_propagates():
+    """An exception raised by one capsule must bubble out of annotate_capsules."""
+
+    class _RaisingClient(LLMClient):
+        def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+            raise ValueError("LLM down")
+
+        def stream(self, system: str, user: str) -> Iterator[str]:
+            yield ""
+
+    with pytest.raises(ValueError, match="LLM down"):
+        annotate_capsules([_make_capsule(0)], _RaisingClient())
