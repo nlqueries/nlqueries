@@ -16,7 +16,9 @@ def _free_port() -> int:
 
 def _start_server_thread(port: int) -> None:
     """Load a mock model and start the embed server in a daemon thread."""
-    from nlqueries.embeddings.embed_server import _EmbedHandler, HTTPServer
+    import time
+
+    from nlqueries.embeddings.embed_server import HTTPServer, _EmbedHandler
 
     mock_model = MagicMock()
     # encode() returns a list-like; tolist() gives the final list
@@ -31,8 +33,6 @@ def _start_server_thread(port: int) -> None:
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     # give the server a moment to start
-    import time
-
     time.sleep(0.05)
     return server
 
@@ -96,11 +96,13 @@ def test_embed_text_uses_daemon_when_running():
     """embed_text must return the daemon vector without loading the local model."""
     sentinel = [0.42] * 384
 
-    with patch("nlqueries.embeddings.embedder._try_daemon_single", return_value=sentinel):
-        with patch("nlqueries.embeddings.embedder._get_model") as mock_get_model:
-            from nlqueries.embeddings.embedder import embed_text
+    with (
+        patch("nlqueries.embeddings.embedder._try_daemon_single", return_value=sentinel),
+        patch("nlqueries.embeddings.embedder._get_model") as mock_get_model,
+    ):
+        from nlqueries.embeddings.embedder import embed_text
 
-            result = embed_text("anything")
+        result = embed_text("anything")
 
     assert result == sentinel
     mock_get_model.assert_not_called()
@@ -108,21 +110,25 @@ def test_embed_text_uses_daemon_when_running():
 
 def test_embed_text_falls_back_to_local_model_when_daemon_down():
     """embed_text must load the local model when the daemon is unreachable."""
+    import importlib
+
     sentinel = [0.99] * 384
     mock_model = MagicMock()
     mock_model.encode.return_value = MagicMock(tolist=lambda: sentinel)
 
-    with patch("nlqueries.embeddings.embedder._try_daemon_single", return_value=None):
-        with patch("nlqueries.embeddings.embedder._get_model", return_value=mock_model):
-            from nlqueries.embeddings import embedder
+    with (
+        patch("nlqueries.embeddings.embedder._try_daemon_single", return_value=None),
+        patch("nlqueries.embeddings.embedder._get_model", return_value=mock_model),
+    ):
+        from nlqueries.embeddings import embedder
 
-            # reload to avoid cached module state from other tests
-            import importlib
-
-            importlib.reload(embedder)
-            with patch.object(embedder, "_try_daemon_single", return_value=None):
-                with patch.object(embedder, "_get_model", return_value=mock_model):
-                    result = embedder.embed_text("anything")
+        # reload to avoid cached module state from other tests
+        importlib.reload(embedder)
+        with (
+            patch.object(embedder, "_try_daemon_single", return_value=None),
+            patch.object(embedder, "_get_model", return_value=mock_model),
+        ):
+            result = embedder.embed_text("anything")
 
     assert result == sentinel
     mock_model.encode.assert_called_once()
