@@ -2484,7 +2484,6 @@ def embed_server_status() -> None:
     Example:
       nlqueries embed-server status
     """
-    import os as _os
     import urllib.error
     import urllib.request
 
@@ -2501,9 +2500,9 @@ def embed_server_status() -> None:
     pid = int(_PID_FILE.read_text().strip())
 
     # Verify the OS process is actually alive before checking HTTP.
-    try:
-        _os.kill(pid, 0)
-    except (ProcessLookupError, OSError):
+    from nlqueries.embeddings.embed_server import is_pid_alive
+
+    if not is_pid_alive(pid):
         console.print(f"  Process {pid} not found — removing stale PID file.")
         _PID_FILE.unlink(missing_ok=True)
         return

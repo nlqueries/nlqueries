@@ -15,6 +15,8 @@ import logging
 import os
 import pathlib
 import signal
+import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
 
@@ -26,6 +28,28 @@ _DEFAULT_PORT = 8765
 _PID_FILE = pathlib.Path.home() / ".nlqueries" / "embed-server.pid"
 
 logger = logging.getLogger(__name__)
+
+
+def is_pid_alive(pid: int) -> bool:
+    """Return True if a process with *pid* is currently running.
+
+    Uses tasklist on Windows because os.kill(pid, 0) maps to CTRL_C_EVENT
+    (value 0) there, which sends Ctrl+C to the whole console group instead of
+    checking process existence.
+    """
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def _load_model() -> SentenceTransformer:
