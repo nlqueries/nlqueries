@@ -75,6 +75,12 @@ LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
 
 # ---------------------------------------------------------------------------
+# Embedding daemon
+# ---------------------------------------------------------------------------
+EMBED_SERVER_PORT: int = int(os.getenv("EMBED_SERVER_PORT", "8765"))
+"""Port for the persistent embedding daemon (``nlqueries embed-server start``)."""
+
+# ---------------------------------------------------------------------------
 # Knowledge base
 # ---------------------------------------------------------------------------
 KB_PATH: Path = Path(os.getenv("KB_PATH", str(Path.home() / ".nlqueries" / "knowledge_base")))

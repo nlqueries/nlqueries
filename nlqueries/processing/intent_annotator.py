@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import logging
-import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from nlqueries.llm.client import LLMClient
 from nlqueries.processing.parameterizer import QueryCapsule
@@ -16,7 +17,8 @@ _SYSTEM_PROMPT = (
 )
 _MAX_INTENT_LENGTH = 200
 _BATCH_SIZE = 10
-_BATCH_DELAY = 1.0  # seconds between batches to avoid rate limits
+_BATCH_DELAY = 1.0  # kept for backward-compat imports; no longer used
+_MAX_CONCURRENT = 5
 
 
 def annotate_capsule(capsule: QueryCapsule, llm: LLMClient) -> QueryCapsule:
@@ -31,20 +33,24 @@ def annotate_capsule(capsule: QueryCapsule, llm: LLMClient) -> QueryCapsule:
 def annotate_capsules(
     capsules: list[QueryCapsule],
     llm: LLMClient,
-    batch_size: int = _BATCH_SIZE,
+    batch_size: int = _BATCH_SIZE,  # noqa: ARG001 — kept for API compat
+    on_capsule_done: Callable[[], None] | None = None,
 ) -> list[QueryCapsule]:
-    """Annotate all capsules in batches, sleeping 1 s between batches.
+    """Annotate all capsules concurrently using up to 5 threads.
 
     Each capsule's ``intent`` field is updated in-place via LLM completion.
-    Returns the same list.
+    ``on_capsule_done`` is called (in the main thread) after each capsule
+    completes — use it to advance a progress bar.
+    Returns the same list. Raises the first per-capsule exception encountered.
     """
-    total = len(capsules)
-    for batch_start in range(0, total, batch_size):
-        batch = capsules[batch_start : batch_start + batch_size]
-        for capsule in batch:
-            annotate_capsule(capsule, llm)
-        batch_end = min(batch_start + batch_size, total)
-        _log.info("Annotated %d/%d capsules", batch_end, total)
-        if batch_end < total:
-            time.sleep(_BATCH_DELAY)
+    if not capsules:
+        return capsules
+
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT) as pool:
+        futures = {pool.submit(annotate_capsule, cap, llm): cap for cap in capsules}
+        for i, future in enumerate(as_completed(futures), 1):
+            future.result()  # re-raises any exception from the thread
+            _log.info("Annotated %d/%d capsules", i, len(capsules))
+            if on_capsule_done is not None:
+                on_capsule_done()
     return capsules
