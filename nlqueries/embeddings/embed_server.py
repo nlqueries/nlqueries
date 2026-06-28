@@ -16,6 +16,10 @@ import os
 import pathlib
 import signal
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _DEFAULT_PORT = 8765
@@ -24,16 +28,17 @@ _PID_FILE = pathlib.Path.home() / ".nlqueries" / "embed-server.pid"
 logger = logging.getLogger(__name__)
 
 
-def _load_model():
+def _load_model() -> SentenceTransformer:
     from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-    return SentenceTransformer(_MODEL_NAME)
+    return SentenceTransformer(_MODEL_NAME)  # type: ignore[no-any-return]
 
 
 class _EmbedHandler(BaseHTTPRequestHandler):
-    model = None  # set by serve() before the server starts
+    model: SentenceTransformer | None = None  # set by serve() before the server starts
 
     def do_POST(self) -> None:  # noqa: N802
+        assert self.model is not None
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
 
@@ -55,7 +60,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def log_message(self, format, *args) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # silence per-request access log
 
 
@@ -68,7 +73,7 @@ def serve(port: int = _DEFAULT_PORT) -> None:
     _EmbedHandler.model = model
     server = HTTPServer(("127.0.0.1", port), _EmbedHandler)
 
-    def _shutdown(signum, frame) -> None:  # noqa: ARG001
+    def _shutdown(signum: int, frame: object) -> None:  # noqa: ARG001
         server.shutdown()
 
     signal.signal(signal.SIGTERM, _shutdown)

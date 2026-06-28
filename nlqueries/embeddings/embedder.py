@@ -15,7 +15,7 @@ import json as _json
 import os as _os
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -38,7 +38,7 @@ def _try_daemon_single(text: str) -> list[float] | None:
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=2) as resp:
-            return _json.loads(resp.read())["vector"]
+            return cast(list[float], _json.loads(resp.read())["vector"])
     except Exception:  # noqa: BLE001
         return None
 
@@ -53,7 +53,7 @@ def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=2) as resp:
-            return _json.loads(resp.read())["vectors"]
+            return cast(list[list[float]], _json.loads(resp.read())["vectors"])
     except Exception:  # noqa: BLE001
         return None
 
