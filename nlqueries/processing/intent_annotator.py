@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from nlqueries.llm.client import LLMClient
@@ -33,10 +34,13 @@ def annotate_capsules(
     capsules: list[QueryCapsule],
     llm: LLMClient,
     batch_size: int = _BATCH_SIZE,  # noqa: ARG001 — kept for API compat
+    on_capsule_done: Callable[[], None] | None = None,
 ) -> list[QueryCapsule]:
     """Annotate all capsules concurrently using up to 5 threads.
 
     Each capsule's ``intent`` field is updated in-place via LLM completion.
+    ``on_capsule_done`` is called (in the main thread) after each capsule
+    completes — use it to advance a progress bar.
     Returns the same list. Raises the first per-capsule exception encountered.
     """
     if not capsules:
@@ -47,4 +51,6 @@ def annotate_capsules(
         for i, future in enumerate(as_completed(futures), 1):
             future.result()  # re-raises any exception from the thread
             _log.info("Annotated %d/%d capsules", i, len(capsules))
+            if on_capsule_done is not None:
+                on_capsule_done()
     return capsules

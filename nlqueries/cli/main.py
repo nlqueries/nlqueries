@@ -1147,13 +1147,11 @@ def process_history(
             capsules = parameterize_clusters(clusters, schema=schema)
         console.print(f"  [3] [bold]{len(capsules)}[/bold] query capsules produced")
 
-        # Stage 4 — Annotate (optional); per-capsule progress bar so the user
-        # can see each LLM call completing rather than waiting in silence.
+        # Stage 4 — Annotate (optional); per-capsule progress bar driven by
+        # the on_capsule_done callback so it updates as concurrent threads finish.
         if annotate and capsules:
-            import time as _time
-
             from nlqueries.llm import get_llm_client
-            from nlqueries.processing.intent_annotator import annotate_capsule
+            from nlqueries.processing.intent_annotator import annotate_capsules
 
             _llm = get_llm_client()
             with Progress(
@@ -1164,12 +1162,7 @@ def process_history(
                 console=console,
             ) as _prog:
                 _task = _prog.add_task("", total=len(capsules))
-                for _i, _cap in enumerate(capsules):
-                    annotate_capsule(_cap, _llm)
-                    _prog.advance(_task)
-                    # Respect the same inter-batch delay used by annotate_capsules()
-                    if (_i + 1) % 10 == 0 and _i + 1 < len(capsules):
-                        _time.sleep(1.0)
+                annotate_capsules(capsules, _llm, on_capsule_done=lambda: _prog.advance(_task))
 
         # Stage 5 — Embed (optional)
         if embed and capsules:
