@@ -2491,6 +2491,7 @@ def embed_server_status() -> None:
     Example:
       nlqueries embed-server status
     """
+    import os as _os
     import urllib.error
     import urllib.request
 
@@ -2505,14 +2506,26 @@ def embed_server_status() -> None:
         return
 
     pid = int(_PID_FILE.read_text().strip())
+
+    # Verify the OS process is actually alive before checking HTTP.
+    try:
+        _os.kill(pid, 0)
+    except (ProcessLookupError, OSError):
+        console.print(f"  Process {pid} not found — removing stale PID file.")
+        _PID_FILE.unlink(missing_ok=True)
+        return
+
+    # Process alive — check whether HTTP server is ready yet.
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{_DEFAULT_PORT}/embed", timeout=1)
     except urllib.error.HTTPError:
-        pass  # 405 on GET means the server is alive
+        pass  # 405 on GET means the server is accepting connections
     except Exception:  # noqa: BLE001
+        # Process running but HTTP not up yet — still loading the model.
         console.print(
-            f"  PID file present (PID {pid}) but daemon is [red]not responding[/red]. "
-            "Try [bold]embed-server stop[/bold] then [bold]embed-server start[/bold]."
+            f"  Daemon [yellow]starting[/yellow] (PID {pid}) — "
+            "model is still loading (~9 s). "
+            "Run [bold]embed-server status[/bold] again in a moment."
         )
         return
 

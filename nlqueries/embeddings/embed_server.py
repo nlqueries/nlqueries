@@ -66,21 +66,22 @@ class _EmbedHandler(BaseHTTPRequestHandler):
 
 def serve(port: int = _DEFAULT_PORT) -> None:
     """Load the model and start the HTTP server. Blocks until SIGTERM/SIGINT."""
-    logger.info("Loading %s ...", _MODEL_NAME)
-    model = _load_model()
-    logger.info("Model loaded. Listening on localhost:%d", port)
-
-    _EmbedHandler.model = model
-    server = HTTPServer(("127.0.0.1", port), _EmbedHandler)
-
-    def _shutdown(signum: int, frame: object) -> None:  # noqa: ARG001
-        server.shutdown()
-
-    signal.signal(signal.SIGTERM, _shutdown)
-
+    # Write PID file immediately so `embed-server status` can see the process
+    # while the model is still loading (loading takes ~9 s).
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _PID_FILE.write_text(str(os.getpid()))
     try:
+        logger.info("Loading %s ...", _MODEL_NAME)
+        model = _load_model()
+        logger.info("Model loaded. Listening on localhost:%d", port)
+
+        _EmbedHandler.model = model
+        server = HTTPServer(("127.0.0.1", port), _EmbedHandler)
+
+        def _shutdown(signum: int, frame: object) -> None:  # noqa: ARG001
+            server.shutdown()
+
+        signal.signal(signal.SIGTERM, _shutdown)
         server.serve_forever()
     finally:
         _PID_FILE.unlink(missing_ok=True)
