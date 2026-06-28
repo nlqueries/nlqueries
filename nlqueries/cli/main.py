@@ -2434,8 +2434,7 @@ def embed_server_start(port: int, foreground: bool) -> None:
     if _PID_FILE.exists():
         pid = int(_PID_FILE.read_text().strip())
         console.print(
-            f"  Daemon already running (PID {pid}). "
-            "Use [bold]embed-server stop[/bold] first."
+            f"  Daemon already running (PID {pid}). Use [bold]embed-server stop[/bold] first."
         )
         return
 
