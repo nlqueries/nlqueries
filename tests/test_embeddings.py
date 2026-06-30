@@ -87,7 +87,12 @@ class TestEmbedText:
         mock_model = MagicMock()
         mock_model.encode.return_value = fake_array
 
-        with patch("nlqueries.embeddings.embedder._model", mock_model):
+        with (
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            # Suppress the daemon probe so the local-model path is always exercised,
+            # even when `nlqueries embed-server` is running in the background.
+            patch("nlqueries.embeddings.embedder._try_daemon_single", return_value=None),
+        ):
             from nlqueries.embeddings.embedder import embed_text
 
             embed_text("hello")
@@ -120,7 +125,12 @@ class TestEmbedBatch:
         mock_model = MagicMock()
         mock_model.encode.return_value = fake_arrays
 
-        with patch("nlqueries.embeddings.embedder._model", mock_model):
+        with (
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            # Suppress the daemon probe so the local-model path is always exercised,
+            # even when `nlqueries embed-server` is running in the background.
+            patch("nlqueries.embeddings.embedder._try_daemon_batch", return_value=None),
+        ):
             from nlqueries.embeddings.embedder import embed_batch
 
             embed_batch(texts)
