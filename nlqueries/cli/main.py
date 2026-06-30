@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -244,6 +245,173 @@ def _build_url(
         return f"snowflake://{quote_plus(user)}:{quote_plus(password)}@{acct}/{database}"
 
     return f"{scheme}://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{database}"
+
+
+# ---------------------------------------------------------------------------
+# Health-check helpers (#34)
+# ---------------------------------------------------------------------------
+
+
+class _CheckResult:
+    """Result of a single service health check."""
+
+    def __init__(self, service: str, status: str, detail: str, error: str = "") -> None:
+        self.service = service
+        self.status = status  # "ok" | "fail" | "skip" | "warn"
+        self.detail = detail
+        self.error = error
+
+
+def _check_qdrant(qdrant_url: str) -> _CheckResult:
+    import json as _json  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(f"{qdrant_url}/", timeout=3) as resp:
+            data = _json.loads(resp.read())
+            ms = int((time.monotonic() - t0) * 1000)
+            version = data.get("version", "?")
+            host = qdrant_url.removeprefix("http://").removeprefix("https://")
+            return _CheckResult("Qdrant", "ok", f"reachable at {host} (version {version}, {ms} ms)")
+    except urllib.error.URLError as exc:
+        return _CheckResult(
+            "Qdrant",
+            "fail",
+            f"connection refused — is Qdrant running at {qdrant_url}?",
+            str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _CheckResult("Qdrant", "fail", f"unexpected error: {exc}", str(exc))
+
+
+def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
+    connectors = _load_connectors()
+    if not connectors:
+        return [
+            _CheckResult(
+                "Database", "skip", "no connectors registered — run 'nlqueries connect' first"
+            )
+        ]
+
+    if connector_filter:
+        resolved = _resolve_alias(connector_filter)
+        if resolved not in connectors:
+            return [_CheckResult("Database", "fail", f"connector '{connector_filter}' not found")]
+        connectors = {resolved: connectors[resolved]}
+
+    results: list[_CheckResult] = []
+    for cid, cfg in connectors.items():
+        db_type = cfg.get("db_type", "")
+        alias = cfg.get("alias", "")
+        label_name = alias if alias else cid
+        service = f"Database ({label_name})"
+
+        connector_cls = CONNECTOR_REGISTRY.get(db_type.lower())
+        if connector_cls is None:
+            results.append(
+                _CheckResult(service, "skip", f"no connector class for db_type '{db_type}'")
+            )
+            continue
+
+        try:
+            from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+            parsed = make_url(cfg["url"])
+            connector = connector_cls()
+            connector.connect(
+                {
+                    "host": parsed.host or cfg.get("host", "localhost"),
+                    "port": parsed.port or cfg.get("port"),
+                    "database": parsed.database or cfg.get("database"),
+                    "user": parsed.username or cfg.get("user"),
+                    "password": _load_password(cid, cfg),
+                    "account": cfg.get("account"),
+                    "warehouse": cfg.get("warehouse"),
+                    "schema": cfg.get("schema"),
+                }
+            )
+            t0 = time.monotonic()
+            qr = connector.execute_query("SELECT 1")
+            ms = int((time.monotonic() - t0) * 1000)
+            if qr.error:
+                results.append(_CheckResult(service, "fail", f"SELECT 1 failed: {qr.error}"))
+            else:
+                db_name = cfg.get("database", "?")
+                results.append(_CheckResult(service, "ok", f"{db_name} connected ({ms} ms)"))
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                _CheckResult(
+                    service, "fail", "connection failed — is the database running?", str(exc)
+                )
+            )
+
+    return results
+
+
+def _check_llm() -> _CheckResult:
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    if not has_key:
+        return _CheckResult(
+            "LLM provider", "fail", "no API key set (ANTHROPIC_API_KEY or OPENAI_API_KEY)"
+        )
+
+    from nlqueries.config import LLM_MODEL, LLM_PROVIDER  # noqa: PLC0415
+
+    try:
+        from nlqueries.llm import get_llm_client  # noqa: PLC0415
+
+        llm = get_llm_client()
+        t0 = time.monotonic()
+        llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
+        ms = int((time.monotonic() - t0) * 1000)
+        return _CheckResult(
+            "LLM provider", "ok", f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _CheckResult(
+            "LLM provider", "fail", f"{LLM_PROVIDER} — {LLM_MODEL}: {exc}", str(exc)
+        )
+
+
+def _check_embedding() -> _CheckResult:
+    from nlqueries.embeddings.embed_server import _DEFAULT_PORT  # noqa: PLC0415
+    from nlqueries.embeddings.embedder import _try_daemon_single  # noqa: PLC0415
+
+    vec = _try_daemon_single("health")
+    if vec is not None:
+        return _CheckResult(
+            "Embedding model", "ok", f"daemon running on port {_DEFAULT_PORT} (dim {len(vec)})"
+        )
+    return _CheckResult(
+        "Embedding model",
+        "warn",
+        "daemon not running — embeddings load ~9 s per invocation; "
+        "start with 'nlqueries embed-server start'",
+    )
+
+
+def _check_config() -> _CheckResult:
+    issues: list[str] = []
+    notes: list[str] = []
+
+    if KB_PATH.exists():
+        notes.append("KB_PATH exists")
+    else:
+        issues.append(f"KB_PATH {KB_PATH} not found (run export-kb to create)")
+
+    if os.environ.get("QDRANT_URL"):
+        notes.append("QDRANT_URL set")
+    else:
+        notes.append("QDRANT_URL using default (localhost:6333)")
+
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")):
+        issues.append("no LLM API key set")
+
+    if issues:
+        return _CheckResult("Config", "warn", "; ".join(issues))
+    return _CheckResult("Config", "ok", ", ".join(notes))
 
 
 # ---------------------------------------------------------------------------
@@ -2379,6 +2547,104 @@ def feedback_stats(agent_id: str) -> None:
             )
             tbl.add_row(q, gen, cor)
         console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# health (#34)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("health")
+@click.option(
+    "--connector",
+    "connector_filter",
+    default=None,
+    metavar="ALIAS",
+    help="Check only the named connector instead of all.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Show full error details for failures.",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Emit results as JSON for scripting / CI health checks.",
+)
+def health(connector_filter: str | None, verbose: bool, output_json: bool) -> None:
+    """Check the status of all services NLQueries depends on.
+
+    \b
+    Checks Qdrant, registered database connectors, LLM provider, the
+    embedding model daemon, and local configuration.
+
+    \b
+    Exits 0 when all checks pass, 1 when any check fails.
+
+    \b
+    Examples:
+      nlqueries health
+      nlqueries health --connector dvdrental
+      nlqueries health --json
+      nlqueries health --verbose
+    """
+    import json as _json  # noqa: PLC0415
+
+    checks: list[_CheckResult] = []
+    checks.append(_check_qdrant(QDRANT_URL))
+    checks.extend(_check_connectors(connector_filter))
+    checks.append(_check_llm())
+    checks.append(_check_embedding())
+    checks.append(_check_config())
+
+    any_fail = any(c.status == "fail" for c in checks)
+
+    if output_json:
+        payload: dict[str, object] = {
+            "checks": [
+                {
+                    "service": c.service,
+                    "status": c.status,
+                    "detail": c.detail,
+                    **({"error": c.error} if verbose and c.error else {}),
+                }
+                for c in checks
+            ],
+            "healthy": not any_fail,
+        }
+        console.print_json(_json.dumps(payload))
+    else:
+        _STATUS_ICON = {
+            "ok": "[bold green][OK]  [/bold green]",
+            "fail": "[bold red][FAIL][/bold red]",
+            "skip": "[dim][SKIP][/dim] ",
+            "warn": "[yellow][WARN][/yellow]",
+        }
+        console.print("[bold]NLQueries health check[/bold]")
+        console.print("─" * 46)
+        for c in checks:
+            icon = _STATUS_ICON.get(c.status, c.status)
+            svc = c.service.ljust(20)
+            console.print(f"  {icon} {svc} {c.detail}")
+            if verbose and c.error:
+                for line in c.error.splitlines():
+                    console.print(f"           [dim]{line}[/dim]")
+        console.print()
+        if any_fail:
+            fail_count = sum(1 for c in checks if c.status == "fail")
+            console.print(
+                f"  [bold red]{fail_count} service(s) unhealthy.[/bold red] "
+                "Run [bold]nlqueries health --verbose[/bold] for details."
+            )
+        else:
+            console.print("  [bold green]All services healthy.[/bold green]")
+
+    if any_fail:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
