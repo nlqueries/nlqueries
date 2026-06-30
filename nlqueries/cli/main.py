@@ -2648,6 +2648,273 @@ def health(connector_filter: str | None, verbose: bool, output_json: bool) -> No
 
 
 # ---------------------------------------------------------------------------
+# kb-stats (#35)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("kb-stats")
+@click.argument("agent_id")
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Show per-table breakdown (row count, column coverage %).",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Emit the full report as JSON for CI or scripting.",
+)
+def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
+    """Print a coverage and quality report for a knowledge base.
+
+    \b
+    AGENT_ID  the connector ID used when you ran 'nlqueries export-kb'
+
+    \b
+    Checks schema coverage (tables and columns with descriptions),
+    query-capsule coverage, join coverage (when connected), and quality
+    signals (feedback, cache).
+
+    \b
+    Exits 0 when the knowledge base file exists, 1 when it is missing.
+
+    \b
+    Examples:
+      nlqueries kb-stats postgres:localhost:mydb
+      nlqueries kb-stats postgres:localhost:mydb --verbose
+      nlqueries kb-stats postgres:localhost:mydb --json
+    """
+    import json as _json  # noqa: PLC0415
+    from datetime import datetime  # noqa: PLC0415
+
+    from nlqueries.knowledge.kb_stats import compute_kb_stats  # noqa: PLC0415
+
+    agent_id = _resolve_alias(agent_id)
+    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    kb_path = KB_PATH / f"{safe_id}.yaml"
+
+    # Try to connect to the live DB — best-effort; skip gracefully on failure.
+    connector: Any = None
+    cfg = _load_connectors().get(agent_id)
+    if cfg is not None:
+        connector_cls = CONNECTOR_REGISTRY.get((cfg.get("db_type") or "").lower())
+        if connector_cls is not None:
+            try:
+                from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+                parsed = make_url(cfg["url"])
+                connector = connector_cls()
+                connector.connect(
+                    {
+                        "host": parsed.host or cfg.get("host", "localhost"),
+                        "port": parsed.port or cfg.get("port"),
+                        "database": parsed.database or cfg.get("database"),
+                        "user": parsed.username or cfg.get("user"),
+                        "password": _load_password(agent_id, cfg),
+                        "account": cfg.get("account"),
+                        "warehouse": cfg.get("warehouse"),
+                        "schema": cfg.get("schema"),
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                connector = None
+
+    stats = compute_kb_stats(agent_id, kb_path, connector)
+
+    if not kb_path.exists():
+        err_console.print(
+            f"[bold red]Error:[/bold red] no knowledge base found at {kb_path}. "
+            "Run [bold]nlqueries export-kb[/bold] first."
+        )
+        sys.exit(1)
+
+    def _pct(num: int, den: int) -> str:
+        return f"{num / den * 100:5.0f}%" if den else "  N/A"
+
+    def _na(val: int | None) -> str:
+        return str(val) if val is not None else "N/A"
+
+    if output_json:
+        payload: dict[str, Any] = {
+            "agent_id": agent_id,
+            "kb_path": str(kb_path),
+            "kb_age_seconds": (
+                int(datetime.now(UTC).timestamp() - stats.kb_mtime)
+                if stats.kb_mtime is not None
+                else None
+            ),
+            "schema_coverage": {
+                "kb_tables": stats.kb_tables,
+                "kb_tables_with_desc": stats.kb_tables_with_desc,
+                "kb_columns": stats.kb_columns,
+                "kb_columns_with_desc": stats.kb_columns_with_desc,
+                "kb_tables_with_samples": stats.kb_tables_with_samples,
+                "db_tables": stats.db_tables,
+                "db_columns": stats.db_columns,
+                "ambiguous_columns": stats.ambiguous_columns,
+            },
+            "query_coverage": {
+                "capsule_count": stats.capsule_count,
+                "capsule_with_intent": stats.capsule_with_intent,
+                "joins_in_capsules": stats.joins_in_capsules,
+            },
+            "join_coverage": {
+                "fk_joins": stats.fk_joins,
+                "fk_joins_seen": stats.fk_joins_seen,
+            },
+            "quality_signals": {
+                "feedback_total": stats.feedback_total,
+                "feedback_thumbs_up": stats.feedback_thumbs_up,
+                "feedback_thumbs_down": stats.feedback_thumbs_down,
+                "feedback_corrections": stats.feedback_corrections,
+                "cache_entries": stats.cache_entries,
+            },
+        }
+        if verbose:
+            payload["table_details"] = [
+                {
+                    "name": td.name,
+                    "row_count": td.row_count,
+                    "column_count": td.column_count,
+                    "columns_with_desc": td.columns_with_desc,
+                    "has_table_desc": td.has_table_desc,
+                }
+                for td in stats.table_details
+            ]
+        console.print_json(_json.dumps(payload))
+        return
+
+    # Human-readable output
+    age_str = ""
+    if stats.kb_mtime is not None:
+        age_s = int(datetime.now(UTC).timestamp() - stats.kb_mtime)
+        if age_s < 3600:
+            age_str = f" ({age_s // 60} min ago)"
+        elif age_s < 86400:
+            age_str = f" ({age_s // 3600} h ago)"
+        else:
+            age_str = f" ({age_s // 86400} day(s) ago)"
+        mtime_str = datetime.fromtimestamp(stats.kb_mtime).strftime("%Y-%m-%d %H:%M")
+    else:
+        mtime_str = "unknown"
+
+    console.print(f"[bold]Knowledge Base — {agent_id}[/bold]")
+    console.print(f"Last exported : {mtime_str}{age_str}")
+    console.print("─" * 56)
+
+    console.print()
+    console.print("[bold]Schema coverage[/bold]")
+    if stats.db_tables is not None:
+        missing_tables = stats.db_tables - stats.kb_tables
+        console.print(f"  Tables in database        : {stats.db_tables:>4}")
+        console.print(
+            f"  Tables in KB              : {stats.kb_tables:>4}"
+            f"   ({_pct(stats.kb_tables, stats.db_tables)})"
+            + (f"   ← {missing_tables} missing" if missing_tables else "")
+        )
+    else:
+        console.print(f"  Tables in KB              : {stats.kb_tables:>4}")
+    missing_desc = stats.kb_tables - stats.kb_tables_with_desc
+    console.print(
+        f"  Tables with a description : {stats.kb_tables_with_desc:>4}"
+        f"   ({_pct(stats.kb_tables_with_desc, stats.kb_tables)})"
+        + (f"   ← {missing_desc} missing" if missing_desc else "")
+    )
+    if stats.db_columns is not None:
+        missing_cols = stats.db_columns - stats.kb_columns
+        console.print(f"  Columns in database       : {stats.db_columns:>4}")
+        console.print(
+            f"  Columns in KB             : {stats.kb_columns:>4}"
+            f"   ({_pct(stats.kb_columns, stats.db_columns)})"
+            + (f"   ← {missing_cols} missing" if missing_cols else "")
+        )
+    else:
+        console.print(f"  Columns in KB             : {stats.kb_columns:>4}")
+    missing_col_desc = stats.kb_columns - stats.kb_columns_with_desc
+    console.print(
+        f"  Columns with a description: {stats.kb_columns_with_desc:>4}"
+        f"   ({_pct(stats.kb_columns_with_desc, stats.kb_columns)})"
+        + (f"   ← {missing_col_desc} blank" if missing_col_desc else "")
+    )
+    if stats.ambiguous_columns:
+        console.print(
+            f"  [yellow]Ambiguous columns (no desc): {stats.ambiguous_columns:>4}"
+            "   ← status/type/code/value/…[/yellow]"
+        )
+    console.print(
+        f"  Tables with sample rows   : {stats.kb_tables_with_samples:>4}"
+        f"   ({_pct(stats.kb_tables_with_samples, stats.kb_tables)})"
+    )
+
+    console.print()
+    console.print("[bold]Query coverage[/bold]")
+    console.print(f"  Query capsules            : {stats.capsule_count:>4}")
+    missing_intent = stats.capsule_count - stats.capsule_with_intent
+    console.print(
+        f"  Capsules with intent      : {stats.capsule_with_intent:>4}"
+        f"   ({_pct(stats.capsule_with_intent, stats.capsule_count)})"
+        + (f"   ← {missing_intent} unannotated" if missing_intent else "")
+    )
+    console.print(f"  JOIN keywords in capsules : {stats.joins_in_capsules:>4}")
+
+    if stats.fk_joins is not None:
+        console.print()
+        console.print("[bold]Join coverage[/bold]")
+        console.print(f"  FK-declared joins         : {stats.fk_joins:>4}")
+        fk_unseen = stats.fk_joins - (stats.fk_joins_seen or 0)
+        console.print(
+            f"  FK joins seen in capsules : {_na(stats.fk_joins_seen):>4}"
+            f"   ({_pct(stats.fk_joins_seen or 0, stats.fk_joins)})"
+            + (f"   ← {fk_unseen} FK joins never used" if fk_unseen else "")
+        )
+
+    console.print()
+    console.print("[bold]Quality signals[/bold]")
+    cache_str = _na(stats.cache_entries) if stats.cache_entries != 0 else "0"
+    console.print(f"  Cache entries             : {cache_str:>4}")
+    fb_detail = (
+        f"   ({stats.feedback_thumbs_up} 👍  {stats.feedback_thumbs_down} 👎)"
+        if stats.feedback_total
+        else ""
+    )
+    console.print(f"  Feedback recorded         : {stats.feedback_total:>4}{fb_detail}")
+    console.print(f"  Corrections applied to KB : {stats.feedback_corrections:>4}")
+
+    if verbose and stats.table_details:
+        console.print()
+        console.print("[bold]Per-table breakdown[/bold]")
+        from rich.table import Table  # noqa: PLC0415
+
+        tbl = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        tbl.add_column("Table", style="cyan", no_wrap=True)
+        tbl.add_column("Rows", justify="right")
+        tbl.add_column("Cols", justify="right")
+        tbl.add_column("Desc%", justify="right")
+        tbl.add_column("Table desc?", justify="center")
+        for td in sorted(stats.table_details, key=lambda x: x.name):
+            rows_str = str(td.row_count) if td.row_count is not None else "?"
+            desc_pct = _pct(td.columns_with_desc, td.column_count)
+            has_desc = "✓" if td.has_table_desc else "✗"
+            tbl.add_row(td.name, rows_str, str(td.column_count), desc_pct, has_desc)
+        console.print(tbl)
+
+    console.print()
+    if verbose:
+        console.print(
+            f"  [dim]Run [bold]nlqueries kb-stats {agent_id}[/bold]"
+            " without --verbose for the summary view.[/dim]"
+        )
+    else:
+        console.print(
+            f"  [dim]Run [bold]nlqueries kb-stats {agent_id} --verbose[/bold]"
+            " for per-table and per-column breakdowns.[/dim]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # embed-server command group (#32 — persistent embedding daemon)
 # ---------------------------------------------------------------------------
 
