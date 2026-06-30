@@ -63,6 +63,9 @@ _DB_SCHEMES: dict[str, str] = {
     "mysql": "mysql+pymysql",
     "bigquery": "bigquery",
     "snowflake": "snowflake",
+    "redshift": "redshift+redshift_connector",
+    "mssql": "mssql+pymssql",
+    "duckdb": "duckdb",
 }
 
 _DEFAULT_PORTS: dict[str, int] = {
@@ -71,6 +74,8 @@ _DEFAULT_PORTS: dict[str, int] = {
     "mysql": 3306,
     "bigquery": 443,
     "snowflake": 443,
+    "redshift": 5439,
+    "mssql": 1433,
 }
 
 
@@ -243,6 +248,11 @@ def _build_url(
     if db_type_l == "snowflake":
         acct = account or host
         return f"snowflake://{quote_plus(user)}:{quote_plus(password)}@{acct}/{database}"
+
+    if db_type_l == "duckdb":
+        # DuckDB uses a file path or :memory: — no host/port/user/password in the URL.
+        db_path = database or ":memory:"
+        return f"duckdb:///{db_path}" if db_path != ":memory:" else "duckdb:///:memory:"
 
     return f"{scheme}://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{database}"
 
@@ -512,11 +522,16 @@ def connect(
     """Test a database connection and register it as a named connector.
 
     \b
-    DB_TYPE  one of: postgres, mysql, bigquery, snowflake
+    DB_TYPE  one of: postgres, mysql, bigquery, snowflake, redshift, mssql, duckdb
 
     \b
     Examples:
       nlqueries connect postgres --database mydb --user alice --password secret
+      nlqueries connect redshift --host cluster.abc.us-east-1.redshift.amazonaws.com \\
+          --database dev --user awsuser --password secret
+      nlqueries connect mssql --host myserver.database.windows.net \\
+          --database mydb --user alice --password secret
+      nlqueries connect duckdb --database /data/warehouse.db
       nlqueries connect snowflake --account acme-prod --database PROD --user bob \\
           --password s3cr3t --warehouse COMPUTE_WH --schema PUBLIC
       nlqueries connect bigquery --project-id acme-prod --dataset-id analytics \\
@@ -529,7 +544,9 @@ def connect(
     # Priority: --password-env VAR > --password <value> > interactive prompt.
     # BigQuery uses service-account auth and never needs a password.
     # ------------------------------------------------------------------
-    if db_type_l != "bigquery":
+    # DuckDB has no user/password — skip credential prompting entirely.
+    _no_auth_types = {"bigquery", "duckdb"}
+    if db_type_l not in _no_auth_types:
         if password_env is not None:
             password = os.environ.get(password_env) or ""
             if not password:
@@ -568,6 +585,9 @@ def connect(
                 f"  Example: nlqueries connect snowflake --account acme-prod "
                 f"--database PROD --user bob --password s3cr3t --warehouse COMPUTE_WH"
             )
+    elif db_type_l == "duckdb":
+        # DuckDB only needs a database path (or :memory: which is the default).
+        pass
     else:
         missing = [
             name
@@ -607,6 +627,10 @@ def connect(
 
     if db_type_l == "bigquery":
         console.print(f"[bold]Connecting[/bold] to BigQuery project [cyan]{project_id}[/cyan] …")
+    elif db_type_l == "duckdb":
+        db_label = database or ":memory:"
+        cid = connector_id or f"duckdb:{db_label}"
+        console.print(f"[bold]Connecting[/bold] to DuckDB at [cyan]{db_label}[/cyan] …")
     else:
         console.print(
             f"[bold]Connecting[/bold] to {db_type} at "
@@ -698,6 +722,11 @@ def connect(
             config["dataset_id"] = dataset_id
         if service_account_json:
             config["service_account_json"] = service_account_json
+    if db_type_l == "duckdb":
+        # DuckDB has no host/port/user — store the database path directly.
+        config["host"] = ""
+        config["port"] = 0
+        config["user"] = ""
     _save_connector(cid, config)
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
