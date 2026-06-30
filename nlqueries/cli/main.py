@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -244,6 +245,173 @@ def _build_url(
         return f"snowflake://{quote_plus(user)}:{quote_plus(password)}@{acct}/{database}"
 
     return f"{scheme}://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{database}"
+
+
+# ---------------------------------------------------------------------------
+# Health-check helpers (#34)
+# ---------------------------------------------------------------------------
+
+
+class _CheckResult:
+    """Result of a single service health check."""
+
+    def __init__(self, service: str, status: str, detail: str, error: str = "") -> None:
+        self.service = service
+        self.status = status  # "ok" | "fail" | "skip" | "warn"
+        self.detail = detail
+        self.error = error
+
+
+def _check_qdrant(qdrant_url: str) -> _CheckResult:
+    import json as _json  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(f"{qdrant_url}/", timeout=3) as resp:
+            data = _json.loads(resp.read())
+            ms = int((time.monotonic() - t0) * 1000)
+            version = data.get("version", "?")
+            host = qdrant_url.removeprefix("http://").removeprefix("https://")
+            return _CheckResult("Qdrant", "ok", f"reachable at {host} (version {version}, {ms} ms)")
+    except urllib.error.URLError as exc:
+        return _CheckResult(
+            "Qdrant",
+            "fail",
+            f"connection refused — is Qdrant running at {qdrant_url}?",
+            str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _CheckResult("Qdrant", "fail", f"unexpected error: {exc}", str(exc))
+
+
+def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
+    connectors = _load_connectors()
+    if not connectors:
+        return [
+            _CheckResult(
+                "Database", "skip", "no connectors registered — run 'nlqueries connect' first"
+            )
+        ]
+
+    if connector_filter:
+        resolved = _resolve_alias(connector_filter)
+        if resolved not in connectors:
+            return [_CheckResult("Database", "fail", f"connector '{connector_filter}' not found")]
+        connectors = {resolved: connectors[resolved]}
+
+    results: list[_CheckResult] = []
+    for cid, cfg in connectors.items():
+        db_type = cfg.get("db_type", "")
+        alias = cfg.get("alias", "")
+        label_name = alias if alias else cid
+        service = f"Database ({label_name})"
+
+        connector_cls = CONNECTOR_REGISTRY.get(db_type.lower())
+        if connector_cls is None:
+            results.append(
+                _CheckResult(service, "skip", f"no connector class for db_type '{db_type}'")
+            )
+            continue
+
+        try:
+            from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+            parsed = make_url(cfg["url"])
+            connector = connector_cls()
+            connector.connect(
+                {
+                    "host": parsed.host or cfg.get("host", "localhost"),
+                    "port": parsed.port or cfg.get("port"),
+                    "database": parsed.database or cfg.get("database"),
+                    "user": parsed.username or cfg.get("user"),
+                    "password": _load_password(cid, cfg),
+                    "account": cfg.get("account"),
+                    "warehouse": cfg.get("warehouse"),
+                    "schema": cfg.get("schema"),
+                }
+            )
+            t0 = time.monotonic()
+            qr = connector.execute_query("SELECT 1")
+            ms = int((time.monotonic() - t0) * 1000)
+            if qr.error:
+                results.append(_CheckResult(service, "fail", f"SELECT 1 failed: {qr.error}"))
+            else:
+                db_name = cfg.get("database", "?")
+                results.append(_CheckResult(service, "ok", f"{db_name} connected ({ms} ms)"))
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                _CheckResult(
+                    service, "fail", "connection failed — is the database running?", str(exc)
+                )
+            )
+
+    return results
+
+
+def _check_llm() -> _CheckResult:
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    if not has_key:
+        return _CheckResult(
+            "LLM provider", "fail", "no API key set (ANTHROPIC_API_KEY or OPENAI_API_KEY)"
+        )
+
+    from nlqueries.config import LLM_MODEL, LLM_PROVIDER  # noqa: PLC0415
+
+    try:
+        from nlqueries.llm import get_llm_client  # noqa: PLC0415
+
+        llm = get_llm_client()
+        t0 = time.monotonic()
+        llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
+        ms = int((time.monotonic() - t0) * 1000)
+        return _CheckResult(
+            "LLM provider", "ok", f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _CheckResult(
+            "LLM provider", "fail", f"{LLM_PROVIDER} — {LLM_MODEL}: {exc}", str(exc)
+        )
+
+
+def _check_embedding() -> _CheckResult:
+    from nlqueries.embeddings.embed_server import _DEFAULT_PORT  # noqa: PLC0415
+    from nlqueries.embeddings.embedder import _try_daemon_single  # noqa: PLC0415
+
+    vec = _try_daemon_single("health")
+    if vec is not None:
+        return _CheckResult(
+            "Embedding model", "ok", f"daemon running on port {_DEFAULT_PORT} (dim {len(vec)})"
+        )
+    return _CheckResult(
+        "Embedding model",
+        "warn",
+        "daemon not running — embeddings load ~9 s per invocation; "
+        "start with 'nlqueries embed-server start'",
+    )
+
+
+def _check_config() -> _CheckResult:
+    issues: list[str] = []
+    notes: list[str] = []
+
+    if KB_PATH.exists():
+        notes.append("KB_PATH exists")
+    else:
+        issues.append(f"KB_PATH {KB_PATH} not found (run export-kb to create)")
+
+    if os.environ.get("QDRANT_URL"):
+        notes.append("QDRANT_URL set")
+    else:
+        notes.append("QDRANT_URL using default (localhost:6333)")
+
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")):
+        issues.append("no LLM API key set")
+
+    if issues:
+        return _CheckResult("Config", "warn", "; ".join(issues))
+    return _CheckResult("Config", "ok", ", ".join(notes))
 
 
 # ---------------------------------------------------------------------------
@@ -2379,6 +2547,371 @@ def feedback_stats(agent_id: str) -> None:
             )
             tbl.add_row(q, gen, cor)
         console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# health (#34)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("health")
+@click.option(
+    "--connector",
+    "connector_filter",
+    default=None,
+    metavar="ALIAS",
+    help="Check only the named connector instead of all.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Show full error details for failures.",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Emit results as JSON for scripting / CI health checks.",
+)
+def health(connector_filter: str | None, verbose: bool, output_json: bool) -> None:
+    """Check the status of all services NLQueries depends on.
+
+    \b
+    Checks Qdrant, registered database connectors, LLM provider, the
+    embedding model daemon, and local configuration.
+
+    \b
+    Exits 0 when all checks pass, 1 when any check fails.
+
+    \b
+    Examples:
+      nlqueries health
+      nlqueries health --connector dvdrental
+      nlqueries health --json
+      nlqueries health --verbose
+    """
+    import json as _json  # noqa: PLC0415
+
+    checks: list[_CheckResult] = []
+    checks.append(_check_qdrant(QDRANT_URL))
+    checks.extend(_check_connectors(connector_filter))
+    checks.append(_check_llm())
+    checks.append(_check_embedding())
+    checks.append(_check_config())
+
+    any_fail = any(c.status == "fail" for c in checks)
+
+    if output_json:
+        payload: dict[str, object] = {
+            "checks": [
+                {
+                    "service": c.service,
+                    "status": c.status,
+                    "detail": c.detail,
+                    **({"error": c.error} if verbose and c.error else {}),
+                }
+                for c in checks
+            ],
+            "healthy": not any_fail,
+        }
+        console.print_json(_json.dumps(payload))
+    else:
+        _STATUS_ICON = {
+            "ok": "[bold green][OK]  [/bold green]",
+            "fail": "[bold red][FAIL][/bold red]",
+            "skip": "[dim][SKIP][/dim] ",
+            "warn": "[yellow][WARN][/yellow]",
+        }
+        console.print("[bold]NLQueries health check[/bold]")
+        console.print("─" * 46)
+        for c in checks:
+            icon = _STATUS_ICON.get(c.status, c.status)
+            svc = c.service.ljust(20)
+            console.print(f"  {icon} {svc} {c.detail}")
+            if verbose and c.error:
+                for line in c.error.splitlines():
+                    console.print(f"           [dim]{line}[/dim]")
+        console.print()
+        if any_fail:
+            fail_count = sum(1 for c in checks if c.status == "fail")
+            console.print(
+                f"  [bold red]{fail_count} service(s) unhealthy.[/bold red] "
+                "Run [bold]nlqueries health --verbose[/bold] for details."
+            )
+        else:
+            console.print("  [bold green]All services healthy.[/bold green]")
+
+    if any_fail:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# kb-stats (#35)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("kb-stats")
+@click.argument("agent_id")
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Show per-table breakdown (row count, column coverage %).",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Emit the full report as JSON for CI or scripting.",
+)
+def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
+    """Print a coverage and quality report for a knowledge base.
+
+    \b
+    AGENT_ID  the connector ID used when you ran 'nlqueries export-kb'
+
+    \b
+    Checks schema coverage (tables and columns with descriptions),
+    query-capsule coverage, join coverage (when connected), and quality
+    signals (feedback, cache).
+
+    \b
+    Exits 0 when the knowledge base file exists, 1 when it is missing.
+
+    \b
+    Examples:
+      nlqueries kb-stats postgres:localhost:mydb
+      nlqueries kb-stats postgres:localhost:mydb --verbose
+      nlqueries kb-stats postgres:localhost:mydb --json
+    """
+    import json as _json  # noqa: PLC0415
+    from datetime import datetime  # noqa: PLC0415
+
+    from nlqueries.knowledge.kb_stats import compute_kb_stats  # noqa: PLC0415
+
+    agent_id = _resolve_alias(agent_id)
+    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    kb_path = KB_PATH / f"{safe_id}.yaml"
+
+    # Try to connect to the live DB — best-effort; skip gracefully on failure.
+    connector: Any = None
+    cfg = _load_connectors().get(agent_id)
+    if cfg is not None:
+        connector_cls = CONNECTOR_REGISTRY.get((cfg.get("db_type") or "").lower())
+        if connector_cls is not None:
+            try:
+                from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+                parsed = make_url(cfg["url"])
+                connector = connector_cls()
+                connector.connect(
+                    {
+                        "host": parsed.host or cfg.get("host", "localhost"),
+                        "port": parsed.port or cfg.get("port"),
+                        "database": parsed.database or cfg.get("database"),
+                        "user": parsed.username or cfg.get("user"),
+                        "password": _load_password(agent_id, cfg),
+                        "account": cfg.get("account"),
+                        "warehouse": cfg.get("warehouse"),
+                        "schema": cfg.get("schema"),
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                connector = None
+
+    stats = compute_kb_stats(agent_id, kb_path, connector)
+
+    if not kb_path.exists():
+        err_console.print(
+            f"[bold red]Error:[/bold red] no knowledge base found at {kb_path}. "
+            "Run [bold]nlqueries export-kb[/bold] first."
+        )
+        sys.exit(1)
+
+    def _pct(num: int, den: int) -> str:
+        return f"{num / den * 100:5.0f}%" if den else "  N/A"
+
+    def _na(val: int | None) -> str:
+        return str(val) if val is not None else "N/A"
+
+    if output_json:
+        payload: dict[str, Any] = {
+            "agent_id": agent_id,
+            "kb_path": str(kb_path),
+            "kb_age_seconds": (
+                int(datetime.now(UTC).timestamp() - stats.kb_mtime)
+                if stats.kb_mtime is not None
+                else None
+            ),
+            "schema_coverage": {
+                "kb_tables": stats.kb_tables,
+                "kb_tables_with_desc": stats.kb_tables_with_desc,
+                "kb_columns": stats.kb_columns,
+                "kb_columns_with_desc": stats.kb_columns_with_desc,
+                "kb_tables_with_samples": stats.kb_tables_with_samples,
+                "db_tables": stats.db_tables,
+                "db_columns": stats.db_columns,
+                "ambiguous_columns": stats.ambiguous_columns,
+            },
+            "query_coverage": {
+                "capsule_count": stats.capsule_count,
+                "capsule_with_intent": stats.capsule_with_intent,
+                "joins_in_capsules": stats.joins_in_capsules,
+            },
+            "join_coverage": {
+                "fk_joins": stats.fk_joins,
+                "fk_joins_seen": stats.fk_joins_seen,
+            },
+            "quality_signals": {
+                "feedback_total": stats.feedback_total,
+                "feedback_thumbs_up": stats.feedback_thumbs_up,
+                "feedback_thumbs_down": stats.feedback_thumbs_down,
+                "feedback_corrections": stats.feedback_corrections,
+                "cache_entries": stats.cache_entries,
+            },
+        }
+        if verbose:
+            payload["table_details"] = [
+                {
+                    "name": td.name,
+                    "row_count": td.row_count,
+                    "column_count": td.column_count,
+                    "columns_with_desc": td.columns_with_desc,
+                    "has_table_desc": td.has_table_desc,
+                }
+                for td in stats.table_details
+            ]
+        console.print_json(_json.dumps(payload))
+        return
+
+    # Human-readable output
+    age_str = ""
+    if stats.kb_mtime is not None:
+        age_s = int(datetime.now(UTC).timestamp() - stats.kb_mtime)
+        if age_s < 3600:
+            age_str = f" ({age_s // 60} min ago)"
+        elif age_s < 86400:
+            age_str = f" ({age_s // 3600} h ago)"
+        else:
+            age_str = f" ({age_s // 86400} day(s) ago)"
+        mtime_str = datetime.fromtimestamp(stats.kb_mtime).strftime("%Y-%m-%d %H:%M")
+    else:
+        mtime_str = "unknown"
+
+    console.print(f"[bold]Knowledge Base — {agent_id}[/bold]")
+    console.print(f"Last exported : {mtime_str}{age_str}")
+    console.print("─" * 56)
+
+    console.print()
+    console.print("[bold]Schema coverage[/bold]")
+    if stats.db_tables is not None:
+        missing_tables = stats.db_tables - stats.kb_tables
+        console.print(f"  Tables in database        : {stats.db_tables:>4}")
+        console.print(
+            f"  Tables in KB              : {stats.kb_tables:>4}"
+            f"   ({_pct(stats.kb_tables, stats.db_tables)})"
+            + (f"   ← {missing_tables} missing" if missing_tables else "")
+        )
+    else:
+        console.print(f"  Tables in KB              : {stats.kb_tables:>4}")
+    missing_desc = stats.kb_tables - stats.kb_tables_with_desc
+    console.print(
+        f"  Tables with a description : {stats.kb_tables_with_desc:>4}"
+        f"   ({_pct(stats.kb_tables_with_desc, stats.kb_tables)})"
+        + (f"   ← {missing_desc} missing" if missing_desc else "")
+    )
+    if stats.db_columns is not None:
+        missing_cols = stats.db_columns - stats.kb_columns
+        console.print(f"  Columns in database       : {stats.db_columns:>4}")
+        console.print(
+            f"  Columns in KB             : {stats.kb_columns:>4}"
+            f"   ({_pct(stats.kb_columns, stats.db_columns)})"
+            + (f"   ← {missing_cols} missing" if missing_cols else "")
+        )
+    else:
+        console.print(f"  Columns in KB             : {stats.kb_columns:>4}")
+    missing_col_desc = stats.kb_columns - stats.kb_columns_with_desc
+    console.print(
+        f"  Columns with a description: {stats.kb_columns_with_desc:>4}"
+        f"   ({_pct(stats.kb_columns_with_desc, stats.kb_columns)})"
+        + (f"   ← {missing_col_desc} blank" if missing_col_desc else "")
+    )
+    if stats.ambiguous_columns:
+        console.print(
+            f"  [yellow]Ambiguous columns (no desc): {stats.ambiguous_columns:>4}"
+            "   ← status/type/code/value/…[/yellow]"
+        )
+    console.print(
+        f"  Tables with sample rows   : {stats.kb_tables_with_samples:>4}"
+        f"   ({_pct(stats.kb_tables_with_samples, stats.kb_tables)})"
+    )
+
+    console.print()
+    console.print("[bold]Query coverage[/bold]")
+    console.print(f"  Query capsules            : {stats.capsule_count:>4}")
+    missing_intent = stats.capsule_count - stats.capsule_with_intent
+    console.print(
+        f"  Capsules with intent      : {stats.capsule_with_intent:>4}"
+        f"   ({_pct(stats.capsule_with_intent, stats.capsule_count)})"
+        + (f"   ← {missing_intent} unannotated" if missing_intent else "")
+    )
+    console.print(f"  JOIN keywords in capsules : {stats.joins_in_capsules:>4}")
+
+    if stats.fk_joins is not None:
+        console.print()
+        console.print("[bold]Join coverage[/bold]")
+        console.print(f"  FK-declared joins         : {stats.fk_joins:>4}")
+        fk_unseen = stats.fk_joins - (stats.fk_joins_seen or 0)
+        console.print(
+            f"  FK joins seen in capsules : {_na(stats.fk_joins_seen):>4}"
+            f"   ({_pct(stats.fk_joins_seen or 0, stats.fk_joins)})"
+            + (f"   ← {fk_unseen} FK joins never used" if fk_unseen else "")
+        )
+
+    console.print()
+    console.print("[bold]Quality signals[/bold]")
+    cache_str = _na(stats.cache_entries) if stats.cache_entries != 0 else "0"
+    console.print(f"  Cache entries             : {cache_str:>4}")
+    fb_detail = (
+        f"   ({stats.feedback_thumbs_up} 👍  {stats.feedback_thumbs_down} 👎)"
+        if stats.feedback_total
+        else ""
+    )
+    console.print(f"  Feedback recorded         : {stats.feedback_total:>4}{fb_detail}")
+    console.print(f"  Corrections applied to KB : {stats.feedback_corrections:>4}")
+
+    if verbose and stats.table_details:
+        console.print()
+        console.print("[bold]Per-table breakdown[/bold]")
+        from rich.table import Table  # noqa: PLC0415
+
+        tbl = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        tbl.add_column("Table", style="cyan", no_wrap=True)
+        tbl.add_column("Rows", justify="right")
+        tbl.add_column("Cols", justify="right")
+        tbl.add_column("Desc%", justify="right")
+        tbl.add_column("Table desc?", justify="center")
+        for td in sorted(stats.table_details, key=lambda x: x.name):
+            rows_str = str(td.row_count) if td.row_count is not None else "?"
+            desc_pct = _pct(td.columns_with_desc, td.column_count)
+            has_desc = "✓" if td.has_table_desc else "✗"
+            tbl.add_row(td.name, rows_str, str(td.column_count), desc_pct, has_desc)
+        console.print(tbl)
+
+    console.print()
+    if verbose:
+        console.print(
+            f"  [dim]Run [bold]nlqueries kb-stats {agent_id}[/bold]"
+            " without --verbose for the summary view.[/dim]"
+        )
+    else:
+        console.print(
+            f"  [dim]Run [bold]nlqueries kb-stats {agent_id} --verbose[/bold]"
+            " for per-table and per-column breakdowns.[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------

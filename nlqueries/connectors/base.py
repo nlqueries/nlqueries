@@ -110,3 +110,14 @@ class DatabaseConnector(ABC):
     def execute_query(self, sql: str) -> QueryResult:
         """Execute ``sql`` against the connected database and return the result."""
         ...
+
+    def get_schema_summary(self) -> tuple[int, int]:
+        """Return *(table_count, column_count)* for the connected database.
+
+        Delegates to :meth:`extract_schema` by default.  Subclasses may
+        override this method with a faster implementation (e.g. a single
+        ``COUNT`` query against ``information_schema``) if introspecting the
+        full schema would be too slow.
+        """
+        spec = self.extract_schema()
+        return len(spec.tables), sum(len(t.columns) for t in spec.tables)

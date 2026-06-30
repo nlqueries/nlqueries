@@ -85,6 +85,7 @@ wiki      = ["notion-client>=2.2", "langchain-text-splitters>=0.3", "atlassian-p
 
 [project.scripts]
 nlqueries = "nlqueries.cli.main:cli"
+nlq       = "nlqueries.cli.main:cli"
 
 [project.urls]
 Homepage   = "https://github.com/nlqueries/nlqueries"

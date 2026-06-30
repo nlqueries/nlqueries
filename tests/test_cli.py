@@ -179,3 +179,88 @@ class TestCacheListCommand:
 
         assert result.exit_code == 0, result.output
         assert "No cached entries" in result.output
+
+
+# ---------------------------------------------------------------------------
+# health command (#34)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCommand:
+    """Tests for `nlqueries health`."""
+
+    def _make_ok(self, service: str = "Test") -> Any:
+        from nlqueries.cli.main import _CheckResult
+
+        return _CheckResult(service, "ok", "all good")
+
+    def _invoke_health(self, extra_args: list[str] | None = None) -> Any:
+        from nlqueries.cli.main import _CheckResult
+
+        runner = CliRunner()
+        ok = _CheckResult("Test", "ok", "all good")
+        with (
+            patch("nlqueries.cli.main._check_qdrant", return_value=ok),
+            patch("nlqueries.cli.main._check_connectors", return_value=[]),
+            patch("nlqueries.cli.main._check_llm", return_value=ok),
+            patch("nlqueries.cli.main._check_embedding", return_value=ok),
+            patch("nlqueries.cli.main._check_config", return_value=ok),
+        ):
+            return runner.invoke(cli, ["health", *(extra_args or [])])
+
+    def test_health_all_healthy_exits_zero(self) -> None:
+        """health exits 0 and prints 'All services healthy' when every check passes."""
+        result = self._invoke_health()
+        assert result.exit_code == 0, result.output
+        assert "All services healthy" in result.output
+
+    def test_health_any_failure_exits_nonzero(self) -> None:
+        """health exits 1 and shows FAIL when at least one check fails."""
+        from nlqueries.cli.main import _CheckResult
+
+        runner = CliRunner()
+        fail = _CheckResult("Qdrant", "fail", "connection refused", "err detail")
+        ok = _CheckResult("Test", "ok", "ok")
+        with (
+            patch("nlqueries.cli.main._check_qdrant", return_value=fail),
+            patch("nlqueries.cli.main._check_connectors", return_value=[]),
+            patch("nlqueries.cli.main._check_llm", return_value=ok),
+            patch("nlqueries.cli.main._check_embedding", return_value=ok),
+            patch("nlqueries.cli.main._check_config", return_value=ok),
+        ):
+            result = runner.invoke(cli, ["health"])
+        assert result.exit_code == 1
+        assert "FAIL" in result.output
+
+    def test_health_json_output_is_valid(self) -> None:
+        """--json flag emits parseable JSON with 'healthy' and 'checks' keys."""
+        import json
+
+        result = self._invoke_health(["--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["healthy"] is True
+        assert isinstance(data["checks"], list)
+        assert all("service" in c and "status" in c for c in data["checks"])
+
+    def test_health_connector_filter_forwarded(self) -> None:
+        """--connector <alias> passes the alias value to _check_connectors."""
+        from nlqueries.cli.main import _CheckResult
+
+        runner = CliRunner()
+        ok = _CheckResult("Test", "ok", "ok")
+        captured: list[str | None] = []
+
+        def _stub(f: str | None) -> list[_CheckResult]:
+            captured.append(f)
+            return []
+
+        with (
+            patch("nlqueries.cli.main._check_qdrant", return_value=ok),
+            patch("nlqueries.cli.main._check_connectors", side_effect=_stub),
+            patch("nlqueries.cli.main._check_llm", return_value=ok),
+            patch("nlqueries.cli.main._check_embedding", return_value=ok),
+            patch("nlqueries.cli.main._check_config", return_value=ok),
+        ):
+            runner.invoke(cli, ["health", "--connector", "dvdrental"])
+        assert captured == ["dvdrental"]
