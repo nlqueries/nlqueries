@@ -91,7 +91,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) for linting and test
 
 ## Step 2 — Connect a Database
 
-Register your database connection. NLQueries stores the connection config in `~/.nlqueries/connectors.yaml` so you only need to do this once per database. Credentials are stored locally and never sent anywhere except the database itself.
+Register your database connection. NLQueries stores the connection metadata in `~/.nlqueries/connectors.yaml` so you only need to do this once per database. The password itself is stored separately, in your OS keychain (via the `keyring` package), not in that file — see [cli-reference.md](cli-reference.md#connect) for what happens if keyring isn't available on your machine. Nothing is sent anywhere except the database itself.
 
 ```bash
 nlqueries connect postgres \
@@ -108,7 +108,10 @@ On success you'll see:
 
 ```
 ✓ Connection successful.
-  Connector registered as 'postgres:localhost:mydb', alias 'dev'
+  Connector registered as 'postgres:localhost:mydb'
+  Alias               : dev
+  Config saved to ~/.nlqueries/connectors.yaml
+  ✓ Password stored in OS keychain (not written to the config file).
 ```
 
 ---

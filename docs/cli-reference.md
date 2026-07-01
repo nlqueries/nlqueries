@@ -13,7 +13,9 @@ Anywhere a connector ID (`<type>:<host>:<database>`) is accepted, a configured `
 
 ## connect
 
-Register a database connection. Writes to `~/.nlqueries/connectors.yaml`; credentials stay local.
+Register a database connection. Connection metadata (host, port, database, user) is written to `~/.nlqueries/connectors.yaml` (mode `0600`).
+
+**Password storage:** the password itself does not go in that file. `connect` stores it in your OS keychain (macOS Keychain, Windows Credential Manager, or Linux Secret Service, via the `keyring` package) and prints `✓ Password stored in OS keychain` on success. If keyring is unavailable on the machine — headless CI without a secret service, for example — it falls back to embedding the password in the stored connection URL instead, and prints a warning telling you so. To rotate a password later without re-running `connect`, use `nlqueries update-password <connector-id>`.
 
 **Password handling:** don't put `--password` on the command line if you can avoid it — it lands in shell history. Two safer options: omit `--password` entirely and you'll get an interactive, hidden prompt, or use `--password-env VAR` to read it from an already-set environment variable. (`--password` is shown in the examples below only for brevity.)
 
@@ -61,6 +63,19 @@ nlqueries connect duckdb --alias duck-mem                                   # in
 ```
 
 See [connectors.md](connectors.md) for per-database query-history and schema-introspection caveats (Redshift, MSSQL, and DuckDB in particular).
+
+---
+
+## update-password
+
+Rotate the stored password for a connector without re-running `connect`. The new password replaces whatever is in the OS keychain (or the config-file fallback); the connector's other settings are untouched.
+
+```bash
+nlqueries update-password postgres:localhost:mydb   # prompts for the new password, hidden input
+nlqueries update-password dev --password-env DB_PASSWORD
+```
+
+`CONNECTOR_ID` accepts an alias. This does not re-test the connection — run `nlqueries extract-schema <connector-or-alias>` afterwards to confirm the new password actually works. If keyring is unavailable, the command prints a warning instead of silently writing the password to the config file.
 
 ---
 
