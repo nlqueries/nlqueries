@@ -1,0 +1,40 @@
+# Version control
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist/
+build/
+.eggs/
+
+# Dev / test
+tests/
+.pytest_cache/
+pytest-cache-files-*
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# SDK (separate package, not part of the server image)
+sdk/
+
+# Docs
+docs/
+*.md
+!README.md
+
+# Local env files
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp

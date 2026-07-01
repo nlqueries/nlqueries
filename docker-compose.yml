@@ -1,0 +1,65 @@
+# =============================================================================
+# docker-compose.yml — NLQueries OSS stack
+#
+# Quickstart:
+#   cp .env.example .env
+#   # edit .env — set DATABASE_URL and your LLM API key
+#   docker compose up
+#
+#   Once running:
+#   docker exec -it nlqueries-core nlqueries connect postgres \
+#       --host host.docker.internal --database mydb --user me --password s3cr3t
+#   docker exec -it nlqueries-core nlqueries ask postgres:localhost:mydb \
+#       "How many orders this week?"
+#
+# Tier: [OSS] — github.com/nlqueries/nlqueries (BSL 1.1)
+# =============================================================================
+
+services:
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.3
+    container_name: nlqueries-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - nlqueries
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  nlqueries-core:
+    image: nlqueries/core:latest
+    # To build from source instead of pulling: docker compose build
+    container_name: nlqueries-core
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+    volumes:
+      - nlqueries-data:/data/nlqueries
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    networks:
+      - nlqueries
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+networks:
+  nlqueries:
+    driver: bridge
+
+volumes:
+  qdrant-data:
+    driver: local
+  nlqueries-data:
+    driver: local
