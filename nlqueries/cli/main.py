@@ -39,14 +39,20 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL
 from nlqueries.connectors import CONNECTOR_REGISTRY
 
-# Warn when running on an unsupported Python version.  langchain/langgraph
-# depend on a pydantic.v1 shim that broke in Python 3.14.
+# Warn when running on an unsupported Python version. `pyproject.toml` caps
+# requires-python at <3.14, but this fires as a backstop for editable installs
+# or environments that bypass that metadata check. As of 2026-07-01,
+# multi-agent/hybrid query routing no longer depends on langgraph (see
+# nlqueries/orchestrator/multi_agent_orchestrator.py), so the remaining
+# exposure is document ingestion (langchain-text-splitters, [docs]/[wiki]
+# extras), which still depends on a pydantic.v1 shim that broke in Python 3.14.
 if sys.version_info >= (3, 14):
     import warnings
 
     warnings.warn(
-        "Python 3.14+ is not fully supported. Some orchestration features may "
-        "fail due to pydantic.v1 incompatibility in langchain/langgraph. "
+        "Python 3.14+ is not fully supported. Document ingestion "
+        "(doc-ingest, doc-sync-notion, doc-sync-confluence) may fail due to "
+        "a pydantic.v1 incompatibility in langchain-text-splitters. "
         "Python 3.11 or 3.12 is recommended.",
         stacklevel=1,
     )
@@ -2543,8 +2549,10 @@ def feedback_stats(agent_id: str) -> None:
 
     if not records:
         console.print(
-            f"[yellow]No feedback found for agent [bold]{agent_id!r}[/bold].[/yellow]\n"
-            "  Submit feedback via the chat UI or the enterprise API first."
+            f"[yellow]No feedback recorded yet for [bold]{agent_id!r}[/bold].[/yellow]\n"
+            f"  Submit some with 'nlqueries feedback {agent_id} --question \"...\" --thumbs-up'\n"
+            '  (or --thumbs-down --corrected-sql "..."),\n'
+            "  or via the enterprise chat UI / API if you're on that edition."
         )
         return
 

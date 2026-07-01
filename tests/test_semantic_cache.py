@@ -450,23 +450,14 @@ class TestCacheWriteFromOrchestratorAsyncContext:
                 "agent_type": "sql",
             }
         )
-        final_state = {
-            # intent must be present so the sql extraction branch is entered
-            "intent": "sql",
-            "sql_result": json.dumps(["Five languages ", "exist. ", sql_token]),
-        }
 
         mock_cache = MagicMock()
         mock_cache.get.return_value = None  # force a cache miss
-
-        mock_graph = MagicMock()
-        mock_graph.ainvoke = AsyncMock(return_value=final_state)
 
         async def _drive() -> None:
             from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
 
             orch = MultiAgentOrchestrator()
-            orch._graph = mock_graph
             async for _ in orch.handle_question("How many languages?", "agent1"):
                 pass
 
@@ -478,6 +469,14 @@ class TestCacheWriteFromOrchestratorAsyncContext:
             patch(
                 "nlqueries.orchestrator.multi_agent_orchestrator.resolve_followup",
                 return_value=MagicMock(resolved="How many languages?"),
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                return_value=MagicMock(intent="sql"),
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator._run_sql",
+                new=AsyncMock(return_value=["Five languages ", "exist. ", sql_token]),
             ),
         ):
             asyncio.run(_drive())

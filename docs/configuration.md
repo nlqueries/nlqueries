@@ -1,0 +1,47 @@
+# Configuration Reference
+
+All settings are read from environment variables, or a `.env` file in the working directory (copy `.env.example` to `.env` to start).
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | One of these two | — | Anthropic API key |
+| `OPENAI_API_KEY` | One of these two | — | OpenAI API key |
+| `LLM_MODEL` | No | `claude-sonnet-4-5` | LLM model identifier |
+| `LLM_PROVIDER` | No | Auto-detected | `anthropic`, `openai`, or any LiteLLM provider. **Setting `OPENAI_API_KEY` alone does not switch the provider** — also set `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/<model>` to use OpenAI. |
+| `DATABASE_URL` | No | — | Connection string for the database being queried, e.g. `postgresql+psycopg2://user:password@localhost:5432/mydb` |
+| `SSL_MODE` | No | `prefer` | SSL mode for the source database connection |
+| `SSL_CA_CERT` | No | — | Path to an SSL CA certificate bundle (e.g. for AWS RDS/Aurora with `verify-full`) |
+| `QDRANT_URL` | No | — | Qdrant URL, e.g. `http://localhost:6333`. Required for `--embed`, the semantic cache, and document connectors. |
+| `QDRANT_API_KEY` | No | — | Required if using Qdrant Cloud |
+| `QDRANT_COLLECTION` | No | `nlqueries` | Qdrant collection name |
+| `KB_PATH` | No | `~/.nlqueries/knowledge_base` | Local path for exported knowledge base files |
+| `KB_REFRESH_INTERVAL` | No | `3600` | Seconds between auto-refresh of the KB (`0` disables) |
+| `CONNECTORS_FILE` | No | `~/.nlqueries/connectors.yaml` | Path to the connector registry |
+| `CAPSULES_DIR` | No | `~/.nlqueries/capsules` | Path to saved query capsules |
+| `FEEDBACK_DIR` | No | `~/.nlqueries/feedback` | Path to feedback JSONL files |
+| `NOTION_TOKEN` | Only for Notion sync | — | Notion integration token |
+| `CONFLUENCE_URL` / `CONFLUENCE_USER` / `CONFLUENCE_API_TOKEN` | Only for Confluence sync | — | Confluence connection details |
+| `HF_TOKEN` | No | — | Hugging Face token — avoids rate limits on the one-time embedding model download. See [troubleshooting.md](troubleshooting.md#w2--hugging-face-hub-unauthenticated-requests). |
+| `EMBED_SERVER_PORT` | No | `8765` | Port the embedding daemon listens on |
+| `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | — | OTLP endpoint for traces (disabled if unset) |
+
+**Windows note:** `~` in default paths resolves to `C:\Users\<YourUsername>` in PowerShell. To set a variable for the current session use `$env:VAR = "value"`; to persist it, use **System Properties → Environment Variables** or add it to your PowerShell profile.
+
+---
+
+## Docker Compose services and volumes
+
+Running `docker compose up` from `core/` starts:
+
+| Service | Port | Purpose |
+|---|---|---|
+| `qdrant` | 6333 (REST), 6334 (gRPC) | Vector store for embeddings, semantic cache, document search |
+| `nlqueries-core` | 8080 | MCP server + CLI engine |
+
+| Volume | Persists |
+|---|---|
+| `qdrant-data` | Qdrant collections across restarts |
+| `nlqueries-data` | Knowledge bases, connector config, capsules, and feedback (mounted at `/data/nlqueries` in the container) |
+
+Run CLI commands inside the container with `docker exec -it nlqueries-core nlqueries <command>` — when connecting to a database on your host machine, use `--host host.docker.internal`.

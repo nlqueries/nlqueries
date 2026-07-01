@@ -255,7 +255,7 @@ class TestFeedbackStatsCli:
             result = runner.invoke(cli, ["feedback-stats", "agent1"])
 
         assert result.exit_code == 0
-        assert "No feedback found" in result.output
+        assert "No feedback recorded yet" in result.output
 
     def test_feedback_stats_shows_up_down_counts(self) -> None:
         from nlqueries.cli.main import cli

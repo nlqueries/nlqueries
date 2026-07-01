@@ -1,17 +1,27 @@
 """
 nlqueries.orchestrator.multi_agent_orchestrator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-LangGraph-based multi-agent orchestrator — routes questions to the SQL agent,
-Document agent, or Hybrid based on LLM-classified intent.
+Routes questions to the SQL agent, Document agent, or Hybrid based on
+LLM-classified intent.
 
-Sprint 13 update: the hybrid branch now runs SQL and Document agents
-**concurrently** via ``asyncio.gather()`` (replacing the Sprint 12 stub) and
-merges their results via :func:`~nlqueries.orchestrator.result_merger.merge_results`.
+Sprint 13 update: the hybrid branch runs SQL and Document agents
+**concurrently** via ``asyncio.gather()`` and merges their results via
+:func:`~nlqueries.orchestrator.result_merger.merge_results`.
 
 Sprint 21 update: a semantic cache (backed by Qdrant) is checked before
-running the graph.  Cache hits bypass the LLM entirely and return the stored
+dispatching. Cache hits bypass the LLM entirely and return the stored
 answer word-by-word.  Cache misses run normally and store the result so
 subsequent similar questions can be served from cache.
+
+2026-07-01: previously implemented as a LangGraph ``StateGraph``. Replaced
+with plain async dispatch — the graph was a straightforward linear/branching
+flow (classify → dispatch → merge) with no persistence, subgraphs, or
+LangChain LLM wrappers, so it didn't need the dependency. This removes the
+`langgraph`/`langchain_core` import that broke on Python 3.14 (pydantic.v1
+compatibility shim) — see docs/troubleshooting.md#w6 for background. Document
+ingestion (`langchain_text_splitters`) is untouched by this change and is
+still subject to that same Python-version constraint; see
+docs/connectors.md#document-connectors.
 
 Public API
 ----------
@@ -20,13 +30,13 @@ Public API
     to get an async token stream.  The final chunk includes ``"agent_type"``
     so the UI can display which agent answered.
 
-Graph topology::
+Routing::
 
-    START → classify_intent_node
-        ├─ sql      → sql_node              → merge_node → END
-        ├─ document → document_node         → merge_node → END
-        ├─ hybrid   → parallel_hybrid_node  → merge_node → END
-        └─ unclear  → merge_node → END
+    classify_intent()
+        ├─ sql      → _run_sql()
+        ├─ document → _run_document()
+        ├─ hybrid   → _run_hybrid()   (SQL + Document concurrently, then merged)
+        └─ unclear  → error chunk
 """
 
 from __future__ import annotations
@@ -37,9 +47,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
-from typing import Any, TypedDict
-
-from langgraph.graph import END, StateGraph
+from typing import Any
 
 from nlqueries.cache.semantic_cache import SemanticCache
 from nlqueries.connectors.base import QueryResult
@@ -52,20 +60,6 @@ from nlqueries.orchestrator.orchestrator import Orchestrator
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 
 _log = logging.getLogger(__name__)
-
-
-class AgentState(TypedDict):
-    question: str
-    agent_id: str
-    available_types: list[str]
-    dialect: str
-    intent: IntentType | None
-    sql_result: str | None  # JSON-encoded list[str] of collected tokens
-    document_result: str | None  # JSON-encoded list[str] of collected tokens
-    citations: list[Citation] | None
-    final_answer: str | None
-    error: str | None
-    hybrid_result: HybridQueryResult | None  # populated for hybrid intent (Sprint 13)
 
 
 # ---------------------------------------------------------------------------
@@ -136,152 +130,70 @@ def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
 
 
 # ---------------------------------------------------------------------------
-# Node functions
+# Agent runners (previously LangGraph nodes; now plain async helpers)
 # ---------------------------------------------------------------------------
 
 
-async def _classify_intent_node(state: AgentState) -> dict[str, Any]:
-    result = classify_intent(state["question"], state["available_types"])
-    return {"intent": result.intent}
-
-
-async def _sql_node(state: AgentState) -> dict[str, Any]:
+async def _run_sql(question: str, agent_id: str, dialect: str) -> list[str]:
     orch = Orchestrator()
     tokens: list[str] = []
-    async for token in orch.handle_question(
-        state["question"],
-        state["agent_id"],
-        dialect=state["dialect"],
-    ):
+    async for token in orch.handle_question(question, agent_id, dialect=dialect):
         tokens.append(token)
-    return {"sql_result": json.dumps(tokens)}
+    return tokens
 
 
-async def _document_node(state: AgentState) -> dict[str, Any]:
+async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[Citation] | None]:
     orch = DocumentOrchestrator()
-    collection = f"doc_{state['agent_id']}_chunks"
+    collection = f"doc_{agent_id}_chunks"
     tokens: list[str] = []
-    async for token in orch.handle_question(state["question"], collection):
+    async for token in orch.handle_question(question, collection):
         tokens.append(token)
     citations = _extract_citations_from_tokens(tokens)
-    return {"document_result": json.dumps(tokens), "citations": citations}
+    return tokens, citations
 
 
-async def _parallel_hybrid_node(state: AgentState) -> dict[str, Any]:
+async def _run_hybrid(
+    question: str, agent_id: str, dialect: str
+) -> tuple[list[str], list[str], list[Citation] | None]:
     """Run SQL and Document agents concurrently via ``asyncio.gather``."""
     sql_orch = Orchestrator()
     doc_orch = DocumentOrchestrator()
-    collection = f"doc_{state['agent_id']}_chunks"
+    collection = f"doc_{agent_id}_chunks"
 
-    async def _collect_sql() -> str:
+    async def _collect_sql() -> list[str]:
         tokens: list[str] = []
-        async for token in sql_orch.handle_question(
-            state["question"],
-            state["agent_id"],
-            dialect=state["dialect"],
-        ):
+        async for token in sql_orch.handle_question(question, agent_id, dialect=dialect):
             tokens.append(token)
-        return json.dumps(tokens)
+        return tokens
 
-    async def _collect_doc() -> str:
+    async def _collect_doc() -> list[str]:
         tokens: list[str] = []
-        async for token in doc_orch.handle_question(state["question"], collection):
+        async for token in doc_orch.handle_question(question, collection):
             tokens.append(token)
-        return json.dumps(tokens)
+        return tokens
 
-    sql_json, doc_json = await asyncio.gather(_collect_sql(), _collect_doc())
-
-    doc_tokens: list[str] = json.loads(doc_json)
+    sql_tokens, doc_tokens = await asyncio.gather(_collect_sql(), _collect_doc())
     citations = _extract_citations_from_tokens(doc_tokens)
-
-    return {
-        "sql_result": sql_json,
-        "document_result": doc_json,
-        "citations": citations,
-    }
+    return sql_tokens, doc_tokens, citations
 
 
-async def _merge_node(state: AgentState) -> dict[str, Any]:
-    """Merge results; for hybrid intent, call ``merge_results`` for LLM synthesis."""
-    intent = state.get("intent")
+def _merge_hybrid(
+    question: str,
+    agent_id: str,
+    sql_tokens: list[str],
+    citations: list[Citation] | None,
+) -> HybridQueryResult:
+    sql_query_result = _extract_sql_query_result(sql_tokens) if sql_tokens else None
 
-    if intent == IntentType.hybrid:
-        sql_raw = state.get("sql_result")
-        sql_query_result: QueryResult | None = None
-        if sql_raw:
-            sql_query_result = _extract_sql_query_result(json.loads(sql_raw))
-
-        doc_retrieval: DocumentRetrievalResult | None = None
-        citations = state.get("citations")
-        if citations:
-            doc_retrieval = DocumentRetrievalResult(
-                chunks=[],
-                citations=citations,
-                collection=f"doc_{state['agent_id']}_chunks",
-            )
-
-        hybrid = merge_results(
-            state["question"],
-            sql_result=sql_query_result,
-            document_result=doc_retrieval,
+    doc_retrieval: DocumentRetrievalResult | None = None
+    if citations:
+        doc_retrieval = DocumentRetrievalResult(
+            chunks=[],
+            citations=citations,
+            collection=f"doc_{agent_id}_chunks",
         )
-        return {"hybrid_result": hybrid, "final_answer": None}
 
-    if intent == IntentType.sql:
-        return {"final_answer": state.get("sql_result"), "hybrid_result": None}
-    if intent == IntentType.document:
-        return {"final_answer": state.get("document_result"), "hybrid_result": None}
-    return {"final_answer": None, "hybrid_result": None}
-
-
-# ---------------------------------------------------------------------------
-# Routing function (conditional edge)
-# ---------------------------------------------------------------------------
-
-
-def _route_after_classify(state: AgentState) -> str:
-    intent = state.get("intent")
-    if intent == IntentType.document:
-        return "document_node"
-    if intent == IntentType.hybrid:
-        return "parallel_hybrid_node"
-    if intent == IntentType.sql:
-        return "sql_node"
-    return "merge_node"  # unclear → skip agents, merge with no result
-
-
-# ---------------------------------------------------------------------------
-# Graph construction
-# ---------------------------------------------------------------------------
-
-
-def _build_graph() -> StateGraph:  # type: ignore[type-arg]
-    builder: StateGraph = StateGraph(AgentState)  # type: ignore[type-arg]
-
-    builder.add_node("classify_intent_node", _classify_intent_node)
-    builder.add_node("sql_node", _sql_node)
-    builder.add_node("document_node", _document_node)
-    builder.add_node("parallel_hybrid_node", _parallel_hybrid_node)
-    builder.add_node("merge_node", _merge_node)
-
-    builder.set_entry_point("classify_intent_node")
-
-    builder.add_conditional_edges(
-        "classify_intent_node",
-        _route_after_classify,
-        {
-            "sql_node": "sql_node",
-            "document_node": "document_node",
-            "parallel_hybrid_node": "parallel_hybrid_node",
-            "merge_node": "merge_node",
-        },
-    )
-    builder.add_edge("sql_node", "merge_node")
-    builder.add_edge("document_node", "merge_node")
-    builder.add_edge("parallel_hybrid_node", "merge_node")
-    builder.add_edge("merge_node", END)
-
-    return builder
+    return merge_results(question, sql_result=sql_query_result, document_result=doc_retrieval)
 
 
 # ---------------------------------------------------------------------------
@@ -290,32 +202,32 @@ def _build_graph() -> StateGraph:  # type: ignore[type-arg]
 
 
 class MultiAgentOrchestrator:
-    """LangGraph-based multi-agent orchestrator for NLQueries.
+    """Orchestrator for NLQueries multi-agent routing.
 
     Routes a question to the SQL agent, Document agent, or both (hybrid)
     based on LLM-classified intent, then streams the response with an
     ``"agent_type"`` field in the final JSON chunk.
 
-    Sprint 13: the hybrid branch now runs both agents concurrently via
+    Sprint 13: the hybrid branch runs both agents concurrently via
     ``asyncio.gather()`` and synthesises a unified answer via
     :func:`~nlqueries.orchestrator.result_merger.merge_results`.
 
-    Sprint 21: a semantic cache is consulted before routing.  Cache hits
+    Sprint 21: a semantic cache is consulted before dispatching. Cache hits
     bypass the LLM and return the stored answer immediately.
 
     Exposes the same async-generator interface as :class:`Orchestrator`.
 
-    Graph topology::
+    Routing::
 
-        START → classify_intent_node
-            ├─ sql      → sql_node              → merge_node → END
-            ├─ document → document_node         → merge_node → END
-            ├─ hybrid   → parallel_hybrid_node  → merge_node → END
-            └─ unclear  → merge_node → END
+        classify_intent()
+            ├─ sql      → _run_sql()
+            ├─ document → _run_document()
+            ├─ hybrid   → _run_hybrid()   (SQL + Document concurrently, merged)
+            └─ unclear  → error chunk
     """
 
     def __init__(self) -> None:
-        self._graph = _build_graph().compile()
+        pass
 
     async def handle_question(
         self,
@@ -344,10 +256,9 @@ class MultiAgentOrchestrator:
         self-contained question before intent classification.
 
         Sprint 21: the resolved question is looked up in the semantic cache
-        before running the LangGraph pipeline.  On a cache hit the stored
-        answer is yielded word-by-word and the final JSON chunk includes
-        ``"from_cache": True``.  On a miss the result is stored in the cache
-        after the pipeline completes.
+        before dispatching. On a cache hit the stored answer is yielded
+        word-by-word and the final JSON chunk includes ``"from_cache": True``.
+        On a miss the result is stored in the cache after dispatch completes.
 
         Args:
             question:        Natural-language question from the user.
@@ -397,25 +308,25 @@ class MultiAgentOrchestrator:
             return
 
         # ------------------------------------------------------------------
-        # Cache miss: run the LangGraph pipeline
+        # Cache miss: classify intent and dispatch
         # ------------------------------------------------------------------
-        initial_state: AgentState = {
-            "question": effective_question,
-            "agent_id": agent_id,
-            "available_types": list(available_types),
-            "dialect": dialect,
-            "intent": None,
-            "sql_result": None,
-            "document_result": None,
-            "citations": None,
-            "final_answer": None,
-            "error": None,
-            "hybrid_result": None,
-        }
+        classification = classify_intent(effective_question, list(available_types))
+        intent = classification.intent
 
-        final_state: AgentState = await self._graph.ainvoke(initial_state)  # type: ignore[assignment]
+        sql_tokens: list[str] | None = None
+        document_tokens: list[str] | None = None
+        citations: list[Citation] | None = None
+        hybrid_result: HybridQueryResult | None = None
 
-        intent = final_state.get("intent")
+        if intent == IntentType.sql:
+            sql_tokens = await _run_sql(effective_question, agent_id, dialect)
+        elif intent == IntentType.document:
+            document_tokens, citations = await _run_document(effective_question, agent_id)
+        elif intent == IntentType.hybrid:
+            sql_tokens, document_tokens, citations = await _run_hybrid(
+                effective_question, agent_id, dialect
+            )
+            hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 
         # ------------------------------------------------------------------
         # Pre-extract fields for caching before yielding (Sprint 21)
@@ -424,26 +335,17 @@ class MultiAgentOrchestrator:
         _cache_answer = ""
         _cache_sql: str | None = None
 
-        if intent == IntentType.sql:
-            _raw = final_state.get("sql_result")
-            if _raw:
-                _toks: list[str] = json.loads(_raw)
-                _cache_agent_type = "sql"
-                _cache_answer = "".join(_toks[:-1])
-                if _toks:
-                    with contextlib.suppress(json.JSONDecodeError, AttributeError, TypeError):
-                        _cache_sql = json.loads(_toks[-1]).get("sql")
-        elif intent == IntentType.document:
-            _raw = final_state.get("document_result")
-            if _raw:
-                _toks = json.loads(_raw)
-                _cache_agent_type = "document"
-                _cache_answer = "".join(_toks[:-1])
-        elif intent == IntentType.hybrid:
-            _hr = final_state.get("hybrid_result")
-            if _hr is not None:
-                _cache_agent_type = "hybrid"
-                _cache_answer = _hr.merged_answer or ""
+        if intent == IntentType.sql and sql_tokens:
+            _cache_agent_type = "sql"
+            _cache_answer = "".join(sql_tokens[:-1])
+            with contextlib.suppress(json.JSONDecodeError, AttributeError, TypeError, IndexError):
+                _cache_sql = json.loads(sql_tokens[-1]).get("sql")
+        elif intent == IntentType.document and document_tokens:
+            _cache_agent_type = "document"
+            _cache_answer = "".join(document_tokens[:-1])
+        elif intent == IntentType.hybrid and hybrid_result is not None:
+            _cache_agent_type = "hybrid"
+            _cache_answer = hybrid_result.merged_answer or ""
 
         if _cache_agent_type != "unclear":
             _data = _CacheData(
@@ -463,60 +365,50 @@ class MultiAgentOrchestrator:
                 _log.warning("Semantic cache write failed: %s", _cache_err)
 
         # ------------------------------------------------------------------
-        # Yield tokens (unchanged from pre-Sprint-21)
+        # Yield tokens
         # ------------------------------------------------------------------
-        if intent == IntentType.sql:
-            raw = final_state.get("sql_result")
-            if raw:
-                tokens: list[str] = json.loads(raw)
-                for token in tokens[:-1]:
-                    yield token
-                if tokens:
-                    last = json.loads(tokens[-1])
-                    last["agent_type"] = "sql"
-                    yield json.dumps(last)
+        if intent == IntentType.sql and sql_tokens:
+            for token in sql_tokens[:-1]:
+                yield token
+            last = json.loads(sql_tokens[-1])
+            last["agent_type"] = "sql"
+            yield json.dumps(last)
 
-        elif intent == IntentType.document:
-            raw = final_state.get("document_result")
-            if raw:
-                tokens = json.loads(raw)
-                for token in tokens[:-1]:
-                    yield token
-                if tokens:
-                    last = json.loads(tokens[-1])
-                    last["agent_type"] = "document"
-                    yield json.dumps(last)
+        elif intent == IntentType.document and document_tokens:
+            for token in document_tokens[:-1]:
+                yield token
+            last = json.loads(document_tokens[-1])
+            last["agent_type"] = "document"
+            yield json.dumps(last)
 
-        elif intent == IntentType.hybrid:
-            hybrid_result = final_state.get("hybrid_result")
-            if hybrid_result is not None:
-                sql_table_dict = None
-                if hybrid_result.sql_table is not None:
-                    qt = hybrid_result.sql_table
-                    sql_table_dict = {
-                        "columns": qt.columns,
-                        "rows": qt.rows,
-                        "row_count": qt.row_count,
-                        "execution_time_ms": qt.execution_time_ms,
-                        "error": qt.error,
-                    }
-                citations_list = [
-                    {
-                        "source_name": c.source_name,
-                        "page_number": c.page_number,
-                        "excerpt": c.excerpt,
-                    }
-                    for c in hybrid_result.citations
-                ]
-                yield json.dumps(
-                    {
-                        "type": "hybrid",
-                        "agent_type": "hybrid",
-                        "merged_answer": hybrid_result.merged_answer,
-                        "sql_table": sql_table_dict,
-                        "citations": citations_list,
-                    }
-                )
+        elif intent == IntentType.hybrid and hybrid_result is not None:
+            sql_table_dict = None
+            if hybrid_result.sql_table is not None:
+                qt = hybrid_result.sql_table
+                sql_table_dict = {
+                    "columns": qt.columns,
+                    "rows": qt.rows,
+                    "row_count": qt.row_count,
+                    "execution_time_ms": qt.execution_time_ms,
+                    "error": qt.error,
+                }
+            citations_list = [
+                {
+                    "source_name": c.source_name,
+                    "page_number": c.page_number,
+                    "excerpt": c.excerpt,
+                }
+                for c in hybrid_result.citations
+            ]
+            yield json.dumps(
+                {
+                    "type": "hybrid",
+                    "agent_type": "hybrid",
+                    "merged_answer": hybrid_result.merged_answer,
+                    "sql_table": sql_table_dict,
+                    "citations": citations_list,
+                }
+            )
 
         else:
             yield json.dumps(
