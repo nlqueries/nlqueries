@@ -142,9 +142,7 @@ async def _run_sql(question: str, agent_id: str, dialect: str) -> list[str]:
     return tokens
 
 
-async def _run_document(
-    question: str, agent_id: str
-) -> tuple[list[str], list[Citation] | None]:
+async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[Citation] | None]:
     orch = DocumentOrchestrator()
     collection = f"doc_{agent_id}_chunks"
     tokens: list[str] = []

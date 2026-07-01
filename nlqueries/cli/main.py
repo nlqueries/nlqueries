@@ -2551,7 +2551,7 @@ def feedback_stats(agent_id: str) -> None:
         console.print(
             f"[yellow]No feedback recorded yet for [bold]{agent_id!r}[/bold].[/yellow]\n"
             f"  Submit some with 'nlqueries feedback {agent_id} --question \"...\" --thumbs-up'\n"
-            "  (or --thumbs-down --corrected-sql \"...\"),\n"
+            '  (or --thumbs-down --corrected-sql "..."),\n'
             "  or via the enterprise chat UI / API if you're on that edition."
         )
         return
