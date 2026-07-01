@@ -15,13 +15,17 @@ Anywhere a connector ID (`<type>:<host>:<database>`) is accepted, a configured `
 
 Register a database connection. Writes to `~/.nlqueries/connectors.yaml`; credentials stay local.
 
+**Password handling:** don't put `--password` on the command line if you can avoid it — it lands in shell history. Two safer options: omit `--password` entirely and you'll get an interactive, hidden prompt, or use `--password-env VAR` to read it from an already-set environment variable. (`--password` is shown in the examples below only for brevity.)
+
 **PostgreSQL / MySQL**
 
 ```bash
-nlqueries connect postgres --host db.example.com --port 5432 --database prod --user alice --password s3cr3t --alias prod
-nlqueries connect postgres --host db.example.com --database prod --user alice --password s3cr3t --ssl-mode require --alias prod   # with SSL
+nlqueries connect postgres --host db.example.com --port 5432 --database prod --user alice --alias prod   # prompts for password
+nlqueries connect postgres --host db.example.com --database prod --user alice --password-env PGPASSWORD --alias prod
 nlqueries connect mysql --host localhost --database mydb --user alice --password secret
 ```
+
+SSL for PostgreSQL/MySQL connections is configured via the `SSL_MODE` / `SSL_CA_CERT` environment variables, not a `connect` flag — see [configuration.md](configuration.md).
 
 **Snowflake**
 
@@ -29,11 +33,13 @@ nlqueries connect mysql --host localhost --database mydb --user alice --password
 nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --schema PUBLIC --warehouse COMPUTE_WH --user alice --password s3cr3t
 ```
 
-**BigQuery** (uses Application Default Credentials or a service account file)
+**BigQuery** (uses Application Default Credentials if `--service-account-json` is omitted)
 
 ```bash
-nlqueries connect bigquery --project my-gcp-project --dataset my_dataset --credentials-file /path/to/service-account.json
+nlqueries connect bigquery --project-id my-gcp-project --dataset-id my_dataset --service-account-json /path/to/service-account.json
 ```
+
+BigQuery has no password — `--project-id` (or `--database`, used as a fallback) is the only required flag.
 
 **Amazon Redshift** — install `pip install "nlqueries-core[redshift]"` first
 
@@ -214,6 +220,8 @@ nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-
 nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-down --corrected-sql "SELECT ..."
 ```
 
+`--question` is required; `--generated-sql` is an optional third flag to attach the SQL the agent originally produced (useful context alongside a correction). A thumbs-down with `--corrected-sql` is saved but not applied automatically — re-run `export-kb` to fold it into the knowledge base.
+
 ## feedback-stats
 
 ```bash
@@ -229,8 +237,9 @@ Prints total rated, thumbs-up/down rate, and recent corrections. Prints "No feed
 Semantic cache management — two questions are considered the same if their embeddings have cosine similarity ≥ 0.97. The cache is enabled automatically once Qdrant is reachable.
 
 ```bash
-nlqueries cache stats <connector-or-alias>
-nlqueries cache clear <connector-or-alias>
+nlqueries cache list <connector-or-alias> [--limit 50]   # list cached questions and their generated SQL
+nlqueries cache stats <connector-or-alias>                # cache statistics
+nlqueries cache clear <connector-or-alias>                 # invalidate all cached entries
 ```
 
 Cached answers include `from_cache: true` and typically respond in under 50 ms. Entries are written automatically on every successful query — no setup beyond having Qdrant running.
@@ -242,12 +251,12 @@ Cached answers include `from_cache: true` and typically respond in under 50 ms. 
 Every embedding-dependent command (`query`, `ask`, `process-history --embed`) loads the sentence-transformer model on startup (~9 s, ~130 MB RAM). The daemon loads it once and serves requests over `localhost:8765`, cutting per-call latency to ~10 ms.
 
 ```bash
-nlqueries embed-server start
+nlqueries embed-server start [--port 8765] [--foreground]   # --foreground blocks and is useful for debugging
 nlqueries embed-server status   # not running | starting | running
 nlqueries embed-server stop
 ```
 
-Not restarted automatically on reboot — add the `start` command to your shell profile or a startup task if you want it always on. Override the port with `EMBED_SERVER_PORT`.
+Not restarted automatically on reboot — add the `start` command to your shell profile or a startup task if you want it always on. Override the default port with `--port` or the `EMBED_SERVER_PORT` environment variable.
 
 ---
 

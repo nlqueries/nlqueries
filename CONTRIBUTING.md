@@ -77,10 +77,10 @@ docs(cli): update --help text
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/nlqueries/nlqueries/issues). For security vulnerabilities, email [security@nlqueries.com](mailto:security@nlqueries.com) — do not file a public issue.
+Use [GitHub Issues](https://github.com/nlqueries/nlqueries/issues). For security vulnerabilities, see [SECURITY.md](SECURITY.md) — do not file a public issue.
 
 ---
 
 ## Code of Conduct
 
-Be respectful and constructive. We follow the [Contributor Covenant](https://www.contributor-covenant.org/).
+Be respectful and constructive. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (Contributor Covenant).

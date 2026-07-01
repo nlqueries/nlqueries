@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: mailto:security@nlqueries.com
+    about: Please do not report security vulnerabilities as a public issue — email security@nlqueries.com instead. See SECURITY.md.
+  - name: Documentation
+    url: https://github.com/nlqueries/nlqueries/tree/main/docs
+    about: Check the docs/ folder before filing — getting-started, cli-reference, connectors, configuration, troubleshooting.

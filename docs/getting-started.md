@@ -17,15 +17,15 @@ This guide walks you from zero to your first natural-language query in six steps
 
 ## Step 1 — Install nlqueries-core
 
-### Option A: Docker Compose (includes Qdrant)
+### Option A: Docker (includes Qdrant, no clone needed)
+
+Pulls the published [`nlqueries/core`](https://hub.docker.com/r/nlqueries/core) image from Docker Hub:
 
 ```bash
-git clone https://github.com/nlqueries/nlqueries.git
-cd nlqueries/core
-cp .env.example .env
+curl -O https://raw.githubusercontent.com/nlqueries/nlqueries/main/docker-compose.yml
 ```
 
-Edit `.env` and set at minimum:
+Create a `.env` file next to it with at least one LLM key:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...    # or OPENAI_API_KEY
@@ -37,7 +37,7 @@ Start the stack:
 docker compose up -d
 ```
 
-This reads `docker-compose.yml` in the current directory automatically — no `-f` flag needed. Open a shell into the container for the steps below:
+This reads `docker-compose.yml` in the current directory automatically — no `-f` flag needed — and pulls `nlqueries/core:latest` alongside Qdrant. Open a shell into the container for the steps below:
 
 ```bash
 docker exec -it nlqueries-core bash
@@ -71,6 +71,21 @@ nlq health
 ```
 
 `health` probes every service NLQueries depends on (LLM key, Qdrant, embedding daemon, config) and prints a pass/fail summary. See [cli-reference.md](cli-reference.md#health) for details.
+
+### Option C: Clone and install from source (no Docker)
+
+For contributing, or to run against unreleased changes:
+
+```bash
+git clone https://github.com/nlqueries/nlqueries.git
+cd nlqueries
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+export ANTHROPIC_API_KEY=sk-ant-...
+nlqueries health
+```
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) for linting and test commands.
 
 ---
 
