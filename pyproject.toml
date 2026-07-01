@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Natural-language query engine — open-source core (CLI, connectors, MCP server)"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 keywords = ["nlp", "sql", "natural-language", "mcp", "query"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -51,9 +51,6 @@ dependencies = [
 
     # Credential storage
     "keyring>=24.0",
-
-    # Multi-agent orchestration
-    "langgraph>=0.2",
 
     # OpenTelemetry — tracing and metrics (no-op when no exporter is configured)
     "opentelemetry-sdk>=1.24",
@@ -130,6 +127,6 @@ addopts   = "--tb=short -q"
 # Mypy
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version         = "3.11"
+python_version         = "3.12"
 strict                 = true
 ignore_missing_imports = true
