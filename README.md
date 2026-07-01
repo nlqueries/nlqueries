@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.png" alt="NLQueries" width="120">
+</p>
+
 # nlqueries-core
 
 [![CI](https://github.com/nlqueries/nlqueries/actions/workflows/ci.yml/badge.svg)](https://github.com/nlqueries/nlqueries/actions/workflows/ci.yml)
