@@ -18,7 +18,7 @@ RUN mkdir -p /data/nlqueries
 
 # ── dependency layer (re-runs only when pyproject.toml changes) ───────────────
 # Stub the package so hatchling resolves all deps without the full source tree.
-COPY pyproject.toml .
+COPY pyproject.toml LICENSE README.md ./
 RUN mkdir -p nlqueries && touch nlqueries/__init__.py \
  && pip install --no-cache-dir -e . \
  && rm -rf nlqueries
