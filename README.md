@@ -7,8 +7,6 @@
 
 **NLQueries Core** turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Notion, Confluence) and can blend both in a single hybrid answer.
 
-> `nlqueries-core` is the standalone OSS library and CLI. For the full web UI, team auth, and admin panel, see [nlqueries-enterprise](https://nlqueries.dev).
-
 ---
 
 ## Features
@@ -36,15 +34,26 @@ See [docs/architecture.md](docs/architecture.md) for how these pieces fit togeth
 
 ### Option A — Docker (recommended)
 
+Pulls the published [`nlqueries/core`](https://hub.docker.com/r/nlqueries/core) image from Docker Hub — no clone required, just the compose file:
+
 ```bash
-git clone https://github.com/nlqueries/nlqueries.git
-cd nlqueries/core
-cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY or OPENAI_API_KEY at minimum
+curl -O https://raw.githubusercontent.com/nlqueries/nlqueries/main/docker-compose.yml
+```
+
+Create a `.env` file next to it with at least one LLM key:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+# or OPENAI_API_KEY=sk-...
+```
+
+Then start the stack:
+
+```bash
 docker compose up
 ```
 
-This starts Qdrant (`:6333`) and the NLQueries core service with its MCP server (`:8080`). Run CLI commands against the running stack from a second terminal:
+This pulls `nlqueries/core:latest` and starts it alongside Qdrant (`:6333`), with the MCP server on `:8080`. Run CLI commands against the running stack from a second terminal:
 
 ```bash
 docker exec -it nlqueries-core nlqueries health
@@ -68,6 +77,21 @@ pip install "nlqueries-core[duckdb]"    # DuckDB
 pip install "nlqueries-core[docs]"      # PDF / Word / Excel ingestion
 pip install "nlqueries-core[wiki]"      # Notion / Confluence sync
 ```
+
+### Option C — Clone and install from source
+
+No Docker required — for contributing, or to run against unreleased changes:
+
+```bash
+git clone https://github.com/nlqueries/nlqueries.git
+cd nlqueries
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY
+nlqueries health
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) for linting and test commands.
 
 ### First query
 
