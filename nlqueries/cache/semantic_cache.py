@@ -1,12 +1,25 @@
 """
 nlqueries.cache.semantic_cache
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Semantic query cache backed by Qdrant.
+Semantic query cache backed by Qdrant with three lookup tiers.
 
-Instead of exact-match caching, this module embeds each question and performs
-nearest-neighbour search in a per-agent Qdrant collection.  If a sufficiently
-similar question was answered recently (cosine similarity >= 0.97) and has not
-yet expired, the cached answer is returned without hitting the LLM.
+**Tier 0 — exact-match** (zero embed calls on hit):
+    Normalize the question (lowercase, strip punctuation, collapse whitespace),
+    derive a deterministic point ID via SHA-256, and call ``client.retrieve()``
+    directly.  No embedding is needed.
+
+**Tier 1 — answer cache** (cosine similarity ≥ CACHE_ANSWER_THRESHOLD):
+    Embed the question once (or reuse the pre-computed *vector* kwarg) and
+    run a nearest-neighbour search filtered to ``kind=answer`` points.
+    This is the original Sprint 21 cache, unchanged except for the kind filter.
+
+**Tier 2 — template cache** (cosine similarity ≥ CACHE_TEMPLATE_THRESHOLD):
+    Mask entity tokens in the question (dates → ``<DATE>``, numbers →
+    ``<NUMBER>`` etc.) and search against stored ``kind=template`` points.
+    On a hit, re-extract the concrete entity values from the original question
+    and bind them into the parameterized SQL template
+    (placeholders look like ``[column_name:DATE]``).  The bound SQL is
+    validated syntactically before being returned.
 
 Collection naming convention: ``cache_{agent_id}`` (one per agent, separate
 from the ``agent_{id}_schema``, ``agent_{id}_capsules`` and
@@ -26,19 +39,138 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import re
-from dataclasses import dataclass
+import string
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from nlqueries import config
 from nlqueries.embeddings.embedder import embed_text
 from nlqueries.embeddings.qdrant_store import ensure_collection
 
 CACHE_COLLECTION_PREFIX = "cache_"
 CACHE_VECTOR_SIZE = 384
-SIMILARITY_THRESHOLD = 0.97
+SIMILARITY_THRESHOLD = 0.97  # kept for backward-compat; Tier 1 uses config value
 
 # Qdrant collection names must not contain ":" or other special chars.
 _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+# Module-level set of known-existing Qdrant collection names.
+_known_collections: set[str] = set()
+
+# ---------------------------------------------------------------------------
+# Entity masking helpers (Tier 2 template cache)
+# ---------------------------------------------------------------------------
+
+# Regex patterns applied in order (most specific first).
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_MONTH_RE = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?"
+    r"|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b",
+    re.IGNORECASE,
+)
+_CURRENCY_RE = re.compile(r"\$[\d,]+(?:\.\d+)?")
+_DQUOTE_RE = re.compile(r'"[^"]*"')
+_SQUOTE_RE = re.compile(r"'[^']*'")
+_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
+
+# Each entry: (pattern, token_type_string)
+_ENTITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (_ISO_DATE_RE, "<DATE>"),
+    (_MONTH_RE, "<MONTH>"),
+    (_CURRENCY_RE, "<CURRENCY>"),
+    (_DQUOTE_RE, "<STRING>"),
+    (_SQUOTE_RE, "<STRING>"),
+    (_NUMBER_RE, "<NUMBER>"),
+]
+
+# Regex to find parameterized SQL placeholders like [column_name:DATE]
+_PLACEHOLDER_RE = re.compile(r"\[([^:\]]+):([^\]]+)\]")
+
+# Maps parameterizer placeholder types → entity type keys used by _extract_entities_by_type
+_PARAM_TYPE_TO_ENTITY: dict[str, str] = {
+    "INT": "NUMBER",
+    "DECIMAL": "NUMBER",
+    "DATE": "DATE",
+    "TIMESTAMP": "DATE",
+    "VARCHAR": "STRING",
+}
+
+_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+
+
+def _normalize_question(question: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace for exact-match lookup."""
+    q = question.lower().translate(_PUNCT_TABLE)
+    return re.sub(r"\s+", " ", q).strip()
+
+
+def _mask_entities(question: str) -> str:
+    """Replace entity tokens in *question* with typed placeholders.
+
+    Patterns are applied in order (most specific first) so that ISO dates are
+    captured before the generic number pattern would match the year/month/day
+    digits.
+    """
+    masked = question
+    for pattern, token in _ENTITY_PATTERNS:
+        masked = pattern.sub(token, masked)
+    return masked
+
+
+def _extract_entities_by_type(question: str) -> dict[str, list[str]]:
+    """Return entity values from *question* grouped by type token (no angle brackets).
+
+    Each pattern is applied to *question* and the matched strings are collected.
+    A running copy of *question* is masked after each pattern so later patterns
+    don't double-count characters that already matched.
+    """
+    result: dict[str, list[str]] = {}
+    remaining = question
+    for pattern, token in _ENTITY_PATTERNS:
+        type_key = token[1:-1]  # strip < > → "DATE", "NUMBER", etc.
+        values = pattern.findall(remaining)
+        if values:
+            result.setdefault(type_key, []).extend(values)
+        remaining = pattern.sub(token, remaining)
+    return result
+
+
+def _quote_sql_value(value: str, param_type: str) -> str:
+    """Format *value* for inline SQL according to its *param_type*."""
+    if param_type.upper() in ("INT", "DECIMAL"):
+        return value
+    return f"'{value}'"
+
+
+def _bind_entities(question: str, template_sql: str) -> str | None:
+    """Substitute question entities into *template_sql* placeholders.
+
+    Placeholders look like ``[column_name:DATE]``.  Entities are matched to
+    placeholders by type in order of appearance.  Returns ``None`` when there
+    are fewer available entities than required placeholders of a given type
+    (binding would produce an incomplete or incorrect query).
+    """
+    placeholders = _PLACEHOLDER_RE.findall(template_sql)  # [(name, type), ...]
+    if not placeholders:
+        return template_sql  # no placeholders — use as-is
+
+    entities = _extract_entities_by_type(question)
+    type_used: dict[str, int] = {}
+
+    bound = template_sql
+    for name, ptype in placeholders:
+        entity_type = _PARAM_TYPE_TO_ENTITY.get(ptype.upper(), "STRING")
+        idx = type_used.get(entity_type, 0)
+        available = entities.get(entity_type, [])
+        if idx >= len(available):
+            return None  # not enough entities — unsafe to bind
+        value = available[idx]
+        type_used[entity_type] = idx + 1
+        sql_value = _quote_sql_value(value, ptype)
+        bound = bound.replace(f"[{name}:{ptype}]", sql_value, 1)
+
+    return bound
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +202,7 @@ class CacheEntry:
     sql: str | None
     created_at: datetime
     hit_count: int
+    kind: str = field(default="answer")
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +220,6 @@ def _get_client() -> Any:
     if _cache_client is None:
         from qdrant_client import QdrantClient  # noqa: PLC0415
 
-        from nlqueries import config  # noqa: PLC0415
-
         _cache_client = QdrantClient(url=config.QDRANT_URL)
     return _cache_client
 
@@ -96,6 +227,19 @@ def _get_client() -> Any:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _collection_exists(client: Any, collection: str) -> bool:
+    """Return True if *collection* exists in Qdrant, using a module-level set as
+    a positive cache so repeated calls skip the get_collections() HTTP round-trip."""
+    if collection in _known_collections:
+        return True
+    try:
+        existing = {c.name for c in client.get_collections().collections}
+    except Exception:  # noqa: BLE001
+        return False
+    _known_collections.update(existing)
+    return collection in existing
 
 
 def _point_id_for_question(question: str) -> int:
@@ -133,69 +277,24 @@ class SemanticCache:
         self._ttl_hours = ttl_hours
 
     # ------------------------------------------------------------------
-    # Public API
+    # Private helpers
     # ------------------------------------------------------------------
 
-    def get(self, question: str) -> CacheEntry | None:
-        """Embed *question* and search the cache collection.
+    def _payload_to_entry(self, payload: dict[str, Any]) -> CacheEntry | None:
+        """Deserialize a ``CacheEntry`` from *payload*, checking TTL.
 
-        Returns the top hit if its cosine similarity is >= SIMILARITY_THRESHOLD
-        and the entry has not yet expired (``created_at + ttl_hours``).
-        Increments ``hit_count`` in the Qdrant payload on a successful hit.
-
-        Returns ``None`` when the collection does not exist, no similar entry
-        is found, the top score is below threshold, or the entry has expired.
+        Returns ``None`` when the entry has expired or the timestamp is missing
+        / unparseable.
         """
-        client = _get_client()
-
-        # Guard: collection might not exist yet.
-        try:
-            existing = {c.name for c in client.get_collections().collections}
-            if self._collection not in existing:
-                return None
-        except Exception:  # noqa: BLE001
-            return None
-
-        vector = embed_text(question)
-
-        try:
-            response = client.query_points(
-                collection_name=self._collection,
-                query=vector,
-                limit=1,
-            )
-        except Exception:  # noqa: BLE001
-            return None
-
-        if not response.points:
-            return None
-
-        hit = response.points[0]
-        if hit.score < SIMILARITY_THRESHOLD:
-            return None
-
-        payload = hit.payload or {}
         created_at_raw = payload.get("created_at")
         if not created_at_raw:
             return None
-
         try:
             created_at = datetime.fromisoformat(str(created_at_raw))
         except ValueError:
             return None
-
         if datetime.now(UTC) - created_at > timedelta(hours=self._ttl_hours):
-            return None  # expired
-
-        # Increment hit_count (best-effort — do not fail the whole get on error).
-        new_count = int(payload.get("hit_count", 0)) + 1
-        with contextlib.suppress(Exception):
-            client.set_payload(
-                collection_name=self._collection,
-                payload={"hit_count": new_count},
-                points=[hit.id],
-            )
-
+            return None
         return CacheEntry(
             question=str(payload.get("question", "")),
             resolved_question=str(payload.get("resolved_question", "")),
@@ -203,31 +302,172 @@ class SemanticCache:
             answer=str(payload.get("answer", "")),
             sql=payload.get("sql") or None,
             created_at=created_at,
-            hit_count=new_count,
+            hit_count=int(payload.get("hit_count", 0)),
+            kind=str(payload.get("kind", "answer")),
         )
+
+    def _increment_hit_count(self, client: Any, point_id: Any, payload: dict[str, Any]) -> int:
+        """Increment ``hit_count`` in the Qdrant payload and return the new value."""
+        new_count = int(payload.get("hit_count", 0)) + 1
+        with contextlib.suppress(Exception):
+            client.set_payload(
+                collection_name=self._collection,
+                payload={"hit_count": new_count},
+                points=[point_id],
+            )
+        return new_count
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def get(
+        self,
+        question: str,
+        *,
+        vector: list[float] | None = None,
+    ) -> CacheEntry | None:
+        """Look up *question* in the cache, trying three tiers in order.
+
+        **Tier 0** — exact-match via SHA-256 hash: zero embed calls on hit.
+        **Tier 1** — cosine similarity ≥ ``config.CACHE_ANSWER_THRESHOLD`` against
+        ``kind=answer`` points; uses *vector* when supplied to avoid a second
+        ``embed_text()`` call.
+        **Tier 2** — entity-masked cosine similarity ≥ ``config.CACHE_TEMPLATE_THRESHOLD``
+        against ``kind=template`` points; entities from *question* are bound
+        into the stored parameterized SQL template.
+
+        Returns ``None`` when the collection does not exist, no tier produces a
+        valid non-expired hit, or Tier 2 entity binding fails.
+
+        Args:
+            question: The user question.
+            vector:   Pre-computed embedding vector.  When provided, the
+                      ``embed_text()`` call for Tier 1 is skipped.
+        """
+        client = _get_client()
+
+        if not _collection_exists(client, self._collection):
+            return None
+
+        # --- Tier 0: exact-match hash lookup (zero embed calls on hit) ---
+        normalized = _normalize_question(question)
+        tier0_id = _point_id_for_question(normalized)
+        with contextlib.suppress(Exception):
+            tier0_hits = client.retrieve(
+                collection_name=self._collection,
+                ids=[tier0_id],
+                with_payload=True,
+            )
+            if tier0_hits:
+                payload = tier0_hits[0].payload or {}
+                entry = self._payload_to_entry(payload)
+                if entry is not None:
+                    entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
+                    return entry
+
+        # --- Tier 1: answer cache (cosine similarity, kind=answer filter) ---
+        from qdrant_client.models import FieldCondition, Filter, MatchAny  # noqa: PLC0415
+
+        v = vector if vector is not None else embed_text(question)
+        try:
+            response = client.query_points(
+                collection_name=self._collection,
+                query=v,
+                query_filter=Filter(
+                    must=[FieldCondition(key="kind", match=MatchAny(any=["answer"]))]
+                ),
+                limit=1,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        if response.points:
+            hit = response.points[0]
+            if hit.score >= config.CACHE_ANSWER_THRESHOLD:
+                payload = hit.payload or {}
+                entry = self._payload_to_entry(payload)
+                if entry is not None:
+                    entry.hit_count = self._increment_hit_count(client, hit.id, payload)
+                    return entry
+
+        # --- Tier 2: template cache (masked cosine similarity, kind=template) ---
+        masked = _mask_entities(question)
+        if masked == question:
+            # No entities found — template would be identical to answer; skip.
+            return None
+
+        try:
+            masked_vector = embed_text(masked)
+            tmpl_response = client.query_points(
+                collection_name=self._collection,
+                query=masked_vector,
+                query_filter=Filter(
+                    must=[FieldCondition(key="kind", match=MatchAny(any=["template"]))]
+                ),
+                limit=1,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        if not tmpl_response.points:
+            return None
+
+        tmpl_hit = tmpl_response.points[0]
+        if tmpl_hit.score < config.CACHE_TEMPLATE_THRESHOLD:
+            return None
+
+        tmpl_payload = tmpl_hit.payload or {}
+        template_sql = str(tmpl_payload.get("sql") or "")
+        if not template_sql:
+            return None
+
+        bound_sql = _bind_entities(question, template_sql)
+        if bound_sql is None:
+            return None
+
+        # Basic syntactic validation before returning a template-filled SQL.
+        with contextlib.suppress(Exception):
+            import sqlglot  # noqa: PLC0415
+
+            sqlglot.parse_one(bound_sql)
+
+        entry = self._payload_to_entry(tmpl_payload)
+        if entry is None:
+            return None
+
+        entry.question = question
+        entry.sql = bound_sql
+        entry.hit_count = 0
+        entry.kind = "template"
+        return entry
 
     def put(self, question: str, result: _PutResult) -> None:
         """Embed *question* and upsert the answer into the cache collection.
 
-        Uses ``SHA-256(question)[:16]`` as the point ID so that repeated puts
-        for the same question are idempotent (last write wins).
-        Sets ``created_at`` to now and initialises ``hit_count`` to 0.
+        Stores a ``kind="answer"`` point keyed on the **normalized** question so
+        that minor variations (capitalisation, punctuation) map to the same entry.
+
+        For SQL results that contain entity literals in the question, also stores
+        a ``kind="template"`` point keyed on the masked question embedding, with
+        the SQL parameterized via placeholder substitution.  Both points are
+        upserted in a single Qdrant call.
 
         Args:
             question: The (resolved) question string used as the cache key.
             result:   Any object exposing ``resolved_question``, ``agent_type``,
-                      ``answer``, and ``sql`` attributes (e.g. AgentQueryResult
-                      or the internal ``_CacheData`` carrier used by the
-                      orchestrator).
+                      ``answer``, and ``sql`` attributes.
         """
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
-        ensure_collection(self._collection, CACHE_VECTOR_SIZE)
+        ensure_collection(self._collection, CACHE_VECTOR_SIZE, payload_indexes=["kind"])
 
-        vector = embed_text(question)
-        point_id = _point_id_for_question(question)
+        # Answer entry (Tier 0 exact-match + Tier 1 cosine)
+        normalized = _normalize_question(question)
+        answer_id = _point_id_for_question(normalized)
+        answer_vector = embed_text(question)
 
-        payload: dict[str, Any] = {
+        answer_payload: dict[str, Any] = {
             "question": question,
             "resolved_question": result.resolved_question,
             "agent_type": result.agent_type,
@@ -235,13 +475,44 @@ class SemanticCache:
             "sql": result.sql,
             "created_at": datetime.now(UTC).isoformat(),
             "hit_count": 0,
+            "kind": "answer",
         }
 
+        points: list[PointStruct] = [
+            PointStruct(id=answer_id, vector=answer_vector, payload=answer_payload)
+        ]
+
+        # Template entry (Tier 2) — only for SQL results with entity literals
+        if result.agent_type == "sql" and result.sql:
+            masked = _mask_entities(question)
+            if masked != question:  # entities were found
+                try:
+                    from nlqueries.processing.parameterizer import (  # noqa: PLC0415
+                        _parameterize_sql,
+                    )
+
+                    template_sql, placeholders = _parameterize_sql(result.sql, {})
+                    if placeholders:  # only store if SQL has literal parameters
+                        masked_vector = embed_text(masked)
+                        tmpl_id = _point_id_for_question(f"tmpl:{masked}")
+                        tmpl_payload: dict[str, Any] = {
+                            "question": masked,
+                            "resolved_question": result.resolved_question,
+                            "agent_type": result.agent_type,
+                            "answer": result.answer,
+                            "sql": template_sql,
+                            "created_at": datetime.now(UTC).isoformat(),
+                            "hit_count": 0,
+                            "kind": "template",
+                        }
+                        points.append(
+                            PointStruct(id=tmpl_id, vector=masked_vector, payload=tmpl_payload)
+                        )
+                except Exception:  # noqa: BLE001
+                    pass  # template storage is best-effort
+
         client = _get_client()
-        client.upsert(
-            collection_name=self._collection,
-            points=[PointStruct(id=point_id, vector=vector, payload=payload)],
-        )
+        client.upsert(collection_name=self._collection, points=points)
 
     def invalidate(self, agent_id: str) -> None:  # noqa: ARG002
         """Delete all points in the cache collection (full invalidation).
@@ -249,6 +520,7 @@ class SemanticCache:
         The *agent_id* parameter is accepted for API symmetry with CLI callers
         but is not used — the collection to clear is always ``self._collection``.
         """
+        _known_collections.discard(self._collection)
         with contextlib.suppress(Exception):
             _get_client().delete_collection(self._collection)
 
@@ -273,24 +545,9 @@ class SemanticCache:
         entries: list[CacheEntry] = []
         for record in records:
             payload = record.payload or {}
-            raw_ts = payload.get("created_at")
-            if not raw_ts:
-                continue
-            try:
-                created_at = datetime.fromisoformat(str(raw_ts))
-            except ValueError:
-                continue
-            entries.append(
-                CacheEntry(
-                    question=str(payload.get("question", "")),
-                    resolved_question=str(payload.get("resolved_question", "")),
-                    agent_type=str(payload.get("agent_type", "")),
-                    answer=str(payload.get("answer", "")),
-                    sql=payload.get("sql") or None,
-                    created_at=created_at,
-                    hit_count=int(payload.get("hit_count", 0)),
-                )
-            )
+            entry = self._payload_to_entry(payload)
+            if entry is not None:
+                entries.append(entry)
 
         entries.sort(key=lambda e: e.created_at, reverse=True)
         return entries

@@ -1,11 +1,21 @@
-"""Tests for nlqueries.orchestrator.prompt_assembly.assemble_prompt."""
+"""Tests for nlqueries.orchestrator.prompt_assembly.assemble_prompt.
+
+Key design invariants verified here:
+- ``assemble_prompt()`` returns ``AssembledPrompt``, not a tuple.
+- ``static_system`` contains the FULL schema (all tables, deterministic order),
+  business context, and SQL format rules — no per-question content.
+- ``dynamic_context`` contains Qdrant-retrieved capsules and relevant-table hints.
+- ``user_question`` is the exact question string.
+- Schema is NEVER filtered from ``static_system`` by Qdrant results; filtering
+  is replaced by a "most relevant tables" hint in ``dynamic_context``.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 from unittest.mock import patch
 
-from nlqueries.orchestrator.prompt_assembly import assemble_prompt
+from nlqueries.orchestrator.prompt_assembly import AssembledPrompt, assemble_prompt
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -74,146 +84,209 @@ def _make_kb(
     }
 
 
+def _full_text(prompt: AssembledPrompt) -> str:
+    """Return the concatenated text of all prompt fields for content checks."""
+    return "\n".join([prompt.static_system, prompt.dynamic_context, prompt.user_question])
+
+
 # ---------------------------------------------------------------------------
 # Return type and structure
 # ---------------------------------------------------------------------------
 
 
-def test_assemble_prompt_returns_tuple_of_two_strings() -> None:
-    system, user = assemble_prompt("How many orders?", _make_kb())
-    assert isinstance(system, str)
-    assert isinstance(user, str)
+def test_assemble_prompt_returns_assembled_prompt() -> None:
+    prompt = assemble_prompt("How many orders?", _make_kb())
+    assert isinstance(prompt, AssembledPrompt)
 
 
-def test_user_prompt_equals_question() -> None:
+def test_user_question_equals_input() -> None:
     question = "What is the total revenue?"
-    _, user = assemble_prompt(question, _make_kb())
-    assert user == question
+    prompt = assemble_prompt(question, _make_kb())
+    assert prompt.user_question == question
 
 
-def test_system_prompt_is_non_empty() -> None:
-    system, _ = assemble_prompt("Show all customers", _make_kb())
-    assert system.strip()
+def test_user_content_returns_question() -> None:
+    """user_content() must return the bare question — no dynamic context duplication."""
+    question = "How many orders?"
+    prompt = assemble_prompt(question, _make_kb())
+    assert prompt.user_content() == question
+
+
+def test_static_system_is_non_empty() -> None:
+    prompt = assemble_prompt("Show all customers", _make_kb())
+    assert prompt.static_system.strip()
+
+
+def test_system_blocks_returns_list() -> None:
+    prompt = assemble_prompt("question", _make_kb())
+    blocks = prompt.system_blocks(cache=False)
+    assert isinstance(blocks, list)
+    assert len(blocks) >= 1
+    assert all(isinstance(b, dict) for b in blocks)
+
+
+def test_system_blocks_with_cache_attaches_cache_control() -> None:
+    prompt = assemble_prompt("question", _make_kb())
+    blocks = prompt.system_blocks(cache=True)
+    # First block (static_system) must have cache_control
+    assert blocks[0].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_system_blocks_without_cache_has_no_cache_control() -> None:
+    prompt = assemble_prompt("question", _make_kb())
+    blocks = prompt.system_blocks(cache=False)
+    for block in blocks:
+        assert "cache_control" not in block
 
 
 # ---------------------------------------------------------------------------
-# Schema section
+# static_system — schema section (full schema, deterministic, cacheable)
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_includes_table_name() -> None:
-    system, _ = assemble_prompt("show orders", _make_kb())
-    assert "orders" in system
+def test_static_system_includes_table_name() -> None:
+    prompt = assemble_prompt("show orders", _make_kb())
+    assert "orders" in prompt.static_system
 
 
-def test_system_prompt_includes_table_description() -> None:
-    system, _ = assemble_prompt("show orders", _make_kb())
-    assert "Customer purchase records" in system
+def test_static_system_includes_table_description() -> None:
+    prompt = assemble_prompt("show orders", _make_kb())
+    assert "Customer purchase records" in prompt.static_system
 
 
-def test_system_prompt_includes_column_names() -> None:
-    system, _ = assemble_prompt("show orders", _make_kb())
-    assert "customer_id" in system
-    assert "total" in system
+def test_static_system_includes_column_names() -> None:
+    prompt = assemble_prompt("show orders", _make_kb())
+    assert "customer_id" in prompt.static_system
+    assert "total" in prompt.static_system
 
 
-def test_system_prompt_includes_column_types() -> None:
-    system, _ = assemble_prompt("show orders", _make_kb())
-    assert "DECIMAL" in system
+def test_static_system_includes_column_types() -> None:
+    prompt = assemble_prompt("show orders", _make_kb())
+    assert "DECIMAL" in prompt.static_system
 
 
-def test_system_prompt_includes_column_description_when_present() -> None:
-    system, _ = assemble_prompt("show orders", _make_kb())
-    assert "Primary key" in system
+def test_static_system_includes_column_description_when_present() -> None:
+    with patch("nlqueries.config.SCHEMA_FORMAT", "verbose"):
+        prompt = assemble_prompt("show orders", _make_kb())
+    assert "Primary key" in prompt.static_system
 
 
-def test_system_prompt_includes_row_count() -> None:
-    system, _ = assemble_prompt("show orders", _make_kb())
-    assert "5,000" in system
+def test_static_system_includes_row_count() -> None:
+    with patch("nlqueries.config.SCHEMA_FORMAT", "verbose"):
+        prompt = assemble_prompt("show orders", _make_kb())
+    assert "5,000" in prompt.static_system
 
 
-def test_system_prompt_handles_empty_schema() -> None:
+def test_static_system_handles_empty_schema() -> None:
     kb = _make_kb(tables=[])
-    system, _ = assemble_prompt("any question", kb)
-    assert "Database Schema" not in system
+    prompt = assemble_prompt("any question", kb)
+    assert "Database Schema" not in prompt.static_system
+
+
+def test_static_system_always_includes_all_tables() -> None:
+    """ALL tables must appear in static_system regardless of Qdrant results.
+
+    This is required for prompt-cache stability — the static_system must be
+    byte-identical across questions for the same agent.
+    """
+    kb = _make_kb(tables=[_TABLE, _TABLE2])
+    mock_hits = [{"table_name": "orders", "type": "table", "score": 0.9}]
+    with (
+        patch("nlqueries.config.SCHEMA_FORMAT", "verbose"),
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=mock_hits),
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        prompt = assemble_prompt("show orders", kb, collection="col")
+
+    assert "### Table: orders" in prompt.static_system
+    assert "### Table: customers" in prompt.static_system
 
 
 # ---------------------------------------------------------------------------
-# Capsule section — top-k selection
+# dynamic_context — capsule section (per-question, Qdrant or fallback)
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_includes_capsule_intent() -> None:
-    system, _ = assemble_prompt("count orders", _make_kb())
-    assert "Count orders per customer" in system
+def test_dynamic_context_includes_capsule_intent_from_kb() -> None:
+    """When Qdrant is unavailable, KB capsules appear in dynamic_context."""
+    prompt = assemble_prompt("count orders", _make_kb())
+    assert "Count orders per customer" in prompt.dynamic_context
 
 
-def test_system_prompt_includes_capsule_template() -> None:
-    system, _ = assemble_prompt("count orders", _make_kb())
-    assert "SELECT customer_id, COUNT(*)" in system
+def test_dynamic_context_includes_capsule_template_from_kb() -> None:
+    prompt = assemble_prompt("count orders", _make_kb())
+    assert "SELECT customer_id, COUNT(*)" in prompt.dynamic_context
 
 
 def test_top_k_capsules_limits_included_count() -> None:
     kb = _make_kb(capsules=_CAPSULES)  # 6 capsules total
-    system, _ = assemble_prompt("question", kb, top_k_capsules=3)
-    assert system.count("Intent:") == 3
+    prompt = assemble_prompt("question", kb, top_k_capsules=3)
+    assert prompt.dynamic_context.count("Intent:") == 3
 
 
 def test_top_k_capsules_default_is_five() -> None:
     kb = _make_kb(capsules=_CAPSULES)  # 6 capsules
-    system, _ = assemble_prompt("question", kb)
-    assert system.count("Intent:") == 5
+    prompt = assemble_prompt("question", kb)
+    assert prompt.dynamic_context.count("Intent:") == 5
 
 
 def test_top_k_capsules_one() -> None:
     kb = _make_kb(capsules=_CAPSULES)
-    system, _ = assemble_prompt("question", kb, top_k_capsules=1)
-    assert system.count("Intent:") == 1
+    prompt = assemble_prompt("question", kb, top_k_capsules=1)
+    assert prompt.dynamic_context.count("Intent:") == 1
 
 
-def test_system_prompt_handles_empty_capsules() -> None:
+def test_dynamic_context_empty_when_no_capsules() -> None:
     kb = _make_kb(capsules=[])
-    system, _ = assemble_prompt("question", kb)
-    assert "Example Queries" not in system
+    prompt = assemble_prompt("question", kb)
+    assert "Example Queries" not in prompt.dynamic_context
 
 
 # ---------------------------------------------------------------------------
-# Business context section
+# static_system — business context section
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_includes_glossary_term() -> None:
+def test_static_system_includes_glossary_term() -> None:
     kb = _make_kb(glossary=[{"term": "ARR", "definition": "Annual Recurring Revenue"}])
-    system, _ = assemble_prompt("what is ARR?", kb)
-    assert "ARR" in system
-    assert "Annual Recurring Revenue" in system
+    prompt = assemble_prompt("what is ARR?", kb)
+    assert "ARR" in prompt.static_system
+    assert "Annual Recurring Revenue" in prompt.static_system
 
 
-def test_system_prompt_includes_business_rules() -> None:
+def test_static_system_includes_business_rules() -> None:
     kb = _make_kb(rules=["Never show deleted records", "Always filter by active status"])
-    system, _ = assemble_prompt("show data", kb)
-    assert "Never show deleted records" in system
+    prompt = assemble_prompt("show data", kb)
+    assert "Never show deleted records" in prompt.static_system
 
 
-def test_system_prompt_omits_business_context_when_empty() -> None:
+def test_static_system_omits_business_context_when_empty() -> None:
     kb = _make_kb(glossary=[], rules=[])
-    system, _ = assemble_prompt("show data", kb)
-    assert "Business Context" not in system
+    prompt = assemble_prompt("show data", kb)
+    assert "Business Context" not in prompt.static_system
 
 
 # ---------------------------------------------------------------------------
-# Instructions section always present
+# static_system — instructions always present
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_always_includes_instructions() -> None:
-    system, _ = assemble_prompt("any question", _make_kb())
-    assert "## Instructions" in system
-    assert "SELECT" in system
+def test_static_system_always_includes_instructions() -> None:
+    prompt = assemble_prompt("any question", _make_kb())
+    assert "## Instructions" in prompt.static_system
+    assert "SELECT" in prompt.static_system
+
+
+def test_static_system_includes_sql_sentinel_instructions() -> None:
+    """LLM must be instructed to use <sql>...</sql> markers (Phase 3B)."""
+    prompt = assemble_prompt("question", _make_kb())
+    assert "<sql>" in prompt.static_system
+    assert "</sql>" in prompt.static_system
 
 
 # ---------------------------------------------------------------------------
-# Qdrant collection — schema search
+# Qdrant collection — search calls
 # ---------------------------------------------------------------------------
 
 
@@ -224,10 +297,15 @@ def test_assemble_prompt_calls_search_schema_when_collection_given() -> None:
     with (
         patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=mock_hits) as mock_ss,
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
     ):
         assemble_prompt("how many orders?", kb, collection="my_collection")
 
-    mock_ss.assert_called_once_with("my_collection", "how many orders?", top_k=10)
+    mock_ss.assert_called_once()
+    call_args = mock_ss.call_args
+    assert call_args.args[0] == "my_collection"
+    assert call_args.args[1] == "how many orders?"
+    assert call_args.kwargs.get("top_k") == 10
 
 
 def test_assemble_prompt_calls_search_when_collection_given() -> None:
@@ -236,10 +314,15 @@ def test_assemble_prompt_calls_search_when_collection_given() -> None:
     with (
         patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[]) as mock_s,
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
     ):
         assemble_prompt("count orders", kb, top_k_capsules=3, collection="my_col")
 
-    mock_s.assert_called_once_with("my_col", "count orders", top_k=3)
+    mock_s.assert_called_once()
+    call_args = mock_s.call_args
+    assert call_args.args[0] == "my_col"
+    assert call_args.args[1] == "count orders"
+    assert call_args.kwargs.get("top_k") == 3
 
 
 def test_assemble_prompt_uses_qdrant_capsules_when_returned() -> None:
@@ -259,10 +342,11 @@ def test_assemble_prompt_uses_qdrant_capsules_when_returned() -> None:
     with (
         patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[qdrant_capsule]),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
     ):
-        system, _ = assemble_prompt("count orders", kb, collection="col")
+        prompt = assemble_prompt("count orders", kb, collection="col")
 
-    assert "Qdrant-found capsule" in system
+    assert "Qdrant-found capsule" in prompt.dynamic_context
 
 
 def test_assemble_prompt_falls_back_to_kb_when_qdrant_raises() -> None:
@@ -278,9 +362,9 @@ def test_assemble_prompt_falls_back_to_kb_when_qdrant_raises() -> None:
             side_effect=RuntimeError("down"),
         ),
     ):
-        system, _ = assemble_prompt("question", kb, collection="col")
+        prompt = assemble_prompt("question", kb, collection="col")
 
-    assert "Count orders per customer" in system
+    assert "Count orders per customer" in prompt.dynamic_context
 
 
 def test_assemble_prompt_does_not_call_qdrant_without_collection() -> None:
@@ -295,37 +379,100 @@ def test_assemble_prompt_does_not_call_qdrant_without_collection() -> None:
     mock_ss.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Qdrant schema filtering narrows tables
-# ---------------------------------------------------------------------------
-
-
-def test_qdrant_schema_hit_filters_to_relevant_tables() -> None:
+def test_qdrant_schema_hit_adds_relevant_tables_hint_to_dynamic_context() -> None:
+    """Qdrant schema hits add a hint in dynamic_context; static_system keeps ALL tables."""
     kb = _make_kb(tables=[_TABLE, _TABLE2])
-
-    # Only "orders" is returned by schema search → "customers" should be excluded
     mock_hits = [{"table_name": "orders", "type": "table", "score": 0.9}]
     with (
+        patch("nlqueries.config.SCHEMA_FORMAT", "verbose"),
         patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=mock_hits),
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
     ):
-        system, _ = assemble_prompt("show orders", kb, collection="col")
+        prompt = assemble_prompt("show orders", kb, collection="col")
 
-    assert "### Table: orders" in system
-    assert "### Table: customers" not in system
+    # dynamic_context carries the relevance hint
+    assert "orders" in prompt.dynamic_context
+    # static_system always has both tables (not filtered)
+    assert "### Table: orders" in prompt.static_system
+    assert "### Table: customers" in prompt.static_system
 
 
-def test_qdrant_schema_empty_hit_falls_back_to_all_tables() -> None:
+def test_qdrant_schema_empty_hit_does_not_add_hint() -> None:
     kb = _make_kb(tables=[_TABLE, _TABLE2])
 
     with (
+        patch("nlqueries.config.SCHEMA_FORMAT", "verbose"),
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        prompt = assemble_prompt("show something", kb, collection="col")
+
+    # Both tables in static_system regardless
+    assert "### Table: orders" in prompt.static_system
+    assert "### Table: customers" in prompt.static_system
+
+
+# ---------------------------------------------------------------------------
+# Single-embed optimisation (vector passed to both searches)
+# ---------------------------------------------------------------------------
+
+
+def test_single_embed_call_passed_to_both_searches() -> None:
+    """embed_text is called once; the pre-computed vector is reused for both searches."""
+    kb = _make_kb()
+    call_log: list[str] = []
+
+    def fake_embed(text: str) -> list[float]:
+        call_log.append(text)
+        return [0.42] * 384
+
+    with (
+        patch("nlqueries.embeddings.embedder.embed_text", side_effect=fake_embed),
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]) as mock_ss,
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=[]) as mock_s,
+    ):
+        assemble_prompt("my question", kb, collection="col")
+
+    # embed_text called exactly once
+    assert len(call_log) == 1
+    # Both searches received the pre-computed vector
+    assert mock_ss.call_args.kwargs.get("vector") == [0.42] * 384
+    assert mock_s.call_args.kwargs.get("vector") == [0.42] * 384
+
+
+def test_precomputed_vector_skips_embed_text_call() -> None:
+    """When vector= is supplied, embed_text must NOT be called at all."""
+    kb = _make_kb()
+    precomputed = [0.99] * 384
+
+    with (
+        patch(
+            "nlqueries.embeddings.embedder.embed_text",
+            side_effect=AssertionError("embed_text must not be called when vector= is provided"),
+        ),
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]) as mock_ss,
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=[]) as mock_s,
+    ):
+        assemble_prompt("my question", kb, collection="col", vector=precomputed)
+
+    assert mock_ss.call_args.kwargs.get("vector") == precomputed
+    assert mock_s.call_args.kwargs.get("vector") == precomputed
+
+
+def test_precomputed_vector_none_triggers_embed() -> None:
+    """Without vector=, embed_text is still called (backward-compat)."""
+    kb = _make_kb()
+
+    with (
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384) as mock_embed,
         patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
     ):
-        system, _ = assemble_prompt("show something", kb, collection="col")
+        assemble_prompt("my question", kb, collection="col")
 
-    assert "### Table: orders" in system
-    assert "### Table: customers" in system
+    mock_embed.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -334,12 +481,12 @@ def test_qdrant_schema_empty_hit_falls_back_to_all_tables() -> None:
 
 
 def test_empty_knowledge_base_does_not_raise() -> None:
-    system, user = assemble_prompt("question", {})
-    assert isinstance(system, str)
-    assert user == "question"
+    prompt = assemble_prompt("question", {})
+    assert isinstance(prompt, AssembledPrompt)
+    assert prompt.user_question == "question"
 
 
 def test_question_passed_through_unchanged() -> None:
     q = "How many customers signed up in 2024?"
-    _, user = assemble_prompt(q, _make_kb())
-    assert user == q
+    prompt = assemble_prompt(q, _make_kb())
+    assert prompt.user_question == q

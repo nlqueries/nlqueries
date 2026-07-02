@@ -6,7 +6,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import yaml
 
@@ -127,14 +127,25 @@ class TestPredefinedInstruments:
 # ---------------------------------------------------------------------------
 
 
+def _make_async_llm(tokens: list[str] | None = None) -> MagicMock:
+    """Return an LLM mock with an async-generator ``astream`` method."""
+
+    async def _astream(*a: object, **kw: object) -> object:
+        for t in tokens or []:
+            yield t
+
+    mock_llm = MagicMock()
+    mock_llm.supports_prompt_caching = False
+    mock_llm.astream = _astream
+    return mock_llm
+
+
 class TestOrchestratorSpan:
     def test_orchestrator_emits_span(self) -> None:
         """handle_question must create an 'orchestrator.handle_question' span."""
         from nlqueries.orchestrator.sql_generation import SQLGenerationResult
 
         mock_tracer, mock_span = _make_mock_tracer()
-        mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter([])
         sql_result = SQLGenerationResult(
             sql="SELECT 1",
             is_valid=True,
@@ -151,11 +162,11 @@ class TestOrchestratorSpan:
                 patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
                 patch(
                     "nlqueries.orchestrator.orchestrator.get_llm_client",
-                    return_value=mock_llm,
+                    return_value=_make_async_llm(),
                 ),
                 patch(
-                    "nlqueries.orchestrator.orchestrator.generate_sql",
-                    return_value=sql_result,
+                    "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                    new=AsyncMock(return_value=sql_result),
                 ),
                 patch("nlqueries.orchestrator.orchestrator.get_tracer", return_value=mock_tracer),
                 patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
@@ -172,8 +183,6 @@ class TestOrchestratorSpan:
         from nlqueries.orchestrator.sql_generation import SQLGenerationResult
 
         mock_tracer, mock_span = _make_mock_tracer()
-        mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter([])
         sql_result = SQLGenerationResult(
             sql="SELECT 1",
             is_valid=True,
@@ -190,11 +199,11 @@ class TestOrchestratorSpan:
                 patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
                 patch(
                     "nlqueries.orchestrator.orchestrator.get_llm_client",
-                    return_value=mock_llm,
+                    return_value=_make_async_llm(),
                 ),
                 patch(
-                    "nlqueries.orchestrator.orchestrator.generate_sql",
-                    return_value=sql_result,
+                    "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                    new=AsyncMock(return_value=sql_result),
                 ),
                 patch("nlqueries.orchestrator.orchestrator.get_tracer", return_value=mock_tracer),
                 patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
@@ -211,8 +220,6 @@ class TestOrchestratorSpan:
         from nlqueries.orchestrator.sql_generation import SQLGenerationResult
 
         mock_tracer, mock_span = _make_mock_tracer()
-        mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter([])
         sql_result = SQLGenerationResult(
             sql="SELECT 1",
             is_valid=True,
@@ -229,11 +236,11 @@ class TestOrchestratorSpan:
                 patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
                 patch(
                     "nlqueries.orchestrator.orchestrator.get_llm_client",
-                    return_value=mock_llm,
+                    return_value=_make_async_llm(),
                 ),
                 patch(
-                    "nlqueries.orchestrator.orchestrator.generate_sql",
-                    return_value=sql_result,
+                    "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                    new=AsyncMock(return_value=sql_result),
                 ),
                 patch("nlqueries.orchestrator.orchestrator.get_tracer", return_value=mock_tracer),
                 patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),

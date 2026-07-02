@@ -11,6 +11,19 @@ import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.processing.parameterizer import QueryCapsule
 
+# Column names that strongly indicate PII — sample values are never included.
+# No word boundaries: underscore-delimited names like `user_email` must match.
+_PII_COLUMN_RE = re.compile(
+    r"password|passwd|secret|token|hash|salt|ssn|"
+    r"credit.?card|card.?num|cvv|dob|birth|email|phone|address",
+    re.IGNORECASE,
+)
+
+
+def _is_pii_column(col_name: str) -> bool:
+    return bool(_PII_COLUMN_RE.search(col_name))
+
+
 # Column name suffixes that indicate surrogate/technical keys with no business meaning.
 _SKIP_SUFFIXES = ("_id", "_key", "_uuid", "_hash", "_token", "_code", "_pk", "_fk")
 
@@ -126,6 +139,7 @@ def generate_knowledge_base(
     existing_kb: dict[str, Any] | None = None,
     embed: bool = False,
     llm_column_descriptions: dict[str, dict[str, str]] | None = None,
+    column_samples: dict[str, dict[str, list[str]]] | None = None,
 ) -> dict[str, Any]:
     """Build a structured knowledge-base dict from a schema and query capsules.
 
@@ -140,6 +154,11 @@ def generate_knowledge_base(
     When *embed* is ``True``, table and column descriptions are also upserted
     into the Qdrant collection ``agent_{agent_name}_schema`` (Qdrant must be
     reachable).
+
+    When *column_samples* is supplied (``{table: {col: [val, ...]}}``), up to
+    five non-PII sample values are stored per column for use by the M-Schema
+    renderer.  PII columns (name matches :data:`_PII_COLUMN_RE`) are silently
+    skipped.
     """
     existing_table_descs: dict[str, str] = {}
     existing_col_descs: dict[str, dict[str, str]] = {}
@@ -158,6 +177,10 @@ def generate_knowledge_base(
                 existing_col_descs[tname] = col_descs
 
     llm_descs = llm_column_descriptions or {}
+    col_samples_map = column_samples or {}
+
+    # Collect foreign-key relationships for the M-Schema FK section.
+    foreign_keys: list[dict[str, str]] = []
 
     tables = []
     for table in schema.tables:
@@ -170,13 +193,24 @@ def generate_knowledge_base(
                 or llm_descs.get(table.name, {}).get(col.name)
                 or ""
             )
-            columns.append(
-                {
-                    "name": col.name,
-                    "type": col.type,
-                    "description": col_desc,
-                }
-            )
+            col_dict: dict[str, Any] = {
+                "name": col.name,
+                "type": col.type,
+                "description": col_desc,
+                "is_primary_key": col.is_primary_key,
+                "is_foreign_key": col.is_foreign_key,
+                "references": col.references,
+            }
+            # Sample values: store up to 5 for non-PII columns.
+            if not _is_pii_column(col.name):
+                raw_samples = col_samples_map.get(table.name, {}).get(col.name, [])
+                if raw_samples:
+                    col_dict["samples"] = [str(s) for s in raw_samples[:5]]
+
+            if col.is_foreign_key and col.references:
+                foreign_keys.append({"from": f"{table.name}.{col.name}", "to": col.references})
+
+            columns.append(col_dict)
         tables.append(
             {
                 "name": table.name,
@@ -196,7 +230,12 @@ def generate_knowledge_base(
     ]
 
     kb: dict[str, Any] = {
-        "schema": {"tables": tables},
+        "kb_version": 2,
+        "db_name": schema.database,
+        "schema": {
+            "tables": tables,
+            "foreign_keys": foreign_keys,
+        },
         "business_context": {
             "glossary": [],
             "rules": [],

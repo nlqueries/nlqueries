@@ -39,6 +39,7 @@ Public API
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import time
 from typing import TYPE_CHECKING, Any
@@ -57,6 +58,10 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _client: _QdrantClient | None = None
+
+# Tracks "{collection}:{field}" keys that already have a payload index created,
+# so repeated put() calls skip the create_payload_index round-trip.
+_indexed_fields: set[str] = set()
 
 
 def _get_client() -> _QdrantClient:
@@ -97,23 +102,64 @@ def _capsule_id(capsule: QueryCapsule, index: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def ensure_collection(name: str, vector_size: int = 384) -> None:
+def ensure_collection(
+    name: str,
+    vector_size: int = 384,
+    *,
+    payload_indexes: list[str] | None = None,
+    quantize: bool = True,
+) -> None:
     """Create a Qdrant collection with cosine distance if it does not exist.
 
     Args:
-        name:        Collection name.
-        vector_size: Dimensionality of the stored vectors (default 384 for
-                     ``all-MiniLM-L6-v2``).
+        name:            Collection name.
+        vector_size:     Dimensionality of the stored vectors (default 384 for
+                         ``all-MiniLM-L6-v2``).
+        payload_indexes: Optional list of payload field names to index as
+                         keyword fields.  Existing indexes are skipped via a
+                         module-level cache, so repeated calls are cheap.
+        quantize:        When ``True`` (default), enable INT8 scalar quantization
+                         on new collections.  Reduces on-disk and RAM footprint
+                         ~4× with <1% recall loss.  Pass ``False`` to disable
+                         (e.g. for small test collections).
     """
     from qdrant_client.models import Distance, VectorParams
 
     client = _get_client()
     existing = {c.name for c in client.get_collections().collections}
     if name not in existing:
-        client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-        )
+        create_kwargs: dict[str, Any] = {
+            "collection_name": name,
+            "vectors_config": VectorParams(size=vector_size, distance=Distance.COSINE),
+        }
+        if quantize:
+            from qdrant_client.models import (  # noqa: PLC0415
+                ScalarQuantization,
+                ScalarQuantizationConfig,
+                ScalarType,
+            )
+
+            create_kwargs["quantization_config"] = ScalarQuantization(
+                scalar=ScalarQuantizationConfig(
+                    type=ScalarType.INT8,
+                    always_ram=True,
+                )
+            )
+        client.create_collection(**create_kwargs)
+
+    if payload_indexes:
+        from qdrant_client.models import PayloadSchemaType
+
+        for field in payload_indexes:
+            key = f"{name}:{field}"
+            if key not in _indexed_fields:
+                with contextlib.suppress(Exception):
+                    client.create_payload_index(
+                        collection_name=name,
+                        field_name=field,
+                        field_schema=PayloadSchemaType.KEYWORD,
+                    )
+                _indexed_fields.add(key)
 
 
 def upsert_capsules(
@@ -172,6 +218,8 @@ def search(
     collection: str,
     query: str,
     top_k: int = 5,
+    *,
+    vector: list[float] | None = None,
 ) -> list[QueryCapsule]:
     """Embed *query*, search *collection*, and return ``QueryCapsule`` objects.
 
@@ -181,15 +229,19 @@ def search(
 
     Args:
         collection: Qdrant collection to search.
-        query:      Natural-language query string to embed.
+        query:      Natural-language query string to embed (ignored when
+                    *vector* is supplied).
         top_k:      Maximum number of results to return.
+        vector:     Pre-computed embedding vector.  When provided, *query* is
+                    not embedded again, saving one embed_text() call per request.
 
     Returns:
         ``list[QueryCapsule]`` of length ≤ *top_k*, ordered by relevance.
     """
-    from nlqueries.embeddings.embedder import embed_text
+    if vector is None:
+        from nlqueries.embeddings.embedder import embed_text
 
-    vector = embed_text(query)
+        vector = embed_text(query)
     client = _get_client()
     response = client.query_points(collection_name=collection, query=vector, limit=top_k)
 
@@ -283,6 +335,8 @@ def search_schema(
     collection: str,
     query: str,
     top_k: int = 10,
+    *,
+    vector: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Embed *query* and search for matching schema objects in *collection*.
 
@@ -291,8 +345,11 @@ def search_schema(
 
     Args:
         collection: Qdrant collection to search.
-        query:      Natural-language query string to embed.
+        query:      Natural-language query string to embed (ignored when
+                    *vector* is supplied).
         top_k:      Maximum number of results to return.
+        vector:     Pre-computed embedding vector.  When provided, *query* is
+                    not embedded again, saving one embed_text() call per request.
 
     Returns:
         ``list[dict]`` each containing the stored payload plus a ``"score"`` key,
@@ -300,9 +357,10 @@ def search_schema(
     """
     from qdrant_client.models import FieldCondition, Filter, MatchAny
 
-    from nlqueries.embeddings.embedder import embed_text
+    if vector is None:
+        from nlqueries.embeddings.embedder import embed_text
 
-    vector = embed_text(query)
+        vector = embed_text(query)
     query_filter = Filter(
         must=[FieldCondition(key="type", match=MatchAny(any=["table", "column"]))]
     )

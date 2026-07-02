@@ -91,7 +91,7 @@ class DocumentOrchestrator:
             system_prompt, user_prompt = assemble_document_prompt(question, retrieval_result)
 
             llm = get_llm_client()
-            for token in llm.stream(system_prompt, user_prompt):
+            async for token in llm.astream(system_prompt, user_prompt):
                 yield token
 
             citations_payload = [

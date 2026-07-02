@@ -1,0 +1,39 @@
+version: "3.9"
+
+# Benchmark infrastructure: Postgres + Qdrant + embedding server.
+# Start with: docker compose -f benchmarks/docker-compose.yaml up -d
+# Stop  with: docker compose -f benchmarks/docker-compose.yaml down
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: nlq
+      POSTGRES_PASSWORD: nlq
+      POSTGRES_DB: nlq_bench
+    ports:
+      - "5433:5432"    # 5433 to avoid conflict with a local Postgres on 5432
+    volumes:
+      - postgres_bench_data:/var/lib/postgresql/data
+      - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nlq -d nlq_bench"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    ports:
+      - "6334:6333"    # 6334 to avoid conflict with a local Qdrant on 6333
+    volumes:
+      - qdrant_bench_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_bench_data:
+  qdrant_bench_data:

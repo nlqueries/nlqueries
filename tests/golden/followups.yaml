@@ -1,0 +1,156 @@
+# NLQueries follow-up resolution golden set
+# Used by: Phase 5 fast-model accuracy evaluation (followup_resolver).
+#
+# Schema
+# ------
+# history:      List of prior turns [{role: user|assistant, content: str}]
+# q:            The follow-up question to resolve
+# must_mention: List of strings that MUST appear in the resolved question.
+#               A resolved question "passes" if all strings appear (case-insensitive).
+#
+# Evaluation logic: resolved = resolve_followup(q, history).resolved
+#   pass iff all(s.lower() in resolved.lower() for s in must_mention)
+
+# ---------------------------------------------------------------------------
+# Pronoun resolution
+# ---------------------------------------------------------------------------
+
+- history:
+    - role: user
+      content: Show me total revenue by region last month
+    - role: assistant
+      content: Here is the revenue by region for last month...
+  q: Can you break it down by product category instead?
+  must_mention: [revenue, product category]
+
+- history:
+    - role: user
+      content: Which customers placed the most orders this year?
+    - role: assistant
+      content: The top customers by order count are...
+  q: What is their average order value?
+  must_mention: [customers, average order value]
+
+- history:
+    - role: user
+      content: How many employees are in the engineering department?
+    - role: assistant
+      content: There are 142 employees in engineering.
+  q: How does that compare to last year?
+  must_mention: [engineering, employees]
+
+- history:
+    - role: user
+      content: Show me invoices overdue by more than 60 days
+    - role: assistant
+      content: Found 23 overdue invoices.
+  q: Which vendors do they belong to?
+  must_mention: [invoices, vendors, overdue]
+
+# ---------------------------------------------------------------------------
+# Filter addition
+# ---------------------------------------------------------------------------
+
+- history:
+    - role: user
+      content: Total sales by channel for Q1
+    - role: assistant
+      content: Sales by channel for Q1 2026 are shown below.
+  q: Filter that to just the online channel
+  must_mention: [sales, channel, online]
+
+- history:
+    - role: user
+      content: List all open support tickets
+    - role: assistant
+      content: There are 87 open tickets.
+  q: Show only the high priority ones
+  must_mention: [support tickets, high priority]
+
+- history:
+    - role: user
+      content: Revenue by product category for this year
+    - role: assistant
+      content: Revenue by category for 2026 is listed below.
+  q: Exclude the hardware category
+  must_mention: [revenue, product category, hardware]
+
+# ---------------------------------------------------------------------------
+# Contextual reference to prior result
+# ---------------------------------------------------------------------------
+
+- history:
+    - role: user
+      content: Which regions had revenue below target last quarter?
+    - role: assistant
+      content: The underperforming regions were APAC and LATAM.
+  q: What was the revenue gap for each of those?
+  must_mention: [regions, revenue, APAC, LATAM]
+
+- history:
+    - role: user
+      content: Top 5 customers by lifetime value
+    - role: assistant
+      content: The top customers are Acme, Beta Corp, Gamma Ltd, Delta Inc, Epsilon.
+  q: How many orders did each of them place in the last 90 days?
+  must_mention: [customers, orders]
+
+# ---------------------------------------------------------------------------
+# Aggregation change
+# ---------------------------------------------------------------------------
+
+- history:
+    - role: user
+      content: Average deal size by sales rep in Q2
+    - role: assistant
+      content: Here is the average deal size per rep for Q2 2026.
+  q: Can you show the median instead?
+  must_mention: [deal size, sales rep, median]
+
+- history:
+    - role: user
+      content: Monthly churn rate for the last 12 months
+    - role: assistant
+      content: The monthly churn rate over the last 12 months is shown below.
+  q: What about weekly?
+  must_mention: [churn rate, weekly]
+
+# ---------------------------------------------------------------------------
+# Time window shift
+# ---------------------------------------------------------------------------
+
+- history:
+    - role: user
+      content: Headcount by department as of today
+    - role: assistant
+      content: Current headcount by department is as follows.
+  q: Show me the same for 6 months ago
+  must_mention: [headcount, department, 6 months]
+
+- history:
+    - role: user
+      content: Total spend by cost centre for this fiscal year
+    - role: assistant
+      content: Spend by cost centre for FY2026 is listed below.
+  q: How does that compare to the previous fiscal year?
+  must_mention: [spend, cost centre, previous fiscal year]
+
+# ---------------------------------------------------------------------------
+# Standalone questions (should NOT trigger resolution)
+# ---------------------------------------------------------------------------
+
+- history:
+    - role: user
+      content: Total revenue by region last month
+    - role: assistant
+      content: Revenue by region for last month is below.
+  q: What is the headcount in HR?
+  must_mention: [headcount, HR]
+
+- history:
+    - role: user
+      content: Which vendors have outstanding invoices?
+    - role: assistant
+      content: The following vendors have overdue invoices.
+  q: Show me the top 10 customers by order value
+  must_mention: [customers, order value]

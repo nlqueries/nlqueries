@@ -115,8 +115,11 @@ def test_assemble_prompt_with_history_includes_prior_messages() -> None:
         history,
     )
 
-    assert isinstance(system_prompt, str)
-    assert system_prompt.strip()  # non-empty
+    # system_prompt is now a list of typed blocks (AssembledPrompt.system_blocks())
+    assert isinstance(system_prompt, list)
+    assert len(system_prompt) > 0
+    # Every block must have a non-empty "text" field
+    assert all(isinstance(b.get("text"), str) and b["text"].strip() for b in system_prompt)
     assert user_prompt == "Show me those customers"
     assert prior is history  # same list reference — not a copy
     assert len(prior) == 2

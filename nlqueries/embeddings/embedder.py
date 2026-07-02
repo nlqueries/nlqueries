@@ -11,6 +11,7 @@ Falls back to loading the model in-process when the daemon is not running.
 
 from __future__ import annotations
 
+import functools
 import json as _json
 import os as _os
 import urllib.error
@@ -81,10 +82,16 @@ def _get_model() -> SentenceTransformer:
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=2048)
 def embed_text(text: str) -> list[float]:
     """Embed a single string and return a list of 384 floats (L2-normalised).
 
     Tries the embedding daemon first; falls back to loading the local model.
+    Results are memoised (LRU, up to 2 048 unique strings) so repeated calls
+    within a process — e.g. the same question hitting the semantic cache and
+    the Qdrant search in the same request — cost zero additional compute.
+
+    The returned list must not be mutated by callers.
     """
     result = _try_daemon_single(text)
     if result is not None:
