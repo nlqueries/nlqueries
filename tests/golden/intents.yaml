@@ -1,0 +1,149 @@
+# NLQueries intent golden set
+# Used by: Phase 5 fast-model accuracy evaluation.
+#
+# Schema
+# ------
+# q:      Natural-language question (string)
+# intent: Expected intent — "sql" | "document" | "hybrid" | "unclear"
+#
+# Run with:
+#   python -m benchmarks.eval_intents --golden tests/golden/intents.yaml
+
+# ---------------------------------------------------------------------------
+# SQL intent (structured data queries)
+# ---------------------------------------------------------------------------
+
+- q: Total revenue by region last month
+  intent: sql
+
+- q: How many orders were placed today?
+  intent: sql
+
+- q: Show me the top 10 customers by lifetime value
+  intent: sql
+
+- q: Which products have inventory below reorder level?
+  intent: sql
+
+- q: Average deal size by sales rep for Q2 2026
+  intent: sql
+
+- q: Count of open support tickets by priority
+  intent: sql
+
+- q: Monthly churn rate for the last 12 months
+  intent: sql
+
+- q: Headcount trend by department year over year
+  intent: sql
+
+- q: Which vendors have outstanding invoices over 60 days?
+  intent: sql
+
+- q: Revenue vs target by region for March 2026
+  intent: sql
+
+- q: How many users signed up last week?
+  intent: sql
+
+- q: Gross margin by product category this quarter
+  intent: sql
+
+- q: Average session duration per channel last week
+  intent: sql
+
+- q: List all employees who haven't completed compliance training
+  intent: sql
+
+- q: Top 5 countries by order volume in 2025
+  intent: sql
+
+- q: What is the conversion rate from trial to paid?
+  intent: sql
+
+- q: Show cancelled orders from the last 7 days
+  intent: sql
+
+- q: Budget vs actual spend by cost centre for FY2025
+  intent: sql
+
+- q: Which SKUs had no sales in the last 30 days?
+  intent: sql
+
+- q: Customer acquisition cost by marketing channel
+  intent: sql
+
+# ---------------------------------------------------------------------------
+# Document intent (unstructured knowledge queries)
+# ---------------------------------------------------------------------------
+
+- q: What is our refund policy for digital products?
+  intent: document
+
+- q: Summarise the Q3 2025 board meeting minutes
+  intent: document
+
+- q: What does the employee handbook say about remote work?
+  intent: document
+
+- q: What are the key risks identified in the latest SOC 2 audit?
+  intent: document
+
+- q: What is the escalation process for critical incidents?
+  intent: document
+
+- q: Describe the onboarding process for new hires
+  intent: document
+
+- q: What were the main decisions from the product roadmap review?
+  intent: document
+
+- q: What does the data retention policy specify?
+  intent: document
+
+- q: Explain the pricing structure as described in the contract template
+  intent: document
+
+- q: What SLA commitments do we offer enterprise customers?
+  intent: document
+
+# ---------------------------------------------------------------------------
+# Hybrid intent (needs both SQL data and document knowledge)
+# ---------------------------------------------------------------------------
+
+- q: How does our revenue growth compare to what we projected in the annual plan?
+  intent: hybrid
+
+- q: Which customers are at churn risk according to our success playbook?
+  intent: hybrid
+
+- q: Are our support ticket resolution times meeting the SLA commitments?
+  intent: hybrid
+
+- q: Compare actual headcount against the hiring plan from the board deck
+  intent: hybrid
+
+- q: Did we hit the KPIs mentioned in last quarter's OKR document?
+  intent: hybrid
+
+- q: How does current inventory compare to the reorder thresholds in the procurement policy?
+  intent: hybrid
+
+- q: Which regions are underperforming relative to the targets set in the sales strategy doc?
+  intent: hybrid
+
+- q: Are our vendor payment terms consistent with the approved procurement policy?
+  intent: hybrid
+
+# ---------------------------------------------------------------------------
+# Unclear intent
+# ---------------------------------------------------------------------------
+
+- q: Help
+  intent: unclear
+
+- q: What should I do?
+  intent: unclear
+
+- q: Tell me something interesting
+  intent: unclear

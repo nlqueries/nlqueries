@@ -927,6 +927,57 @@ def submit_feedback(
 
 
 # ---------------------------------------------------------------------------
+# promote-feedback
+# ---------------------------------------------------------------------------
+
+
+@cli.command("promote-feedback")
+@click.argument("agent_id")
+def promote_feedback_cmd(agent_id: str) -> None:
+    """Promote positively-rated feedback into the verified Qdrant collection.
+
+    \b
+    AGENT_ID  the agent whose feedback file to promote (alias accepted)
+
+    Loads all ``thumbs-up`` feedback for AGENT_ID, validates each SQL against
+    the current knowledge base schema, and upserts qualifying (question, SQL)
+    pairs into the ``agent_{id}_verified`` Qdrant collection so future
+    ``ask`` commands can blend them into the prompt as verified examples.
+
+    \b
+    This command is also called automatically at the end of 'export-kb'.
+
+    \b
+    Example:
+      nlqueries promote-feedback postgres:localhost:mydb
+    """
+    agent_id = _resolve_alias(agent_id)
+
+    from nlqueries.feedback.promoter import promote_feedback
+
+    console.print(
+        f"[bold]Promoting feedback[/bold] for [cyan]{agent_id}[/cyan] …"
+    )
+    try:
+        count = promote_feedback(agent_id)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"[bold red]✗ Promotion failed:[/bold red] {exc}")
+        sys.exit(1)
+
+    if count:
+        console.print(
+            f"  [bold green]✓[/bold green] [bold]{count}[/bold] verified "
+            f"pair(s) upserted to Qdrant collection "
+            f"[cyan]agent_{agent_id}_verified[/cyan]."
+        )
+    else:
+        console.print(
+            "  [dim]No qualifying feedback found "
+            "(need thumbs-up ratings with valid SQL).[/dim]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # connectors
 # ---------------------------------------------------------------------------
 
@@ -1646,6 +1697,19 @@ def export_kb(
         console.print(f"  Tables   : [bold]{table_count}[/bold]")
         console.print(f"  Columns  : [bold]{column_count}[/bold]")
         console.print(f"  Capsules : [bold]{capsule_count}[/bold]")
+
+        # Phase 5B: auto-promote positive feedback into the verified collection.
+        try:
+            from nlqueries.feedback.promoter import promote_feedback
+
+            promoted = promote_feedback(connector_id)
+            if promoted:
+                console.print(
+                    f"  [dim]Promoted {promoted} verified feedback pair(s) to Qdrant.[/dim]"
+                )
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; never fail export-kb because of this
+
         return
 
     # Fallback: no registered connector — raw SQLAlchemy introspection

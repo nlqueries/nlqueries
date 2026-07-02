@@ -4,6 +4,12 @@ nlqueries.orchestrator.orchestrator
 Single-agent orchestrator: loads a knowledge base, assembles the LLM prompt,
 streams natural-language reasoning, then yields a validated SQL final chunk.
 
+Phase 3B: a **single** ``astream()`` call handles both reasoning and SQL
+generation.  The LLM is instructed to emit reasoning prose first, then wrap
+the SQL in ``<sql>…</sql>`` sentinels.  Tokens before the opening tag are
+yielded immediately (low TTFT); content inside the tags is accumulated and
+passed to :func:`~nlqueries.orchestrator.sql_generation.validate_and_repair`.
+
 Public API
 ----------
 ``Orchestrator``
@@ -24,8 +30,20 @@ import yaml
 from nlqueries import config
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt
-from nlqueries.orchestrator.sql_generation import generate_sql
+from nlqueries.orchestrator.sql_generation import _extract_sql, validate_and_repair
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
+
+# Module-level KB cache: path -> (mtime, parsed_dict).
+# Invalidated automatically when the file's mtime changes (e.g. after export-kb).
+_kb_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+# Sentinel tags injected into the system prompt (must match _SQL_FORMAT_RULES
+# in prompt_assembly.py).
+_OPEN_TAG = "<sql>"
+_CLOSE_TAG = "</sql>"
+# How many chars to hold back before flushing pre-tag content, to catch markers
+# split across token boundaries (len("<sql>") - 1 == 4).
+_HOLD = len(_OPEN_TAG) - 1
 
 
 class Orchestrator:
@@ -33,13 +51,14 @@ class Orchestrator:
 
     Each invocation of ``handle_question`` independently:
 
-    1. Loads the agent's YAML knowledge base.
-    2. Streams a natural-language reasoning response from the LLM.
-    3. Calls :func:`generate_sql` to produce a validated SQL statement and
-       yields it as a structured JSON final chunk.
-
-    Multi-agent routing is out of scope for v1 and will be added in Phase 2
-    (Sprint 12).
+    1. Loads the agent's YAML knowledge base (memoised by mtime).
+    2. Assembles an :class:`~nlqueries.orchestrator.prompt_assembly.AssembledPrompt`
+       — a stable cacheable ``static_system`` block plus a per-question
+       ``dynamic_context`` block.
+    3. Makes **one** ``astream()`` call.  Reasoning tokens are yielded
+       immediately; SQL content (inside ``<sql>…</sql>``) is collected silently
+       and then validated / repaired.
+    4. Yields a structured JSON final chunk with the validated SQL.
     """
 
     async def handle_question(
@@ -47,6 +66,8 @@ class Orchestrator:
         question: str,
         agent_id: str,
         dialect: str = "postgres",
+        *,
+        question_vector: list[float] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Translate *question* into a reasoning stream followed by a SQL chunk.
 
@@ -80,20 +101,95 @@ class Orchestrator:
 
             kb = self._load_knowledge_base(agent_id)
             collection = f"agent_{agent_id}_schema"
-            system_prompt, user_prompt = assemble_prompt(
+            prompt = assemble_prompt(
                 question,
                 kb,
                 top_k_capsules=5,
                 collection=collection,
+                vector=question_vector,
             )
 
-            # Step 1: stream natural-language reasoning -----------------------
             llm = get_llm_client()
-            for token in llm.stream(system_prompt, user_prompt):
-                yield token
+            # Pass cache_control blocks when the provider supports them.
+            system = prompt.system_blocks(cache=llm.supports_prompt_caching)
 
-            # Step 2: generate validated SQL, yield as structured final chunk -
-            result = generate_sql(question, kb, dialect)
+            # ------------------------------------------------------------------
+            # Single streaming call — split on <sql>…</sql> sentinels.
+            # Tokens before <sql> are yielded to the caller immediately (TTFT).
+            # Content inside the markers is collected silently for validation.
+            # all_tokens is kept for the fallback extraction path.
+            # ------------------------------------------------------------------
+
+            pending: str = ""   # chars buffered to detect cross-token markers
+            sql_buf: str = ""   # SQL content accumulated inside <sql>…</sql>
+            in_sql: bool = False
+            found_sql: bool = False
+            all_tokens: list[str] = []
+
+            async for token in llm.astream(system, prompt.user_content()):
+                all_tokens.append(token)
+
+                if in_sql:
+                    sql_buf += token
+                    close_idx = sql_buf.find(_CLOSE_TAG)
+                    if close_idx != -1:
+                        sql_buf = sql_buf[:close_idx]
+                        in_sql = False
+                        found_sql = True
+                    continue  # never yield SQL tokens
+
+                # Not yet inside <sql> — buffer and check for opening tag.
+                pending += token
+                open_idx = pending.find(_OPEN_TAG)
+                if open_idx != -1:
+                    # Yield everything before the opening tag.
+                    before = pending[:open_idx]
+                    if before:
+                        yield before
+                    # Everything after <sql> goes into the SQL buffer.
+                    after_tag = pending[open_idx + len(_OPEN_TAG):]
+                    if after_tag.startswith("\n"):
+                        after_tag = after_tag[1:]
+                    close_idx = after_tag.find(_CLOSE_TAG)
+                    if close_idx != -1:
+                        # Both tags arrived in the same accumulated buffer.
+                        sql_buf = after_tag[:close_idx]
+                        in_sql = False
+                        found_sql = True
+                    else:
+                        sql_buf = after_tag
+                        in_sql = True
+                    pending = ""
+                else:
+                    # No opening tag yet — flush safe portion (all but last
+                    # _HOLD chars), holding back enough to detect a split tag.
+                    safe_len = max(0, len(pending) - _HOLD)
+                    if safe_len:
+                        yield pending[:safe_len]
+                        pending = pending[safe_len:]
+
+            # Flush any remaining pre-SQL content.
+            if not in_sql and pending:
+                yield pending
+
+            # Fallback: no <sql>…</sql> markers in the response — extract via
+            # regex / keyword scan from the full concatenated output.
+            if not found_sql:
+                sql_buf = _extract_sql("".join(all_tokens))
+
+            # ------------------------------------------------------------------
+            # Validate (and repair if needed) the extracted SQL.
+            # validate_and_repair() reuses the same `system` blocks so Anthropic
+            # prompt-cache tokens are credited on the repair call too.
+            # ------------------------------------------------------------------
+            result = await validate_and_repair(
+                sql_buf.strip(),
+                kb,
+                dialect,
+                llm,
+                system,
+            )
+
             span.set_attribute("sql_valid", result.is_valid)
             span.set_attribute("attempt_count", result.attempt_count)
             span.set_attribute("intent_type", "sql")
@@ -120,6 +216,11 @@ class Orchestrator:
         become underscores) then reads
         ``{config.KB_PATH}/{safe_agent_id}.yaml``.
 
+        The result is memoized in a module-level cache keyed by file path.
+        On each call the file's mtime is checked; if unchanged the cached
+        dict is returned without a disk read or YAML parse.  Callers must
+        treat the returned dict as read-only.
+
         Raises:
             FileNotFoundError: When the knowledge base file does not exist.
         """
@@ -130,4 +231,11 @@ class Orchestrator:
                 f"No knowledge base found for agent '{agent_id}'. "
                 f"Run 'nlqueries export-kb {agent_id}' first."
             )
-        return yaml.safe_load(kb_file.read_text(encoding="utf-8")) or {}
+        mtime = kb_file.stat().st_mtime
+        key = str(kb_file)
+        cached = _kb_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        kb: dict[str, Any] = yaml.safe_load(kb_file.read_text(encoding="utf-8")) or {}
+        _kb_cache[key] = (mtime, kb)
+        return kb

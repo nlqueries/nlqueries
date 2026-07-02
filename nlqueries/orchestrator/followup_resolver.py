@@ -144,8 +144,8 @@ def resolve_followup(
     )
 
     try:
-        llm = get_llm_client()
-        raw = llm.complete(_SYSTEM_PROMPT, user_prompt)
+        llm = get_llm_client(tier="fast")
+        raw = llm.complete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
         parsed = json.loads(raw.strip())
         resolved_text = str(parsed["resolved"])
         reasoning = str(parsed["reasoning"])

@@ -133,3 +133,46 @@ def test_llm_failure_returns_original() -> None:
     assert result.is_followup is False
     assert result.resolved == "filter those to North America"
     assert result.original == "filter those to North America"
+
+
+def test_uses_fast_tier_client() -> None:
+    """resolve_followup must request the fast-tier LLM client."""
+    history = _make_history(
+        [
+            ("user", "Show orders by region"),
+            ("assistant", "Here are the orders grouped by region."),
+        ]
+    )
+    mock_llm = _mock_llm(
+        {"resolved": "Filter orders by region to North America", "reasoning": "resolved."}
+    )
+
+    with patch(
+        "nlqueries.orchestrator.followup_resolver.get_llm_client",
+        return_value=mock_llm,
+    ) as mock_get_client:
+        resolve_followup("filter those to North America", history)
+
+    mock_get_client.assert_called_once_with(tier="fast")
+
+
+def test_complete_called_with_max_tokens_200() -> None:
+    """resolve_followup must cap the completion at 200 tokens."""
+    history = _make_history(
+        [
+            ("user", "Show orders by region"),
+            ("assistant", "Here are the orders grouped by region."),
+        ]
+    )
+    mock_llm = _mock_llm(
+        {"resolved": "Filter orders by region to North America", "reasoning": "resolved."}
+    )
+
+    with patch(
+        "nlqueries.orchestrator.followup_resolver.get_llm_client",
+        return_value=mock_llm,
+    ):
+        resolve_followup("filter those to North America", history)
+
+    _, call_kwargs = mock_llm.complete.call_args
+    assert call_kwargs.get("max_tokens") == 200

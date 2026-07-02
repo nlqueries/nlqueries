@@ -275,3 +275,26 @@ class TestClassifyIntentExtra:
 
         assert result.intent == IntentType.document
         assert result.confidence == pytest.approx(0.88)
+
+    def test_uses_fast_tier_client(self) -> None:
+        """classify_intent must request the fast-tier LLM client."""
+        mock_llm = _mock_llm({"intent": "sql", "confidence": 0.9, "reasoning": "DB query."})
+        with patch(
+            "nlqueries.orchestrator.intent_classifier.get_llm_client",
+            return_value=mock_llm,
+        ) as mock_get_client:
+            classify_intent("How many orders?", available_agent_types=["sql"])
+
+        mock_get_client.assert_called_once_with(tier="fast")
+
+    def test_complete_called_with_max_tokens_200(self) -> None:
+        """classify_intent must cap the completion at 200 tokens."""
+        mock_llm = _mock_llm({"intent": "sql", "confidence": 0.9, "reasoning": "DB query."})
+        with patch(
+            "nlqueries.orchestrator.intent_classifier.get_llm_client",
+            return_value=mock_llm,
+        ):
+            classify_intent("How many orders?", available_agent_types=["sql"])
+
+        _, call_kwargs = mock_llm.complete.call_args
+        assert call_kwargs.get("max_tokens") == 200

@@ -74,6 +74,33 @@ LLM_PROVIDER: str = _detect_provider()
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
 
+
+def _detect_fast_model(provider: str) -> str:
+    """Resolve the fast/cheap LLM model from the environment.
+
+    Used for short-output tasks (intent classification, follow-up resolution)
+    where a smaller model is sufficient and cheaper.
+    Priority: explicit LLM_MODEL_FAST env var > provider default.
+    """
+    explicit = os.getenv("LLM_MODEL_FAST", "").strip()
+    if explicit:
+        return explicit
+    if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
+        return "openai/gpt-4o-mini"
+    return "claude-haiku-4-5-20251001"
+
+
+LLM_MODEL_FAST: str = _detect_fast_model(LLM_PROVIDER)
+"""Fast/cheap LLM model for short-output auxiliary calls (classifier, resolver)."""
+
+EXPLAIN_VALIDATION: bool = os.getenv("NLQ_EXPLAIN_VALIDATION", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""When True, validate_and_repair() runs EXPLAIN on the final SQL via the caller-supplied
+connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
+
 # ---------------------------------------------------------------------------
 # Embedding daemon
 # ---------------------------------------------------------------------------
@@ -114,6 +141,28 @@ QUERY_HISTORY_LIMIT: int = int(os.getenv("QUERY_HISTORY_LIMIT", "500"))
 # ---------------------------------------------------------------------------
 FEEDBACK_DIR: Path = Path(os.getenv("FEEDBACK_DIR", str(Path.home() / ".nlqueries" / "feedback")))
 """Directory where per-agent feedback JSONL files are stored."""
+
+# ---------------------------------------------------------------------------
+# Cache thresholds
+# ---------------------------------------------------------------------------
+SCHEMA_FORMAT: str = os.getenv("NLQ_SCHEMA_FORMAT", "compact").lower()
+"""Schema format used in the static system prompt. Values: compact | verbose.
+  compact  — M-Schema format (【Table】 ...) — fewer tokens, default
+  verbose  — Full markdown format (### Table: ...) — backward compatible
+"""
+
+SELF_CONSISTENCY: str = os.getenv("NLQ_SELF_CONSISTENCY", "off").lower()
+"""Self-consistency mode for hard SQL queries. Values: off | hard | all.
+  off  — disabled (default)
+  hard — run N parallel candidates only when _is_hard() returns True
+  all  — always run N parallel candidates
+"""
+
+CACHE_ANSWER_THRESHOLD: float = float(os.getenv("NLQ_CACHE_ANSWER_THRESHOLD", "0.97"))
+"""Cosine similarity threshold for the Tier 1 answer cache (kind=answer)."""
+
+CACHE_TEMPLATE_THRESHOLD: float = float(os.getenv("NLQ_CACHE_TEMPLATE_THRESHOLD", "0.90"))
+"""Cosine similarity threshold for the Tier 2 template cache (kind=template)."""
 
 # ---------------------------------------------------------------------------
 # Logging

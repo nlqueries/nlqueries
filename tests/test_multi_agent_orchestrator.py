@@ -283,7 +283,11 @@ class TestMultiAgentOrchestratorExtra:
             ):
                 orch = MultiAgentOrchestrator()
                 tokens: list[str] = []
-                async for token in orch.handle_question("...", "agent1", available_types=["sql"]):
+                # Use multiple types so the fast-path (single-type bypass) is
+                # not taken and classify_intent is actually called.
+                async for token in orch.handle_question(
+                    "...", "agent1", available_types=["sql", "document"]
+                ):
                     tokens.append(token)
                 return tokens
 

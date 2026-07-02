@@ -12,13 +12,18 @@ _REGISTRY: dict[str, type[LLMClient]] = {
 }
 
 
-def get_llm_client() -> LLMClient:
+def get_llm_client(tier: str = "default") -> LLMClient:
     """Return an LLMClient instance for the configured provider.
 
-    Reads LLM_PROVIDER from config (default: "anthropic").
+    Args:
+        tier: ``"fast"`` selects the cheap/fast model (``LLM_MODEL_FAST``) for
+              short-output auxiliary calls such as intent classification and
+              follow-up resolution.  Any other value uses the default model.
+
     Raises ValueError for unknown providers.
     """
     provider = config.LLM_PROVIDER
     if provider not in _REGISTRY:
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
-    return _REGISTRY[provider]()
+    model = config.LLM_MODEL_FAST if tier == "fast" else config.LLM_MODEL
+    return _REGISTRY[provider](model=model)
