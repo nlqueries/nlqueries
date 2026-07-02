@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import litellm
 
@@ -77,7 +78,7 @@ class LiteLLMClient(LLMClient):
         *,
         temperature: float | None = None,
     ) -> str:
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": _flatten_system(system)},

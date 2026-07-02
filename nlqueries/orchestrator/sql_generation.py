@@ -67,7 +67,7 @@ async def validate_and_repair(
     knowledge_base: dict[str, Any],
     dialect: str,
     llm: LLMClient,
-    system: str | list[dict] | None = None,
+    system: str | list[dict[str, Any]] | None = None,
     connector: Any = None,
     explain_check: bool = False,
 ) -> SQLGenerationResult:
@@ -251,7 +251,7 @@ def generate_sql(
 # -- Phase 4B: schema dict for column validation ---------------------------
 
 
-def _kb_to_sqlglot_schema(knowledge_base: dict[str, Any]) -> dict[str, dict[str, str]]:
+def _kb_to_sqlglot_schema(knowledge_base: dict[str, Any]) -> dict[str, Any]:
     """Build a sqlglot-compatible schema dict: ``{table: {column: type}}``."""
     schema: dict[str, dict[str, str]] = {}
     for table in knowledge_base.get("schema", {}).get("tables", []):

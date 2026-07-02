@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 # System parameter type: plain string OR a list of typed blocks (Anthropic format).
 # List form is only meaningful for providers that support prompt caching
 # (see `supports_prompt_caching` on each client class).
-SystemParam = str | list[dict]
+SystemParam = str | list[dict[str, Any]]
 
 
 class LLMClient(ABC):

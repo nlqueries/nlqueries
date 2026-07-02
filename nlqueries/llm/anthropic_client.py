@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Iterator
+from typing import Any, cast
 
 import anthropic
 
@@ -28,7 +29,7 @@ class AnthropicClient(LLMClient):
     # the Anthropic API expects (enabling cache_control on structured inputs).
     # ------------------------------------------------------------------
 
-    def _system_param(self, system: SystemParam) -> list[dict]:
+    def _system_param(self, system: SystemParam) -> list[dict[str, Any]]:
         if isinstance(system, str):
             return [{"type": "text", "text": system}]
         return system
@@ -44,10 +45,10 @@ class AnthropicClient(LLMClient):
                 response = self._client.messages.create(
                     model=self._model,
                     max_tokens=max_tokens,
-                    system=sys_blocks,
+                    system=cast(Any, sys_blocks),
                     messages=[{"role": "user", "content": user}],
                 )
-                return next(b.text for b in response.content if b.type == "text")
+                return str(next(b.text for b in response.content if b.type == "text"))
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
                     time.sleep(_BASE_DELAY * (2**attempt))
@@ -60,7 +61,7 @@ class AnthropicClient(LLMClient):
         with self._client.messages.stream(
             model=self._model,
             max_tokens=1024,
-            system=sys_blocks,
+            system=cast(Any, sys_blocks),
             messages=[{"role": "user", "content": user}],
         ) as stream:
             yield from stream.text_stream
@@ -78,10 +79,10 @@ class AnthropicClient(LLMClient):
         temperature: float | None = None,
     ) -> str:
         sys_blocks = self._system_param(system)
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "system": sys_blocks,
+            "system": cast(Any, sys_blocks),
             "messages": [{"role": "user", "content": user}],
         }
         if temperature is not None:
@@ -89,7 +90,7 @@ class AnthropicClient(LLMClient):
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = await self._aclient.messages.create(**kwargs)
-                return next(b.text for b in response.content if b.type == "text")
+                return str(next(b.text for b in response.content if b.type == "text"))
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_BASE_DELAY * (2**attempt))
@@ -102,7 +103,7 @@ class AnthropicClient(LLMClient):
         async with self._aclient.messages.stream(
             model=self._model,
             max_tokens=1024,
-            system=sys_blocks,
+            system=cast(Any, sys_blocks),
             messages=[{"role": "user", "content": user}],
         ) as stream:
             async for text in stream.text_stream:

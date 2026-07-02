@@ -1,12 +1,14 @@
 # nlqueries-core — OSS (BSL 1.1)
 from __future__ import annotations
 
+from typing import Any, cast
+
 from nlqueries import config
 from nlqueries.llm.anthropic_client import AnthropicClient
 from nlqueries.llm.client import LLMClient
 from nlqueries.llm.litellm_client import LiteLLMClient
 
-_REGISTRY: dict[str, type[LLMClient]] = {
+_REGISTRY: dict[str, Any] = {
     "anthropic": AnthropicClient,
     "litellm": LiteLLMClient,
 }
@@ -26,4 +28,4 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     if provider not in _REGISTRY:
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
     model = config.LLM_MODEL_FAST if tier == "fast" else config.LLM_MODEL
-    return _REGISTRY[provider](model=model)
+    return cast(LLMClient, _REGISTRY[provider](model=model))

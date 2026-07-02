@@ -128,7 +128,7 @@ def ensure_collection(
     client = _get_client()
     existing = {c.name for c in client.get_collections().collections}
     if name not in existing:
-        create_kwargs: dict = {
+        create_kwargs: dict[str, Any] = {
             "collection_name": name,
             "vectors_config": VectorParams(size=vector_size, distance=Distance.COSINE),
         }

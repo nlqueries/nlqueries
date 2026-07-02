@@ -76,16 +76,16 @@ class AssembledPrompt:
     dynamic_context: str
     user_question: str
 
-    def system_blocks(self, *, cache: bool = True) -> list[dict]:
+    def system_blocks(self, *, cache: bool = True) -> list[dict[str, Any]]:
         """Return the system parameter as a list of typed blocks.
 
         When *cache* is True and the static block is non-empty, attach
         ``cache_control: {"type": "ephemeral"}`` so Anthropic's prompt-cache
         API stores the prefix for up to 5 minutes.
         """
-        blocks: list[dict] = []
+        blocks: list[dict[str, Any]] = []
         if self.static_system:
-            block: dict = {"type": "text", "text": self.static_system}
+            block: dict[str, Any] = {"type": "text", "text": self.static_system}
             if cache:
                 block["cache_control"] = {"type": "ephemeral"}
             blocks.append(block)
@@ -345,7 +345,7 @@ def _build_dynamic_context(
             from nlqueries.embeddings.qdrant_store import search_schema
 
             hits = search_schema(collection, question, top_k=10, vector=question_vector)
-            hit_names = sorted({h.get("table_name") for h in hits if h.get("table_name")})
+            hit_names = sorted({str(h["table_name"]) for h in hits if h.get("table_name")})
             if hit_names:
                 parts.append("## Most relevant tables for this question\n" + ", ".join(hit_names))
         except Exception:  # noqa: BLE001
@@ -486,7 +486,7 @@ def assemble_prompt_with_history(
     knowledge_base: dict[str, Any],
     history: list[dict[str, str]],
     top_k_capsules: int = 5,
-) -> tuple[list[dict], str, list[dict[str, str]]]:
+) -> tuple[list[dict[str, Any]], str, list[dict[str, str]]]:
     """Assemble a (system_blocks, user_prompt, prior_messages) triple.
 
     Returns the system as a list of typed blocks (with cache_control on the

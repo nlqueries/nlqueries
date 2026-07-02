@@ -31,7 +31,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any
+from typing import Any, cast
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _DEFAULT_PORT = 8765
@@ -101,7 +101,7 @@ def _mean_pool_normalize(
 
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     normalized = embeddings / np.where(norms > 0, norms, 1.0)
-    return normalized.tolist()
+    return cast(list[list[float]], normalized.tolist())
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ def _load_torch_encoder() -> Callable[[list[str]], list[list[float]]]:
     model = SentenceTransformer(_MODEL_NAME)
 
     def _encode(texts: list[str]) -> list[list[float]]:
-        return model.encode(texts, normalize_embeddings=True).tolist()  # type: ignore[return-value]
+        return cast(list[list[float]], model.encode(texts, normalize_embeddings=True).tolist())
 
     return _encode
 
@@ -207,7 +207,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
         vectors = result.tolist()
         if isinstance(vectors[0], float):
             return [vectors]  # single text → wrap in batch list
-        return vectors  # type: ignore[return-value]
+        return cast(list[list[float]], vectors)
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # silence per-request access log

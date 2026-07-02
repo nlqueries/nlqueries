@@ -73,7 +73,7 @@ def _is_hard(question: str, knowledge_base: dict[str, Any]) -> bool:
 
 async def generate_candidates(
     llm: LLMClient,
-    system: str | list[dict],
+    system: str | list[dict[str, Any]],
     user: str,
     n: int = 3,
 ) -> list[str]:
