@@ -955,9 +955,7 @@ def promote_feedback_cmd(agent_id: str) -> None:
 
     from nlqueries.feedback.promoter import promote_feedback
 
-    console.print(
-        f"[bold]Promoting feedback[/bold] for [cyan]{agent_id}[/cyan] …"
-    )
+    console.print(f"[bold]Promoting feedback[/bold] for [cyan]{agent_id}[/cyan] …")
     try:
         count = promote_feedback(agent_id)
     except Exception as exc:  # noqa: BLE001
@@ -972,8 +970,7 @@ def promote_feedback_cmd(agent_id: str) -> None:
         )
     else:
         console.print(
-            "  [dim]No qualifying feedback found "
-            "(need thumbs-up ratings with valid SQL).[/dim]"
+            "  [dim]No qualifying feedback found (need thumbs-up ratings with valid SQL).[/dim]"
         )
 
 

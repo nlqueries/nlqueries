@@ -974,9 +974,7 @@ class TestPutStoresKindAndTemplate:
 
     def test_put_passes_payload_indexes_to_ensure_collection(self) -> None:
         """put() must request a 'kind' keyword index from ensure_collection."""
-        result = _FakeResult(
-            resolved_question="q", agent_type="sql", answer="a", sql=None
-        )
+        result = _FakeResult(resolved_question="q", agent_type="sql", answer="a", sql=None)
 
         with (
             patch("nlqueries.cache.semantic_cache._get_client", return_value=MagicMock()),

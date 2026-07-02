@@ -41,8 +41,8 @@ class BenchRow:
     sql: str | None
     is_valid: bool  # True when sql present and no validation error in answer
     from_cache: bool
-    tables_ok: bool     # expected_tables all present in sql
-    contains_ok: bool   # expect_contains all present in answer
+    tables_ok: bool  # expected_tables all present in sql
+    contains_ok: bool  # expect_contains all present in answer
     hard: bool
     error: str | None = None
 

@@ -22,8 +22,7 @@ def _make_kb(table_names: list[str]) -> dict[str, Any]:
     return {
         "schema": {
             "tables": [
-                {"name": n, "columns": [{"name": "id", "type": "INTEGER"}]}
-                for n in table_names
+                {"name": n, "columns": [{"name": "id", "type": "INTEGER"}]} for n in table_names
             ]
         }
     }
@@ -223,9 +222,7 @@ class TestValidateAndRepairWithSelfConsistency:
 
         kb = _make_kb(["orders"])
         llm = MagicMock()
-        llm.acomplete = AsyncMock(
-            return_value="<sql>SELECT COUNT(*) FROM orders</sql>"
-        )
+        llm.acomplete = AsyncMock(return_value="<sql>SELECT COUNT(*) FROM orders</sql>")
 
         # Patch the module-level attribute; the lazy `from nlqueries import config as _cfg`
         # inside validate_and_repair reads `_cfg.SELF_CONSISTENCY` at call time, so

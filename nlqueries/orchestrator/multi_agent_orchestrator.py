@@ -450,9 +450,7 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            _schedule_cache_write(
-                _cache, _cache_lookup_key, effective_question, "document", seen
-            )
+            _schedule_cache_write(_cache, _cache_lookup_key, effective_question, "document", seen)
             return
 
         hybrid_result: HybridQueryResult | None = None

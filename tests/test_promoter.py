@@ -22,8 +22,7 @@ def _make_kb(table_names: list[str]) -> dict[str, Any]:
     return {
         "schema": {
             "tables": [
-                {"name": n, "columns": [{"name": "id", "type": "INTEGER"}]}
-                for n in table_names
+                {"name": n, "columns": [{"name": "id", "type": "INTEGER"}]} for n in table_names
             ]
         }
     }
@@ -209,9 +208,7 @@ class TestPromoteFeedback:
         assert self._run_promote([rec]) == 0
 
     def test_skips_unknown_table(self) -> None:
-        rec = _make_feedback_record(
-            rating="up", generated_sql="SELECT * FROM does_not_exist"
-        )
+        rec = _make_feedback_record(rating="up", generated_sql="SELECT * FROM does_not_exist")
         kb = _make_kb(["orders"])
         assert self._run_promote([rec], kb=kb) == 0
 
@@ -301,9 +298,7 @@ class TestVerifiedFewShotInPromptAssembly:
         from nlqueries.orchestrator.prompt_assembly import _search_verified
 
         with patch("qdrant_client.QdrantClient", side_effect=RuntimeError("down")):
-            result = _search_verified(
-                "agent_x_schema", "question", vector=[0.1] * 384
-            )
+            result = _search_verified("agent_x_schema", "question", vector=[0.1] * 384)
         assert result == []
 
     def test_search_verified_queries_verified_collection(self) -> None:
@@ -320,7 +315,8 @@ class TestVerifiedFewShotInPromptAssembly:
             _search_verified("agent_agent1_schema", "test question", vector=[0.1] * 384)
 
         if mock_client.query_points.called:
-            called_collection = mock_client.query_points.call_args[1].get(
-                "collection_name"
-            ) or mock_client.query_points.call_args[0][0]
+            called_collection = (
+                mock_client.query_points.call_args[1].get("collection_name")
+                or mock_client.query_points.call_args[0][0]
+            )
             assert "verified" in called_collection

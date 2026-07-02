@@ -67,9 +67,7 @@ def _is_hard(question: str, knowledge_base: dict[str, Any]) -> bool:
     signal_count = sum(1 for pat in _HARD_KEYWORDS if pat.search(question))
     if signal_count >= 2:
         return True
-    table_count = len(
-        knowledge_base.get("schema", {}).get("tables", [])
-    )
+    table_count = len(knowledge_base.get("schema", {}).get("tables", []))
     return table_count > _HARD_TABLE_THRESHOLD
 
 

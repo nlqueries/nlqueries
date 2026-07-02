@@ -23,6 +23,7 @@ _PII_COLUMN_RE = re.compile(
 def _is_pii_column(col_name: str) -> bool:
     return bool(_PII_COLUMN_RE.search(col_name))
 
+
 # Column name suffixes that indicate surrogate/technical keys with no business meaning.
 _SKIP_SUFFIXES = ("_id", "_key", "_uuid", "_hash", "_token", "_code", "_pk", "_fk")
 
@@ -207,9 +208,7 @@ def generate_knowledge_base(
                     col_dict["samples"] = [str(s) for s in raw_samples[:5]]
 
             if col.is_foreign_key and col.references:
-                foreign_keys.append(
-                    {"from": f"{table.name}.{col.name}", "to": col.references}
-                )
+                foreign_keys.append({"from": f"{table.name}.{col.name}", "to": col.references})
 
             columns.append(col_dict)
         tables.append(

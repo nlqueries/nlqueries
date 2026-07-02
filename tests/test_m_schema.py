@@ -133,25 +133,19 @@ class TestGenerateKnowledgeBaseV2:
 
     def test_column_samples_stored(self) -> None:
         samples = {"orders": {"status": ["pending", "shipped", "cancelled"]}}
-        kb = _kb_from_schema(
-            _table("orders", [_col("status", "TEXT")]), column_samples=samples
-        )
+        kb = _kb_from_schema(_table("orders", [_col("status", "TEXT")]), column_samples=samples)
         col = kb["schema"]["tables"][0]["columns"][0]
         assert col.get("samples") == ["pending", "shipped", "cancelled"]
 
     def test_samples_capped_at_five(self) -> None:
         samples = {"orders": {"status": ["a", "b", "c", "d", "e", "f"]}}
-        kb = _kb_from_schema(
-            _table("orders", [_col("status", "TEXT")]), column_samples=samples
-        )
+        kb = _kb_from_schema(_table("orders", [_col("status", "TEXT")]), column_samples=samples)
         col = kb["schema"]["tables"][0]["columns"][0]
         assert len(col["samples"]) == 5
 
     def test_pii_column_samples_suppressed(self) -> None:
         samples = {"users": {"email": ["a@b.com", "c@d.com"]}}
-        kb = _kb_from_schema(
-            _table("users", [_col("email", "TEXT")]), column_samples=samples
-        )
+        kb = _kb_from_schema(_table("users", [_col("email", "TEXT")]), column_samples=samples)
         col = kb["schema"]["tables"][0]["columns"][0]
         assert "samples" not in col
 
@@ -216,8 +210,15 @@ class TestRenderMSchema:
         foreign_keys: list[dict[str, str]] | None = None,
         db_name: str = "testdb",
     ) -> dict[str, Any]:
-        cols = columns or [{"name": "id", "type": "INTEGER", "is_primary_key": False,
-                            "is_foreign_key": False, "references": None}]
+        cols = columns or [
+            {
+                "name": "id",
+                "type": "INTEGER",
+                "is_primary_key": False,
+                "is_foreign_key": False,
+                "references": None,
+            }
+        ]
         return {
             "kb_version": 2,
             "db_name": db_name,
@@ -244,8 +245,15 @@ class TestRenderMSchema:
 
     def test_pk_flag_present(self) -> None:
         kb = self._simple_kb(
-            columns=[{"name": "id", "type": "BIGINT", "is_primary_key": True,
-                      "is_foreign_key": False, "references": None}]
+            columns=[
+                {
+                    "name": "id",
+                    "type": "BIGINT",
+                    "is_primary_key": True,
+                    "is_foreign_key": False,
+                    "references": None,
+                }
+            ]
         )
         result = _render_m_schema(kb)
         assert "PK" in result
@@ -253,17 +261,31 @@ class TestRenderMSchema:
 
     def test_fk_flag_present(self) -> None:
         kb = self._simple_kb(
-            columns=[{"name": "customer_id", "type": "BIGINT", "is_primary_key": False,
-                      "is_foreign_key": True, "references": "customers.id"}]
+            columns=[
+                {
+                    "name": "customer_id",
+                    "type": "BIGINT",
+                    "is_primary_key": False,
+                    "is_foreign_key": True,
+                    "references": "customers.id",
+                }
+            ]
         )
         result = _render_m_schema(kb)
         assert "FK->customers.id" in result
 
     def test_samples_in_output(self) -> None:
         kb = self._simple_kb(
-            columns=[{"name": "status", "type": "TEXT", "is_primary_key": False,
-                      "is_foreign_key": False, "references": None,
-                      "samples": ["pending", "shipped"]}]
+            columns=[
+                {
+                    "name": "status",
+                    "type": "TEXT",
+                    "is_primary_key": False,
+                    "is_foreign_key": False,
+                    "references": None,
+                    "samples": ["pending", "shipped"],
+                }
+            ]
         )
         result = _render_m_schema(kb)
         assert "samples:" in result
@@ -271,9 +293,7 @@ class TestRenderMSchema:
         assert "'shipped'" in result
 
     def test_foreign_keys_section_present(self) -> None:
-        kb = self._simple_kb(
-            foreign_keys=[{"from": "orders.customer_id", "to": "customers.id"}]
-        )
+        kb = self._simple_kb(foreign_keys=[{"from": "orders.customer_id", "to": "customers.id"}])
         result = _render_m_schema(kb)
         assert "【Foreign keys】" in result
         assert "orders.customer_id = customers.id" in result
@@ -305,8 +325,15 @@ class TestRenderMSchema:
 
     def test_column_without_flags_rendered_cleanly(self) -> None:
         kb = self._simple_kb(
-            columns=[{"name": "name", "type": "TEXT", "is_primary_key": False,
-                      "is_foreign_key": False, "references": None}]
+            columns=[
+                {
+                    "name": "name",
+                    "type": "TEXT",
+                    "is_primary_key": False,
+                    "is_foreign_key": False,
+                    "references": None,
+                }
+            ]
         )
         result = _render_m_schema(kb)
         assert "(name:TEXT)" in result
@@ -331,12 +358,23 @@ class TestAssemblePromptSchemaFormat:
                         "description": "One row per order",
                         "row_count": 5000,
                         "columns": [
-                            {"name": "id", "type": "INTEGER", "description": "PK",
-                             "is_primary_key": True, "is_foreign_key": False,
-                             "references": None},
-                            {"name": "status", "type": "TEXT", "description": "",
-                             "is_primary_key": False, "is_foreign_key": False,
-                             "references": None, "samples": ["pending", "shipped"]},
+                            {
+                                "name": "id",
+                                "type": "INTEGER",
+                                "description": "PK",
+                                "is_primary_key": True,
+                                "is_foreign_key": False,
+                                "references": None,
+                            },
+                            {
+                                "name": "status",
+                                "type": "TEXT",
+                                "description": "",
+                                "is_primary_key": False,
+                                "is_foreign_key": False,
+                                "references": None,
+                                "samples": ["pending", "shipped"],
+                            },
                         ],
                     }
                 ],

@@ -120,8 +120,8 @@ class Orchestrator:
             # all_tokens is kept for the fallback extraction path.
             # ------------------------------------------------------------------
 
-            pending: str = ""   # chars buffered to detect cross-token markers
-            sql_buf: str = ""   # SQL content accumulated inside <sql>…</sql>
+            pending: str = ""  # chars buffered to detect cross-token markers
+            sql_buf: str = ""  # SQL content accumulated inside <sql>…</sql>
             in_sql: bool = False
             found_sql: bool = False
             all_tokens: list[str] = []
@@ -147,7 +147,7 @@ class Orchestrator:
                     if before:
                         yield before
                     # Everything after <sql> goes into the SQL buffer.
-                    after_tag = pending[open_idx + len(_OPEN_TAG):]
+                    after_tag = pending[open_idx + len(_OPEN_TAG) :]
                     if after_tag.startswith("\n"):
                         after_tag = after_tag[1:]
                     close_idx = after_tag.find(_CLOSE_TAG)

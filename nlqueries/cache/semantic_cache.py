@@ -506,9 +506,7 @@ class SemanticCache:
                             "kind": "template",
                         }
                         points.append(
-                            PointStruct(
-                                id=tmpl_id, vector=masked_vector, payload=tmpl_payload
-                            )
+                            PointStruct(id=tmpl_id, vector=masked_vector, payload=tmpl_payload)
                         )
                 except Exception:  # noqa: BLE001
                     pass  # template storage is best-effort

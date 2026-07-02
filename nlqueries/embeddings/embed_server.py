@@ -74,7 +74,7 @@ def is_pid_alive(pid: int) -> bool:
 
 def _mean_pool_normalize(
     token_embeddings: Any,  # (batch, seq, hidden) — numpy array or array-like
-    attention_mask: Any,    # (batch, seq) — numpy array or array-like
+    attention_mask: Any,  # (batch, seq) — numpy array or array-like
 ) -> list[list[float]]:
     """Mean-pool token embeddings and L2-normalise each row.
 
@@ -95,9 +95,9 @@ def _mean_pool_normalize(
     token_embeddings = np.array(token_embeddings, dtype=np.float32)
     mask = np.array(attention_mask, dtype=np.float32)[:, :, np.newaxis]  # (B, S, 1)
 
-    sum_emb = np.sum(token_embeddings * mask, axis=1)           # (B, H)
+    sum_emb = np.sum(token_embeddings * mask, axis=1)  # (B, H)
     sum_mask = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)  # (B, 1)
-    embeddings = sum_emb / sum_mask                              # (B, H)
+    embeddings = sum_emb / sum_mask  # (B, H)
 
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     normalized = embeddings / np.where(norms > 0, norms, 1.0)
@@ -134,9 +134,7 @@ def _load_onnx_encoder() -> Callable[[list[str]], list[list[float]]]:
     tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME)
 
     def _encode(texts: list[str]) -> list[list[float]]:
-        inputs = tokenizer(
-            texts, padding=True, truncation=True, return_tensors="np"
-        )
+        inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="np")
         outputs = ort_model(**inputs)
         return _mean_pool_normalize(outputs.last_hidden_state, inputs["attention_mask"])
 

@@ -21,9 +21,7 @@ class AnthropicClient(LLMClient):
         self._model = model if model is not None else config.LLM_MODEL
         # Disable SDK-level retries so our own retry loop has full control.
         self._client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=0)
-        self._aclient = anthropic.AsyncAnthropic(
-            api_key=config.ANTHROPIC_API_KEY, max_retries=0
-        )
+        self._aclient = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=0)
 
     # ------------------------------------------------------------------
     # Helper: normalise system param into the list-of-blocks form that

@@ -186,9 +186,7 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     """
     db_name = knowledge_base.get("db_name", "database")
     tables: list[dict[str, Any]] = knowledge_base.get("schema", {}).get("tables", [])
-    foreign_keys: list[dict[str, str]] = (
-        knowledge_base.get("schema", {}).get("foreign_keys", [])
-    )
+    foreign_keys: list[dict[str, str]] = knowledge_base.get("schema", {}).get("foreign_keys", [])
 
     if not tables:
         return ""
@@ -347,14 +345,9 @@ def _build_dynamic_context(
             from nlqueries.embeddings.qdrant_store import search_schema
 
             hits = search_schema(collection, question, top_k=10, vector=question_vector)
-            hit_names = sorted(
-                {h.get("table_name") for h in hits if h.get("table_name")}
-            )
+            hit_names = sorted({h.get("table_name") for h in hits if h.get("table_name")})
             if hit_names:
-                parts.append(
-                    "## Most relevant tables for this question\n"
-                    + ", ".join(hit_names)
-                )
+                parts.append("## Most relevant tables for this question\n" + ", ".join(hit_names))
         except Exception:  # noqa: BLE001
             pass
 
@@ -391,8 +384,7 @@ def _build_dynamic_context(
                 cap_lines.append(f"{idx}. Intent: {q}")
                 if sql:
                     cap_lines.append(
-                        f"   SQL Template: {sql}"
-                        "  -- verified example (user-confirmed correct)"
+                        f"   SQL Template: {sql}  -- verified example (user-confirmed correct)"
                     )
                 cap_lines.append("")
                 idx += 1
@@ -479,11 +471,7 @@ def _search_verified(
             ),
             limit=top_k,
         )
-        return [
-            hit.payload
-            for hit in response.points
-            if hit.score >= threshold and hit.payload
-        ]
+        return [hit.payload for hit in response.points if hit.score >= threshold and hit.payload]
     except Exception:  # noqa: BLE001
         return []
 

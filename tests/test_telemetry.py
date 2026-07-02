@@ -131,7 +131,7 @@ def _make_async_llm(tokens: list[str] | None = None) -> MagicMock:
     """Return an LLM mock with an async-generator ``astream`` method."""
 
     async def _astream(*a: object, **kw: object) -> object:
-        for t in (tokens or []):
+        for t in tokens or []:
             yield t
 
     mock_llm = MagicMock()

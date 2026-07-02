@@ -452,9 +452,7 @@ def test_precomputed_vector_skips_embed_text_call() -> None:
             "nlqueries.embeddings.embedder.embed_text",
             side_effect=AssertionError("embed_text must not be called when vector= is provided"),
         ),
-        patch(
-            "nlqueries.embeddings.qdrant_store.search_schema", return_value=[]
-        ) as mock_ss,
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]) as mock_ss,
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[]) as mock_s,
     ):
         assemble_prompt("my question", kb, collection="col", vector=precomputed)
@@ -468,9 +466,7 @@ def test_precomputed_vector_none_triggers_embed() -> None:
     kb = _make_kb()
 
     with (
-        patch(
-            "nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384
-        ) as mock_embed,
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384) as mock_embed,
         patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
         patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
     ):

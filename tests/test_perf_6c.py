@@ -20,13 +20,12 @@ def _fake_vector(seed: int = 42) -> list[float]:
     return v.tolist()
 
 
-
 def _make_ort_mocks(hidden: int = 384, seq: int = 8, batch: int = 1):
     """Return (mock_ort_class, mock_tokenizer_class) for patching sys.modules."""
     ort_outputs = MagicMock()
-    ort_outputs.last_hidden_state = np.random.standard_normal(
-        (batch, seq, hidden)
-    ).astype(np.float32)
+    ort_outputs.last_hidden_state = np.random.standard_normal((batch, seq, hidden)).astype(
+        np.float32
+    )
 
     mock_ort_instance = MagicMock()
     mock_ort_instance.return_value = ort_outputs
@@ -368,9 +367,7 @@ class TestLoadOnnxEncoder:
         from nlqueries.embeddings.embed_server import _load_encoder
 
         mock_st_model = MagicMock()
-        mock_st_model.encode.return_value = MagicMock(
-            tolist=lambda: [[0.1] * 384]
-        )
+        mock_st_model.encode.return_value = MagicMock(tolist=lambda: [[0.1] * 384])
         mock_st = MagicMock()
         mock_st.SentenceTransformer.return_value = mock_st_model
 
@@ -455,6 +452,7 @@ class TestEmbedHandlerLegacyCompat:
 
             try:
                 from nlqueries.embeddings import embed_server
+
                 embed_server.serve(port=19999, backend="torch")
             except (KeyboardInterrupt, SystemExit):
                 pass
