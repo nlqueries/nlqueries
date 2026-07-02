@@ -41,6 +41,29 @@ def _make_retrieval_result(num_chunks: int = 2) -> object:
     return DocumentRetrievalResult(chunks=chunks, citations=citations, collection="col")
 
 
+def _make_astream(tokens: list[str]):
+    """Return an async-generator function that yields *tokens*.
+
+    Used to mock ``LLMClient.astream()`` which is now the primary streaming
+    method (the orchestrators all use ``astream`` instead of the sync ``stream``).
+    """
+
+    async def _inner(*args, **kwargs):
+        for token in tokens:
+            yield token
+
+    return _inner
+
+
+def _is_citations_chunk(token: str) -> bool:
+    """Return True if *token* is a valid JSON citations chunk."""
+    try:
+        parsed = json.loads(token)
+        return isinstance(parsed, dict) and parsed.get("type") == "citations"
+    except (ValueError, TypeError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -55,7 +78,7 @@ class TestDocumentOrchestrator:
 
         retrieval_result = _make_retrieval_result(2)
         mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter(["Hello", " world", "."])
+        mock_llm.astream = _make_astream(["Hello", " world", "."])
 
         with (
             patch(
@@ -92,7 +115,7 @@ class TestDocumentOrchestrator:
 
         retrieval_result = _make_retrieval_result(3)
         mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter(["Answer text."])
+        mock_llm.astream = _make_astream(["Answer text."])
 
         with (
             patch(
@@ -132,7 +155,7 @@ class TestDocumentOrchestrator:
 
         retrieval_result = _make_retrieval_result(2)
         mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter(["token"])
+        mock_llm.astream = _make_astream(["token"])
 
         with (
             patch(
@@ -167,7 +190,7 @@ class TestDocumentOrchestrator:
 
         retrieval_result = _make_retrieval_result(1)
         mock_llm = MagicMock()
-        mock_llm.stream.return_value = iter([])
+        mock_llm.astream = _make_astream([])
         mock_retrieve = MagicMock(return_value=retrieval_result)
 
         with (
@@ -193,17 +216,3 @@ class TestDocumentOrchestrator:
         mock_retrieve.assert_called_once_with(
             "query", "col", top_k=3, source_id_filter="my-source-uuid"
         )
-
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
-
-
-def _is_citations_chunk(token: str) -> bool:
-    """Return True if *token* is a valid JSON citations chunk."""
-    try:
-        parsed = json.loads(token)
-        return isinstance(parsed, dict) and parsed.get("type") == "citations"
-    except (ValueError, TypeError):
-        return False

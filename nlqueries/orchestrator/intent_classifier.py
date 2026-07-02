@@ -123,9 +123,9 @@ def classify_intent(
         :class:`IntentClassificationResult` with ``intent``, ``confidence``,
         and ``reasoning``.
     """
-    llm = get_llm_client()
+    llm = get_llm_client(tier="fast")
     user_prompt = _build_user_prompt(question, available_agent_types)
-    raw = llm.complete(_SYSTEM_PROMPT, user_prompt)
+    raw = llm.complete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
 
     try:
         parsed = json.loads(raw.strip())

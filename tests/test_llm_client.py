@@ -144,7 +144,9 @@ def test_complete_passes_system_and_user_to_api():
         AnthropicClient().complete(system="my system", user="my question")
 
     call_kwargs = mock_sdk.messages.create.call_args.kwargs
-    assert call_kwargs["system"] == "my system"
+    # AnthropicClient._system_param() normalises a plain string to a typed block list
+    # so the API always receives the list-of-blocks format.
+    assert call_kwargs["system"] == [{"type": "text", "text": "my system"}]
     assert call_kwargs["messages"][0]["content"] == "my question"
 
 
@@ -318,6 +320,40 @@ def test_get_llm_client_raises_on_unknown_provider():
     ):
         mock_llm_cfg.LLM_PROVIDER = "unknown_provider"
         get_llm_client()
+
+
+def test_get_llm_client_default_tier_uses_llm_model():
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.config") as mock_ac_cfg,
+        patch("nlqueries.llm.config") as mock_llm_cfg,
+    ):
+        mock_ac_cfg.ANTHROPIC_API_KEY = "test-key"
+        mock_ac_cfg.LLM_MODEL = "claude-sonnet-4-5"
+        mock_llm_cfg.LLM_PROVIDER = "anthropic"
+        mock_llm_cfg.LLM_MODEL = "claude-sonnet-4-5"
+        mock_llm_cfg.LLM_MODEL_FAST = "claude-haiku-4-5-20251001"
+        client = get_llm_client()
+
+    assert isinstance(client, AnthropicClient)
+    assert client._model == "claude-sonnet-4-5"
+
+
+def test_get_llm_client_fast_tier_uses_llm_model_fast():
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.config") as mock_ac_cfg,
+        patch("nlqueries.llm.config") as mock_llm_cfg,
+    ):
+        mock_ac_cfg.ANTHROPIC_API_KEY = "test-key"
+        mock_ac_cfg.LLM_MODEL = "claude-sonnet-4-5"
+        mock_llm_cfg.LLM_PROVIDER = "anthropic"
+        mock_llm_cfg.LLM_MODEL = "claude-sonnet-4-5"
+        mock_llm_cfg.LLM_MODEL_FAST = "claude-haiku-4-5-20251001"
+        client = get_llm_client(tier="fast")
+
+    assert isinstance(client, AnthropicClient)
+    assert client._model == "claude-haiku-4-5-20251001"
 
 
 # ---------------------------------------------------------------------------

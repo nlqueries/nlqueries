@@ -16,6 +16,9 @@ from nlqueries.cache.semantic_cache import (
     SIMILARITY_THRESHOLD,
     CacheEntry,
     SemanticCache,
+    _bind_entities,
+    _mask_entities,
+    _normalize_question,
     _point_id_for_question,
 )
 
@@ -236,9 +239,9 @@ class TestPutDeterministicPointId:
         assert id1 != id2
 
     def test_put_calls_upsert_with_correct_point_id(self) -> None:
-        """put() derives the point ID from SHA-256(question) and passes it to upsert."""
+        """put() derives the point ID from SHA-256(normalized question) and passes it to upsert."""
         question = "Total revenue last month?"
-        expected_id = _point_id_for_question(question)
+        expected_id = _point_id_for_question(_normalize_question(question))
 
         result = _FakeResult(
             resolved_question=question,
@@ -443,23 +446,42 @@ class TestCacheWriteFromOrchestratorAsyncContext:
         a SQL result inside asyncio.run() — regression test for the sync/async
         conflict where the sync QdrantClient conflicted with the running event loop
         and the write was silently swallowed by contextlib.suppress(Exception)."""
+        # Final chunk must have "type" so _is_final_chunk() recognises it.
         sql_token = json.dumps(
             {
-                "answer": "Five languages exist.",
+                "type": "sql",
                 "sql": "SELECT COUNT(*) FROM language",
-                "agent_type": "sql",
+                "is_valid": True,
+                "validation_error": None,
+                "dialect": "postgres",
+                "attempt_count": 1,
             }
         )
 
         mock_cache = MagicMock()
         mock_cache.get.return_value = None  # force a cache miss
 
+        # Mock the inner Orchestrator so it yields our predefined tokens.
+        # The SQL branch in MultiAgentOrchestrator directly instantiates Orchestrator()
+        # and calls handle_question() — _run_sql is only used in the hybrid path.
+        async def _fake_handle(*args: object, **kwargs: object) -> object:
+            for t in ["Five languages exist. ", sql_token]:
+                yield t
+
+        mock_sql_orch = MagicMock()
+        mock_sql_orch.handle_question = _fake_handle
+
         async def _drive() -> None:
-            from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+            from nlqueries.orchestrator.multi_agent_orchestrator import (
+                MultiAgentOrchestrator,
+                drain_background_tasks,
+            )
 
             orch = MultiAgentOrchestrator()
             async for _ in orch.handle_question("How many languages?", "agent1"):
                 pass
+            # Wait for the fire-and-forget cache write to complete.
+            await drain_background_tasks()
 
         with (
             patch(
@@ -471,12 +493,8 @@ class TestCacheWriteFromOrchestratorAsyncContext:
                 return_value=MagicMock(resolved="How many languages?"),
             ),
             patch(
-                "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
-                return_value=MagicMock(intent="sql"),
-            ),
-            patch(
-                "nlqueries.orchestrator.multi_agent_orchestrator._run_sql",
-                new=AsyncMock(return_value=["Five languages ", "exist. ", sql_token]),
+                "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                return_value=mock_sql_orch,
             ),
         ):
             asyncio.run(_drive())
@@ -508,3 +526,464 @@ class TestAgentIdSanitization:
         cache = SemanticCache("myschema/mydb")
         assert "/" not in cache._collection
         assert cache._collection == "cache_myschema_mydb"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1C: pre-computed vector threading in SemanticCache.get()
+# ---------------------------------------------------------------------------
+
+
+class TestGetWithPrecomputedVector:
+    def _make_hit_client(self, payload: dict[str, Any]) -> MagicMock:
+        pt = _make_scored_point(score=1.0, payload=payload, point_id=1)
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        client.query_points.return_value = _make_query_response([pt])
+        client.set_payload.return_value = None
+        return client
+
+    def test_precomputed_vector_skips_embed_text(self) -> None:
+        """When vector= is supplied, embed_text must NOT be called."""
+        payload = _fresh_payload()
+        mock_client = self._make_hit_client(payload)
+        precomputed = [0.9] * 384
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch(
+                "nlqueries.cache.semantic_cache.embed_text",
+                side_effect=AssertionError("embed_text called unexpectedly"),
+            ),
+        ):
+            entry = SemanticCache("agent1").get("How many orders?", vector=precomputed)
+
+        assert entry is not None
+
+    def test_precomputed_vector_passed_to_qdrant_query(self) -> None:
+        """The pre-computed vector must be forwarded to query_points() as the query."""
+        payload = _fresh_payload()
+        mock_client = self._make_hit_client(payload)
+        precomputed = [0.42] * 384
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+        ):
+            SemanticCache("agent1").get("How many orders?", vector=precomputed)
+
+        call_kwargs = mock_client.query_points.call_args.kwargs
+        assert call_kwargs["query"] == precomputed
+
+    def test_no_vector_falls_back_to_embed_text(self) -> None:
+        """When vector=None (default), embed_text is called to compute the vector."""
+        payload = _fresh_payload()
+        mock_client = self._make_hit_client(payload)
+        embed_vector = [0.77] * 384
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch(
+                "nlqueries.cache.semantic_cache.embed_text",
+                return_value=embed_vector,
+            ) as mock_embed,
+        ):
+            SemanticCache("agent1").get("How many orders?")
+
+        mock_embed.assert_called_once_with("How many orders?")
+        call_kwargs = mock_client.query_points.call_args.kwargs
+        assert call_kwargs["query"] == embed_vector
+
+
+# ---------------------------------------------------------------------------
+# Phase 5A: helper function unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeQuestion:
+    def test_lowercases(self) -> None:
+        assert _normalize_question("HOW MANY Orders?") == "how many orders"
+
+    def test_strips_punctuation(self) -> None:
+        assert _normalize_question("revenue last month?") == "revenue last month"
+
+    def test_collapses_whitespace(self) -> None:
+        assert _normalize_question("  how   many   orders  ") == "how many orders"
+
+    def test_identical_questions_same_result(self) -> None:
+        q1 = _normalize_question("How many orders?")
+        q2 = _normalize_question("how many orders")
+        assert q1 == q2
+
+
+class TestMaskEntities:
+    def test_masks_iso_date(self) -> None:
+        assert _mask_entities("orders after 2024-01-01") == "orders after <DATE>"
+
+    def test_masks_number(self) -> None:
+        assert _mask_entities("revenue > 1000") == "revenue > <NUMBER>"
+
+    def test_masks_month_name(self) -> None:
+        result = _mask_entities("orders in January")
+        assert "<MONTH>" in result
+
+    def test_masks_currency(self) -> None:
+        result = _mask_entities("sales above $500")
+        assert "<CURRENCY>" in result
+
+    def test_no_entities_unchanged(self) -> None:
+        q = "how many active users are there"
+        assert _mask_entities(q) == q
+
+    def test_date_before_number(self) -> None:
+        # ISO date should be masked as <DATE>, not as multiple <NUMBER>s
+        result = _mask_entities("orders on 2024-03-15")
+        assert "<DATE>" in result
+        assert "<NUMBER>" not in result
+
+
+class TestBindEntities:
+    def test_binds_date_placeholder(self) -> None:
+        template = "SELECT COUNT(*) FROM orders WHERE order_date >= '[d:DATE]'"
+        question = "how many orders after 2024-06-01"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "2024-06-01" in result
+
+    def test_binds_number_int_placeholder(self) -> None:
+        template = "SELECT * FROM orders WHERE amount > '[amount:INT]'"
+        question = "orders where amount exceeds 500"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "500" in result
+
+    def test_returns_none_when_insufficient_entities(self) -> None:
+        template = "SELECT * FROM t WHERE d1 = '[d1:DATE]' AND d2 = '[d2:DATE]'"
+        question = "only one date 2024-01-01"  # only one DATE entity
+        result = _bind_entities(question, template)
+        assert result is None
+
+    def test_no_placeholders_returns_sql_unchanged(self) -> None:
+        sql = "SELECT COUNT(*) FROM orders"
+        result = _bind_entities("how many orders", sql)
+        assert result == sql
+
+    def test_binds_varchar_placeholder(self) -> None:
+        template = "SELECT * FROM users WHERE status = '[status:VARCHAR]'"
+        question = "users with status 'active'"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "active" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 5A: Tier 0 exact-match lookup
+# ---------------------------------------------------------------------------
+
+
+class TestTier0ExactMatch:
+    def _make_retrieve_client(self, payload: dict[str, Any]) -> MagicMock:
+        """Build a mock client whose retrieve() returns one record."""
+        record = MagicMock()
+        record.id = _point_id_for_question(_normalize_question("How many orders?"))
+        record.payload = payload
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        client.retrieve.return_value = [record]
+        return client
+
+    def test_tier0_hit_skips_embed_text(self) -> None:
+        """A Tier 0 hit must not call embed_text at all."""
+        payload = _fresh_payload()
+        payload["kind"] = "answer"
+        mock_client = self._make_retrieve_client(payload)
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch(
+                "nlqueries.cache.semantic_cache.embed_text",
+                side_effect=AssertionError("embed_text must not be called on Tier 0 hit"),
+            ),
+        ):
+            entry = SemanticCache("agent1").get("How many orders?")
+
+        assert entry is not None
+        assert entry.agent_type == "sql"
+        # query_points should NOT be called since Tier 0 returned a hit
+        mock_client.query_points.assert_not_called()
+
+    def test_tier0_uses_normalized_question_id(self) -> None:
+        """Different capitalizations of the same question share the same Tier 0 ID."""
+        id1 = _point_id_for_question(_normalize_question("How many orders?"))
+        id2 = _point_id_for_question(_normalize_question("HOW MANY ORDERS"))
+        id3 = _point_id_for_question(_normalize_question("how many orders"))
+        assert id1 == id2 == id3
+
+    def test_tier0_miss_falls_through_to_tier1(self) -> None:
+        """When retrieve() returns nothing, Tier 1 cosine search is attempted."""
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value.collections = [coll]
+        mock_client.retrieve.return_value = []  # Tier 0 miss
+        mock_client.query_points.return_value = _make_query_response([])  # Tier 1 miss too
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1").get("How many orders?")
+
+        assert entry is None
+        # Tier 1 query_points must have been called after the Tier 0 miss
+        mock_client.query_points.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5A: Tier 1 kind=answer filter
+# ---------------------------------------------------------------------------
+
+
+class TestTier1AnswerFilter:
+    def test_tier1_passes_kind_answer_filter(self) -> None:
+        """Tier 1 must include a kind=answer payload filter in its query_points call."""
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value.collections = [coll]
+        mock_client.retrieve.return_value = []  # Tier 0 miss
+        mock_client.query_points.return_value = _make_query_response([])
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.5] * 384),
+        ):
+            SemanticCache("agent1").get("How many orders?")
+
+        call_kwargs = mock_client.query_points.call_args_list[0].kwargs
+        q_filter = call_kwargs.get("query_filter")
+        assert q_filter is not None
+        # The filter must include a MatchAny for "answer"
+        filter_str = str(q_filter)
+        assert "answer" in filter_str
+
+    def test_tier1_returns_entry_above_threshold(self) -> None:
+        """Tier 1 returns a CacheEntry when cosine score meets CACHE_ANSWER_THRESHOLD."""
+        payload = _fresh_payload()
+        payload["kind"] = "answer"
+        scored_point = _make_scored_point(score=0.98, payload=payload, point_id=55)
+
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value.collections = [coll]
+        mock_client.retrieve.return_value = []  # Tier 0 miss
+        mock_client.query_points.return_value = _make_query_response([scored_point])
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1").get("How many orders?")
+
+        assert entry is not None
+        assert entry.answer == "There were 42 orders."
+
+
+# ---------------------------------------------------------------------------
+# Phase 5A: Tier 2 template cache
+# ---------------------------------------------------------------------------
+
+
+class TestTier2TemplateCache:
+    def _make_tier2_client(self, tmpl_payload: dict[str, Any], score: float) -> MagicMock:
+        tmpl_point = _make_scored_point(score=score, payload=tmpl_payload, point_id=99)
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        client.retrieve.return_value = []  # Tier 0 miss
+        # First query_points call = Tier 1 (answer, miss); second = Tier 2 (template)
+        client.query_points.side_effect = [
+            _make_query_response([]),  # Tier 1 miss
+            _make_query_response([tmpl_point]),  # Tier 2 hit
+        ]
+        return client
+
+    def test_tier2_returns_bound_sql_on_hit(self) -> None:
+        """A Tier 2 template hit returns a CacheEntry with entity-filled SQL."""
+        tmpl_payload = {
+            "question": "orders after <DATE>",
+            "resolved_question": "orders after <DATE>",
+            "agent_type": "sql",
+            "answer": "Found results.",
+            "sql": "SELECT * FROM orders WHERE order_date >= '[d:DATE]'",
+            "created_at": datetime.now(UTC).isoformat(),
+            "hit_count": 0,
+            "kind": "template",
+        }
+        mock_client = self._make_tier2_client(tmpl_payload, score=0.95)
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1").get("orders after 2024-06-01")
+
+        assert entry is not None
+        assert entry.sql is not None
+        assert "2024-06-01" in entry.sql
+
+    def test_tier2_miss_below_threshold_returns_none(self) -> None:
+        """Tier 2 returns None when template score is below CACHE_TEMPLATE_THRESHOLD."""
+        tmpl_payload = {
+            "question": "orders after <DATE>",
+            "resolved_question": "orders after <DATE>",
+            "agent_type": "sql",
+            "answer": "Found results.",
+            "sql": "SELECT * FROM orders WHERE d >= '[d:DATE]'",
+            "created_at": datetime.now(UTC).isoformat(),
+            "hit_count": 0,
+            "kind": "template",
+        }
+        mock_client = self._make_tier2_client(tmpl_payload, score=0.75)  # below 0.90
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1").get("orders after 2024-06-01")
+
+        assert entry is None
+
+    def test_tier2_binding_failure_returns_none(self) -> None:
+        """Tier 2 returns None when _bind_entities cannot fill all placeholders."""
+        # Template requires TWO dates but question has only ONE
+        tmpl_payload = {
+            "question": "orders between <DATE> and <DATE>",
+            "resolved_question": "orders between <DATE> and <DATE>",
+            "agent_type": "sql",
+            "answer": "Found results.",
+            "sql": "SELECT * FROM orders WHERE d BETWEEN '[d1:DATE]' AND '[d2:DATE]'",
+            "created_at": datetime.now(UTC).isoformat(),
+            "hit_count": 0,
+            "kind": "template",
+        }
+        mock_client = self._make_tier2_client(tmpl_payload, score=0.95)
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1").get("orders after 2024-06-01")  # only 1 date
+
+        assert entry is None
+
+    def test_tier2_skipped_when_no_entities_in_question(self) -> None:
+        """Tier 2 is never attempted when the question has no entity tokens."""
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value.collections = [coll]
+        mock_client.retrieve.return_value = []
+        mock_client.query_points.return_value = _make_query_response([])  # Tier 1 miss
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1").get("how many active users are there")
+
+        assert entry is None
+        # Only ONE query_points call (Tier 1); Tier 2 must be skipped
+        assert mock_client.query_points.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 5A: put() stores kind field and template
+# ---------------------------------------------------------------------------
+
+
+class TestPutStoresKindAndTemplate:
+    def test_put_stores_kind_answer(self) -> None:
+        """put() must include kind='answer' in the upserted payload."""
+        result = _FakeResult(
+            resolved_question="How many orders?",
+            agent_type="sql",
+            answer="42 orders.",
+            sql="SELECT COUNT(*) FROM orders",
+        )
+        mock_client = MagicMock()
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1").put("How many orders?", result)
+
+        points = mock_client.upsert.call_args.kwargs.get("points") or []
+        answer_point = next(p for p in points if p.payload.get("kind") == "answer")
+        assert answer_point is not None
+
+    def test_put_stores_template_for_sql_with_entities(self) -> None:
+        """put() also stores a kind='template' point when the SQL has entity literals."""
+        result = _FakeResult(
+            resolved_question="orders after 2024-06-01",
+            agent_type="sql",
+            answer="Found 10 orders.",
+            sql="SELECT * FROM orders WHERE order_date >= '2024-06-01'",
+        )
+        mock_client = MagicMock()
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1").put("orders after 2024-06-01", result)
+
+        points = mock_client.upsert.call_args.kwargs.get("points") or []
+        kinds = [p.payload.get("kind") for p in points]
+        assert "answer" in kinds
+        assert "template" in kinds
+
+    def test_put_skips_template_when_no_entities(self) -> None:
+        """put() stores only the answer point when the question has no entity literals."""
+        result = _FakeResult(
+            resolved_question="how many active users",
+            agent_type="sql",
+            answer="There are 5 users.",
+            sql="SELECT COUNT(*) FROM users WHERE active = TRUE",
+        )
+        mock_client = MagicMock()
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1").put("how many active users", result)
+
+        points = mock_client.upsert.call_args.kwargs.get("points") or []
+        kinds = [p.payload.get("kind") for p in points]
+        assert kinds == ["answer"]  # only one point
+
+    def test_put_passes_payload_indexes_to_ensure_collection(self) -> None:
+        """put() must request a 'kind' keyword index from ensure_collection."""
+        result = _FakeResult(
+            resolved_question="q", agent_type="sql", answer="a", sql=None
+        )
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=MagicMock()),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection") as mock_ensure,
+        ):
+            SemanticCache("agent1").put("q", result)
+
+        _, kwargs = mock_ensure.call_args
+        assert kwargs.get("payload_indexes") == ["kind"]

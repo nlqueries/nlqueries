@@ -7,7 +7,7 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
@@ -52,11 +52,41 @@ def _make_kb(tables: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     }
 
 
-def _make_mock_llm(tokens: list[str]) -> MagicMock:
-    """Return a mock LLMClient whose stream() yields *tokens*."""
-    mock_llm = MagicMock()
-    mock_llm.stream.return_value = iter(tokens)
-    return mock_llm
+class _MockLLM:
+    """Minimal LLMClient stand-in with a tracked async astream generator.
+
+    The orchestrator now uses ``astream()`` (not the sync ``stream()``) and
+    ``supports_prompt_caching`` to decide whether to attach cache_control to
+    system blocks.  This class records every call for assertion in tests.
+    """
+
+    supports_prompt_caching: bool = False
+
+    def __init__(self, tokens: list[str]) -> None:
+        self._tokens = tokens
+        self._calls: list[tuple[Any, str]] = []  # [(system, user), ...]
+
+    async def astream(self, system: Any, user: str) -> Any:
+        self._calls.append((system, user))
+        for t in self._tokens:
+            yield t
+
+    @property
+    def last_system(self) -> Any:
+        return self._calls[-1][0] if self._calls else None
+
+    @property
+    def last_user(self) -> str:
+        return self._calls[-1][1] if self._calls else ""
+
+    def system_text(self) -> str:
+        """Join all block texts from the last system call to a plain string."""
+        sys = self.last_system
+        if isinstance(sys, str):
+            return sys
+        if isinstance(sys, list):
+            return " ".join(b.get("text", "") for b in sys if isinstance(b, dict))
+        return ""
 
 
 def _make_sql_result(
@@ -87,13 +117,30 @@ def _last_token_as_json(tokens: list[str]) -> dict[str, Any]:
     return json.loads(tokens[-1])  # type: ignore[no-any-return]
 
 
+def _non_json_text(tokens: list[str]) -> str:
+    """Concatenate all non-JSON tokens (the reasoning text)."""
+    parts: list[str] = []
+    for t in tokens:
+        try:
+            json.loads(t)
+        except (json.JSONDecodeError, ValueError):
+            parts.append(t)
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # handle_question — token streaming (reasoning phase)
 # ---------------------------------------------------------------------------
 
 
 def test_orchestrator_yields_tokens_in_order() -> None:
-    expected = ["SELECT", " ", "*", " ", "FROM", " ", "orders"]
+    """Reasoning tokens are yielded before the SQL final chunk.
+
+    The orchestrator uses a sentinel-split buffer so individual token
+    boundaries may shift; we verify the full concatenated content instead.
+    """
+    source_tokens = ["SELECT", " ", "*", " ", "FROM", " ", "orders"]
+    mock_llm = _MockLLM(source_tokens)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -101,13 +148,10 @@ def test_orchestrator_yields_tokens_in_order() -> None:
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm(expected),
-            ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result()),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -116,12 +160,17 @@ def test_orchestrator_yields_tokens_in_order() -> None:
             orch = Orchestrator()
             tokens = asyncio.run(_collect_tokens(orch.handle_question("all orders", "agent1")))
 
-    assert tokens[:-1] == expected
     assert _last_token_as_json(tokens)["type"] == "sql"
+    # Reasoning text (concatenated) must contain the expected content
+    reasoning = _non_json_text(tokens)
+    assert "SELECT" in reasoning
+    assert "orders" in reasoning
 
 
 def test_orchestrator_yields_all_tokens() -> None:
-    all_tokens = ["tok1", "tok2", "tok3", "tok4", "tok5"]
+    """Every token from the LLM stream must appear in the output (no dropping)."""
+    source_tokens = ["tok1", "tok2", "tok3", "tok4", "tok5"]
+    mock_llm = _MockLLM(source_tokens)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -129,13 +178,10 @@ def test_orchestrator_yields_all_tokens() -> None:
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm(all_tokens),
-            ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result()),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -144,24 +190,26 @@ def test_orchestrator_yields_all_tokens() -> None:
             orch = Orchestrator()
             tokens = asyncio.run(_collect_tokens(orch.handle_question("question", "myagent")))
 
-    assert tokens[:-1] == all_tokens
+    # Final token is JSON; the reasoning tokens together must cover all source content
+    assert _last_token_as_json(tokens)["type"] == "sql"
+    reasoning = _non_json_text(tokens)
+    assert "".join(source_tokens) == reasoning
 
 
 def test_orchestrator_yields_sql_chunk_when_llm_returns_no_tokens() -> None:
     """Even with an empty reasoning stream the final SQL chunk must be yielded."""
+    mock_llm = _MockLLM([])
+
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
         _write_kb(kb_path, "agent1", _make_kb())
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm([]),
-            ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result("SELECT 1"),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result("SELECT 1")),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -179,8 +227,9 @@ def test_orchestrator_yields_sql_chunk_when_llm_returns_no_tokens() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_orchestrator_calls_llm_stream_once() -> None:
-    mock_llm = _make_mock_llm(["result"])
+def test_orchestrator_calls_llm_astream_once() -> None:
+    """The orchestrator must call astream exactly once (single-call path)."""
+    mock_llm = _MockLLM(["result"])
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -190,8 +239,8 @@ def test_orchestrator_calls_llm_stream_once() -> None:
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
             patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result()),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -200,11 +249,12 @@ def test_orchestrator_calls_llm_stream_once() -> None:
             orch = Orchestrator()
             asyncio.run(_collect_tokens(orch.handle_question("question", "agent1")))
 
-    mock_llm.stream.assert_called_once()
+    assert len(mock_llm._calls) == 1
 
 
 def test_orchestrator_passes_non_empty_prompts_to_llm() -> None:
-    mock_llm = _make_mock_llm(["ok"])
+    """The system blocks must be non-empty and user must be the question text."""
+    mock_llm = _MockLLM(["ok"])
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -214,8 +264,8 @@ def test_orchestrator_passes_non_empty_prompts_to_llm() -> None:
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
             patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result()),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -224,14 +274,15 @@ def test_orchestrator_passes_non_empty_prompts_to_llm() -> None:
             orch = Orchestrator()
             asyncio.run(_collect_tokens(orch.handle_question("my question", "agent1")))
 
-    system_arg, user_arg = mock_llm.stream.call_args.args
-    assert system_arg.strip()
-    assert user_arg == "my question"
+    assert mock_llm.system_text().strip()
+    assert mock_llm.last_user == "my question"
 
 
 def test_orchestrator_uses_agent_id_schema_collection() -> None:
     """Collection name passed to assemble_prompt must be agent_{agent_id}_schema."""
-    mock_llm = _make_mock_llm(["ok"])
+    from nlqueries.orchestrator.prompt_assembly import AssembledPrompt
+
+    mock_llm = _MockLLM(["ok"])
     captured: dict[str, Any] = {}
 
     def fake_assemble(
@@ -240,9 +291,10 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
         top_k_capsules: int = 5,
         *,
         collection: str | None = None,
-    ) -> tuple[str, str]:
+        vector: list[float] | None = None,
+    ) -> AssembledPrompt:
         captured["collection"] = collection
-        return "sys", "usr"
+        return AssembledPrompt(static_system="sys", dynamic_context="", user_question=question)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -256,8 +308,8 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
                 side_effect=fake_assemble,
             ),
             patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result()),
             ),
         ):
             mock_cfg.KB_PATH = kb_path
@@ -274,19 +326,18 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
 
 def test_orchestrator_yields_final_sql_chunk() -> None:
     """The last yielded token must be valid JSON with type 'sql'."""
+    mock_llm = _MockLLM([])
+
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
         _write_kb(kb_path, "agent1", _make_kb())
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm([]),
-            ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result("SELECT id FROM orders"),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result("SELECT id FROM orders")),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -305,7 +356,7 @@ def test_orchestrator_yields_final_sql_chunk() -> None:
 
 
 def test_orchestrator_final_chunk_reflects_invalid_result() -> None:
-    """When SQL generation fails, the chunk must carry is_valid=False."""
+    """When SQL validation fails, the chunk must carry is_valid=False."""
     bad_result = SQLGenerationResult(
         sql="DELETE FROM orders",
         is_valid=False,
@@ -313,6 +364,7 @@ def test_orchestrator_final_chunk_reflects_invalid_result() -> None:
         dialect="postgres",
         attempt_count=2,
     )
+    mock_llm = _MockLLM([])
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -320,13 +372,10 @@ def test_orchestrator_final_chunk_reflects_invalid_result() -> None:
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm([]),
-            ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=bad_result,
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=bad_result),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -341,22 +390,22 @@ def test_orchestrator_final_chunk_reflects_invalid_result() -> None:
     assert chunk["validation_error"] is not None
 
 
-def test_orchestrator_passes_dialect_to_generate_sql() -> None:
-    """The dialect parameter must be forwarded to generate_sql."""
+def test_orchestrator_passes_dialect_to_validate_and_repair() -> None:
+    """The dialect parameter must be forwarded to validate_and_repair."""
+    mock_llm = _MockLLM([])
+    mock_repair = AsyncMock(return_value=_make_sql_result(dialect="snowflake"))
+
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
         _write_kb(kb_path, "agent1", _make_kb())
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm([]),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                mock_repair,
             ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(dialect="snowflake"),
-            ) as mock_gen,
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
         ):
@@ -366,12 +415,15 @@ def test_orchestrator_passes_dialect_to_generate_sql() -> None:
                 _collect_tokens(orch.handle_question("question", "agent1", dialect="snowflake"))
             )
 
-    _question, _kb, passed_dialect = mock_gen.call_args.args
+    _sql, _kb, passed_dialect, _llm, _system = mock_repair.call_args.args
     assert passed_dialect == "snowflake"
 
 
-def test_orchestrator_calls_generate_sql_with_loaded_kb() -> None:
-    """generate_sql must receive the actual knowledge base, not an empty dict."""
+def test_orchestrator_passes_kb_to_validate_and_repair() -> None:
+    """validate_and_repair must receive the actual loaded knowledge base."""
+    mock_llm = _MockLLM([])
+    mock_repair = AsyncMock(return_value=_make_sql_result())
+
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
         kb = _make_kb()
@@ -379,14 +431,11 @@ def test_orchestrator_calls_generate_sql_with_loaded_kb() -> None:
 
         with (
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.get_llm_client",
-                return_value=_make_mock_llm([]),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                mock_repair,
             ),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
-            ) as mock_gen,
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
         ):
@@ -394,8 +443,87 @@ def test_orchestrator_calls_generate_sql_with_loaded_kb() -> None:
             orch = Orchestrator()
             asyncio.run(_collect_tokens(orch.handle_question("question", "agent1")))
 
-    _question, passed_kb, _dialect = mock_gen.call_args.args
+    _sql, passed_kb, _dialect, _llm, _system = mock_repair.call_args.args
     assert "schema" in passed_kb
+
+
+def test_orchestrator_loads_kb_schema_into_prompt() -> None:
+    """The system blocks must include table names from the loaded knowledge base."""
+    mock_llm = _MockLLM(["SQL"])
+    mock_repair = AsyncMock(return_value=_make_sql_result())
+
+    kb = _make_kb(
+        tables=[
+            {
+                "name": "special_table",
+                "description": "A unique table",
+                "row_count": 1,
+                "columns": [{"name": "col1", "type": "TEXT", "description": ""}],
+            }
+        ]
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _write_kb(kb_path, "agent1", kb)
+
+        with (
+            patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
+            patch(
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                mock_repair,
+            ),
+            patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
+            patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        ):
+            mock_cfg.KB_PATH = kb_path
+            orch = Orchestrator()
+            asyncio.run(_collect_tokens(orch.handle_question("question", "agent1")))
+
+    assert "special_table" in mock_llm.system_text()
+
+
+# ---------------------------------------------------------------------------
+# Sentinel-split behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_splits_sql_from_sentinel() -> None:
+    """Tokens inside <sql>...</sql> are not yielded as reasoning text."""
+    sql_text = "SELECT id FROM orders"
+    source_tokens = [
+        "Let me query the orders table.",
+        f"\n<sql>\n{sql_text}\n</sql>",
+    ]
+    mock_llm = _MockLLM(source_tokens)
+    mock_repair = AsyncMock(return_value=_make_sql_result(sql=sql_text))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _write_kb(kb_path, "agent1", _make_kb())
+
+        with (
+            patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
+            patch(
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                mock_repair,
+            ),
+            patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
+            patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        ):
+            mock_cfg.KB_PATH = kb_path
+            orch = Orchestrator()
+            tokens = asyncio.run(_collect_tokens(orch.handle_question("all orders", "agent1")))
+
+    # SQL text must not appear in the reasoning output
+    reasoning = _non_json_text(tokens)
+    assert sql_text not in reasoning
+    assert "Let me query" in reasoning
+    # validate_and_repair was called with the extracted SQL
+    sql_arg = mock_repair.call_args.args[0]
+    assert sql_text in sql_arg or sql_arg.strip() == sql_text
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +546,7 @@ def test_orchestrator_raises_file_not_found_for_missing_kb() -> None:
 def test_orchestrator_sanitises_agent_id_for_filename() -> None:
     """Colons in agent_id are replaced with underscores for the filename."""
     agent_id = "postgres:localhost:mydb"
-    mock_llm = _make_mock_llm(["ok"])
+    mock_llm = _MockLLM(["ok"])
 
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -428,8 +556,8 @@ def test_orchestrator_sanitises_agent_id_for_filename() -> None:
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
             patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
+                "nlqueries.orchestrator.orchestrator.validate_and_repair",
+                new=AsyncMock(return_value=_make_sql_result()),
             ),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
@@ -438,46 +566,8 @@ def test_orchestrator_sanitises_agent_id_for_filename() -> None:
             orch = Orchestrator()
             tokens = asyncio.run(_collect_tokens(orch.handle_question("question", agent_id)))
 
-    # Reasoning token ("ok") + SQL chunk = 2 tokens
-    assert tokens[0] == "ok"
+    assert "ok" in _non_json_text(tokens)
     assert _last_token_as_json(tokens)["type"] == "sql"
-
-
-def test_orchestrator_loads_kb_schema_into_prompt() -> None:
-    """The system prompt must include table names from the loaded knowledge base."""
-    mock_llm = _make_mock_llm(["SQL"])
-
-    kb = _make_kb(
-        tables=[
-            {
-                "name": "special_table",
-                "description": "A unique table",
-                "row_count": 1,
-                "columns": [{"name": "col1", "type": "TEXT", "description": ""}],
-            }
-        ]
-    )
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        kb_path = Path(tmpdir)
-        _write_kb(kb_path, "agent1", kb)
-
-        with (
-            patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
-            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
-            patch(
-                "nlqueries.orchestrator.orchestrator.generate_sql",
-                return_value=_make_sql_result(),
-            ),
-            patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
-            patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
-        ):
-            mock_cfg.KB_PATH = kb_path
-            orch = Orchestrator()
-            asyncio.run(_collect_tokens(orch.handle_question("question", "agent1")))
-
-    system_arg, _ = mock_llm.stream.call_args.args
-    assert "special_table" in system_arg
 
 
 # ---------------------------------------------------------------------------

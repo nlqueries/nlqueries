@@ -6,11 +6,17 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import asyncio
+
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
+    _kb_to_sqlglot_schema,
+    _try_mechanical_repair,
+    _validate_columns,
     _validate_sql,
     generate_sql,
+    validate_and_repair,
 )
 
 # ---------------------------------------------------------------------------
@@ -381,3 +387,238 @@ def test_generate_sql_all_dialects_accepted(dialect: str) -> None:
         result = generate_sql("show orders", _make_kb(), dialect)
 
     assert result.dialect == dialect
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: _kb_to_sqlglot_schema
+# ---------------------------------------------------------------------------
+
+
+def test_kb_to_sqlglot_schema_maps_tables_and_columns() -> None:
+    schema = _kb_to_sqlglot_schema(_make_kb())
+    assert "orders" in schema
+    assert schema["orders"]["id"] == "INTEGER"
+    assert schema["orders"]["total"] == "DECIMAL"
+
+
+def test_kb_to_sqlglot_schema_includes_all_tables() -> None:
+    schema = _kb_to_sqlglot_schema(_make_kb())
+    assert "orders" in schema
+    assert "customers" in schema
+
+
+def test_kb_to_sqlglot_schema_empty_kb_returns_empty() -> None:
+    schema = _kb_to_sqlglot_schema({})
+    assert schema == {}
+
+
+def test_kb_to_sqlglot_schema_skips_tables_without_name() -> None:
+    kb = {"schema": {"tables": [{"columns": [{"name": "id", "type": "INT"}]}]}}
+    schema = _kb_to_sqlglot_schema(kb)
+    assert schema == {}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: _validate_columns
+# ---------------------------------------------------------------------------
+
+
+def test_validate_columns_valid_explicit_column_returns_none() -> None:
+    import sqlglot as sg
+
+    stmt = sg.parse_one("SELECT id FROM orders", dialect="postgres")
+    assert _validate_columns(stmt, _make_kb(), "postgres") is None
+
+
+def test_validate_columns_select_star_returns_none() -> None:
+    import sqlglot as sg
+
+    stmt = sg.parse_one("SELECT * FROM orders", dialect="postgres")
+    assert _validate_columns(stmt, _make_kb(), "postgres") is None
+
+
+def test_validate_columns_unknown_column_returns_error() -> None:
+    import sqlglot as sg
+
+    stmt = sg.parse_one("SELECT ghost_col FROM orders", dialect="postgres")
+    error = _validate_columns(stmt, _make_kb(), "postgres")
+    assert error is not None
+    assert "ghost_col" in error or "Column" in error
+
+
+def test_validate_columns_empty_schema_returns_none() -> None:
+    """No schema → column validation skipped (best-effort permissive)."""
+    import sqlglot as sg
+
+    stmt = sg.parse_one("SELECT anything FROM orders", dialect="postgres")
+    kb = {"schema": {"tables": []}, "business_context": {}, "query_capsules": []}
+    assert _validate_columns(stmt, kb, "postgres") is None
+
+
+def test_validate_columns_join_valid_columns_returns_none() -> None:
+    import sqlglot as sg
+
+    sql = "SELECT o.id, c.email FROM orders o JOIN customers c ON o.customer_id = c.id"
+    stmt = sg.parse_one(sql, dialect="postgres")
+    assert _validate_columns(stmt, _make_kb(), "postgres") is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: _validate_sql includes column check
+# ---------------------------------------------------------------------------
+
+
+def test_validate_sql_rejects_unknown_column() -> None:
+    error = _validate_sql("SELECT ghost_col FROM orders", _make_kb(), "postgres")
+    assert error is not None
+    assert "Column" in error or "ghost_col" in error
+
+
+def test_validate_sql_accepts_valid_explicit_column() -> None:
+    assert _validate_sql("SELECT id, total FROM orders", _make_kb(), "postgres") is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: _try_mechanical_repair step 3 — multi-statement stripping
+# ---------------------------------------------------------------------------
+
+
+def test_mechanical_repair_strips_second_statement() -> None:
+    """When LLM appends a second statement, only the first is kept."""
+    sql = "SELECT * FROM orders; SELECT 1"
+    repaired, err = _try_mechanical_repair(sql, _make_kb(), "postgres")
+    assert err is None
+    assert "SELECT 1" not in repaired
+
+
+def test_mechanical_repair_single_statement_unchanged() -> None:
+    sql = "SELECT * FROM orders"
+    repaired, err = _try_mechanical_repair(sql, _make_kb(), "postgres")
+    assert err is None
+    assert "orders" in repaired
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: EXPLAIN gate via validate_and_repair
+# ---------------------------------------------------------------------------
+
+
+def _make_async_llm_for_repair(repair_sql: str = "SELECT * FROM orders") -> MagicMock:
+    """Return a mock LLMClient whose acomplete() returns a valid SQL string."""
+    mock = MagicMock()
+
+    async def _acomplete(*args: Any, **kwargs: Any) -> str:
+        return repair_sql
+
+    mock.acomplete = _acomplete
+    mock.supports_prompt_caching = False
+    return mock
+
+
+def test_explain_gate_skipped_when_no_connector() -> None:
+    """EXPLAIN gate must be a no-op when connector=None."""
+
+    async def _run() -> SQLGenerationResult:
+        llm = _make_async_llm_for_repair()
+        return await validate_and_repair(
+            "SELECT * FROM orders",
+            _make_kb(),
+            "postgres",
+            llm,
+            explain_check=True,  # enabled but no connector
+        )
+
+    result = asyncio.run(_run())
+    assert result.is_valid is True
+
+
+def test_explain_gate_skipped_when_explain_check_false() -> None:
+    """EXPLAIN gate must be a no-op when explain_check=False."""
+    connector = MagicMock()
+    connector.execute.side_effect = RuntimeError("should not be called")
+
+    async def _run() -> SQLGenerationResult:
+        llm = _make_async_llm_for_repair()
+        return await validate_and_repair(
+            "SELECT * FROM orders",
+            _make_kb(),
+            "postgres",
+            llm,
+            connector=connector,
+            explain_check=False,
+        )
+
+    result = asyncio.run(_run())
+    assert result.is_valid is True
+    connector.execute.assert_not_called()
+
+
+def test_explain_gate_marks_invalid_on_db_error() -> None:
+    """When EXPLAIN raises, result is marked invalid with the error message."""
+    connector = MagicMock()
+    connector.execute.side_effect = RuntimeError("syntax error at position 5")
+
+    async def _run() -> SQLGenerationResult:
+        llm = _make_async_llm_for_repair()
+        return await validate_and_repair(
+            "SELECT * FROM orders",
+            _make_kb(),
+            "postgres",
+            llm,
+            connector=connector,
+            explain_check=True,
+        )
+
+    result = asyncio.run(_run())
+    assert result.is_valid is False
+    assert result.validation_error is not None
+    assert "EXPLAIN failed" in result.validation_error
+
+
+def test_explain_gate_passes_on_successful_explain() -> None:
+    """When EXPLAIN succeeds, result remains valid."""
+    connector = MagicMock()
+    connector.execute.return_value = None  # success
+
+    async def _run() -> SQLGenerationResult:
+        llm = _make_async_llm_for_repair()
+        return await validate_and_repair(
+            "SELECT * FROM orders",
+            _make_kb(),
+            "postgres",
+            llm,
+            connector=connector,
+            explain_check=True,
+        )
+
+    result = asyncio.run(_run())
+    assert result.is_valid is True
+    connector.execute.assert_called_once()
+    assert "EXPLAIN" in connector.execute.call_args[0][0]
+
+
+def test_explain_gate_not_run_on_already_invalid_result() -> None:
+    """EXPLAIN must not run when static validation already failed."""
+    connector = MagicMock()
+    connector.execute.side_effect = RuntimeError("should not be called")
+
+    async def _run() -> SQLGenerationResult:
+        mock_llm = MagicMock()
+
+        async def _acomplete(*a: Any, **kw: Any) -> str:
+            return "SELECT * FROM ghost_table"  # repair also returns invalid SQL
+
+        mock_llm.acomplete = _acomplete
+        mock_llm.supports_prompt_caching = False
+        return await validate_and_repair(
+            "SELECT * FROM ghost_table",
+            _make_kb(),
+            "postgres",
+            mock_llm,
+            connector=connector,
+            explain_check=True,
+        )
+
+    result = asyncio.run(_run())
+    assert result.is_valid is False
+    connector.execute.assert_not_called()

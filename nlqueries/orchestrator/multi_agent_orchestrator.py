@@ -42,7 +42,6 @@ Routing::
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator, Sequence
@@ -127,6 +126,82 @@ def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
     except (json.JSONDecodeError, AttributeError, TypeError):
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Background-task registry
+# Used for fire-and-forget cache writes so they don't block the response stream.
+# ---------------------------------------------------------------------------
+
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
+async def drain_background_tasks() -> None:
+    """Await all in-flight background cache writes.
+
+    Call this in tests after consuming the generator to ensure cache writes
+    have completed before making assertions.  Also useful for graceful
+    shutdown in the MCP server.
+    """
+    if _background_tasks:
+        await asyncio.gather(*list(_background_tasks), return_exceptions=True)
+
+
+def _schedule_cache_write(
+    cache: SemanticCache,
+    key: str,
+    resolved_q: str,
+    agent_type_str: str,
+    tokens: list[str],
+) -> None:
+    """Extract result fields from *tokens* and write to *cache* in a background task."""
+    # Extract answer (all text tokens) and sql (from final JSON chunk).
+    answer = ""
+    sql: str | None = None
+    if tokens:
+        text_parts: list[str] = []
+        for t in tokens:
+            try:
+                parsed = json.loads(t)
+                if isinstance(parsed, dict) and "type" in parsed:
+                    sql = parsed.get("sql") or None
+                    continue
+            except (json.JSONDecodeError, ValueError):
+                pass
+            text_parts.append(t)
+        answer = "".join(text_parts)
+
+    data = _CacheData(
+        resolved_question=resolved_q,
+        agent_type=agent_type_str,
+        answer=answer,
+        sql=sql,
+    )
+
+    async def _write() -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, cache.put, key, data)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Semantic cache write failed: %s", exc)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # no running loop (e.g. in sync test context)
+
+    task = loop.create_task(_write())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def _is_final_chunk(token: str) -> bool:
+    """Return True if *token* is the orchestrator's terminal structured JSON chunk."""
+    try:
+        parsed = json.loads(token)
+        return isinstance(parsed, dict) and "type" in parsed
+    except (json.JSONDecodeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +352,20 @@ class MultiAgentOrchestrator:
         effective_question = resolved.resolved
 
         # ------------------------------------------------------------------
+        # Pre-compute the question embedding once.
+        # The same vector is reused by the semantic cache lookup AND passed
+        # through to assemble_prompt() inside the SQL orchestrator, saving a
+        # second embed_text() round-trip on every cache miss (Phase 1C).
+        # ------------------------------------------------------------------
+        _question_vector: list[float] | None = None
+        try:
+            from nlqueries.embeddings.embedder import embed_text as _embed_text  # noqa: PLC0415
+
+            _question_vector = _embed_text(effective_question)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ------------------------------------------------------------------
         # Semantic cache check (Sprint 21)
         # ------------------------------------------------------------------
         _cache = SemanticCache(agent_id)
@@ -284,7 +373,7 @@ class MultiAgentOrchestrator:
         # the original pre-resolution question so repeated identical queries
         # always hit the same cache entry regardless of LLM rewrite variance).
         _cache_lookup_key = cache_key if cache_key is not None else effective_question
-        _cached = _cache.get(_cache_lookup_key)
+        _cached = _cache.get(_cache_lookup_key, vector=_question_vector)
         if _cached is not None:
             # Serve cached answer word-by-word to simulate streaming.
             for _word in _cached.answer.split():
@@ -310,78 +399,82 @@ class MultiAgentOrchestrator:
         # ------------------------------------------------------------------
         # Cache miss: classify intent and dispatch
         # ------------------------------------------------------------------
-        classification = classify_intent(effective_question, list(available_types))
-        intent = classification.intent
+        # Fast path: exactly one agent type available — no LLM call needed.
+        if len(available_types) == 1 and available_types[0] in ("sql", "document"):
+            intent = IntentType(available_types[0])
+            _log.debug("Intent classification skipped: single agent type %s", intent)
+        else:
+            classification = classify_intent(effective_question, list(available_types))
+            intent = classification.intent
 
-        sql_tokens: list[str] | None = None
-        document_tokens: list[str] | None = None
-        citations: list[Citation] | None = None
-        hybrid_result: HybridQueryResult | None = None
+        # ------------------------------------------------------------------
+        # Dispatch: single-agent branches stream tokens through immediately;
+        # hybrid must buffer both sub-streams before merging.
+        # Cache writes are scheduled as background tasks (fire-and-forget).
+        # ------------------------------------------------------------------
 
         if intent == IntentType.sql:
-            sql_tokens = await _run_sql(effective_question, agent_id, dialect)
-        elif intent == IntentType.document:
-            document_tokens, citations = await _run_document(effective_question, agent_id)
-        elif intent == IntentType.hybrid:
+            orch = Orchestrator()
+            seen: list[str] = []
+            async for token in orch.handle_question(
+                effective_question,
+                agent_id,
+                dialect=dialect,
+                question_vector=_question_vector,
+            ):
+                seen.append(token)
+                if _is_final_chunk(token):
+                    try:
+                        last = json.loads(token)
+                        last["agent_type"] = "sql"
+                        yield json.dumps(last)
+                    except (json.JSONDecodeError, ValueError):
+                        yield token
+                else:
+                    yield token
+            _schedule_cache_write(_cache, _cache_lookup_key, effective_question, "sql", seen)
+            return
+
+        if intent == IntentType.document:
+            doc_orch = DocumentOrchestrator()
+            collection = f"doc_{agent_id}_chunks"
+            seen = []
+            async for token in doc_orch.handle_question(effective_question, collection):
+                seen.append(token)
+                if _is_final_chunk(token):
+                    try:
+                        last = json.loads(token)
+                        last["agent_type"] = "document"
+                        yield json.dumps(last)
+                    except (json.JSONDecodeError, ValueError):
+                        yield token
+                else:
+                    yield token
+            _schedule_cache_write(
+                _cache, _cache_lookup_key, effective_question, "document", seen
+            )
+            return
+
+        hybrid_result: HybridQueryResult | None = None
+        citations: list[Citation] | None = None
+
+        if intent == IntentType.hybrid:
             sql_tokens, document_tokens, citations = await _run_hybrid(
                 effective_question, agent_id, dialect
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 
-        # ------------------------------------------------------------------
-        # Pre-extract fields for caching before yielding (Sprint 21)
-        # ------------------------------------------------------------------
-        _cache_agent_type = "unclear"
-        _cache_answer = ""
-        _cache_sql: str | None = None
+            # Cache write for hybrid (background task)
+            if hybrid_result is not None:
+                _schedule_cache_write(
+                    _cache,
+                    _cache_lookup_key,
+                    effective_question,
+                    "hybrid",
+                    [hybrid_result.merged_answer or ""],
+                )
 
-        if intent == IntentType.sql and sql_tokens:
-            _cache_agent_type = "sql"
-            _cache_answer = "".join(sql_tokens[:-1])
-            with contextlib.suppress(json.JSONDecodeError, AttributeError, TypeError, IndexError):
-                _cache_sql = json.loads(sql_tokens[-1]).get("sql")
-        elif intent == IntentType.document and document_tokens:
-            _cache_agent_type = "document"
-            _cache_answer = "".join(document_tokens[:-1])
-        elif intent == IntentType.hybrid and hybrid_result is not None:
-            _cache_agent_type = "hybrid"
-            _cache_answer = hybrid_result.merged_answer or ""
-
-        if _cache_agent_type != "unclear":
-            _data = _CacheData(
-                resolved_question=effective_question,
-                agent_type=_cache_agent_type,
-                answer=_cache_answer,
-                sql=_cache_sql,
-            )
-            # Run the synchronous cache write in a thread-pool executor so it
-            # does not conflict with the running asyncio event loop (sync
-            # QdrantClient uses httpx.Client which raises when called from
-            # inside a running loop).
-            try:
-                _loop = asyncio.get_running_loop()
-                await _loop.run_in_executor(None, _cache.put, _cache_lookup_key, _data)
-            except Exception as _cache_err:  # noqa: BLE001
-                _log.warning("Semantic cache write failed: %s", _cache_err)
-
-        # ------------------------------------------------------------------
-        # Yield tokens
-        # ------------------------------------------------------------------
-        if intent == IntentType.sql and sql_tokens:
-            for token in sql_tokens[:-1]:
-                yield token
-            last = json.loads(sql_tokens[-1])
-            last["agent_type"] = "sql"
-            yield json.dumps(last)
-
-        elif intent == IntentType.document and document_tokens:
-            for token in document_tokens[:-1]:
-                yield token
-            last = json.loads(document_tokens[-1])
-            last["agent_type"] = "document"
-            yield json.dumps(last)
-
-        elif intent == IntentType.hybrid and hybrid_result is not None:
+        if intent == IntentType.hybrid and hybrid_result is not None:
             sql_table_dict = None
             if hybrid_result.sql_table is not None:
                 qt = hybrid_result.sql_table

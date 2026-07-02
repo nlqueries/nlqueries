@@ -1,0 +1,146 @@
+# NLQueries golden question set
+# Used by: benchmarks/run_bench.py, Phase 3/7/9/11 regression tests.
+#
+# Schema
+# ------
+# q:               Natural-language question (string)
+# agent:           Agent ID whose KB to use (string)
+# expect_tables:   Table names that MUST appear in the generated SQL (list, optional)
+# expect_contains: Strings that MUST appear in the answer text (list, optional)
+# hard:            True when self-consistency (P9) should be triggered (bool, default false)
+#
+# How to run
+# ----------
+# python -m benchmarks.run_bench --golden tests/golden/questions.yaml --agent <agent-id>
+
+# ---------------------------------------------------------------------------
+# Sales / Orders
+# ---------------------------------------------------------------------------
+
+- q: Total revenue by region for the last 12 months
+  agent: sales-agent
+  expect_tables: [orders, regions]
+  expect_contains: []
+  hard: false
+
+- q: Top 10 customers by order value this year
+  agent: sales-agent
+  expect_tables: [orders, customers]
+  expect_contains: []
+  hard: false
+
+- q: Month-over-month revenue growth for 2025
+  agent: sales-agent
+  expect_tables: [orders]
+  expect_contains: []
+  hard: true
+
+- q: Which products have a return rate above 5 percent?
+  agent: sales-agent
+  expect_tables: [orders, products]
+  expect_contains: []
+  hard: false
+
+- q: Average order value per sales channel in Q1 2026
+  agent: sales-agent
+  expect_tables: [orders]
+  expect_contains: []
+  hard: false
+
+- q: Customers who placed more than 3 orders but spent less than $100 total
+  agent: sales-agent
+  expect_tables: [orders, customers]
+  expect_contains: []
+  hard: true
+
+- q: Revenue versus target by region for March 2026
+  agent: sales-agent
+  expect_tables: [orders, targets]
+  expect_contains: []
+  hard: true
+
+- q: How many orders were shipped late last quarter?
+  agent: sales-agent
+  expect_tables: [orders]
+  expect_contains: []
+  hard: false
+
+- q: Which SKUs had zero sales in the last 30 days?
+  agent: sales-agent
+  expect_tables: [orders, products]
+  expect_contains: []
+  hard: false
+
+- q: Daily active users for the past week
+  agent: sales-agent
+  expect_tables: []
+  expect_contains: []
+  hard: false
+
+# ---------------------------------------------------------------------------
+# HR / People
+# ---------------------------------------------------------------------------
+
+- q: Headcount by department as of today
+  agent: hr-agent
+  expect_tables: [employees, departments]
+  expect_contains: []
+  hard: false
+
+- q: Average tenure by job grade
+  agent: hr-agent
+  expect_tables: [employees]
+  expect_contains: []
+  hard: false
+
+- q: Attrition rate per quarter for 2025
+  agent: hr-agent
+  expect_tables: [employees]
+  expect_contains: []
+  hard: true
+
+- q: Employees who have not completed mandatory training
+  agent: hr-agent
+  expect_tables: [employees, training]
+  expect_contains: []
+  hard: false
+
+- q: Compare salary bands across engineering vs finance
+  agent: hr-agent
+  expect_tables: [employees, departments]
+  expect_contains: []
+  hard: true
+
+# ---------------------------------------------------------------------------
+# Finance
+# ---------------------------------------------------------------------------
+
+- q: Total spend by cost centre for this fiscal year
+  agent: finance-agent
+  expect_tables: [expenses, cost_centres]
+  expect_contains: []
+  hard: false
+
+- q: Top 5 vendors by spend in the last 6 months
+  agent: finance-agent
+  expect_tables: [expenses, vendors]
+  expect_contains: []
+  hard: false
+
+- q: Budget variance by department for Q4 2025
+  agent: finance-agent
+  expect_tables: [budgets, expenses, departments]
+  expect_contains: []
+  hard: true
+
+- q: Invoices overdue by more than 30 days
+  agent: finance-agent
+  expect_tables: [invoices]
+  expect_contains: []
+  hard: false
+
+- q: Year-over-year operating expense trend for 2024 vs 2025
+  agent: finance-agent
+  expect_tables: [expenses]
+  expect_contains: []
+  hard: true
