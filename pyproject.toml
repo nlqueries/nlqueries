@@ -24,11 +24,9 @@ dependencies = [
     "rich>=13.0",
     "python-dotenv>=1.0",
 
-    # Database connectivity
+    # Database connectivity (Postgres is the only bundled driver)
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
-    "snowflake-connector-python>=3.0",
-    "google-cloud-bigquery>=3.0",
 
     # SQL parsing / dialect normalisation
     "sqlglot>=23.0",
@@ -36,8 +34,7 @@ dependencies = [
     # Knowledge base
     "pyyaml>=6.0",
 
-    # Embeddings + vector store
-    "sentence-transformers>=3.0",
+    # Vector store
     "qdrant-client>=1.9",
 
     # OIDC token verification
@@ -71,7 +68,17 @@ dev = [
     "mypy>=1.10",
     # Docker-based fixtures for connector integration tests (e.g. PostgresConnector)
     "testcontainers[postgres]>=4.0",
+    # Optional connector/embedding deps — installed in CI so their tests keep running
+    "sentence-transformers>=3.0",
+    "snowflake-connector-python>=3.0",
+    "google-cloud-bigquery>=3.0",
 ]
+# Embedding backends
+torch     = ["sentence-transformers>=3.0"]
+onnx      = ["optimum[onnxruntime]>=1.17"]
+# Cloud database connectors
+snowflake = ["snowflake-connector-python>=3.0"]
+bigquery  = ["google-cloud-bigquery>=3.0"]
 # Dialect extras for users who only need one driver
 mysql     = ["pymysql>=1.1"]
 openai    = ["openai>=1.0"]

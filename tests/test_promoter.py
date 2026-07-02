@@ -150,7 +150,10 @@ class TestPromoteFeedback:
             patch("nlqueries.feedback.store.load_feedback", return_value=records),
             patch("nlqueries.feedback.promoter._load_kb", return_value=kb),
             patch("nlqueries.embeddings.qdrant_store.ensure_collection", return_value=None),
-            patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda qs: [[0.1] * 384 for _ in qs],
+            ),
             patch("qdrant_client.QdrantClient", return_value=mock_client),
         ):
             count = promote_feedback("agent1")
@@ -188,7 +191,10 @@ class TestPromoteFeedback:
             patch("nlqueries.feedback.store.load_feedback", return_value=[rec]),
             patch("nlqueries.feedback.promoter._load_kb", return_value=_make_kb(["orders"])),
             patch("nlqueries.embeddings.qdrant_store.ensure_collection", return_value=None),
-            patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda qs: [[0.1] * 384 for _ in qs],
+            ),
             patch("qdrant_client.QdrantClient", return_value=mock_client),
         ):
             promote_feedback("agent1")

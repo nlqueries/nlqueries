@@ -9,9 +9,7 @@ from nlqueries.connectors.base import (
     SchemaSpec,
     TableSpec,
 )
-from nlqueries.connectors.bigquery import BigQueryConnector
 from nlqueries.connectors.postgres import PostgresConnector
-from nlqueries.connectors.snowflake import SnowflakeConnector
 
 # ---------------------------------------------------------------------------
 # Connector registry
@@ -19,19 +17,30 @@ from nlqueries.connectors.snowflake import SnowflakeConnector
 # Maps a db-type identifier (as used by the CLI / connector configs) to its
 # DatabaseConnector implementation. New connectors register themselves here.
 #
-# Tier-1 connectors with optional driver dependencies (redshift, mssql, duckdb)
-# are registered lazily below so that a missing optional extra never prevents
-# the core package from importing.
+# Connectors with optional driver dependencies are registered lazily below so
+# that a missing optional extra never prevents the core package from importing.
 # ---------------------------------------------------------------------------
 CONNECTOR_REGISTRY: dict[str, type[DatabaseConnector]] = {
     "postgres": PostgresConnector,
-    "snowflake": SnowflakeConnector,
-    "bigquery": BigQueryConnector,
 }
 
 
 def _register_optional_connectors() -> None:
     """Register connectors that require optional driver extras."""
+    try:
+        from nlqueries.connectors.snowflake import SnowflakeConnector  # noqa: PLC0415
+
+        CONNECTOR_REGISTRY["snowflake"] = SnowflakeConnector
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from nlqueries.connectors.bigquery import BigQueryConnector  # noqa: PLC0415
+
+        CONNECTOR_REGISTRY["bigquery"] = BigQueryConnector
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         from nlqueries.connectors.redshift import RedshiftConnector  # noqa: PLC0415
 
@@ -57,14 +66,12 @@ def _register_optional_connectors() -> None:
 _register_optional_connectors()
 
 __all__ = [
-    "BigQueryConnector",
     "ColumnSpec",
     "DatabaseConnector",
     "PostgresConnector",
     "QueryRecord",
     "QueryResult",
     "SchemaSpec",
-    "SnowflakeConnector",
     "TableSpec",
     "CONNECTOR_REGISTRY",
 ]
