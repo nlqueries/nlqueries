@@ -17,7 +17,6 @@ from nlqueries.knowledge.kb_generator import _is_pii_column, generate_knowledge_
 from nlqueries.orchestrator.prompt_assembly import _render_m_schema, assemble_prompt
 from nlqueries.processing.parameterizer import QueryCapsule
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

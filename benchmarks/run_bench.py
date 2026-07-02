@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 import time
 from dataclasses import dataclass, field
@@ -27,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -193,7 +191,8 @@ async def run_golden(golden_path: Path, default_agent: str) -> BenchReport:
 
 
 async def run_replay(replay_path: Path, agent_id: str) -> BenchReport:
-    lines = [l.strip() for l in replay_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    raw = replay_path.read_text(encoding="utf-8").splitlines()
+    lines = [ln.strip() for ln in raw if ln.strip()]
     report = BenchReport()
 
     for question in lines:
@@ -213,24 +212,25 @@ async def run_replay(replay_path: Path, agent_id: str) -> BenchReport:
 def _render_markdown(report: BenchReport, label: str) -> str:
     lines = [
         f"# NLQueries Benchmark — {label}",
-        f"",
+        "",
         f"**Date:** {report.started_at}",
         f"**Total questions:** {report.total}",
-        f"**Passed:** {report.passed} / {report.total} ({100 * report.passed // max(report.total, 1)}%)",
+        f"**Passed:** {report.passed} / {report.total}"
+        f" ({100 * report.passed // max(report.total, 1)}%)",
         f"**Cache hits:** {report.cache_hits} / {report.total}",
-        f"",
-        f"## Latency",
-        f"",
-        f"| Metric | Value |",
-        f"|--------|-------|",
+        "",
+        "## Latency",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
         f"| p50    | {report.p50_ms} ms |",
         f"| p95    | {report.p95_ms} ms |",
         f"| avg    | {report.avg_ms} ms |",
-        f"",
-        f"## Per-question results",
-        f"",
-        f"| # | Question | Agent | ms | Type | Tables | Contains | Cache | Hard | Error |",
-        f"|---|----------|-------|-----|------|--------|----------|-------|------|-------|",
+        "",
+        "## Per-question results",
+        "",
+        "| # | Question | Agent | ms | Type | Tables | Contains | Cache | Hard | Error |",
+        "|---|----------|-------|-----|------|--------|----------|-------|------|-------|",
     ]
     for i, row in enumerate(report.rows, 1):
         q_short = row.question[:50].replace("|", "\\|")

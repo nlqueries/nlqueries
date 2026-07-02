@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-import asyncio
-
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
