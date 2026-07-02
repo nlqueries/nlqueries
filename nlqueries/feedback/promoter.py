@@ -116,7 +116,7 @@ def promote_feedback(agent_id: str) -> int:
     """
     from qdrant_client.models import PointStruct  # noqa: PLC0415
 
-    from nlqueries.embeddings.embedder import embed_text  # noqa: PLC0415
+    from nlqueries.embeddings.embedder import embed_batch  # noqa: PLC0415
     from nlqueries.embeddings.qdrant_store import ensure_collection  # noqa: PLC0415
     from nlqueries.feedback.store import load_feedback  # noqa: PLC0415
 
@@ -159,13 +159,16 @@ def promote_feedback(agent_id: str) -> int:
         _log.warning("promote_feedback: Qdrant unavailable — %s", exc)
         return 0
 
+    # Batch-embed all questions in a single call (one HTTP round-trip to daemon).
+    questions = [q for q, _s in candidates]
+    try:
+        vectors = embed_batch(questions)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("promote_feedback: embed_batch failed — %s", exc)
+        return 0
+
     points: list[PointStruct] = []
-    for question, sql in candidates:
-        try:
-            vector = embed_text(question)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("promote_feedback: embed failed for question %.60s — %s", question, exc)
-            continue
+    for (question, sql), vector in zip(candidates, vectors, strict=True):
         point_id = _pair_point_id(question, sql)
         points.append(
             PointStruct(

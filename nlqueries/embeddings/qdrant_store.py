@@ -107,6 +107,7 @@ def ensure_collection(
     vector_size: int = 384,
     *,
     payload_indexes: list[str] | None = None,
+    quantize: bool = True,
 ) -> None:
     """Create a Qdrant collection with cosine distance if it does not exist.
 
@@ -117,16 +118,34 @@ def ensure_collection(
         payload_indexes: Optional list of payload field names to index as
                          keyword fields.  Existing indexes are skipped via a
                          module-level cache, so repeated calls are cheap.
+        quantize:        When ``True`` (default), enable INT8 scalar quantization
+                         on new collections.  Reduces on-disk and RAM footprint
+                         ~4× with <1% recall loss.  Pass ``False`` to disable
+                         (e.g. for small test collections).
     """
     from qdrant_client.models import Distance, VectorParams
 
     client = _get_client()
     existing = {c.name for c in client.get_collections().collections}
     if name not in existing:
-        client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-        )
+        create_kwargs: dict = {
+            "collection_name": name,
+            "vectors_config": VectorParams(size=vector_size, distance=Distance.COSINE),
+        }
+        if quantize:
+            from qdrant_client.models import (  # noqa: PLC0415
+                ScalarQuantization,
+                ScalarQuantizationConfig,
+                ScalarType,
+            )
+
+            create_kwargs["quantization_config"] = ScalarQuantization(
+                scalar=ScalarQuantizationConfig(
+                    type=ScalarType.INT8,
+                    always_ram=True,
+                )
+            )
+        client.create_collection(**create_kwargs)
 
     if payload_indexes:
         from qdrant_client.models import PayloadSchemaType

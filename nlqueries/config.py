@@ -145,6 +145,12 @@ FEEDBACK_DIR: Path = Path(os.getenv("FEEDBACK_DIR", str(Path.home() / ".nlquerie
 # ---------------------------------------------------------------------------
 # Cache thresholds
 # ---------------------------------------------------------------------------
+EMBED_BACKEND: str = os.getenv("EMBED_BACKEND", "torch").lower()
+"""Embedding backend used by the embed-server daemon. Values: torch | onnx.
+  torch — sentence-transformers / PyTorch (default, no extra deps)
+  onnx  — ONNX Runtime via optimum[onnxruntime] (faster cold start, no PyTorch)
+"""
+
 SCHEMA_FORMAT: str = os.getenv("NLQ_SCHEMA_FORMAT", "compact").lower()
 """Schema format used in the static system prompt. Values: compact | verbose.
   compact  — M-Schema format (【Table】 ...) — fewer tokens, default
