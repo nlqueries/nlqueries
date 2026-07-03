@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -438,7 +439,7 @@ def get_cache_stats(agent_id: str) -> str:
 # Server factory
 # ---------------------------------------------------------------------------
 
-_ALL_TOOLS = [
+_ALL_TOOLS: list[Callable[..., Any]] = [
     list_agents,
     get_agent_schema,
     query,
