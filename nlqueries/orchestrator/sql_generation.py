@@ -266,6 +266,24 @@ def _kb_to_sqlglot_schema(knowledge_base: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
+def _validate_numeric_clauses(statement: exp.Expression) -> str | None:
+    """Check that LIMIT/OFFSET/FETCH carry integer literals, not string literals.
+
+    LLMs sometimes produce ``LIMIT '10'`` when the question text contains a
+    quoted number.  Most databases reject or silently mis-handle this.
+    """
+    for node in statement.find_all(exp.Literal):
+        if not node.is_string:
+            continue
+        parent = node.parent
+        if isinstance(parent, (exp.Limit, exp.Offset, exp.Fetch)):
+            return (
+                f"LIMIT/OFFSET value must be an integer literal, not a string: "
+                f"'{node.this}' — use {node.this} (no quotes)"
+            )
+    return None
+
+
 def _validate_columns(
     statement: exp.Expression,
     knowledge_base: dict[str, Any],
@@ -480,6 +498,11 @@ def _validate_sql(
     if col_error is not None:
         return col_error
 
+    # LIMIT/OFFSET must be integer literals, not string literals
+    limit_error = _validate_numeric_clauses(statement)
+    if limit_error is not None:
+        return limit_error
+
     return None
 
 
@@ -502,6 +525,22 @@ def _try_mechanical_repair(
         ``(repaired_sql, None)`` on success (SQL is valid).
         ``(original_sql, error_message)`` when no mechanical fix worked.
     """
+    # Step 0: fix string literals used where integers are required (LIMIT/OFFSET/FETCH)
+    try:
+        stmt = sqlglot.parse_one(sql, dialect=dialect)
+        modified = False
+        for node in stmt.find_all(exp.Literal):
+            if node.is_string and isinstance(node.parent, (exp.Limit, exp.Offset, exp.Fetch)):
+                node.replace(exp.Literal.number(node.this))
+                modified = True
+        if modified:
+            candidate = stmt.sql(dialect=dialect)
+            err = _validate_sql(candidate, knowledge_base, dialect)
+            if err is None:
+                return candidate, None
+    except Exception:  # noqa: BLE001
+        pass
+
     # Step 1: dialect transpile
     try:
         transpiled_list = sqlglot.transpile(sql, write=dialect)

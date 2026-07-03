@@ -25,6 +25,7 @@ get_cache_stats     Return cache size and collection info for an agent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -159,7 +160,17 @@ async def query(
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
     try:
-        result = await run_query(question, agent_id, dialect=dialect)
+        result = await asyncio.wait_for(
+            run_query(question, agent_id, dialect=dialect),
+            timeout=45.0,
+        )
+    except TimeoutError:
+        return (
+            f"⏱ Query timed out after 45 s for agent '{agent_id}'.\n\n"
+            "Most likely cause: the embed daemon is not running, so the first query "
+            "triggers a slow in-process model load.\n\n"
+            "Fix: run `nlqueries embed-server start` in your terminal, then retry."
+        )
     except FileNotFoundError:
         available = list_agents()
         hint = (
