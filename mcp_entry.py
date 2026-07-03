@@ -9,6 +9,7 @@ plain Python file that can be invoked as:
 
 It bypasses the Click CLI entirely and starts the MCP server over stdio.
 """
+
 from nlqueries.mcp_server.server import main
 
 main(transport="stdio")
