@@ -132,7 +132,7 @@ def get_agent_schema(agent_id: str) -> str:
     return "\n".join(lines)
 
 
-def query(
+async def query(
     question: str,
     agent_id: str,
     dialect: str = "postgres",
@@ -156,10 +156,10 @@ def query(
         (for SQL/hybrid agents), and source citations (for document/hybrid agents).
         Includes per-query latency and agent-type metadata.
     """
-    from nlqueries.orchestrator.sync_runner import run_query_sync  # noqa: PLC0415
+    from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
     try:
-        result = run_query_sync(question, agent_id, dialect=dialect)
+        result = await run_query(question, agent_id, dialect=dialect)
     except FileNotFoundError:
         available = list_agents()
         hint = (

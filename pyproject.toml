@@ -92,8 +92,9 @@ docs      = ["pdfplumber>=0.11", "langchain-text-splitters>=0.3", "python-docx>=
 wiki      = ["notion-client>=2.2", "langchain-text-splitters>=0.3", "atlassian-python-api>=3.41", "beautifulsoup4>=4.12"]
 
 [project.scripts]
-nlqueries = "nlqueries.cli.main:cli"
-nlq       = "nlqueries.cli.main:cli"
+nlqueries     = "nlqueries.cli.main:cli"
+nlq           = "nlqueries.cli.main:cli"
+nlqueries-mcp = "nlqueries.mcp_server.server:main"
 
 [project.urls]
 Homepage   = "https://github.com/nlqueries/nlqueries"
