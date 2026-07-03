@@ -3156,3 +3156,74 @@ def embed_server_status() -> None:
         f"  Daemon [green]running[/green] (PID {pid}, port {_DEFAULT_PORT}). "
         "Embedding calls will use the daemon (~10 ms each)."
     )
+
+
+# ---------------------------------------------------------------------------
+# mcp-server
+# ---------------------------------------------------------------------------
+
+
+@cli.group("mcp-server")
+def mcp_server_group() -> None:
+    """Run the NLQueries MCP server.
+
+    \b
+    Exposes two MCP tools to Claude Desktop and other MCP-compatible clients:
+      list_agents — discover available agents
+      query       — ask a natural-language question to an agent
+
+    \b
+    Commands:
+      nlqueries mcp-server start            — stdio transport (Claude Desktop)
+      nlqueries mcp-server start --sse      — SSE transport (network clients)
+    """
+
+
+@mcp_server_group.command("start")
+@click.option(
+    "--sse",
+    is_flag=True,
+    default=False,
+    help="Use SSE transport instead of stdio.",
+)
+@click.option(
+    "--host",
+    default="0.0.0.0",
+    show_default=True,
+    help="Bind host for SSE transport.",
+)
+@click.option(
+    "--port",
+    default=8000,
+    show_default=True,
+    type=int,
+    help="Port for SSE transport.",
+)
+def mcp_server_start(sse: bool, host: str, port: int) -> None:
+    """Start the MCP server.
+
+    \b
+    Stdio mode (default) — for Claude Desktop.  Add this to claude_desktop_config.json:
+      {
+        "mcpServers": {
+          "nlqueries": {
+            "command": "nlqueries",
+            "args": ["mcp-server", "start"]
+          }
+        }
+      }
+
+    \b
+    SSE mode — for network/browser clients:
+      nlqueries mcp-server start --sse --port 8000
+    """
+    from nlqueries.mcp_server.server import main  # noqa: PLC0415
+
+    if sse:
+        console.print(
+            f"  [green]✓[/green] NLQueries MCP server (SSE) listening on "
+            f"http://{host}:{port}/sse"
+        )
+        main(transport="sse", host=host, port=port)
+    else:
+        main(transport="stdio")
