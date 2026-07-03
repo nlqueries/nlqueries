@@ -20,6 +20,8 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import datetime
+import decimal
 import json
 import re
 import time
@@ -46,6 +48,15 @@ _CLOSE_TAG = "</sql>"
 # split across token boundaries (len("<sql>") - 1 == 4).
 _HOLD = len(_OPEN_TAG) - 1
 _MAX_RESULT_ROWS = 200  # cap rows returned to MCP / CLI callers
+
+
+def _json_default(obj: Any) -> Any:
+    """Coerce DB-driver types that json.dumps can't handle."""
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class Orchestrator:
@@ -230,7 +241,8 @@ class Orchestrator:
                     "dialect": result.dialect,
                     "attempt_count": result.attempt_count,
                     "sql_table": sql_table or None,
-                }
+                },
+                default=_json_default,
             )
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:
