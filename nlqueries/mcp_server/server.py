@@ -25,12 +25,12 @@ get_cache_stats     Return cache size and collection info for an agent.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import Callable
 from typing import Any, Literal
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 from nlqueries import config
@@ -160,10 +160,8 @@ async def query(
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
     try:
-        result = await asyncio.wait_for(
-            run_query(question, agent_id, dialect=dialect),
-            timeout=45.0,
-        )
+        with anyio.fail_after(45):
+            result = await run_query(question, agent_id, dialect=dialect)
     except TimeoutError:
         return (
             f"⏱ Query timed out after 45 s for agent '{agent_id}'.\n\n"
