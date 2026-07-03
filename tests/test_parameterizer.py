@@ -445,3 +445,46 @@ def test_literal_type_inference_parametrized(sql: str, expected_types: dict[str,
     ph = _placeholder_map(capsule)
     for col, expected_type in expected_types.items():
         assert ph.get(col) == expected_type, f"{col}: expected {expected_type}, got {ph.get(col)}"
+
+
+# ---------------------------------------------------------------------------
+# skip_string_literals and numeric-literal quoting (semantic-cache fixes)
+# ---------------------------------------------------------------------------
+
+
+def test_skip_string_literals_leaves_varchar_unchanged() -> None:
+    from nlqueries.processing.parameterizer import _parameterize_sql
+
+    sql = "SELECT * FROM movies WHERE title_type = 'movie' AND release_year = 2020"
+    template, placeholders = _parameterize_sql(sql, {}, skip_string_literals=True)
+    ph = {p.name: p.type for p in placeholders}
+    # VARCHAR literal should be left as-is (not parameterized)
+    assert "title_type" not in ph
+    assert "'movie'" in template
+    # INT literal should still be parameterized
+    assert "release_year" in ph
+    assert ph["release_year"] == "INT"
+
+
+def test_int_placeholder_uses_no_quotes_in_template() -> None:
+    from nlqueries.processing.parameterizer import _parameterize_sql
+
+    sql = "SELECT * FROM orders WHERE id = 42"
+    template, placeholders = _parameterize_sql(sql, {})
+    assert len(placeholders) == 1
+    assert placeholders[0].type == "INT"
+    # The placeholder must NOT be wrapped in single quotes in the template.
+    # This ensures binding produces `id = 42` (integer) not `id = '42'` (string).
+    assert "[id:INT]" in template
+    assert "'[id:INT]'" not in template
+
+
+def test_limit_placeholder_uses_no_quotes_in_template() -> None:
+    from nlqueries.processing.parameterizer import _parameterize_sql
+
+    sql = "SELECT id FROM users LIMIT 10"
+    template, placeholders = _parameterize_sql(sql, {})
+    assert len(placeholders) == 1
+    assert placeholders[0].type == "INT"
+    assert "[param_1:INT]" in template
+    assert "'[param_1:INT]'" not in template
