@@ -195,9 +195,7 @@ async def query(
         qr = result.sql_result
         header = "| " + " | ".join(str(c) for c in qr.columns) + " |"
         sep = "| " + " | ".join("---" for _ in qr.columns) + " |"
-        rows = "\n".join(
-            "| " + " | ".join(str(v) for v in row) + " |" for row in qr.rows
-        )
+        rows = "\n".join("| " + " | ".join(str(v) for v in row) + " |" for row in qr.rows)
         shown = len(qr.rows)
         suffix = f"\n*(showing {shown} of {qr.row_count} rows)*" if qr.row_count > shown else ""
         parts.append(f"\n\n**Results**\n\n{header}\n{sep}\n{rows}{suffix}")
