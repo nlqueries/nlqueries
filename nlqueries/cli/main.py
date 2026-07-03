@@ -3221,8 +3221,7 @@ def mcp_server_start(sse: bool, host: str, port: int) -> None:
 
     if sse:
         console.print(
-            f"  [green]✓[/green] NLQueries MCP server (SSE) listening on "
-            f"http://{host}:{port}/sse"
+            f"  [green]✓[/green] NLQueries MCP server (SSE) listening on http://{host}:{port}/sse"
         )
         main(transport="sse", host=host, port=port)
     else:
