@@ -19,6 +19,7 @@ Public API
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -44,6 +45,7 @@ _CLOSE_TAG = "</sql>"
 # How many chars to hold back before flushing pre-tag content, to catch markers
 # split across token boundaries (len("<sql>") - 1 == 4).
 _HOLD = len(_OPEN_TAG) - 1
+_MAX_RESULT_ROWS = 200  # cap rows returned to MCP / CLI callers
 
 
 class Orchestrator:
@@ -194,6 +196,27 @@ class Orchestrator:
             span.set_attribute("attempt_count", result.attempt_count)
             span.set_attribute("intent_type", "sql")
 
+            # Execute the validated SQL and capture rows for the response.
+            sql_table: dict[str, Any] = {}
+            if result.is_valid:
+                from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
+
+                connector = None
+                try:
+                    connector = await asyncio.to_thread(open_connector_for_agent, agent_id)
+                    if connector is not None:
+                        qr = await asyncio.to_thread(connector.execute_query, result.sql)
+                        sql_table = {
+                            "columns": qr.columns,
+                            "rows": qr.rows[:_MAX_RESULT_ROWS],
+                            "row_count": qr.row_count,
+                            "execution_time_ms": qr.execution_time_ms,
+                            "error": qr.error,
+                        }
+                        span.set_attribute("row_count", qr.row_count)
+                except Exception as exc:  # noqa: BLE001
+                    sql_table = {"error": str(exc)}
+
             elapsed_ms = time.perf_counter() * 1000 - start_ms
             query_counter.add(1, {"dialect": dialect, "agent_type": "sql"})
             query_latency.record(elapsed_ms, {"dialect": dialect, "agent_type": "sql"})
@@ -206,6 +229,7 @@ class Orchestrator:
                     "validation_error": result.validation_error,
                     "dialect": result.dialect,
                     "attempt_count": result.attempt_count,
+                    "sql_table": sql_table or None,
                 }
             )
 

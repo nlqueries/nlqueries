@@ -191,6 +191,17 @@ async def query(
     if result.sql_result and result.sql_result.error:
         parts.append(f"\n\n⚠ SQL execution error: {result.sql_result.error}")
 
+    if result.sql_result and not result.sql_result.error and result.sql_result.rows:
+        qr = result.sql_result
+        header = "| " + " | ".join(str(c) for c in qr.columns) + " |"
+        sep = "| " + " | ".join("---" for _ in qr.columns) + " |"
+        rows = "\n".join(
+            "| " + " | ".join(str(v) for v in row) + " |" for row in qr.rows
+        )
+        shown = len(qr.rows)
+        suffix = f"\n*(showing {shown} of {qr.row_count} rows)*" if qr.row_count > shown else ""
+        parts.append(f"\n\n**Results**\n\n{header}\n{sep}\n{rows}{suffix}")
+
     if result.citations:
         parts.append("\n\n**Sources**")
         for c in result.citations:

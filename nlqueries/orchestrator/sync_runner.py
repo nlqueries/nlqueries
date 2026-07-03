@@ -81,6 +81,15 @@ def _parse_final_chunk(
 
     if agent_type == "sql":
         sql = parsed.get("sql") or None
+        sql_table: dict[str, Any] | None = parsed.get("sql_table")
+        if sql_table and isinstance(sql_table, dict):
+            sql_result = QueryResult(
+                columns=sql_table.get("columns") or [],
+                rows=sql_table.get("rows") or [],
+                row_count=int(sql_table.get("row_count", 0)),
+                execution_time_ms=float(sql_table.get("execution_time_ms", 0.0)),
+                error=sql_table.get("error"),
+            )
 
     elif agent_type == "document":
         citations = [
