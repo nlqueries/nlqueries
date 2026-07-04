@@ -3168,9 +3168,16 @@ def mcp_server_group() -> None:
     """Run the NLQueries MCP server.
 
     \b
-    Exposes two MCP tools to Claude Desktop and other MCP-compatible clients:
-      list_agents — discover available agents
-      query       — ask a natural-language question to an agent
+    Exposes MCP tools to Claude Desktop and other MCP-compatible clients:
+      list_agents       — discover available agents
+      get_agent_schema  — inspect tables, columns, and FKs for an agent
+      query             — ask a natural-language question to an agent
+      submit_feedback   — record thumbs-up/down feedback for a result
+      health            — check LLM, Qdrant, embed daemon, and config status
+      invalidate_cache  — drop the semantic cache for an agent
+      list_connectors   — list registered database connectors
+      get_query_history — return recent queries and ratings for an agent
+      get_cache_stats   — return cache size and collection info for an agent
 
     \b
     Commands:
