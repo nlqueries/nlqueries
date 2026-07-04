@@ -29,13 +29,13 @@ nlqueries connect mysql --host localhost --database mydb --user alice --password
 
 SSL for PostgreSQL/MySQL connections is configured via the `SSL_MODE` / `SSL_CA_CERT` environment variables, not a `connect` flag — see [configuration.md](configuration.md).
 
-**Snowflake**
+**Snowflake** — install `pip install "nlqueries-core[snowflake]"` first
 
 ```bash
 nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --schema PUBLIC --warehouse COMPUTE_WH --user alice --password s3cr3t
 ```
 
-**BigQuery** (uses Application Default Credentials if `--service-account-json` is omitted)
+**BigQuery** — install `pip install "nlqueries-core[bigquery]"` first (uses Application Default Credentials if `--service-account-json` is omitted)
 
 ```bash
 nlqueries connect bigquery --project-id my-gcp-project --dataset-id my_dataset --service-account-json /path/to/service-account.json
@@ -126,10 +126,12 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 
 | Flag | Default | Description |
 |---|---|---|
-| `--days` | `30` | How far back to read query history |
-| `--annotate` | off | Generate LLM intent descriptions per cluster |
+| `--days` | `90` | How far back to read query history |
+| `--annotate` | on | Generate LLM intent descriptions per cluster |
 | `--embed` | off | Upload embeddings to Qdrant (requires Qdrant running) |
 | `--min-executions` | `3` | Minimum executions for a query cluster to be kept |
+| `--max-queries` | `500` (env: `QUERY_HISTORY_LIMIT`) | Cap on useful queries to process after filtering |
+| `--verbose` | off | Print sqlglot parse warnings and LLM provider log lines |
 
 Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS`), MySQL (performance schema). Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
 
@@ -142,10 +144,17 @@ A fresh or lightly-used database will produce few or zero capsules until it has 
 Reads the capsules saved by `process-history` together with the live schema and writes the KB YAML that `query`/`ask` read. **Required before `query`/`ask` will work**, and must be re-run after every `process-history` run.
 
 ```bash
-nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3]
+nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3] [--no-include-samples] [--describe-columns]
 ```
 
 Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` replaced with `_`).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--output` / `-o` | `~/.nlqueries/knowledge_base/<id>.yaml` | Path to write the YAML KB |
+| `--include-samples` / `--no-include-samples` | on | Include sample rows per table |
+| `--sample-rows` | `3` | Number of sample rows per table |
+| `--describe-columns` | off | Use the LLM to auto-populate column descriptions from sample data (skips surrogate-key columns; requires LLM key) |
 
 ---
 
@@ -179,12 +188,21 @@ Generates SQL, **executes it against the database**, and returns the natural-lan
 
 ```bash
 nlqueries query <connector-or-alias> "Top 10 customers by revenue this year"
-nlqueries query <connector-or-alias> "..." --json   # structured output including rows
+nlqueries query <connector-or-alias> "..." --json        # structured output including rows
+nlqueries query <connector-or-alias> "..." --no-execute  # generate SQL without running it
+nlqueries query <connector-or-alias> "..." --new-session # discard prior conversation context
 ```
 
 Output includes agent type, answer, generated SQL, and latency. The orchestrator routes each question to a SQL agent, a document agent, or both in parallel (hybrid) — see [Multi-agent routing](#multi-agent-routing).
 
-Supports conversational follow-ups when run interactively — context from prior turns carries forward automatically.
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | off | Emit the full result as raw JSON (includes rows, citations, latency) |
+| `--execute` / `--no-execute` | on | Execute the generated SQL and display rows |
+| `--session` / `--no-session` | on | Carry conversation context across queries for follow-up questions |
+| `--new-session` | off | Start a fresh conversation, discarding prior context |
+
+Conversational context is persisted per agent in `~/.nlqueries/sessions/` and carried forward automatically between calls.
 
 ---
 
@@ -216,10 +234,27 @@ The orchestrator classifies each question and dispatches accordingly:
 ## Document connectors
 
 ```bash
-nlq doc-ingest /path/to/report.pdf --connector <connector-or-alias>
-nlq doc-ask <connector-or-alias> "What did the report say about churn?"
-nlq doc-sync-notion --database-id abc123 --connector <connector-or-alias>          # requires NOTION_TOKEN
-nlq doc-sync-confluence --space-key ENG --connector <connector-or-alias>            # requires CONFLUENCE_URL, CONFLUENCE_USER, CONFLUENCE_API_TOKEN
+# Ingest a local file — SOURCE_ID is an opaque slug you choose (e.g. a UUID)
+nlq doc-ingest <source_id> <file_path>
+# e.g.
+nlq doc-ingest my-q1-report /path/to/report.pdf
+
+# Ask a question against an ingested collection
+# COLLECTION is the Qdrant collection name: doc_{source_id}_chunks
+nlq doc-ask <collection> "What did the report say about churn?"
+# e.g.
+nlq doc-ask doc_my-q1-report_chunks "What did the report say about churn?"
+
+# Sync a Notion page — requires NOTION_API_TOKEN env var
+nlq doc-sync-notion <source_id> <page_id>
+# e.g.
+NOTION_API_TOKEN=secret_... nlq doc-sync-notion my-wiki-src abc123def456
+
+# Sync a Confluence space — requires CONFLUENCE_API_TOKEN env var
+nlq doc-sync-confluence <source_id> <space_key> --base-url <url> --username <user>
+# e.g.
+CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \
+    --base-url https://acme.atlassian.net --username alice@acme.com
 ```
 
 Formats: PDF, Word (`.docx`), Excel (`.xlsx`), Notion pages, Confluence spaces. Install with `pip install "nlqueries-core[docs]"` (PDF/Word/Excel) or `pip install "nlqueries-core[wiki]"` (Notion/Confluence). See [connectors.md](connectors.md#document-connectors).
@@ -244,6 +279,38 @@ nlqueries feedback-stats <connector-or-alias>
 ```
 
 Prints total rated, thumbs-up/down rate, and recent corrections. Prints "No feedback recorded yet" for a connector with none — this is expected on first use, not an error.
+
+---
+
+## promote-feedback
+
+Promotes all thumbs-up feedback for an agent into the verified Qdrant collection (`agent_{id}_verified`), so future `ask` and `query` calls can blend those (question, SQL) pairs into the prompt as high-confidence examples.
+
+```bash
+nlqueries promote-feedback <connector-or-alias>
+```
+
+This is also called automatically at the end of every `export-kb` run. Run it manually after submitting a batch of thumbs-up ratings between KB exports.
+
+---
+
+## verify-oidc-token
+
+Verifies an OIDC ID token and prints the decoded claims as JSON. Useful for debugging SSO setups before wiring up the enterprise auth flow.
+
+```bash
+nlqueries verify-oidc-token <discovery_url> <client_id> <id_token>
+```
+
+```bash
+# Example — Google OIDC
+nlqueries verify-oidc-token \
+  https://accounts.google.com/.well-known/openid-configuration \
+  my-client-id \
+  eyJhbGci...
+```
+
+Validates the token signature, expiry, audience, and issuer. Exits 1 on any verification failure.
 
 ---
 
@@ -275,24 +342,27 @@ Not restarted automatically on reboot — add the `start` command to your shell 
 
 ---
 
-## MCP server
+## mcp-server
+
+Manage and start the NLQueries MCP server. Two transports are supported:
 
 ```bash
-python -m nlqueries.mcp_server --port 8080
-# or via Docker: docker compose up  (MCP server available at http://localhost:8080)
+nlqueries mcp-server start                        # stdio — for Claude Desktop (default)
+nlqueries mcp-server start --sse --port 8000      # SSE — for network/browser clients
+nlqueries mcp-server start --sse --host 0.0.0.0 --port 8000
 ```
 
-Tools exposed: `list_connectors`, `ask_database`, `get_schema`, `list_documents`.
-
-Claude Desktop config (`claude_desktop_config.json`):
+**Claude Desktop config** (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "nlqueries": {
-      "url": "http://localhost:8080/mcp",
-      "transport": "http"
+      "command": "nlqueries",
+      "args": ["mcp-server", "start"]
     }
   }
 }
 ```
+
+Tools exposed: `list_agents`, `get_agent_schema`, `query`, `submit_feedback`, `health`, `invalidate_cache`, `list_connectors`, `get_query_history`, `get_cache_stats`.

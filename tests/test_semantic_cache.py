@@ -676,6 +676,48 @@ class TestBindEntities:
         assert result is not None
         assert "active" in result
 
+    # --- Semantic pre-assignment (fix for multi-number ordering bugs) ---
+
+    def test_year_column_gets_four_digit_number(self) -> None:
+        # "start_year" contains "year" → should receive 2025, not 10 or 10000.
+        # Template uses unquoted INT placeholders (as the updated parameterizer generates).
+        template = (
+            "WHERE tb.start_year = [start_year:INT]"
+            " AND tr.num_votes > [num_votes:INT]"
+            " LIMIT [param_1:INT]"
+        )
+        question = "top 10 highest rated movies from 2025 with more than 10000 reviews"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "start_year = 2025" in result
+        assert "num_votes > 10000" in result
+        assert "LIMIT 10" in result
+
+    def test_param_n_gets_top_n_value(self) -> None:
+        template = "SELECT id FROM users LIMIT [param_1:INT]"
+        question = "show the top 5 users"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "5" in result
+
+    def test_multiple_numbers_no_year_column_uses_positional(self) -> None:
+        # When placeholder name has no "year" and no "top N" pattern, positional binding applies.
+        template = "WHERE amount > [amount:INT] AND qty < [qty:INT]"
+        question = "orders where amount exceeds 100 and qty less than 50"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "100" in result
+        assert "50" in result
+
+    def test_year_preassign_does_not_consume_non_year_numbers(self) -> None:
+        # After pre-assigning 2024 to start_year, 100 must still be available for num_votes.
+        template = "WHERE tb.start_year = [start_year:INT] AND tr.num_votes > [num_votes:INT]"
+        question = "movies from 2024 with more than 100 votes"
+        result = _bind_entities(question, template)
+        assert result is not None
+        assert "2024" in result
+        assert "100" in result
+
 
 # ---------------------------------------------------------------------------
 # Phase 5A: Tier 0 exact-match lookup

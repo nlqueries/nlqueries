@@ -145,11 +145,20 @@ def _infer_literal_type(literal: exp.Literal, schema_type: str | None) -> str:
 def _parameterize_sql(
     sql: str,
     schema_type_map: dict[str, str],
+    *,
+    skip_string_literals: bool = False,
 ) -> tuple[str, list[Placeholder]]:
     """Replace every literal in *sql* with a typed placeholder string.
 
     Returns ``(template_sql, placeholders)``.  On parse failure returns
     the original SQL with an empty placeholder list.
+
+    Args:
+        skip_string_literals: When ``True``, VARCHAR string literals are left
+            unchanged in the template.  Use this when storing semantic-cache
+            templates so implicit filter constants like ``'movie'`` do not
+            become placeholder slots that entity binding must fill from the
+            question.
     """
     try:
         ast = sqlglot.parse_one(sql)
@@ -169,6 +178,11 @@ def _parameterize_sql(
         schema_type = schema_type_map.get(col_name) if col_name else None
         param_type = _infer_literal_type(node, schema_type)
 
+        # Leave VARCHAR constants as literals when building cache templates —
+        # values like 'movie' or 'active' don't appear as entities in questions.
+        if skip_string_literals and param_type == "VARCHAR":
+            return node
+
         # Determine base placeholder name
         if col_name:
             base = col_name
@@ -185,6 +199,11 @@ def _parameterize_sql(
             name = base
 
         placeholders.append(Placeholder(name=name, type=param_type))
+        # Numeric placeholders use a number literal so the template SQL does not
+        # wrap the token in single quotes; bound SQL will have proper integer
+        # literals (e.g. LIMIT 10) rather than string-coerced values (LIMIT '10').
+        if param_type in ("INT", "DECIMAL"):
+            return exp.Literal.number(f"[{name}:{param_type}]")
         return exp.Literal.string(f"[{name}:{param_type}]")
 
     try:

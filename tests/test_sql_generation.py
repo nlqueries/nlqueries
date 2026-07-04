@@ -596,6 +596,45 @@ def test_explain_gate_passes_on_successful_explain() -> None:
     assert "EXPLAIN" in connector.execute.call_args[0][0]
 
 
+def test_validate_numeric_clauses_detects_quoted_limit() -> None:
+    """LIMIT '10' (string literal) should be flagged as invalid."""
+    from nlqueries.orchestrator.sql_generation import _validate_sql
+
+    sql = "SELECT id FROM orders LIMIT '10'"
+    err = _validate_sql(sql, _make_kb(), "postgres")
+    assert err is not None
+    assert "LIMIT" in err
+
+
+def test_mechanical_repair_fixes_quoted_limit() -> None:
+    """Mechanical repair must convert LIMIT '10' → LIMIT 10 without an LLM call."""
+    from nlqueries.orchestrator.sql_generation import _try_mechanical_repair
+
+    sql = "SELECT id FROM orders LIMIT '10'"
+    repaired, error = _try_mechanical_repair(sql, _make_kb(), "postgres")
+    assert error is None
+    assert "'10'" not in repaired
+
+
+def test_validate_and_repair_fixes_quoted_limit() -> None:
+    """End-to-end: LIMIT '10' is auto-corrected without an LLM call (attempt_count stays 1)."""
+
+    async def _run() -> SQLGenerationResult:
+        mock_llm = MagicMock()
+        mock_llm.supports_prompt_caching = False
+        return await validate_and_repair(
+            "SELECT id FROM orders LIMIT '10'",
+            _make_kb(),
+            "postgres",
+            mock_llm,
+        )
+
+    result = asyncio.run(_run())
+    assert result.is_valid is True
+    assert "'10'" not in result.sql
+    assert result.attempt_count == 1  # mechanical repair, no LLM call
+
+
 def test_explain_gate_not_run_on_already_invalid_result() -> None:
     """EXPLAIN must not run when static validation already failed."""
     connector = MagicMock()

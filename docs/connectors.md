@@ -10,8 +10,8 @@ NLQueries reads two kinds of sources: databases (for structured SQL answers) and
 |---|---|---|
 | PostgreSQL | included | `pg_stat_statements` extension |
 | MySQL | `pip install "nlqueries-core[mysql]"` | Performance schema `events_statements_summary_by_digest` |
-| Snowflake | included | `QUERY_HISTORY` view in `INFORMATION_SCHEMA` |
-| BigQuery | included | `INFORMATION_SCHEMA.JOBS` |
+| Snowflake | `pip install "nlqueries-core[snowflake]"` | `QUERY_HISTORY` view in `INFORMATION_SCHEMA` |
+| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS` |
 | Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`) |
 | SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`) |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
@@ -63,15 +63,29 @@ No query history across connections — `process-history` always returns an empt
 | PDF | `.pdf` | `pip install "nlqueries-core[docs]"` |
 | Word | `.docx` | `pip install "nlqueries-core[docs]"` |
 | Excel | `.xlsx` | `pip install "nlqueries-core[docs]"` |
-| Notion | Notion pages | `pip install "nlqueries-core[wiki]"`, `NOTION_TOKEN` |
+| Notion | Notion pages | `pip install "nlqueries-core[wiki]"`, `NOTION_API_TOKEN` |
 | Confluence | Confluence spaces | `pip install "nlqueries-core[wiki]"`, `CONFLUENCE_URL`, `CONFLUENCE_USER`, `CONFLUENCE_API_TOKEN` |
 
 ```bash
-nlq doc-ingest ./report.pdf --connector <connector-or-alias>
-nlq doc-sync-notion --database-id abc123 --connector <connector-or-alias>
-nlq doc-sync-confluence --space-key ENG --connector <connector-or-alias>
+# SOURCE_ID is an opaque slug you choose (e.g. a UUID or short name)
+nlq doc-ingest <source_id> <file_path>
+# e.g.
+nlq doc-ingest q1-report ./report.pdf
+
+# Notion — requires NOTION_API_TOKEN env var; PAGE_ID is the Notion page or database ID
+nlq doc-sync-notion <source_id> <page_id>
+# e.g.
+NOTION_API_TOKEN=secret_... nlq doc-sync-notion my-wiki-src abc123def456
+
+# Confluence — requires CONFLUENCE_API_TOKEN env var
+nlq doc-sync-confluence <source_id> <space_key> --base-url <url> --username <user>
+# e.g.
+CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \
+    --base-url https://acme.atlassian.net --username alice@acme.com
 ```
 
-After ingestion, documents are chunked and embedded into Qdrant (required — see [qdrant-setup.md](qdrant-setup.md)). The document agent retrieves relevant chunks automatically when answering; citations (source document, page/section) are included in the answer. Query with `nlq doc-ask <connector-or-alias> "..."` for a document-only answer, or `nlqueries query` for the orchestrator to route automatically (including hybrid SQL + document answers).
+After ingestion, documents are chunked and embedded into Qdrant (required — see [qdrant-setup.md](qdrant-setup.md)). The document agent retrieves relevant chunks automatically when answering; citations (source document, page/section) are included in the answer.
+
+Query with `nlq doc-ask doc_{source_id}_chunks "..."` for a document-only answer (the collection name follows the pattern `doc_{source_id}_chunks`), or use `nlqueries query` for the orchestrator to route automatically (including hybrid SQL + document answers).
 
 **Python 3.14 note:** document ingestion depends on `langchain_text_splitters`, which is affected by the Python 3.14 / pydantic v1 compatibility issue — see [troubleshooting.md](troubleshooting.md#w6--pydantic-v1-incompatibility-python-314).

@@ -79,8 +79,18 @@ def _parse_final_chunk(
     agent_type = str(parsed.get("agent_type", "unclear"))
     text_tokens = tokens[:-1]
 
+    sql_table: dict[str, Any] | None = None
     if agent_type == "sql":
         sql = parsed.get("sql") or None
+        sql_table = parsed.get("sql_table")
+        if sql_table and isinstance(sql_table, dict):
+            sql_result = QueryResult(
+                columns=sql_table.get("columns") or [],
+                rows=sql_table.get("rows") or [],
+                row_count=int(sql_table.get("row_count", 0)),
+                execution_time_ms=float(sql_table.get("execution_time_ms", 0.0)),
+                error=sql_table.get("error"),
+            )
 
     elif agent_type == "document":
         citations = [
@@ -109,7 +119,7 @@ def _parse_final_chunk(
             )
             for c in parsed.get("citations", [])
         ]
-        sql_table: dict[str, Any] | None = parsed.get("sql_table")
+        sql_table = parsed.get("sql_table")
         if sql_table and isinstance(sql_table, dict):
             sql_result = QueryResult(
                 columns=sql_table.get("columns") or [],
