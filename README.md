@@ -11,6 +11,8 @@
 
 **NLQueries Core** turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Notion, Confluence) and can blend both in a single hybrid answer.
 
+**Website & docs:** [nlqueries.com](https://nlqueries.com)
+
 ---
 
 ## Features
