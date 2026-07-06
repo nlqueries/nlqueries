@@ -91,34 +91,29 @@ To skip annotation entirely, use `--no-annotate`.
 
 ## W6 — pydantic v1 incompatibility (Python 3.14+)
 
+**Status: Resolved** (see below).
+
 ```
 UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
 ```
 
-**When:** Any command that imports `langchain_text_splitters` on Python 3.14+ — that is, document ingestion only.
+**When (historical):** Any command that imported `langchain_text_splitters` on Python 3.14+ — that is, document ingestion only.
 
 **Why:** Some LangChain-ecosystem packages use a `pydantic.v1` compatibility shim that relies on CPython internals removed in 3.14.
 
 **Update (2026-07-01):** multi-agent/hybrid query routing (`query`) previously depended on `langgraph`/`langchain_core` for a simple classify → dispatch → merge flow. That dependency has been removed — routing is now plain async dispatch with no LangGraph/LangChain-core import, so `query`, intent classification, and hybrid queries are **no longer affected** by this issue on any Python version. `pyproject.toml` also now caps `requires-python` at `<3.14` as a backstop.
 
-The remaining exposure is document ingestion, which still uses `langchain_text_splitters` for chunking:
+**Resolved:** `langchain_text_splitters` has now been fully removed from the four document
+connectors (PDF, Word, Notion, Confluence), replaced with a small built-in chunker
+(`nlqueries.document_connectors.chunker`). Document ingestion no longer depends on any
+LangChain-ecosystem package, so Python 3.14 is now fully supported across the entire project.
+
+This section is kept for historical context. Prior impact, before the fix:
 
 | Operation | Command | Impact |
 |---|---|---|
-| PDF / Word ingestion | `doc-ingest` | Chunking step may break at runtime |
-| Notion / Confluence sync | `doc-sync-notion` / `doc-sync-confluence` | Chunking step may break at runtime |
-
-**Not affected:** `query`, `ask`, `connect`, `process-history`, `export-kb`, `doc-ask` (querying already-ingested documents), embedding and Qdrant operations, intent classification, hybrid queries.
-
-**Action required:** `pip install` refuses to install on Python 3.14+ (see `pyproject.toml`'s `requires-python`), so this should only come up in an editable/source install that bypasses that check. Use Python 3.11 or 3.12 if you hit it:
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
-pip install -e ./core
-```
-
-Fully removing `langchain_text_splitters` from the four document connectors (replacing it with a small custom chunker) would close this out entirely; that's a reasonable fast-follow rather than a launch blocker, since document ingestion is a secondary feature relative to the core query path.
+| PDF / Word ingestion | `doc-ingest` | Chunking step could break at runtime |
+| Notion / Confluence sync | `doc-sync-notion` / `doc-sync-confluence` | Chunking step could break at runtime |
 
 ---
 

@@ -2,7 +2,7 @@
 nlqueries.document_connectors.notion
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Notion document connector using ``notion-client`` for page/block retrieval and
-``langchain_text_splitters`` for recursive character chunking.
+a built-in recursive character chunker.
 
 Chunking strategy: all text blocks from a Notion page are concatenated into a
 single body and split with ``RecursiveCharacterTextSplitter(chunk_size=800,
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
+from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
 _TEXT_BLOCK_TYPES: frozenset[str] = frozenset(
     {
@@ -102,14 +103,6 @@ class NotionConnector(DocumentConnector):
         except ImportError as exc:
             raise ImportError(
                 "notion-client is required for NotionConnector. "
-                "Install it with: pip install 'nlqueries-core[wiki]'"
-            ) from exc
-
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-        except ImportError as exc:
-            raise ImportError(
-                "langchain-text-splitters is required for NotionConnector. "
                 "Install it with: pip install 'nlqueries-core[wiki]'"
             ) from exc
 

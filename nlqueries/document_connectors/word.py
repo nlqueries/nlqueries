@@ -2,7 +2,7 @@
 nlqueries.document_connectors.word
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Microsoft Word (.docx) document connector using ``python-docx`` for paragraph
-extraction and ``langchain_text_splitters`` for recursive character chunking.
+extraction and a built-in recursive character chunker.
 
 Chunking strategy: heading-based sections.  The connector walks ``doc.paragraphs``
 and treats every ``Heading 1`` / ``Heading 2`` paragraph as a section boundary.
@@ -21,6 +21,7 @@ import hashlib
 from pathlib import Path
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
+from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
 _HEADING_STYLES = {"Heading 1", "Heading 2"}
 _SPLIT_THRESHOLD = 1_200
@@ -48,14 +49,6 @@ class WordConnector(DocumentConnector):
         except ImportError as exc:
             raise ImportError(
                 "python-docx is required for WordConnector. "
-                "Install it with: pip install 'nlqueries-core[docs]'"
-            ) from exc
-
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-        except ImportError as exc:
-            raise ImportError(
-                "langchain-text-splitters is required for WordConnector. "
                 "Install it with: pip install 'nlqueries-core[docs]'"
             ) from exc
 

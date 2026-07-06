@@ -19,8 +19,9 @@ flow (classify → dispatch → merge) with no persistence, subgraphs, or
 LangChain LLM wrappers, so it didn't need the dependency. This removes the
 `langgraph`/`langchain_core` import that broke on Python 3.14 (pydantic.v1
 compatibility shim) — see docs/troubleshooting.md#w6 for background. Document
-ingestion (`langchain_text_splitters`) is untouched by this change and is
-still subject to that same Python-version constraint; see
+ingestion has since also dropped its LangChain dependency (``langchain_text_splitters``
+replaced with ``nlqueries.document_connectors.chunker``), so that same
+Python-version constraint no longer applies anywhere in the project; see
 docs/connectors.md#document-connectors.
 
 Public API
