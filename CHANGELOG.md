@@ -2,6 +2,15 @@
 
 All notable changes to `nlqueries-core` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Replaced `langchain-text-splitters` with a small built-in chunker
+  (`nlqueries.document_connectors.chunker`). Document connectors (PDF, Word, Notion,
+  Confluence) no longer depend on langchain. Python 3.14 is now fully supported for
+  all connectors including document ingestion.
+
 ## [0.1.0] — Initial release
 
 First public release of NLQueries Core.

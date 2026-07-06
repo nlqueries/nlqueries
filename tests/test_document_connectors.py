@@ -1,7 +1,7 @@
 """
 Tests for nlqueries.document_connectors — PdfConnector + WordConnector + registry.
 
-All tests mock heavy dependencies (pdfplumber, langchain_text_splitters, python-docx)
+All tests mock heavy dependencies (pdfplumber, python-docx)
 so no live files or installed extras are required.
 """
 
@@ -42,14 +42,14 @@ def _make_mock_pdf(pages: list[MagicMock]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Fixture: stub out pdfplumber and langchain_text_splitters before import
+# Fixture: stub out pdfplumber before import
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
 def _stub_heavy_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject lightweight stubs for pdfplumber and langchain_text_splitters
-    so the test suite runs without the [docs] extras installed."""
+    """Inject a lightweight stub for pdfplumber so the test suite runs
+    without the [docs] extras installed."""
 
     # --- pdfplumber stub ---
     pdfplumber_mod = MagicMock()
@@ -61,22 +61,6 @@ def _stub_heavy_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     pdfplumber_mod.open = _open_pdf
     monkeypatch.setitem(sys.modules, "pdfplumber", pdfplumber_mod)
-
-    # --- langchain_text_splitters stub ---
-    splitter_mod = MagicMock()
-
-    class _FakeSplitter:
-        def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100) -> None:
-            self._size = chunk_size
-
-        def split_text(self, text: str) -> list[str]:
-            # Naive split: one chunk per _size chars (matches production intent)
-            if not text:
-                return []
-            return [text[i : i + self._size] for i in range(0, len(text), self._size)]
-
-    splitter_mod.RecursiveCharacterTextSplitter = _FakeSplitter
-    monkeypatch.setitem(sys.modules, "langchain_text_splitters", splitter_mod)
 
 
 # ---------------------------------------------------------------------------
@@ -250,13 +234,13 @@ def _make_mock_doc(paragraphs: list[MagicMock]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Fixture: stub out python-docx and langchain_text_splitters for Word tests
+# Fixture: stub out python-docx for Word tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def _stub_word_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject lightweight stubs for python-docx and langchain_text_splitters."""
+    """Inject a lightweight stub for python-docx."""
 
     # --- python-docx stub ---
     docx_mod = MagicMock()
@@ -267,21 +251,6 @@ def _stub_word_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     docx_mod.Document = _document
     monkeypatch.setitem(sys.modules, "docx", docx_mod)
-
-    # --- langchain_text_splitters (reuse the same _FakeSplitter) ---
-    splitter_mod = sys.modules.get("langchain_text_splitters", MagicMock())
-
-    class _FakeSplitter:
-        def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100) -> None:
-            self._size = chunk_size
-
-        def split_text(self, text: str) -> list[str]:
-            if not text:
-                return []
-            return [text[i : i + self._size] for i in range(0, len(text), self._size)]
-
-    splitter_mod.RecursiveCharacterTextSplitter = _FakeSplitter
-    monkeypatch.setitem(sys.modules, "langchain_text_splitters", splitter_mod)
 
 
 # ---------------------------------------------------------------------------

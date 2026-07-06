@@ -1,8 +1,8 @@
 """
 nlqueries.document_connectors.pdf
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-PDF document connector using ``pdfplumber`` for text extraction and
-``langchain_text_splitters`` for recursive character chunking.
+PDF document connector using ``pdfplumber`` for text extraction and a
+built-in recursive character chunker.
 
 Requires the ``docs`` optional dependency group:
     pip install "nlqueries-core[docs]"
@@ -14,6 +14,7 @@ import hashlib
 from pathlib import Path
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
+from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
 
 def _make_chunk_id(source_id: str, page_number: int, chunk_index: int) -> str:
@@ -39,14 +40,6 @@ class PdfConnector(DocumentConnector):
         except ImportError as exc:
             raise ImportError(
                 "pdfplumber is required for PdfConnector. "
-                "Install it with: pip install 'nlqueries-core[docs]'"
-            ) from exc
-
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-        except ImportError as exc:
-            raise ImportError(
-                "langchain-text-splitters is required for PdfConnector. "
                 "Install it with: pip install 'nlqueries-core[docs]'"
             ) from exc
 

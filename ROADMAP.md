@@ -4,7 +4,6 @@ A short list of what's actively planned or being researched. No committed dates 
 
 ## Near-term
 
-- **Remove the remaining `langchain_text_splitters` dependency** from the document connectors (PDF, Word, Notion, Confluence), replacing it with a small custom chunker. This closes out the last piece of the Python 3.14 compatibility gap — see [docs/troubleshooting.md#w6](docs/troubleshooting.md#w6--pydantic-v1-incompatibility-python-314).
 - Continue expanding test coverage on the newer connectors (Redshift, SQL Server, DuckDB) and the multi-agent routing path.
 
 ## Under research

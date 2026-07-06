@@ -88,4 +88,4 @@ After ingestion, documents are chunked and embedded into Qdrant (required — se
 
 Query with `nlq doc-ask doc_{source_id}_chunks "..."` for a document-only answer (the collection name follows the pattern `doc_{source_id}_chunks`), or use `nlqueries query` for the orchestrator to route automatically (including hybrid SQL + document answers).
 
-**Python 3.14 note:** document ingestion depends on `langchain_text_splitters`, which is affected by the Python 3.14 / pydantic v1 compatibility issue — see [troubleshooting.md](troubleshooting.md#w6--pydantic-v1-incompatibility-python-314).
+Document ingestion no longer depends on `langchain_text_splitters` — chunking uses a small built-in chunker (`nlqueries.document_connectors.chunker`), so the Python 3.14 limitation that previously affected document connectors no longer applies (see [troubleshooting.md](troubleshooting.md#w6--pydantic-v1-incompatibility-python-314) for history).
