@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="NLQueries" width="120">
+  <img src="docs/assets/readme_banner.png" alt="NLQueries" width="1200">
 </p>
 
 # nlqueries-core
@@ -36,7 +36,7 @@ See [docs/architecture.md](docs/architecture.md) for how these pieces fit togeth
 
 ## Quickstart
 
-**Prerequisite:** Python 3.11 or 3.12. **Python 3.14+ is not yet supported** — see [docs/troubleshooting.md](docs/troubleshooting.md#w6--pydantic-v1-incompatibility-python-314) before installing on a newer interpreter.
+**Prerequisite:** Python 3.11+.
 
 ### Option A — Docker (recommended)
 
