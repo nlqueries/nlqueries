@@ -32,7 +32,7 @@ import yaml
 
 from nlqueries import config
 from nlqueries.llm import get_llm_client
-from nlqueries.orchestrator.prompt_assembly import assemble_prompt
+from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.sql_generation import _extract_sql, validate_and_repair
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
@@ -114,7 +114,7 @@ class Orchestrator:
 
             kb = self._load_knowledge_base(agent_id)
             collection = f"agent_{agent_id}_schema"
-            prompt = assemble_prompt(
+            prompt = await assemble_prompt_async(
                 question,
                 kb,
                 top_k_capsules=5,

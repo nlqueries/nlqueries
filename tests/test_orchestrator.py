@@ -285,7 +285,7 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
     mock_llm = _MockLLM(["ok"])
     captured: dict[str, Any] = {}
 
-    def fake_assemble(
+    async def fake_assemble(
         question: str,
         kb: Any,
         top_k_capsules: int = 5,
@@ -304,7 +304,7 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
             patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
             patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=mock_llm),
             patch(
-                "nlqueries.orchestrator.orchestrator.assemble_prompt",
+                "nlqueries.orchestrator.orchestrator.assemble_prompt_async",
                 side_effect=fake_assemble,
             ),
             patch(
