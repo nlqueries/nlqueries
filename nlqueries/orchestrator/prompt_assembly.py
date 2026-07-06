@@ -13,6 +13,15 @@ Public API
     Returns an :class:`AssembledPrompt`.  The ``static_system`` field is
     byte-identical across requests for the same agent (enabling Anthropic
     prompt caching).  Dynamic retrieval results go into ``dynamic_context``.
+    Runs its Qdrant searches sequentially; use this from sync call sites
+    (CLI, tests).
+
+``assemble_prompt_async(...)``
+    Concurrent variant of ``assemble_prompt`` for async call sites (Phase 6C).
+    Identical output, but the schema-hint, verified-example, and capsule
+    searches run via ``asyncio.gather`` instead of one after another, so
+    per-request latency is roughly the slowest single search rather than
+    the sum of all three.
 
 ``assemble_prompt_with_history(...)``
     Multi-turn variant; returns ``(static_system_blocks, user_prompt, prior_messages)``.
@@ -23,6 +32,7 @@ Public API
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -153,6 +163,59 @@ def assemble_prompt(
             pass
 
     dynamic_context = _build_dynamic_context(
+        question, knowledge_base, top_k_capsules, collection, question_vector
+    )
+
+    return AssembledPrompt(
+        static_system=static_system,
+        dynamic_context=dynamic_context,
+        user_question=question,
+    )
+
+
+async def assemble_prompt_async(
+    question: str,
+    knowledge_base: dict[str, Any],
+    top_k_capsules: int = 5,
+    *,
+    collection: str | None = None,
+    vector: list[float] | None = None,
+) -> AssembledPrompt:
+    """Concurrent variant of :func:`assemble_prompt` (Phase 6C).
+
+    Produces identical output to :func:`assemble_prompt`, but the embedding
+    call (when *vector* is not supplied) and the three dynamic-context Qdrant
+    searches are offloaded to threads and run via ``asyncio.gather`` instead
+    of sequentially — so a request no longer blocks the event loop for the
+    sum of all Qdrant round trips, only for the slowest one.
+
+    Use this from async call sites (e.g.
+    :class:`~nlqueries.orchestrator.orchestrator.Orchestrator`); use the sync
+    :func:`assemble_prompt` from CLI / non-async paths.
+
+    Args:
+        question:       The user's natural-language question.
+        knowledge_base: Parsed YAML KB dict.
+        top_k_capsules: Number of example capsules in the dynamic block.
+        collection:     Optional Qdrant collection name for semantic ranking.
+        vector:         Pre-computed question embedding, reused instead of
+                        embedding again.
+
+    Returns:
+        :class:`AssembledPrompt`
+    """
+    static_system = _build_static_system(knowledge_base)
+
+    question_vector: list[float] | None = vector
+    if collection and question_vector is None:
+        try:
+            from nlqueries.embeddings.embedder import embed_text
+
+            question_vector = await asyncio.to_thread(embed_text, question)
+        except Exception:  # noqa: BLE001
+            pass
+
+    dynamic_context = await _build_dynamic_context_async(
         question, knowledge_base, top_k_capsules, collection, question_vector
     )
 
@@ -322,83 +385,56 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_dynamic_context(
-    question: str,
+def _format_dynamic_context(
     knowledge_base: dict[str, Any],
     top_k: int,
-    collection: str | None,
-    question_vector: list[float] | None,
+    hit_names: list[str],
+    verified_hits: list[dict[str, Any]],
+    capsule_hits: list[Any],
 ) -> str:
-    """Build the per-question dynamic context block.
+    """Render the dynamic-context text from already-fetched search results.
 
-    Contains a relevant-tables hint (if Qdrant available), verified examples
-    from user-confirmed feedback (Phase 5B), and top-k capsule examples.
-
-    Verified examples are searched first and consume slots from *top_k* so the
-    total number of examples presented to the LLM stays bounded.
+    Pure formatting, no I/O — shared by the sequential
+    (:func:`_build_dynamic_context`) and concurrent
+    (:func:`_build_dynamic_context_async`) search paths so the two can never
+    drift apart in output.
     """
     parts: list[str] = []
 
-    if collection:
-        # Relevant-tables hint (short list, not full schema)
-        try:
-            from nlqueries.embeddings.qdrant_store import search_schema
+    if hit_names:
+        parts.append("## Most relevant tables for this question\n" + ", ".join(hit_names))
 
-            hits = search_schema(collection, question, top_k=10, vector=question_vector)
-            hit_names = sorted({str(h["table_name"]) for h in hits if h.get("table_name")})
-            if hit_names:
-                parts.append("## Most relevant tables for this question\n" + ", ".join(hit_names))
-        except Exception:  # noqa: BLE001
-            pass
-
-        # Phase 5B: Verified examples (user-confirmed correct SQL, threshold 0.75)
-        verified_hits: list[dict[str, Any]] = _search_verified(
-            collection, question, top_k=3, vector=question_vector
-        )
-        remaining_slots = top_k - len(verified_hits)
-
-        # Capsule examples (fill remaining slots after verified ones)
-        capsule_hits: list[Any] = []
-        try:
-            from nlqueries.embeddings.qdrant_store import search
-
-            capsule_hits = search(
-                collection, question, top_k=max(1, remaining_slots), vector=question_vector
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
-        if verified_hits or capsule_hits:
-            cap_lines: list[str] = [
-                "## Example Queries",
-                "",
-                "The following queries represent common patterns in this database:",
-                "",
-            ]
-            idx = 1
-            for v in verified_hits:
-                q = v.get("question", "")
-                sql = v.get("sql", "")
-                if not q and not sql:
-                    continue
-                cap_lines.append(f"{idx}. Intent: {q}")
-                if sql:
-                    cap_lines.append(
-                        f"   SQL Template: {sql}  -- verified example (user-confirmed correct)"
-                    )
-                cap_lines.append("")
-                idx += 1
-            for cap in capsule_hits:
-                intent = cap.intent or cap.auto_description
-                template = cap.template_sql
-                if not intent and not template:
-                    continue
-                cap_lines.append(f"{idx}. Intent: {intent}")
-                if template:
-                    cap_lines.append(f"   SQL Template: {template}")
-                cap_lines.append("")
-                idx += 1
-            parts.append("\n".join(cap_lines))
+    if verified_hits or capsule_hits:
+        cap_lines: list[str] = [
+            "## Example Queries",
+            "",
+            "The following queries represent common patterns in this database:",
+            "",
+        ]
+        idx = 1
+        for v in verified_hits:
+            q = v.get("question", "")
+            sql = v.get("sql", "")
+            if not q and not sql:
+                continue
+            cap_lines.append(f"{idx}. Intent: {q}")
+            if sql:
+                cap_lines.append(
+                    f"   SQL Template: {sql}  -- verified example (user-confirmed correct)"
+                )
+            cap_lines.append("")
+            idx += 1
+        for cap in capsule_hits:
+            intent = cap.intent or cap.auto_description
+            template = cap.template_sql
+            if not intent and not template:
+                continue
+            cap_lines.append(f"{idx}. Intent: {intent}")
+            if template:
+                cap_lines.append(f"   SQL Template: {template}")
+            cap_lines.append("")
+            idx += 1
+        parts.append("\n".join(cap_lines))
 
     if not parts:
         # Fall back to raw KB capsules when Qdrant is unavailable
@@ -422,6 +458,102 @@ def _build_dynamic_context(
             parts.append("\n".join(cap_lines))
 
     return "\n\n".join(parts)
+
+
+def _build_dynamic_context(
+    question: str,
+    knowledge_base: dict[str, Any],
+    top_k: int,
+    collection: str | None,
+    question_vector: list[float] | None,
+) -> str:
+    """Build the per-question dynamic context block.
+
+    Contains a relevant-tables hint (if Qdrant available), verified examples
+    from user-confirmed feedback (Phase 5B), and top-k capsule examples.
+
+    Verified examples are searched first and consume slots from *top_k* so the
+    total number of examples presented to the LLM stays bounded. Searches run
+    sequentially — use :func:`_build_dynamic_context_async` from async call
+    sites for concurrent searches.
+    """
+    hit_names: list[str] = []
+    verified_hits: list[dict[str, Any]] = []
+    capsule_hits: list[Any] = []
+
+    if collection:
+        # Relevant-tables hint (short list, not full schema)
+        try:
+            from nlqueries.embeddings.qdrant_store import search_schema
+
+            hits = search_schema(collection, question, top_k=10, vector=question_vector)
+            hit_names = sorted({str(h["table_name"]) for h in hits if h.get("table_name")})
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Phase 5B: Verified examples (user-confirmed correct SQL, threshold 0.75)
+        verified_hits = _search_verified(collection, question, top_k=3, vector=question_vector)
+        remaining_slots = top_k - len(verified_hits)
+
+        # Capsule examples (fill remaining slots after verified ones)
+        try:
+            from nlqueries.embeddings.qdrant_store import search
+
+            capsule_hits = search(
+                collection, question, top_k=max(1, remaining_slots), vector=question_vector
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return _format_dynamic_context(knowledge_base, top_k, hit_names, verified_hits, capsule_hits)
+
+
+async def _build_dynamic_context_async(
+    question: str,
+    knowledge_base: dict[str, Any],
+    top_k: int,
+    collection: str | None,
+    question_vector: list[float] | None,
+) -> str:
+    """Concurrent variant of :func:`_build_dynamic_context` (Phase 6C).
+
+    Runs the schema-hint, verified-example, and capsule searches as three
+    independent Qdrant round trips via ``asyncio.gather`` (each offloaded to
+    a thread, since the Qdrant client is synchronous) instead of one after
+    another. The capsule search always requests *top_k* results rather than
+    ``top_k - len(verified_hits)`` — since verified-hit count isn't known
+    until after the gather completes — and the excess is trimmed afterward;
+    this is equivalent because results are returned in relevance order, so
+    requesting more and truncating yields the same prefix as requesting the
+    smaller count directly.
+    """
+    hit_names: list[str] = []
+    verified_hits: list[dict[str, Any]] = []
+    capsule_hits: list[Any] = []
+
+    if collection:
+        from nlqueries.embeddings.qdrant_store import search, search_schema
+
+        schema_result, verified_result, capsule_result = await asyncio.gather(
+            asyncio.to_thread(
+                search_schema, collection, question, top_k=10, vector=question_vector
+            ),
+            asyncio.to_thread(
+                _search_verified, collection, question, top_k=3, vector=question_vector
+            ),
+            asyncio.to_thread(search, collection, question, top_k=top_k, vector=question_vector),
+            return_exceptions=True,
+        )
+
+        if not isinstance(schema_result, BaseException):
+            hit_names = sorted({str(h["table_name"]) for h in schema_result if h.get("table_name")})
+        if not isinstance(verified_result, BaseException):
+            verified_hits = verified_result
+        if not isinstance(capsule_result, BaseException):
+            remaining_slots = max(1, top_k - len(verified_hits))
+            capsule_hits = capsule_result[:remaining_slots]
+
+    return _format_dynamic_context(knowledge_base, top_k, hit_names, verified_hits, capsule_hits)
 
 
 def _search_verified(

@@ -12,10 +12,16 @@ Key design invariants verified here:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import patch
 
-from nlqueries.orchestrator.prompt_assembly import AssembledPrompt, assemble_prompt
+from nlqueries.orchestrator.prompt_assembly import (
+    AssembledPrompt,
+    assemble_prompt,
+    assemble_prompt_async,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -490,3 +496,162 @@ def test_question_passed_through_unchanged() -> None:
     q = "How many customers signed up in 2024?"
     prompt = assemble_prompt(q, _make_kb())
     assert prompt.user_question == q
+
+
+# ---------------------------------------------------------------------------
+# assemble_prompt_async — concurrent variant (Phase 6C)
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_prompt_async_matches_sync_output() -> None:
+    """assemble_prompt_async must produce byte-identical output to assemble_prompt."""
+    from nlqueries.processing.parameterizer import QueryCapsule
+
+    kb = _make_kb(tables=[_TABLE, _TABLE2], capsules=_CAPSULES)
+    schema_hits = [{"table_name": "orders", "type": "table", "score": 0.9}]
+    verified_hits = [{"question": "count orders", "sql": "SELECT COUNT(*) FROM orders"}]
+    capsule_hits = [
+        QueryCapsule(
+            template_sql="SELECT * FROM orders",
+            placeholders=[],
+            tables=["orders"],
+            columns=[],
+            frequency=3,
+            auto_description="",
+            intent="show orders",
+        )
+    ]
+
+    with (
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=schema_hits),
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=capsule_hits),
+        patch(
+            "nlqueries.orchestrator.prompt_assembly._search_verified",
+            return_value=verified_hits,
+        ),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        sync_prompt = assemble_prompt("show orders", kb, collection="col")
+        async_prompt = asyncio.run(assemble_prompt_async("show orders", kb, collection="col"))
+
+    assert async_prompt.static_system == sync_prompt.static_system
+    assert async_prompt.dynamic_context == sync_prompt.dynamic_context
+    assert async_prompt.user_question == sync_prompt.user_question
+
+
+def test_assemble_prompt_async_runs_searches_concurrently() -> None:
+    """The three dynamic-context searches must overlap, not run one after another."""
+    kb = _make_kb()
+    delay = 0.15
+
+    def slow_search_schema(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        time.sleep(delay)
+        return []
+
+    def slow_search_verified(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        time.sleep(delay)
+        return []
+
+    def slow_search(*args: Any, **kwargs: Any) -> list[Any]:
+        time.sleep(delay)
+        return []
+
+    with (
+        patch("nlqueries.embeddings.qdrant_store.search_schema", side_effect=slow_search_schema),
+        patch("nlqueries.embeddings.qdrant_store.search", side_effect=slow_search),
+        patch(
+            "nlqueries.orchestrator.prompt_assembly._search_verified",
+            side_effect=slow_search_verified,
+        ),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        start = time.perf_counter()
+        asyncio.run(assemble_prompt_async("question", kb, collection="col"))
+        elapsed = time.perf_counter() - start
+
+    # Sequential would take >= 3 * delay (~0.45s); concurrent should take ~1 * delay.
+    assert elapsed < 2 * delay
+
+
+def test_assemble_prompt_async_one_search_failing_does_not_lose_others() -> None:
+    """If one search raises, the other two results must still be used."""
+    kb = _make_kb()
+    schema_hits = [{"table_name": "orders", "type": "table", "score": 0.9}]
+
+    with (
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=schema_hits),
+        patch(
+            "nlqueries.embeddings.qdrant_store.search",
+            side_effect=RuntimeError("qdrant unavailable"),
+        ),
+        patch(
+            "nlqueries.orchestrator.prompt_assembly._search_verified",
+            return_value=[],
+        ),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        prompt = asyncio.run(assemble_prompt_async("question", kb, collection="col"))
+
+    assert "orders" in prompt.dynamic_context
+
+
+def test_assemble_prompt_async_truncates_capsules_after_verified_hits() -> None:
+    """Capsule count must still be bounded by top_k - len(verified_hits), same as sync."""
+    from nlqueries.processing.parameterizer import QueryCapsule
+
+    kb = _make_kb()
+    verified_hits = [
+        {"question": "q1", "sql": "SELECT 1"},
+        {"question": "q2", "sql": "SELECT 2"},
+    ]
+    capsule_hits = [
+        QueryCapsule(
+            template_sql=f"SELECT {i}",
+            placeholders=[],
+            tables=[],
+            columns=[],
+            frequency=1,
+            auto_description="",
+            intent=f"capsule {i}",
+        )
+        for i in range(5)
+    ]
+
+    with (
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=capsule_hits),
+        patch(
+            "nlqueries.orchestrator.prompt_assembly._search_verified",
+            return_value=verified_hits,
+        ),
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        prompt = asyncio.run(
+            assemble_prompt_async("question", kb, top_k_capsules=3, collection="col")
+        )
+
+    # top_k=3, 2 verified hits -> only 1 capsule should remain, for 3 "Intent:" lines total.
+    assert prompt.dynamic_context.count("Intent:") == 3
+
+
+def test_assemble_prompt_async_single_embed_reused_across_all_three_searches() -> None:
+    """embed_text is called once; all three concurrent searches reuse that vector."""
+    kb = _make_kb()
+    call_log: list[str] = []
+
+    def fake_embed(text: str) -> list[float]:
+        call_log.append(text)
+        return [0.42] * 384
+
+    with (
+        patch("nlqueries.embeddings.embedder.embed_text", side_effect=fake_embed),
+        patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]) as mock_ss,
+        patch("nlqueries.embeddings.qdrant_store.search", return_value=[]) as mock_s,
+        patch("nlqueries.orchestrator.prompt_assembly._search_verified", return_value=[]) as mock_v,
+    ):
+        asyncio.run(assemble_prompt_async("my question", kb, collection="col"))
+
+    assert len(call_log) == 1
+    assert mock_ss.call_args.kwargs.get("vector") == [0.42] * 384
+    assert mock_s.call_args.kwargs.get("vector") == [0.42] * 384
+    assert mock_v.call_args.kwargs.get("vector") == [0.42] * 384
