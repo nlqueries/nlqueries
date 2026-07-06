@@ -2,7 +2,7 @@
 nlqueries.document_connectors.confluence
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Confluence document connector using ``atlassian-python-api`` for page retrieval,
-``beautifulsoup4`` for HTML stripping, and ``langchain_text_splitters`` for chunking.
+``beautifulsoup4`` for HTML stripping, and a built-in recursive character chunker.
 
 Chunking strategy: for each page in the given space, the HTML storage body is
 stripped to plain text and split with
@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
+from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
 _CHUNK_SIZE = 800
 _CHUNK_OVERLAP = 100
@@ -84,14 +85,6 @@ class ConfluenceConnector(DocumentConnector):
         except ImportError as exc:
             raise ImportError(
                 "beautifulsoup4 is required for ConfluenceConnector. "
-                "Install it with: pip install 'nlqueries-core[wiki]'"
-            ) from exc
-
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-        except ImportError as exc:
-            raise ImportError(
-                "langchain-text-splitters is required for ConfluenceConnector. "
                 "Install it with: pip install 'nlqueries-core[wiki]'"
             ) from exc
 
