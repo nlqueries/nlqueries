@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nlqueries-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "Natural-language query engine — open-source core (CLI, connectors, MCP server)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -34,7 +34,8 @@ dependencies = [
     # Knowledge base
     "pyyaml>=6.0",
 
-    # Vector store
+    # Embeddings + vector store
+    "sentence-transformers>=3.0",
     "qdrant-client>=1.9",
 
     # OIDC token verification
@@ -68,13 +69,12 @@ dev = [
     "mypy>=1.10",
     # Docker-based fixtures for connector integration tests (e.g. PostgresConnector)
     "testcontainers[postgres]>=4.0",
-    # Optional connector/embedding deps — installed in CI so their tests keep running
-    "sentence-transformers>=3.0",
+    # Optional connector deps — installed in CI so their tests keep running
     "snowflake-connector-python>=3.0",
     "google-cloud-bigquery>=3.0",
 ]
-# Embedding backends
-torch     = ["sentence-transformers>=3.0"]
+# Alternate embed-server daemon backend — lighter-weight ONNX Runtime instead
+# of the sentence-transformers/PyTorch path, which is a base dependency.
 onnx      = ["optimum[onnxruntime]>=1.17"]
 # Cloud database connectors
 snowflake = ["snowflake-connector-python>=3.0"]

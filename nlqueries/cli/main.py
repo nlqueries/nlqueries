@@ -21,6 +21,7 @@ import re
 import sys
 import time
 from datetime import UTC, datetime
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
@@ -1706,7 +1707,7 @@ def export_kb(
                 "db_type": cfg["db_type"],
                 "database": cfg["database"],
                 "generated_at": datetime.now(UTC).isoformat(),
-                "nlqueries_version": "0.1.0",
+                "nlqueries_version": _pkg_version("nlqueries-core"),
             },
             "tables": {},
         }
