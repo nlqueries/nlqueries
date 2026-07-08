@@ -357,12 +357,19 @@ class PostgresConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str) -> QueryResult:
+    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
         query execution as always returning a result object.
+
+        When *timeout_seconds* is given, ``SET LOCAL statement_timeout`` is
+        applied inside the same transaction (Task 26.5 — Sprint 26): the
+        server itself aborts the query once it's been running that long,
+        rather than the query continuing to hold locks/connections after
+        the caller (e.g. an API request that already returned 504) has
+        given up waiting on it.
         """
         tracer = get_tracer()
         start = time.perf_counter()
@@ -371,6 +378,11 @@ class PostgresConnector(DatabaseConnector):
             try:
                 engine = self._require_engine()
                 with engine.begin() as conn:
+                    if timeout_seconds is not None:
+                        statement_timeout_ms = max(1, int(timeout_seconds * 1000))
+                        conn.execute(
+                            text(f"SET LOCAL statement_timeout = {statement_timeout_ms}")
+                        )
                     cursor_result = conn.execute(text(sql))
                     elapsed_ms = (time.perf_counter() - start) * 1000
 

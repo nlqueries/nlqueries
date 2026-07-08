@@ -8,6 +8,7 @@
 [![PyPI](https://img.shields.io/pypi/v/nlqueries-core)](https://pypi.org/project/nlqueries-core/)
 [![Python](https://img.shields.io/pypi/pyversions/nlqueries-core)](https://pypi.org/project/nlqueries-core/)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
+[![Visitors](https://visitor-badge.laobi.icu/badge?page_id=nlqueries.nlqueries)](https://github.com/nlqueries/nlqueries)
 
 **NLQueries Core** turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Notion, Confluence) and can blend both in a single hybrid answer.
 

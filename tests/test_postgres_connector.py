@@ -191,6 +191,22 @@ def test_execute_query_captures_errors_without_raising(connector):
     assert result.row_count == 0
 
 
+def test_execute_query_honors_timeout_seconds_via_statement_timeout(connector):
+    """Task 26.5: a tiny timeout_seconds aborts a slow query server-side via
+    ``SET LOCAL statement_timeout`` rather than letting it run to completion."""
+    result = connector.execute_query("SELECT pg_sleep(2)", timeout_seconds=0.05)
+
+    assert result.error is not None
+    assert "statement timeout" in result.error.lower()
+
+
+def test_execute_query_without_timeout_seconds_runs_unbounded(connector):
+    """Default (timeout_seconds=None) preserves the prior unbounded behavior."""
+    result = connector.execute_query("SELECT pg_sleep(0.1)")
+
+    assert result.error is None
+
+
 # ---------------------------------------------------------------------------
 # extract_schema
 # ---------------------------------------------------------------------------
