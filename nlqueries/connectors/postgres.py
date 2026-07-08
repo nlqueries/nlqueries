@@ -380,9 +380,7 @@ class PostgresConnector(DatabaseConnector):
                 with engine.begin() as conn:
                     if timeout_seconds is not None:
                         statement_timeout_ms = max(1, int(timeout_seconds * 1000))
-                        conn.execute(
-                            text(f"SET LOCAL statement_timeout = {statement_timeout_ms}")
-                        )
+                        conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))
                     cursor_result = conn.execute(text(sql))
                     elapsed_ms = (time.perf_counter() - start) * 1000
 
