@@ -57,15 +57,16 @@ class AgentQueryResult:
     merged_answer: str | None  # set only for hybrid
     latency_ms: int  # total time from question to result
     session_id: str | None
+    from_cache: bool = False  # True when served from the semantic cache (Task 27.3)
 
 
 def _parse_final_chunk(
     tokens: list[str],
-) -> tuple[list[str], str, str | None, list[Citation], str | None, QueryResult | None]:
+) -> tuple[list[str], str, str | None, list[Citation], str | None, QueryResult | None, bool]:
     """Parse the last token as a structured JSON chunk.
 
     Returns:
-        (text_tokens, agent_type, sql, citations, merged_answer, sql_result)
+        (text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache)
     """
     agent_type = "unclear"
     sql: str | None = None
@@ -75,16 +76,17 @@ def _parse_final_chunk(
     text_tokens = tokens
 
     if not tokens:
-        return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False
 
     try:
         parsed: Any = json.loads(tokens[-1])
     except (json.JSONDecodeError, TypeError):
-        return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False
 
     if not isinstance(parsed, dict) or "agent_type" not in parsed:
-        return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False
 
+    from_cache = bool(parsed.get("from_cache", False))
     agent_type = str(parsed.get("agent_type", "unclear"))
     text_tokens = tokens[:-1]
 
@@ -138,7 +140,7 @@ def _parse_final_chunk(
                 error=sql_table.get("error"),
             )
 
-    return text_tokens, agent_type, sql, citations, merged_answer, sql_result
+    return text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache
 
 
 async def run_query(
@@ -180,7 +182,9 @@ async def run_query(
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
         fields extracted from the final chunk.  ``latency_ms`` is the wall-clock
-        time from function entry to return.
+        time from function entry to return. ``from_cache`` (Task 27.3) is
+        ``True`` when the answer was served from the semantic cache rather
+        than dispatched to an LLM/SQL/document sub-agent.
     """
     start = time.monotonic()
 
@@ -203,7 +207,9 @@ async def run_query(
         tokens.append(token)
 
     # Split text tokens from the final structured chunk.
-    text_tokens, agent_type, sql, citations, merged_answer, sql_result = _parse_final_chunk(tokens)
+    text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache = (
+        _parse_final_chunk(tokens)
+    )
 
     # Natural-language answer: join text tokens; for hybrid use merged_answer.
     answer = merged_answer if agent_type == "hybrid" and merged_answer else "".join(text_tokens)
@@ -221,6 +227,7 @@ async def run_query(
         merged_answer=merged_answer,
         latency_ms=latency_ms,
         session_id=session_id,
+        from_cache=from_cache,
     )
 
 
