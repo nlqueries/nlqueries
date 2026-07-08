@@ -107,8 +107,17 @@ class DatabaseConnector(ABC):
         ...
 
     @abstractmethod
-    def execute_query(self, sql: str) -> QueryResult:
-        """Execute ``sql`` against the connected database and return the result."""
+    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+        """Execute ``sql`` against the connected database and return the result.
+
+        Args:
+            sql: The SQL statement to execute.
+            timeout_seconds: Optional server-side execution budget (Task 26.5
+                — Sprint 26), so a runaway query is aborted by the database
+                itself rather than left running — and holding locks/connections
+                — after the caller has already given up waiting. Connectors
+                that don't support a statement-level timeout ignore this.
+        """
         ...
 
     def get_schema_summary(self) -> tuple[int, int]:

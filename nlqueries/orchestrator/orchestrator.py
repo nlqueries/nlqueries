@@ -81,6 +81,7 @@ class Orchestrator:
         dialect: str = "postgres",
         *,
         question_vector: list[float] | None = None,
+        timeout_seconds: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Translate *question* into a reasoning stream followed by a SQL chunk.
 
@@ -97,6 +98,11 @@ class Orchestrator:
             dialect:  SQL dialect for generation and validation.
                       One of ``"postgres"``, ``"snowflake"``, ``"bigquery"``.
                       Defaults to ``"postgres"``.
+            timeout_seconds: Forwarded to ``connector.execute_query`` (Task
+                      26.5 — Sprint 26) so the database itself aborts a
+                      runaway query rather than it running orphaned after
+                      the caller has given up. Does not bound the LLM call
+                      above — see the module-level note in ``sync_runner``.
 
         Yields:
             String tokens from the LLM reasoning response, then a final JSON
@@ -216,7 +222,9 @@ class Orchestrator:
                 try:
                     connector = await asyncio.to_thread(open_connector_for_agent, agent_id)
                     if connector is not None:
-                        qr = await asyncio.to_thread(connector.execute_query, result.sql)
+                        qr = await asyncio.to_thread(
+                            connector.execute_query, result.sql, timeout_seconds
+                        )
                         sql_table = {
                             "columns": qr.columns,
                             "rows": qr.rows[:_MAX_RESULT_ROWS],

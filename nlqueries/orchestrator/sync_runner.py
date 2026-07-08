@@ -7,6 +7,15 @@ to completion and returns a single structured AgentQueryResult.
 This is the adapter layer between the streaming orchestrator and the REST API
 / SDK callers who want a complete result in one call.
 
+Task 26.5 (Sprint 26) — Timeout cancellation propagation. ``timeout_seconds``
+threads down to the SQL sub-agent's ``execute_query`` call, applied as
+``SET LOCAL statement_timeout`` on Postgres connections (see
+``nlqueries.connectors.postgres.PostgresConnector.execute_query``) so a
+runaway query is aborted by the database itself rather than left running
+orphaned after the caller has given up. It does not (yet) bound the LLM
+client call — see the enterprise-side coordination note for why that half
+is scoped as a separate, larger core change.
+
 Public API
 ----------
 ``AgentQueryResult``
@@ -139,6 +148,7 @@ async def run_query(
     dialect: str = "postgres",
     session_id: str | None = None,
     history: list[ConversationTurn] | None = None,
+    timeout_seconds: float | None = None,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -154,6 +164,18 @@ async def run_query(
         dialect:         SQL dialect forwarded to the SQL sub-agent.
         session_id:      Optional session identifier — passed through to the result.
         history:         Prior conversation turns for follow-up resolution.
+        timeout_seconds: Cancellation budget (Task 26.5 — Sprint 26), forwarded
+                         to the SQL sub-agent's ``execute_query`` call as a
+                         ``SET LOCAL statement_timeout`` on Postgres, so a
+                         runaway query is aborted server-side instead of
+                         continuing to run — and hold locks/connections —
+                         after the caller (e.g. an API request that already
+                         timed out and returned) has given up waiting on it.
+                         Callers should pass a value at or slightly below
+                         their own outer wait budget. Does **not** currently
+                         bound the LLM call itself — see the connectors
+                         referenced in ``DatabaseConnector.execute_query``'s
+                         docstring for which dialects honor this.
 
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
@@ -176,6 +198,7 @@ async def run_query(
         dialect=dialect,
         history=None,  # already resolved above; avoids double LLM call
         cache_key=question,  # original question — consistent key regardless of LLM rewrite
+        timeout_seconds=timeout_seconds,
     ):
         tokens.append(token)
 

@@ -229,7 +229,7 @@ async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[C
 
 
 async def _run_hybrid(
-    question: str, agent_id: str, dialect: str
+    question: str, agent_id: str, dialect: str, timeout_seconds: float | None = None
 ) -> tuple[list[str], list[str], list[Citation] | None]:
     """Run SQL and Document agents concurrently via ``asyncio.gather``."""
     sql_orch = Orchestrator()
@@ -238,7 +238,9 @@ async def _run_hybrid(
 
     async def _collect_sql() -> list[str]:
         tokens: list[str] = []
-        async for token in sql_orch.handle_question(question, agent_id, dialect=dialect):
+        async for token in sql_orch.handle_question(
+            question, agent_id, dialect=dialect, timeout_seconds=timeout_seconds
+        ):
             tokens.append(token)
         return tokens
 
@@ -313,6 +315,7 @@ class MultiAgentOrchestrator:
         dialect: str = "postgres",
         history: list[ConversationTurn] | None = None,
         cache_key: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -344,6 +347,11 @@ class MultiAgentOrchestrator:
             dialect:         SQL dialect forwarded to the SQL agent.
             history:         Prior conversation turns for follow-up resolution.
                              ``None`` (default) disables follow-up resolution.
+            timeout_seconds: Forwarded to the SQL agent's ``execute_query``
+                             call (Task 26.5 — Sprint 26) so a runaway query
+                             is aborted server-side rather than left running
+                             orphaned after the caller has given up. Not
+                             applied to the LLM call itself.
 
         Yields:
             String tokens from the agent response, then a final JSON chunk
@@ -422,6 +430,7 @@ class MultiAgentOrchestrator:
                 agent_id,
                 dialect=dialect,
                 question_vector=_question_vector,
+                timeout_seconds=timeout_seconds,
             ):
                 seen.append(token)
                 if _is_final_chunk(token):
@@ -459,7 +468,7 @@ class MultiAgentOrchestrator:
 
         if intent == IntentType.hybrid:
             sql_tokens, document_tokens, citations = await _run_hybrid(
-                effective_question, agent_id, dialect
+                effective_question, agent_id, dialect, timeout_seconds
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 

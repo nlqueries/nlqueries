@@ -344,8 +344,13 @@ class RedshiftConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str) -> QueryResult:
+    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
+
+        *timeout_seconds* is accepted for interface parity with
+        :class:`~nlqueries.connectors.base.DatabaseConnector` but not yet
+        implemented for Redshift (Task 26.5 — Sprint 26 only wired this up
+        for Postgres).
 
         Exceptions are caught and surfaced via ``QueryResult.error``.
         """
