@@ -655,3 +655,45 @@ def test_assemble_prompt_async_single_embed_reused_across_all_three_searches() -
     assert mock_ss.call_args.kwargs.get("vector") == [0.42] * 384
     assert mock_s.call_args.kwargs.get("vector") == [0.42] * 384
     assert mock_v.call_args.kwargs.get("vector") == [0.42] * 384
+
+
+# ---------------------------------------------------------------------------
+# extra_dynamic_context seam (enterprise Nexus injection point)
+# ---------------------------------------------------------------------------
+
+_NEXUS_SECTION = "## Join Paths (Nexus)\norders.customer_id = customers.id"
+
+
+def test_extra_dynamic_context_appended() -> None:
+    prompt = assemble_prompt("q", _make_kb(), extra_dynamic_context=_NEXUS_SECTION)
+    assert _NEXUS_SECTION in prompt.dynamic_context
+
+
+def test_extra_dynamic_context_none_is_noop() -> None:
+    baseline = assemble_prompt("q", _make_kb())
+    assert baseline.dynamic_context == assemble_prompt("q", _make_kb()).dynamic_context
+    assert "Join Paths" not in baseline.dynamic_context
+
+
+def test_extra_dynamic_context_does_not_touch_static_prefix() -> None:
+    # The cached static prefix (schema) must be identical with/without extra —
+    # otherwise injection would bust the Anthropic prompt cache.
+    without = assemble_prompt("q", _make_kb())
+    with_extra = assemble_prompt("q", _make_kb(), extra_dynamic_context=_NEXUS_SECTION)
+    assert without.static_system == with_extra.static_system
+
+
+def test_extra_dynamic_context_appears_in_system_blocks() -> None:
+    prompt = assemble_prompt("q", _make_kb(), extra_dynamic_context=_NEXUS_SECTION)
+    blocks = prompt.system_blocks(cache=True)
+    assert any(_NEXUS_SECTION in b["text"] for b in blocks)
+    # And it never lands in the cached (cache_control-bearing) static block.
+    cached = [b for b in blocks if b.get("cache_control")]
+    assert all(_NEXUS_SECTION not in b["text"] for b in cached)
+
+
+def test_extra_dynamic_context_async_appended() -> None:
+    prompt = asyncio.run(
+        assemble_prompt_async("q", _make_kb(), extra_dynamic_context=_NEXUS_SECTION)
+    )
+    assert _NEXUS_SECTION in prompt.dynamic_context

@@ -82,6 +82,7 @@ class Orchestrator:
         *,
         question_vector: list[float] | None = None,
         timeout_seconds: float | None = None,
+        extra_dynamic_context: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Translate *question* into a reasoning stream followed by a SQL chunk.
 
@@ -103,6 +104,9 @@ class Orchestrator:
                       runaway query rather than it running orphaned after
                       the caller has given up. Does not bound the LLM call
                       above — see the module-level note in ``sync_runner``.
+            extra_dynamic_context: Optional caller-supplied guidance appended
+                      to the prompt's dynamic block (e.g. an enterprise Nexus
+                      section). Core stays agnostic to its content.
 
         Yields:
             String tokens from the LLM reasoning response, then a final JSON
@@ -126,6 +130,7 @@ class Orchestrator:
                 top_k_capsules=5,
                 collection=collection,
                 vector=question_vector,
+                extra_dynamic_context=extra_dynamic_context,
             )
 
             llm = get_llm_client()

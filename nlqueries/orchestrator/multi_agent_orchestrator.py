@@ -229,7 +229,11 @@ async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[C
 
 
 async def _run_hybrid(
-    question: str, agent_id: str, dialect: str, timeout_seconds: float | None = None
+    question: str,
+    agent_id: str,
+    dialect: str,
+    timeout_seconds: float | None = None,
+    extra_dynamic_context: str | None = None,
 ) -> tuple[list[str], list[str], list[Citation] | None]:
     """Run SQL and Document agents concurrently via ``asyncio.gather``."""
     sql_orch = Orchestrator()
@@ -239,7 +243,11 @@ async def _run_hybrid(
     async def _collect_sql() -> list[str]:
         tokens: list[str] = []
         async for token in sql_orch.handle_question(
-            question, agent_id, dialect=dialect, timeout_seconds=timeout_seconds
+            question,
+            agent_id,
+            dialect=dialect,
+            timeout_seconds=timeout_seconds,
+            extra_dynamic_context=extra_dynamic_context,
         ):
             tokens.append(token)
         return tokens
@@ -316,6 +324,7 @@ class MultiAgentOrchestrator:
         history: list[ConversationTurn] | None = None,
         cache_key: str | None = None,
         timeout_seconds: float | None = None,
+        extra_dynamic_context: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -431,6 +440,7 @@ class MultiAgentOrchestrator:
                 dialect=dialect,
                 question_vector=_question_vector,
                 timeout_seconds=timeout_seconds,
+                extra_dynamic_context=extra_dynamic_context,
             ):
                 seen.append(token)
                 if _is_final_chunk(token):
@@ -468,7 +478,7 @@ class MultiAgentOrchestrator:
 
         if intent == IntentType.hybrid:
             sql_tokens, document_tokens, citations = await _run_hybrid(
-                effective_question, agent_id, dialect, timeout_seconds
+                effective_question, agent_id, dialect, timeout_seconds, extra_dynamic_context
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock, patch
 
 from nlqueries.orchestrator.followup_resolver import ResolvedQuestion
@@ -191,3 +192,54 @@ class TestRunQuery:
         assert len(results) == 1
         assert isinstance(results[0], AgentQueryResult)
         assert results[0].agent_type == "sql"
+
+
+class TestExtraDynamicContext:
+    """The enterprise Nexus injection seam (Task: core gap)."""
+
+    def test_run_query_threads_extra_dynamic_context(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _capturing(*_args: object, **kwargs: object) -> AsyncGenerator[str, None]:
+            captured.update(kwargs)
+
+            async def _gen() -> AsyncGenerator[str, None]:
+                yield _SQL_FINAL_CHUNK
+
+            return _gen()
+
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _capturing
+
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.resolve_followup",
+                return_value=_NO_FOLLOWUP,
+            ),
+        ):
+            result = asyncio.run(
+                run_query("How many orders?", "agent1", extra_dynamic_context="NEXUS-SECTION")
+            )
+
+        assert captured.get("extra_dynamic_context") == "NEXUS-SECTION"
+        assert result.nexus_warnings == []  # defaults empty; core never populates it
+
+    def test_nexus_warnings_defaults_empty(self) -> None:
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory([_SQL_FINAL_CHUNK])
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.resolve_followup",
+                return_value=_NO_FOLLOWUP,
+            ),
+        ):
+            result = asyncio.run(run_query("q?", "agent1"))
+        assert result.nexus_warnings == []
