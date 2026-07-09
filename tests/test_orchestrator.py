@@ -292,6 +292,7 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
         *,
         collection: str | None = None,
         vector: list[float] | None = None,
+        extra_dynamic_context: str | None = None,
     ) -> AssembledPrompt:
         captured["collection"] = collection
         return AssembledPrompt(static_system="sys", dynamic_context="", user_question=question)

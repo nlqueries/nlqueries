@@ -117,6 +117,18 @@ class AssembledPrompt:
 # ---------------------------------------------------------------------------
 
 
+def _append_extra_context(dynamic_context: str, extra: str | None) -> str:
+    """Append caller-supplied *extra* guidance to the dynamic-context block.
+
+    Extra context (e.g. an enterprise Nexus join-paths / metric section) is
+    appended to the *dynamic* block, never the cached static prefix, so it never
+    busts the Anthropic prompt cache on the schema. ``None``/empty is a no-op.
+    """
+    if not extra:
+        return dynamic_context
+    return f"{dynamic_context}\n\n{extra}" if dynamic_context else extra
+
+
 def assemble_prompt(
     question: str,
     knowledge_base: dict[str, Any],
@@ -124,6 +136,7 @@ def assemble_prompt(
     *,
     collection: str | None = None,
     vector: list[float] | None = None,
+    extra_dynamic_context: str | None = None,
 ) -> AssembledPrompt:
     """Assemble an :class:`AssembledPrompt` for *question*.
 
@@ -144,6 +157,9 @@ def assemble_prompt(
         knowledge_base: Parsed YAML KB dict.
         top_k_capsules: Number of example capsules in the dynamic block.
         collection:     Optional Qdrant collection name for semantic ranking.
+        extra_dynamic_context: Optional caller-supplied guidance appended to the
+                        dynamic block (e.g. an enterprise Nexus join-paths /
+                        Beacons section). Core stays agnostic to its content.
 
     Returns:
         :class:`AssembledPrompt`
@@ -165,6 +181,7 @@ def assemble_prompt(
     dynamic_context = _build_dynamic_context(
         question, knowledge_base, top_k_capsules, collection, question_vector
     )
+    dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
 
     return AssembledPrompt(
         static_system=static_system,
@@ -180,6 +197,7 @@ async def assemble_prompt_async(
     *,
     collection: str | None = None,
     vector: list[float] | None = None,
+    extra_dynamic_context: str | None = None,
 ) -> AssembledPrompt:
     """Concurrent variant of :func:`assemble_prompt` (Phase 6C).
 
@@ -200,6 +218,9 @@ async def assemble_prompt_async(
         collection:     Optional Qdrant collection name for semantic ranking.
         vector:         Pre-computed question embedding, reused instead of
                         embedding again.
+        extra_dynamic_context: Optional caller-supplied guidance appended to the
+                        dynamic block (e.g. an enterprise Nexus join-paths /
+                        Beacons section). Core stays agnostic to its content.
 
     Returns:
         :class:`AssembledPrompt`
@@ -218,6 +239,7 @@ async def assemble_prompt_async(
     dynamic_context = await _build_dynamic_context_async(
         question, knowledge_base, top_k_capsules, collection, question_vector
     )
+    dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
 
     return AssembledPrompt(
         static_system=static_system,

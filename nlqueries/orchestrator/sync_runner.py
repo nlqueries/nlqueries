@@ -33,7 +33,7 @@ import asyncio
 import json
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from nlqueries.connectors.base import QueryResult
@@ -58,6 +58,11 @@ class AgentQueryResult:
     latency_ms: int  # total time from question to result
     session_id: str | None
     from_cache: bool = False  # True when served from the semantic cache (Task 27.3)
+    # Advisory findings attached by a caller after generation (e.g. the
+    # enterprise Nexus join/PII validator). Core never populates this itself —
+    # it is a carrier so a wrapping layer and the CLI can surface the same
+    # findings on the canonical result object.
+    nexus_warnings: list[str] = field(default_factory=list)
 
 
 def _parse_final_chunk(
@@ -151,6 +156,7 @@ async def run_query(
     session_id: str | None = None,
     history: list[ConversationTurn] | None = None,
     timeout_seconds: float | None = None,
+    extra_dynamic_context: str | None = None,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -178,6 +184,10 @@ async def run_query(
                          bound the LLM call itself — see the connectors
                          referenced in ``DatabaseConnector.execute_query``'s
                          docstring for which dialects honor this.
+        extra_dynamic_context: Optional guidance appended to the SQL prompt's
+                         dynamic (non-cached) block. The enterprise layer uses
+                         this to inject a Nexus join-paths / Beacons section;
+                         core stays agnostic to its content.
 
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
@@ -203,6 +213,7 @@ async def run_query(
         history=None,  # already resolved above; avoids double LLM call
         cache_key=question,  # original question — consistent key regardless of LLM rewrite
         timeout_seconds=timeout_seconds,
+        extra_dynamic_context=extra_dynamic_context,
     ):
         tokens.append(token)
 
