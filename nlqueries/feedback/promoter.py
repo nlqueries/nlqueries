@@ -97,7 +97,7 @@ def _sql_references_known_tables(sql: str, knowledge_base: dict[str, Any]) -> bo
         return True  # parse error → be permissive
 
 
-def promote_feedback(agent_id: str) -> int:
+def promote_feedback(agent_id: str, *, dry_run: bool = False) -> int | list[dict[str, str]]:
     """Promote positively-rated feedback pairs to the verified Qdrant collection.
 
     Only ``rating == "up"`` records with a non-empty SQL (``corrected_sql``
@@ -110,20 +110,22 @@ def promote_feedback(agent_id: str) -> int:
 
     Args:
         agent_id: The agent whose feedback file and KB to use.
+        dry_run:  When True, run only the selection (no embedding, no Qdrant
+                  upsert) and return the list of ``{"question", "sql"}`` pairs a
+                  real run would promote. It reuses the exact same selection
+                  code, so the preview matches what a subsequent real run pushes.
 
     Returns:
-        Number of (question, sql) pairs upserted in this call.
+        Normally, the number of (question, sql) pairs upserted in this call.
+        When ``dry_run`` is True, the list of pending ``{"question", "sql"}``
+        pairs instead.
     """
-    from qdrant_client.models import PointStruct  # noqa: PLC0415
-
-    from nlqueries.embeddings.embedder import embed_batch  # noqa: PLC0415
-    from nlqueries.embeddings.qdrant_store import ensure_collection  # noqa: PLC0415
     from nlqueries.feedback.store import load_feedback  # noqa: PLC0415
 
     records = load_feedback(agent_id)
     positive = [r for r in records if r.rating == "up"]
     if not positive:
-        return 0
+        return [] if dry_run else 0
 
     knowledge_base = _load_kb(agent_id)
     collection = _verified_collection(agent_id)
@@ -145,7 +147,17 @@ def promote_feedback(agent_id: str) -> int:
         candidates.append((rec.question, sql))
 
     if not candidates:
-        return 0
+        return [] if dry_run else 0
+
+    if dry_run:
+        return [{"question": q, "sql": s} for q, s in candidates]
+
+    # Side effects (embedding + Qdrant) only past this point — imported lazily so
+    # a dry-run preview never needs the vector-store dependencies installed.
+    from qdrant_client.models import PointStruct  # noqa: PLC0415
+
+    from nlqueries.embeddings.embedder import embed_batch  # noqa: PLC0415
+    from nlqueries.embeddings.qdrant_store import ensure_collection  # noqa: PLC0415
 
     ensure_collection(collection, VERIFIED_VECTOR_SIZE)
 
