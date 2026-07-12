@@ -248,6 +248,44 @@ class TestPromoteFeedback:
         count = self._run_promote(records)
         assert count == 2
 
+    # --- dry_run: preview the pending pairs without side effects ---
+
+    def test_dry_run_returns_pending_pairs_without_side_effects(self) -> None:
+        records = [_make_feedback_record(rating="up", question="Q1")]
+        # No Qdrant/embedder patches needed — dry_run must not touch them.
+        with (
+            patch("nlqueries.feedback.store.load_feedback", return_value=records),
+            patch("nlqueries.feedback.promoter._load_kb", return_value=_make_kb(["orders"])),
+        ):
+            pending = promote_feedback("agent1", dry_run=True)
+        assert pending == [{"question": "Q1", "sql": "SELECT COUNT(*) FROM orders"}]
+
+    def test_dry_run_empty_when_no_positive(self) -> None:
+        with (
+            patch("nlqueries.feedback.store.load_feedback", return_value=[]),
+            patch("nlqueries.feedback.promoter._load_kb", return_value=_make_kb(["orders"])),
+        ):
+            assert promote_feedback("agent1", dry_run=True) == []
+
+    def test_dry_run_matches_a_real_run(self) -> None:
+        records = [
+            _make_feedback_record(
+                rating="up", question="Q1", generated_sql="SELECT COUNT(*) FROM orders"
+            ),
+            _make_feedback_record(
+                rating="up", question="Q2", generated_sql="SELECT SUM(total) FROM orders"
+            ),
+            _make_feedback_record(rating="down", question="Q3"),  # excluded from both
+        ]
+        with (
+            patch("nlqueries.feedback.store.load_feedback", return_value=records),
+            patch("nlqueries.feedback.promoter._load_kb", return_value=_make_kb(["orders"])),
+        ):
+            pending = promote_feedback("agent1", dry_run=True)
+        promoted = self._run_promote(records)
+        assert isinstance(pending, list)
+        assert len(pending) == promoted == 2  # preview count == real promoted count
+
 
 # ---------------------------------------------------------------------------
 # Phase 5B: verified examples in prompt assembly
