@@ -18,11 +18,21 @@ _BASE_DELAY = 1.0  # seconds; doubles on each retry (2**attempt)
 class AnthropicClient(LLMClient):
     supports_prompt_caching = True
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        api_base: str | None = None,
+    ) -> None:
         self._model = model if model is not None else config.LLM_MODEL
+        # An explicit key (e.g. a per-tenant key from the host app) overrides the
+        # env-derived config default; api_base overrides the endpoint when given.
+        key = api_key if api_key is not None else config.ANTHROPIC_API_KEY
+        base_kwargs: dict[str, Any] = {"base_url": api_base} if api_base is not None else {}
         # Disable SDK-level retries so our own retry loop has full control.
-        self._client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=0)
-        self._aclient = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=0)
+        self._client = anthropic.Anthropic(api_key=key, max_retries=0, **base_kwargs)
+        self._aclient = anthropic.AsyncAnthropic(api_key=key, max_retries=0, **base_kwargs)
 
     # ------------------------------------------------------------------
     # Helper: normalise system param into the list-of-blocks form that
