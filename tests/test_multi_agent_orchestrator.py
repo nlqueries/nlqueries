@@ -508,6 +508,66 @@ class TestMultiAgentOrchestratorNewPaths:
         assert final["from_cache"] is True
         assert final["agent_type"] == "sql"
 
+    def test_cache_hit_sql_reexecutes_and_attaches_fresh_result_table(self) -> None:
+        """A sql cache hit re-runs the cached SQL and attaches a fresh sql_table
+        (the cache stores SQL + answer text but not the rows), while still
+        skipping the LLM SQL-generation."""
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+        from nlqueries.connectors.base import QueryResult
+
+        cache_entry = CacheEntry(
+            question="Total revenue?",
+            resolved_question="Total revenue?",
+            agent_type="sql",
+            answer="Total revenue was $1.2M",
+            sql="SELECT sum(revenue) FROM orders",
+            created_at=datetime.now(UTC),
+            hit_count=1,
+        )
+        # Decimal mirrors a Postgres numeric column — the frame must still
+        # serialize (via _json_default), exactly like the live SQL path.
+        qr = QueryResult(
+            columns=["sum"],
+            rows=[[Decimal("1200000.5")]],
+            row_count=1,
+            execution_time_ms=3.0,
+            error=None,
+        )
+        fake_connector = MagicMock()
+        fake_connector.execute_query.return_value = qr
+
+        async def run() -> dict[str, object]:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator") as MockOrch,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch(
+                    "nlqueries.connectors.loader.open_connector_for_agent",
+                    return_value=fake_connector,
+                ),
+            ):
+                MockCache.return_value.get.return_value = cache_entry
+                orch = MultiAgentOrchestrator()
+                tokens: list[str] = []
+                async for token in orch.handle_question("Total revenue?", "agent1"):
+                    tokens.append(token)
+                MockOrch.assert_not_called()  # LLM SQL-generation is still skipped
+                return json.loads(tokens[-1])
+
+        final = asyncio.run(run())
+        assert final["from_cache"] is True
+        assert final["sql_table"] is not None
+        assert final["sql_table"]["columns"] == ["sum"]
+        assert final["sql_table"]["rows"] == [[1200000.5]]  # Decimal → float via _json_default
+        assert final["sql_table"]["row_count"] == 1
+        assert final["sql_table"]["error"] is None
+        fake_connector.execute_query.assert_called_once_with(
+            "SELECT sum(revenue) FROM orders", None
+        )
+
     def test_cache_miss_writes_cache_in_background_non_blocking(self) -> None:
         """A cache write on miss must not block the caller from receiving tokens."""
         import time as _time

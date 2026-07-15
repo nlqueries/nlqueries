@@ -56,7 +56,7 @@ from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 from nlqueries.orchestrator.followup_resolver import resolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent
-from nlqueries.orchestrator.orchestrator import Orchestrator
+from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, Orchestrator, _json_default
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 
 _log = logging.getLogger(__name__)
@@ -282,6 +282,37 @@ def _merge_hybrid(
     return merge_results(question, sql_result=sql_query_result, document_result=doc_retrieval)
 
 
+async def _execute_cached_sql(
+    agent_id: str, sql: str, timeout_seconds: float | None
+) -> dict[str, Any] | None:
+    """Execute *sql* for *agent_id* and return a ``sql_table`` dict (or ``None``).
+
+    The semantic cache stores the generated SQL and the answer text but not the
+    result rows (which would go stale), so a cache hit must re-run the query to
+    return current data. This mirrors ``Orchestrator.handle_question``'s
+    execution block so a cache-hit ``sql`` frame carries the same ``sql_table``
+    shape as a fresh one — the expensive LLM SQL-generation is still skipped;
+    only the cheap query execution runs. Best-effort: any failure is surfaced as
+    an ``{"error": ...}`` table rather than dropping the result entirely.
+    """
+    from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
+
+    try:
+        connector = await asyncio.to_thread(open_connector_for_agent, agent_id)
+        if connector is None:
+            return None
+        qr = await asyncio.to_thread(connector.execute_query, sql, timeout_seconds)
+        return {
+            "columns": qr.columns,
+            "rows": qr.rows[:_MAX_RESULT_ROWS],
+            "row_count": qr.row_count,
+            "execution_time_ms": qr.execution_time_ms,
+            "error": qr.error,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Public class
 # ---------------------------------------------------------------------------
@@ -405,13 +436,24 @@ class MultiAgentOrchestrator:
                 _hit_chunk["type"] = "sql"
                 if _cached.sql:
                     _hit_chunk["sql"] = _cached.sql
+                    # Re-execute the cached SQL so the replayed frame carries a
+                    # fresh result table (the cache stores SQL + answer text but
+                    # not rows). Without this, a cache hit streams an answer with
+                    # no ``sql_table``, and table-rendering callers (enterprise
+                    # chat, CLI, MCP) show no data for repeated queries.
+                    _hit_chunk["sql_table"] = await _execute_cached_sql(
+                        agent_id, _cached.sql, timeout_seconds
+                    )
             elif _cached.agent_type == "document":
                 _hit_chunk["type"] = "citations"
                 _hit_chunk["citations"] = []
             elif _cached.agent_type == "hybrid":
                 _hit_chunk["type"] = "hybrid"
                 _hit_chunk["merged_answer"] = _cached.answer
-            yield json.dumps(_hit_chunk)
+            # default=_json_default coerces Decimal/date values in the freshly
+            # re-executed sql_table (raw DB-driver types) the same way the live
+            # SQL path does — a plain json.dumps would raise on them.
+            yield json.dumps(_hit_chunk, default=_json_default)
             return
 
         # ------------------------------------------------------------------

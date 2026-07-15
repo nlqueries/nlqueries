@@ -70,6 +70,10 @@ jobs:
       - name: pip-audit
         run: |
           pip install pip-audit
+          # Patch the environment's build tooling before auditing: setuptools 79.x
+          # is flagged by PYSEC-2026-3447 (fixed in 83.0.0). Upgrading resolves it
+          # for real (a fix exists), rather than ignoring the advisory.
+          pip install --upgrade "setuptools>=83.0.0"
           # --skip-editable: nlqueries-core is installed as -e . and is not on PyPI.
           # CVE-2025-3000: affects torch (transitive via sentence-transformers); no upstream
           #   fix is available yet. Review and remove this ignore once torch publishes a patch.
