@@ -43,6 +43,7 @@ Routing::
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from collections.abc import AsyncGenerator, Sequence
@@ -55,7 +56,7 @@ from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 from nlqueries.orchestrator.followup_resolver import resolve_followup
-from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent
+from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent, coerce_intent
 from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, Orchestrator, _json_default
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 
@@ -154,8 +155,13 @@ def _schedule_cache_write(
     resolved_q: str,
     agent_type_str: str,
     tokens: list[str],
+    payload_extra: dict[str, str] | None = None,
 ) -> None:
-    """Extract result fields from *tokens* and write to *cache* in a background task."""
+    """Extract result fields from *tokens* and write to *cache* in a background task.
+
+    *payload_extra* (when given) is stored in the cache-entry payload so a later
+    ``get(..., payload_filter=...)`` can scope the hit — see seam S2.
+    """
     # Extract answer (all text tokens) and sql (from final JSON chunk).
     answer = ""
     sql: str | None = None
@@ -182,7 +188,9 @@ def _schedule_cache_write(
     async def _write() -> None:
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, cache.put, key, data)
+            await loop.run_in_executor(
+                None, functools.partial(cache.put, key, data, payload_extra=payload_extra)
+            )
         except Exception as exc:  # noqa: BLE001
             _log.warning("Semantic cache write failed: %s", exc)
 
@@ -356,6 +364,8 @@ class MultiAgentOrchestrator:
         cache_key: str | None = None,
         timeout_seconds: float | None = None,
         extra_dynamic_context: str | None = None,
+        intent_override: str | None = None,
+        cache_context: dict[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -373,6 +383,29 @@ class MultiAgentOrchestrator:
         :func:`~nlqueries.orchestrator.followup_resolver.resolve_followup` so
         that pronoun and contextual references are resolved into a fully
         self-contained question before intent classification.
+
+        **Extension-point guarantees (seam S3, relied on by embedders).** These
+        are contractual, not incidental — see ``docs`` and the pinned regression
+        tests in ``test_multi_agent_orchestrator.py``:
+
+        * Passing ``history=None`` (or an empty list) bypasses
+          ``resolve_followup`` entirely — no follow-up LLM call is made and the
+          question is used verbatim. An embedder that resolves follow-ups
+          out-of-band (e.g. the enterprise Conversation Context Engine) sets
+          ``history=None`` to suppress the built-in resolver.
+        * ``extra_dynamic_context`` is injected into the SQL agent's *dynamic*
+          prompt block only (never the cached static schema block), so it never
+          invalidates the prompt cache. Used to feed caller context (Nexus,
+          conversation context) into generation.
+        * ``intent_override`` (seam S1) short-circuits ``classify_intent``: when
+          it is a valid :class:`IntentType` value it is coerced against
+          *available_types* (via ``coerce_intent``) and used directly, saving the
+          classifier LLM call. An invalid value falls back to normal
+          classification (fail-open). ``None`` leaves behaviour unchanged.
+        * ``cache_context`` (seam S2) is stored in the cache entry on write and
+          required as an exact payload match on read, so a caller can scope an
+          entry (e.g. a follow-up to one conversation context). ``None`` leaves
+          caching unchanged.
 
         Sprint 21: the resolved question is looked up in the semantic cache
         before dispatching. On a cache hit the stored answer is yielded
@@ -422,7 +455,9 @@ class MultiAgentOrchestrator:
         # the original pre-resolution question so repeated identical queries
         # always hit the same cache entry regardless of LLM rewrite variance).
         _cache_lookup_key = cache_key if cache_key is not None else effective_question
-        _cached = _cache.get(_cache_lookup_key, vector=_question_vector)
+        _cached = _cache.get(
+            _cache_lookup_key, vector=_question_vector, payload_filter=cache_context
+        )
         if _cached is not None:
             # Serve cached answer word-by-word to simulate streaming.
             for _word in _cached.answer.split():
@@ -459,10 +494,24 @@ class MultiAgentOrchestrator:
         # ------------------------------------------------------------------
         # Cache miss: classify intent and dispatch
         # ------------------------------------------------------------------
-        # Fast path: exactly one agent type available — no LLM call needed.
+        # Seam S1: a caller-supplied intent_override skips classify_intent when it
+        # names a valid IntentType (coerced to an available type the same way the
+        # classifier's own output is). An unparseable value falls through to the
+        # normal path (fail-open). The single-agent fast path still wins so a
+        # one-type agent never pays for classification.
+        override_intent: IntentType | None = None
+        if intent_override is not None:
+            try:
+                override_intent = coerce_intent(IntentType(intent_override), list(available_types))
+            except ValueError:
+                override_intent = None
+
         if len(available_types) == 1 and available_types[0] in ("sql", "document"):
             intent = IntentType(available_types[0])
             _log.debug("Intent classification skipped: single agent type %s", intent)
+        elif override_intent is not None:
+            intent = override_intent
+            _log.debug("Intent classification skipped: caller override %s", intent)
         else:
             classification = classify_intent(effective_question, list(available_types))
             intent = classification.intent
@@ -494,7 +543,9 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            _schedule_cache_write(_cache, _cache_lookup_key, effective_question, "sql", seen)
+            _schedule_cache_write(
+                _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
+            )
             return
 
         if intent == IntentType.document:
@@ -512,7 +563,9 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            _schedule_cache_write(_cache, _cache_lookup_key, effective_question, "document", seen)
+            _schedule_cache_write(
+                _cache, _cache_lookup_key, effective_question, "document", seen, cache_context
+            )
             return
 
         hybrid_result: HybridQueryResult | None = None
@@ -532,6 +585,7 @@ class MultiAgentOrchestrator:
                     effective_question,
                     "hybrid",
                     [hybrid_result.merged_answer or ""],
+                    cache_context,
                 )
 
         if intent == IntentType.hybrid and hybrid_result is not None:

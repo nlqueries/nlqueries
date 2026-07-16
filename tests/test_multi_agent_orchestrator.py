@@ -577,7 +577,7 @@ class TestMultiAgentOrchestratorNewPaths:
         delay = 0.3
         put_calls: list[tuple[str, Any]] = []
 
-        def slow_put(key: str, data: Any) -> None:
+        def slow_put(key: str, data: Any, *, payload_extra: Any = None) -> None:
             _time.sleep(delay)
             put_calls.append((key, data))
 
@@ -806,3 +806,185 @@ class TestMultiAgentOrchestratorNewPaths:
         assert final["type"] == "hybrid"
         assert final["from_cache"] is True
         assert final["agent_type"] == "hybrid"
+
+
+# ---------------------------------------------------------------------------
+# Extension-point seams for embedders (S1 intent_override, S2 cache_context,
+# S3 documented guarantees) — the enterprise Conversation Context Engine relies
+# on these, so they are pinned here against a future refactor.
+# ---------------------------------------------------------------------------
+
+
+def _capturing_gen(sink: dict[str, Any], tokens: list[str]):  # type: ignore[return]
+    """Async-gen factory that records the args/kwargs it was called with."""
+
+    async def _gen(*args: Any, **kwargs: Any):  # type: ignore[return]
+        sink["args"] = args
+        sink["kwargs"] = kwargs
+        for t in tokens:
+            yield t
+
+    return _gen
+
+
+class TestExtensionPointSeams:
+    def test_intent_override_skips_classify_intent(self) -> None:
+        """S1: a valid intent_override is used directly; classify_intent isn't called."""
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+
+        async def run() -> tuple[list[str], MagicMock]:
+            with (
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent"
+                ) as mock_classify,
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch(
+                    "nlqueries.embeddings.embedder.embed_text",
+                    return_value=[0.0] * 384,
+                ),
+            ):
+                MockCache.return_value.get.return_value = None
+                orch = MultiAgentOrchestrator()
+                tokens: list[str] = []
+                async for token in orch.handle_question(
+                    "Revenue by region",
+                    "agent1",
+                    available_types=["sql", "document"],  # multi-type: would classify
+                    intent_override="sql",
+                ):
+                    tokens.append(token)
+                return tokens, mock_classify
+
+        tokens, mock_classify = asyncio.run(run())
+        mock_classify.assert_not_called()
+        final = json.loads(tokens[-1])
+        assert final["agent_type"] == "sql"
+
+    def test_invalid_intent_override_falls_back_to_classify(self) -> None:
+        """S1: an unparseable override fails open — classify_intent runs as usual."""
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+
+        async def run() -> MagicMock:
+            with (
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    return_value=_classify_result(IntentType.sql),
+                ) as mock_classify,
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+            ):
+                MockCache.return_value.get.return_value = None
+                orch = MultiAgentOrchestrator()
+                async for _token in orch.handle_question(
+                    "Revenue by region",
+                    "agent1",
+                    available_types=["sql", "document"],
+                    intent_override="not-a-real-intent",
+                ):
+                    pass
+                return mock_classify
+
+        mock_classify = asyncio.run(run())
+        mock_classify.assert_called_once()
+
+    def test_history_none_uses_question_verbatim(self) -> None:
+        """S3: history=None bypasses resolve_followup — the SQL agent sees the
+        original question even when it contains a follow-up signal word."""
+        sink: dict[str, Any] = {}
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _capturing_gen(sink, _SQL_TOKENS)
+        question = "show me that instead"  # contains signal words 'that'/'instead'
+
+        async def run() -> None:
+            # resolve_followup is NOT patched — the real one must no-op on empty history.
+            with (
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+            ):
+                MockCache.return_value.get.return_value = None
+                orch = MultiAgentOrchestrator()
+                async for _token in orch.handle_question(
+                    question, "agent1", available_types=["sql"], history=None
+                ):
+                    pass
+
+        asyncio.run(run())
+        assert sink["args"][0] == question
+
+    def test_extra_dynamic_context_forwarded_to_sql_agent(self) -> None:
+        """S3: extra_dynamic_context reaches the SQL orchestrator unchanged."""
+        sink: dict[str, Any] = {}
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _capturing_gen(sink, _SQL_TOKENS)
+
+        async def run() -> None:
+            with (
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+            ):
+                MockCache.return_value.get.return_value = None
+                orch = MultiAgentOrchestrator()
+                async for _token in orch.handle_question(
+                    "Count orders",
+                    "agent1",
+                    available_types=["sql"],
+                    extra_dynamic_context="CONVERSATION CONTEXT BLOCK",
+                ):
+                    pass
+
+        asyncio.run(run())
+        assert sink["kwargs"]["extra_dynamic_context"] == "CONVERSATION CONTEXT BLOCK"
+
+    def test_cache_context_scopes_get_and_put(self) -> None:
+        """S2: cache_context is used as the get() payload_filter and the put()
+        payload_extra, scoping the entry to one conversation context."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import drain_background_tasks
+
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        ctx = {"context_fingerprint": "fp-123"}
+
+        async def run() -> MagicMock:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+            ):
+                MockCache.return_value.get.return_value = None
+                orch = MultiAgentOrchestrator()
+                async for _token in orch.handle_question(
+                    "only completed", "agent1", available_types=["sql"], cache_context=ctx
+                ):
+                    pass
+                await drain_background_tasks()
+                return MockCache.return_value
+
+        cache = asyncio.run(run())
+        assert cache.get.call_args.kwargs["payload_filter"] == ctx
+        assert cache.put.call_args.kwargs["payload_extra"] == ctx

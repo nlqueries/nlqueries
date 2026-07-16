@@ -1027,3 +1027,114 @@ class TestPutStoresKindAndTemplate:
 
         _, kwargs = mock_ensure.call_args
         assert kwargs.get("payload_indexes") == ["kind"]
+
+
+# ---------------------------------------------------------------------------
+# Seam S2 — payload_extra on put() + payload_filter on get() scope entries
+# (mechanism half of bug fix F5: a follow-up cached in one conversation context
+# must not replay in another).
+# ---------------------------------------------------------------------------
+
+
+class TestPayloadScopedEntries:
+    @staticmethod
+    def _client_with_collection() -> MagicMock:
+        coll = MagicMock()
+        coll.name = "cache_agentX"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        return client
+
+    def test_put_stores_payload_extra_in_every_point(self) -> None:
+        """payload_extra keys land in the upserted point payload without clobbering
+        the reserved keys."""
+        client = self._client_with_collection()
+        result = _FakeResult(
+            resolved_question="only completed",
+            agent_type="sql",
+            answer="3",
+            sql="SELECT count(*) FROM orders WHERE status = 'completed'",
+        )
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agentX").put(
+                "only completed", result, payload_extra={"context_fingerprint": "fp1"}
+            )
+
+        points = client.upsert.call_args.kwargs["points"]
+        assert points, "put should upsert at least the answer point"
+        for p in points:
+            assert p.payload["context_fingerprint"] == "fp1"
+            # Reserved keys survive the merge (payload_extra can't overwrite them).
+            assert p.payload["kind"] in ("answer", "template")
+            assert p.payload["sql"]  # not shadowed by payload_extra
+
+    def test_tier0_hit_requires_matching_payload_filter(self) -> None:
+        """An exact-id (Tier 0) hit whose payload matches the filter is returned."""
+        client = self._client_with_collection()
+        pt = _make_scored_point(
+            score=1.0,
+            payload={**_fresh_payload(), "context_fingerprint": "fp1"},
+        )
+        client.retrieve.return_value = [pt]
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+        ):
+            entry = SemanticCache("agentX").get(
+                "How many orders?", payload_filter={"context_fingerprint": "fp1"}
+            )
+        assert entry is not None
+        assert entry.agent_type == "sql"
+
+    def test_tier0_foreign_context_is_not_returned(self) -> None:
+        """F5: a Tier-0 exact hit from a *different* context is skipped, not replayed."""
+        client = self._client_with_collection()
+        pt = _make_scored_point(
+            score=1.0,
+            payload={**_fresh_payload(), "context_fingerprint": "OTHER"},
+        )
+        client.retrieve.return_value = [pt]
+        client.query_points.return_value = _make_query_response([])  # Tier 1 finds nothing
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+        ):
+            entry = SemanticCache("agentX").get(
+                "How many orders?", payload_filter={"context_fingerprint": "fp1"}
+            )
+        assert entry is None
+
+    def test_tier1_query_filter_carries_payload_conditions(self) -> None:
+        """The cosine (Tier 1) query filter includes the payload_filter keys."""
+        client = self._client_with_collection()
+        client.retrieve.return_value = []  # Tier 0 miss
+        client.query_points.return_value = _make_query_response([])
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+        ):
+            SemanticCache("agentX").get("q", payload_filter={"context_fingerprint": "fp1"})
+
+        query_filter = client.query_points.call_args.kwargs["query_filter"]
+        keys = {cond.key for cond in query_filter.must}
+        assert "kind" in keys
+        assert "context_fingerprint" in keys
+
+    def test_no_payload_filter_leaves_lookup_unchanged(self) -> None:
+        """Without payload_filter, the Tier 1 query filter is just the kind condition."""
+        client = self._client_with_collection()
+        client.retrieve.return_value = []
+        client.query_points.return_value = _make_query_response([])
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+        ):
+            SemanticCache("agentX").get("q")
+
+        query_filter = client.query_points.call_args.kwargs["query_filter"]
+        keys = [cond.key for cond in query_filter.must]
+        assert keys == ["kind"]
