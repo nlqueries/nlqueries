@@ -81,12 +81,18 @@ def _build_user_prompt(question: str, available_agent_types: list[str]) -> str:
     )
 
 
-def _coerce_intent(intent: IntentType, available_agent_types: list[str]) -> IntentType:
-    """Coerce *intent* to an available type when the LLM picks an unavailable one.
+def coerce_intent(intent: IntentType, available_agent_types: list[str]) -> IntentType:
+    """Coerce *intent* to an available type when it isn't one of *available_agent_types*.
 
     ``hybrid`` falls back to ``sql`` (preferred) or ``document``.
     All other unavailable types fall back to ``unclear``.
     ``unclear`` always passes through unchanged.
+
+    Public helper (promoted from the former module-private ``_coerce_intent``) so
+    an embedder that classifies intent out-of-band — e.g. the enterprise
+    Conversation Context Engine's TurnPlanner, which supplies
+    ``intent_override`` to :meth:`MultiAgentOrchestrator.handle_question` — can
+    validate its choice through the exact same rules the built-in classifier uses.
     """
     if not available_agent_types or intent.value in available_agent_types:
         return intent
@@ -98,6 +104,11 @@ def _coerce_intent(intent: IntentType, available_agent_types: list[str]) -> Inte
         if "document" in available_agent_types:
             return IntentType.document
     return IntentType.unclear
+
+
+# Backward-compatible private alias (the function was module-private before it
+# was promoted to public API). Retained so any internal/legacy import keeps working.
+_coerce_intent = coerce_intent
 
 
 def classify_intent(
@@ -140,7 +151,7 @@ def classify_intent(
         )
 
     return IntentClassificationResult(
-        intent=_coerce_intent(intent, available_agent_types),
+        intent=coerce_intent(intent, available_agent_types),
         confidence=confidence,
         reasoning=reasoning,
     )

@@ -300,6 +300,18 @@ def _point_id_for_question(question: str) -> int:
     return int(digest[:16], 16)
 
 
+def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | None) -> bool:
+    """True when *payload* contains every key of *payload_filter* with an equal value.
+
+    Used to scope a Tier 0 (exact-id) hit by the caller's ``payload_filter`` —
+    Tier 1/2 push the same constraint down into the Qdrant query filter instead.
+    An empty/``None`` filter matches everything (default behaviour unchanged).
+    """
+    if not payload_filter:
+        return True
+    return all(str(payload.get(k)) == str(v) for k, v in payload_filter.items())
+
+
 # ---------------------------------------------------------------------------
 # SemanticCache
 # ---------------------------------------------------------------------------
@@ -373,6 +385,7 @@ class SemanticCache:
         question: str,
         *,
         vector: list[float] | None = None,
+        payload_filter: dict[str, str] | None = None,
     ) -> CacheEntry | None:
         """Look up *question* in the cache, trying three tiers in order.
 
@@ -391,11 +404,35 @@ class SemanticCache:
             question: The user question.
             vector:   Pre-computed embedding vector.  When provided, the
                       ``embed_text()`` call for Tier 1 is skipped.
+            payload_filter: Optional exact-match constraints on stored payload
+                      keys (paired with :meth:`put`'s ``payload_extra``). A hit is
+                      only returned when the stored point carries every key/value
+                      here — every tier applies it. Enterprise uses this to scope
+                      a follow-up's cache entry to one conversation context
+                      (``{"context_fingerprint": ...}``); ``None`` (default)
+                      leaves lookups exactly as before.
         """
         client = _get_client()
 
         if not _collection_exists(client, self._collection):
             return None
+
+        from qdrant_client.models import (  # noqa: PLC0415
+            FieldCondition,
+            Filter,
+            MatchAny,
+            MatchValue,
+        )
+
+        def _kind_filter(kind: str) -> Filter:
+            """kind== plus every payload_filter key as an exact-match must-condition."""
+            must: list[Any] = [FieldCondition(key="kind", match=MatchAny(any=[kind]))]
+            if payload_filter:
+                must += [
+                    FieldCondition(key=k, match=MatchValue(value=v))
+                    for k, v in payload_filter.items()
+                ]
+            return Filter(must=must)
 
         # --- Tier 0: exact-match hash lookup (zero embed calls on hit) ---
         normalized = _normalize_question(question)
@@ -408,22 +445,22 @@ class SemanticCache:
             )
             if tier0_hits:
                 payload = tier0_hits[0].payload or {}
-                entry = self._payload_to_entry(payload)
-                if entry is not None:
-                    entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
-                    return entry
+                # retrieve() is id-only, so enforce payload_filter here (Tier 1/2
+                # push it into the Qdrant query filter). A mismatch falls through
+                # to the cosine tiers rather than returning a foreign-context hit.
+                if _payload_matches(payload, payload_filter):
+                    entry = self._payload_to_entry(payload)
+                    if entry is not None:
+                        entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
+                        return entry
 
         # --- Tier 1: answer cache (cosine similarity, kind=answer filter) ---
-        from qdrant_client.models import FieldCondition, Filter, MatchAny  # noqa: PLC0415
-
         v = vector if vector is not None else embed_text(question)
         try:
             response = client.query_points(
                 collection_name=self._collection,
                 query=v,
-                query_filter=Filter(
-                    must=[FieldCondition(key="kind", match=MatchAny(any=["answer"]))]
-                ),
+                query_filter=_kind_filter("answer"),
                 limit=1,
             )
         except Exception:  # noqa: BLE001
@@ -449,9 +486,7 @@ class SemanticCache:
             tmpl_response = client.query_points(
                 collection_name=self._collection,
                 query=masked_vector,
-                query_filter=Filter(
-                    must=[FieldCondition(key="kind", match=MatchAny(any=["template"]))]
-                ),
+                query_filter=_kind_filter("template"),
                 limit=1,
             )
         except Exception:  # noqa: BLE001
@@ -489,7 +524,13 @@ class SemanticCache:
         entry.kind = "template"
         return entry
 
-    def put(self, question: str, result: _PutResult) -> None:
+    def put(
+        self,
+        question: str,
+        result: _PutResult,
+        *,
+        payload_extra: dict[str, str] | None = None,
+    ) -> None:
         """Embed *question* and upsert the answer into the cache collection.
 
         Stores a ``kind="answer"`` point keyed on the **normalized** question so
@@ -504,6 +545,12 @@ class SemanticCache:
             question: The (resolved) question string used as the cache key.
             result:   Any object exposing ``resolved_question``, ``agent_type``,
                       ``answer``, and ``sql`` attributes.
+            payload_extra: Optional extra string keys merged into every stored
+                      point's payload, to be matched later by :meth:`get`'s
+                      ``payload_filter``. Reserved payload keys (``question``,
+                      ``sql``, ``kind``, ``created_at``, …) take precedence and
+                      cannot be overwritten. ``None`` (default) stores exactly as
+                      before.
         """
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
@@ -515,6 +562,7 @@ class SemanticCache:
         answer_vector = embed_text(question)
 
         answer_payload: dict[str, Any] = {
+            **(payload_extra or {}),
             "question": question,
             "resolved_question": result.resolved_question,
             "agent_type": result.agent_type,
@@ -545,6 +593,7 @@ class SemanticCache:
                         masked_vector = embed_text(masked)
                         tmpl_id = _point_id_for_question(f"tmpl:{masked}")
                         tmpl_payload: dict[str, Any] = {
+                            **(payload_extra or {}),
                             "question": masked,
                             "resolved_question": result.resolved_question,
                             "agent_type": result.agent_type,
