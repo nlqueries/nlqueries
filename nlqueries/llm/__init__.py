@@ -11,6 +11,28 @@ from nlqueries import config
 from nlqueries.llm.anthropic_client import AnthropicClient
 from nlqueries.llm.client import LLMClient
 from nlqueries.llm.litellm_client import LiteLLMClient
+from nlqueries.llm.usage import (
+    UsageRecord,
+    current_usage_sink,
+    estimate_tokens,
+    record_usage,
+    use_usage_sink,
+)
+
+__all__ = [
+    "AnthropicClient",
+    "LLMClient",
+    "LLMOverride",
+    "LiteLLMClient",
+    "UsageRecord",
+    "current_llm_override",
+    "current_usage_sink",
+    "estimate_tokens",
+    "get_llm_client",
+    "record_usage",
+    "use_llm_override",
+    "use_usage_sink",
+]
 
 _REGISTRY: dict[str, Any] = {
     "anthropic": AnthropicClient,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, cast
@@ -10,9 +11,32 @@ import anthropic
 
 from nlqueries import config
 from nlqueries.llm.client import LLMClient, SystemParam
+from nlqueries.llm.usage import UsageRecord, record_usage
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0  # seconds; doubles on each retry (2**attempt)
+
+
+def _record_anthropic_usage(model: str, usage: Any) -> None:
+    """Map an Anthropic ``usage`` object onto a UsageRecord and record it.
+
+    ``input_tokens`` is the non-cached prompt; cache read/creation are the
+    separately-priced prompt-cache halves (``None`` when caching is unused).
+    Best-effort — a missing/odd usage shape never breaks the completion.
+    """
+    if usage is None:
+        return
+    with contextlib.suppress(Exception):
+        record_usage(
+            UsageRecord(
+                model=model,
+                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+                cache_write_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+                estimated=False,
+            )
+        )
 
 
 class AnthropicClient(LLMClient):
@@ -58,6 +82,7 @@ class AnthropicClient(LLMClient):
                     system=cast(Any, sys_blocks),
                     messages=[{"role": "user", "content": user}],
                 )
+                _record_anthropic_usage(self._model, response.usage)
                 return str(next(b.text for b in response.content if b.type == "text"))
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
@@ -75,6 +100,10 @@ class AnthropicClient(LLMClient):
             messages=[{"role": "user", "content": user}],
         ) as stream:
             yield from stream.text_stream
+            # After the caller drains the token stream, the final message carries
+            # the authoritative usage (input/output + cache tokens).
+            with contextlib.suppress(Exception):
+                _record_anthropic_usage(self._model, stream.get_final_message().usage)
 
     # ------------------------------------------------------------------
     # Native async API — no thread overhead, no event-loop blocking.
@@ -100,6 +129,7 @@ class AnthropicClient(LLMClient):
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = await self._aclient.messages.create(**kwargs)
+                _record_anthropic_usage(self._model, response.usage)
                 return str(next(b.text for b in response.content if b.type == "text"))
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
@@ -118,3 +148,6 @@ class AnthropicClient(LLMClient):
         ) as stream:
             async for text in stream.text_stream:
                 yield text
+            with contextlib.suppress(Exception):
+                final = await stream.get_final_message()
+                _record_anthropic_usage(self._model, final.usage)
