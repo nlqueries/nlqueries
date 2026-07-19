@@ -10,6 +10,7 @@ from nlqueries.connectors.base import (
     TableSpec,
 )
 from nlqueries.connectors.postgres import PostgresConnector
+from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
 
 # ---------------------------------------------------------------------------
 # Connector registry
@@ -19,9 +20,12 @@ from nlqueries.connectors.postgres import PostgresConnector
 #
 # Connectors with optional driver dependencies are registered lazily below so
 # that a missing optional extra never prevents the core package from importing.
+# The generic SQLAlchemy connector needs no extra (SQLAlchemy is a base dep), so
+# it's registered here; the URL's own driver is what must be installed at use.
 # ---------------------------------------------------------------------------
 CONNECTOR_REGISTRY: dict[str, type[DatabaseConnector]] = {
     "postgres": PostgresConnector,
+    "sqlalchemy": SQLAlchemyConnector,
 }
 
 
