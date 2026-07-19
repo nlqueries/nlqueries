@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine
 
+from nlqueries import config
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -364,13 +365,21 @@ class PostgresConnector(DatabaseConnector):
         ``QueryResult.error`` rather than propagating, so callers can treat
         query execution as always returning a result object.
 
-        When *timeout_seconds* is given, ``SET LOCAL statement_timeout`` is
-        applied inside the same transaction (Task 26.5 — Sprint 26): the
-        server itself aborts the query once it's been running that long,
-        rather than the query continuing to hold locks/connections after
-        the caller (e.g. an API request that already returned 504) has
-        given up waiting on it.
+        ``SET LOCAL statement_timeout`` is applied inside the same transaction so
+        the server itself aborts the query once it's been running that long, rather
+        than the query continuing to hold locks/connections after the caller (e.g.
+        an API request that already returned 504) has given up waiting on it.
+
+        The budget is *timeout_seconds* when given (Task 26.5 — Sprint 26),
+        otherwise the ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — so a query
+        without an explicit budget still can't hang indefinitely. A budget of 0
+        (config default set to 0) disables the timeout.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+        )
         tracer = get_tracer()
         start = time.perf_counter()
         with tracer.start_as_current_span("postgres_connector.execute_query") as span:
@@ -378,8 +387,8 @@ class PostgresConnector(DatabaseConnector):
             try:
                 engine = self._require_engine()
                 with engine.begin() as conn:
-                    if timeout_seconds is not None:
-                        statement_timeout_ms = max(1, int(timeout_seconds * 1000))
+                    if effective_timeout is not None and effective_timeout > 0:
+                        statement_timeout_ms = max(1, int(effective_timeout * 1000))
                         conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))
                     cursor_result = conn.execute(text(sql))
                     elapsed_ms = (time.perf_counter() - start) * 1000
