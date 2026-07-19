@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryResult, SchemaSpec, TableSpec
 from nlqueries.connectors.postgres import PostgresConnector
@@ -200,9 +201,28 @@ def test_execute_query_honors_timeout_seconds_via_statement_timeout(connector):
     assert "statement timeout" in result.error.lower()
 
 
-def test_execute_query_without_timeout_seconds_runs_unbounded(connector):
-    """Default (timeout_seconds=None) preserves the prior unbounded behavior."""
+def test_execute_query_without_timeout_completes_within_default(connector):
+    """No explicit timeout: a quick query still runs to completion (well under the
+    default CONNECTOR_STATEMENT_TIMEOUT_SECONDS budget)."""
     result = connector.execute_query("SELECT pg_sleep(0.1)")
+
+    assert result.error is None
+
+
+def test_execute_query_applies_default_statement_timeout(connector, monkeypatch):
+    """A query with no explicit timeout is still bounded by the config default, so
+    a runaway query fails fast instead of hanging indefinitely."""
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0.05)
+    result = connector.execute_query("SELECT pg_sleep(2)")
+
+    assert result.error is not None
+    assert "statement timeout" in result.error.lower()
+
+
+def test_execute_query_default_timeout_disabled_runs_unbounded(connector, monkeypatch):
+    """A config default of 0 disables the timeout — the query runs unbounded."""
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0.0)
+    result = connector.execute_query("SELECT pg_sleep(0.2)")
 
     assert result.error is None
 
