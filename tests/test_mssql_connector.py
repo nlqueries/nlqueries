@@ -10,7 +10,8 @@ default — asserted here by mocking ``create_engine``.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import sys
+from unittest.mock import MagicMock, patch
 
 from nlqueries import config
 from nlqueries.connectors.mssql import MSSQLConnector
@@ -20,6 +21,9 @@ _CREDS = {"host": "sql.example.com", "database": "analytics", "user": "u", "pass
 
 def _connect_args_from_mocked_engine(monkeypatch, timeout_default) -> dict:
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", timeout_default)
+    # pymssql is an optional extra (not installed in CI); connect() imports it
+    # first. Stub it so the import succeeds and we can assert the engine wiring.
+    monkeypatch.setitem(sys.modules, "pymssql", MagicMock())
     with patch("nlqueries.connectors.mssql.create_engine") as mock_create_engine:
         MSSQLConnector().connect(dict(_CREDS))
     return mock_create_engine.call_args.kwargs["connect_args"]
