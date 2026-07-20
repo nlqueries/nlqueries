@@ -20,10 +20,12 @@ always returns an empty list.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+from nlqueries import config
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -237,23 +239,38 @@ class DuckDBConnector(DatabaseConnector):
     def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
-        *timeout_seconds* is accepted for interface parity with
-        :class:`~nlqueries.connectors.base.DatabaseConnector` but not yet
-        implemented for DuckDB (Task 26.5 — Sprint 26 only wired this up
-        for Postgres).
+        DuckDB has no server-side statement timeout, so a runaway query is bounded
+        best-effort by a watchdog thread that calls ``conn.interrupt()`` after the
+        budget — *timeout_seconds* when given, else the
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default (0 disables). The interrupt
+        surfaces as an error rather than a hang.
 
         Exceptions are caught and surfaced via ``QueryResult.error``.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+        )
         start = time.perf_counter()
         try:
             conn = self._require_conn()
-            result = conn.execute(sql)
+            watchdog: threading.Timer | None = None
+            if effective_timeout is not None and effective_timeout > 0:
+                watchdog = threading.Timer(effective_timeout, conn.interrupt)
+                watchdog.daemon = True
+                watchdog.start()
+            try:
+                result = conn.execute(sql)
+                if result.description:
+                    columns = [desc[0] for desc in result.description]
+                    rows = [list(r) for r in result.fetchall()]
+                else:
+                    columns, rows = [], []
+            finally:
+                if watchdog is not None:
+                    watchdog.cancel()
             elapsed_ms = (time.perf_counter() - start) * 1000
-            if result.description:
-                columns = [desc[0] for desc in result.description]
-                rows = [list(r) for r in result.fetchall()]
-            else:
-                columns, rows = [], []
             return QueryResult(
                 columns=columns,
                 rows=rows,

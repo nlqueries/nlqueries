@@ -14,6 +14,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryRecord, QueryResult, SchemaSpec, TableSpec
 from nlqueries.connectors.snowflake import SnowflakeConnector
@@ -151,6 +152,34 @@ def test_execute_query_returns_columns_and_rows():
     assert result.row_count == 1
     assert result.execution_time_ms >= 0
     mock_cursor.close.assert_called_once()
+
+
+def _mock_cursor() -> tuple[SnowflakeConnector, MagicMock]:
+    connector, mock_connection = _connector_with_mock_connection()
+    cursor = MagicMock()
+    cursor.description = None
+    mock_connection.cursor.return_value = cursor
+    return connector, cursor
+
+
+def test_execute_query_passes_explicit_timeout_to_cursor():
+    connector, cursor = _mock_cursor()
+    connector.execute_query("SELECT 1", timeout_seconds=30)
+    assert cursor.execute.call_args.kwargs.get("timeout") == 30
+
+
+def test_execute_query_applies_default_timeout(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 45)
+    connector, cursor = _mock_cursor()
+    connector.execute_query("SELECT 1")
+    assert cursor.execute.call_args.kwargs.get("timeout") == 45
+
+
+def test_execute_query_no_timeout_when_disabled(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    connector, cursor = _mock_cursor()
+    connector.execute_query("SELECT 1")
+    assert "timeout" not in cursor.execute.call_args.kwargs
 
 
 def test_execute_query_handles_statements_with_no_result_set():

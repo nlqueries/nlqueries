@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine
 
+from nlqueries import config
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -93,7 +94,15 @@ class MSSQLConnector(DatabaseConnector):
             port=int(credentials.get("port") or 1433),
             database=credentials["database"],
         )
-        self._engine = create_engine(url, pool_pre_ping=True)
+        # SQL Server has no SET-based statement timeout, so bound queries via
+        # pymssql's connection-level query `timeout` (seconds). Applied from the
+        # CONNECTOR_STATEMENT_TIMEOUT_SECONDS default so a runaway query can't hang
+        # indefinitely; 0 disables it. (Per-call execute_query timeout_seconds is
+        # not separately honored on this driver.)
+        connect_args: dict[str, Any] = {}
+        if config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS > 0:
+            connect_args["timeout"] = max(1, int(config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS))
+        self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

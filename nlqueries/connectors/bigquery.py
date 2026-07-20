@@ -17,6 +17,7 @@ from typing import Any
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
+from nlqueries import config
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -306,10 +307,10 @@ class BigQueryConnector(DatabaseConnector):
     def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         """Run ``sql`` as a BigQuery query job and return a :class:`QueryResult`.
 
-        *timeout_seconds* is accepted for interface parity with
-        :class:`~nlqueries.connectors.base.DatabaseConnector` but not yet
-        implemented for BigQuery (Task 26.5 — Sprint 26 only wired this up
-        for Postgres).
+        The job is bounded by *timeout_seconds* when given, else the
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — set as the job's
+        ``job_timeout_ms`` so BigQuery cancels the job server-side rather than
+        letting it run indefinitely. A budget of 0 disables it.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
@@ -320,10 +321,19 @@ class BigQueryConnector(DatabaseConnector):
         logged metadata note (at INFO level) rather than bolted onto the
         dataclass, keeping the shared interface unchanged for every connector.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+        )
         start = time.perf_counter()
         try:
             client = self._require_client()
-            query_job = client.query(sql)
+            if effective_timeout is not None and effective_timeout > 0:
+                job_config = bigquery.QueryJobConfig(job_timeout_ms=int(effective_timeout * 1000))
+                query_job = client.query(sql, job_config=job_config)
+            else:
+                query_job = client.query(sql)
             result = query_job.result()
             elapsed_ms = (time.perf_counter() - start) * 1000
 

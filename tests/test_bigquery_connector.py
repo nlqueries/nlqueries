@@ -13,6 +13,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryRecord, QueryResult, SchemaSpec, TableSpec
 from nlqueries.connectors.bigquery import BigQueryConnector
@@ -144,6 +145,42 @@ def _connector_with_mock_client() -> tuple[BigQueryConnector, MagicMock]:
     connector._dataset_id = "analytics"
     connector._region_qualifier = "region-us"
     return connector, connector._client
+
+
+def _mock_client_for_timeout() -> tuple[BigQueryConnector, MagicMock]:
+    connector, client = _connector_with_mock_client()
+    result = MagicMock()
+    result.schema = []
+    result.__iter__.return_value = iter([])
+    job = MagicMock()
+    job.result.return_value = result
+    job.total_bytes_processed = 0
+    job.job_id = "j"
+    client.query.return_value = job
+    return connector, client
+
+
+def test_execute_query_sets_job_timeout_ms():
+    connector, client = _mock_client_for_timeout()
+    connector.execute_query("SELECT 1", timeout_seconds=30)
+    job_config = client.query.call_args.kwargs.get("job_config")
+    assert job_config is not None
+    # BigQuery stores job_timeout_ms as a string on the config object.
+    assert int(job_config.job_timeout_ms) == 30000
+
+
+def test_execute_query_applies_default_job_timeout(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 45)
+    connector, client = _mock_client_for_timeout()
+    connector.execute_query("SELECT 1")
+    assert int(client.query.call_args.kwargs["job_config"].job_timeout_ms) == 45000
+
+
+def test_execute_query_no_job_timeout_when_disabled(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    connector, client = _mock_client_for_timeout()
+    connector.execute_query("SELECT 1")
+    assert "job_config" not in client.query.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
