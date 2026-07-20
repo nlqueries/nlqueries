@@ -27,8 +27,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
+from nlqueries import config
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -39,6 +40,33 @@ from nlqueries.connectors.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_statement_timeout(conn: Connection, seconds: float) -> None:
+    """Best-effort per-dialect statement timeout on *conn*.
+
+    Statement timeouts are dialect-specific, so this covers the common cases and is
+    a **no-op** on dialects without a simple session-level one (e.g. SQLite) — the
+    query then runs unbounded there rather than erroring. Applied inside the query's
+    transaction so it takes effect for the statement that follows.
+    """
+    dialect = conn.engine.dialect
+    name = dialect.name
+    ms = max(1, int(seconds * 1000))
+    if name in ("postgresql", "redshift"):
+        # SET LOCAL is transaction-scoped, so it resets when the tx ends — no leak
+        # onto the pooled connection.
+        conn.execute(text(f"SET LOCAL statement_timeout = {ms}"))
+    elif name in ("mysql", "mariadb"):
+        # MySQL 5.7.8+ uses max_execution_time (ms, SELECT only); MariaDB 10.1+ uses
+        # max_statement_time (seconds). SQLAlchemy's `_is_mariadb` distinguishes them
+        # even when both report dialect name "mysql" (e.g. via pymysql).
+        if getattr(dialect, "_is_mariadb", False):
+            conn.execute(text(f"SET SESSION max_statement_time = {float(seconds)}"))
+        else:
+            conn.execute(text(f"SET SESSION max_execution_time = {ms}"))
+    else:
+        logger.debug("No statement-timeout mechanism for dialect %r; running unbounded", name)
 
 
 class SQLAlchemyConnector(DatabaseConnector):
@@ -152,13 +180,22 @@ class SQLAlchemyConnector(DatabaseConnector):
     def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
-        *timeout_seconds* is accepted for interface parity but not enforced
-        (statement timeouts are dialect-specific). Exceptions are surfaced via
-        ``QueryResult.error`` rather than raised.
+        A statement timeout is applied best-effort per dialect (see
+        :func:`_apply_statement_timeout`): *timeout_seconds* when given, else the
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — so a runaway query can't
+        hang indefinitely on a DB that supports it. Dialects without one (e.g.
+        SQLite) run unbounded. Exceptions are surfaced via ``QueryResult.error``.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+        )
         start = time.perf_counter()
         try:
             with self._require_engine().begin() as conn:
+                if effective_timeout is not None and effective_timeout > 0:
+                    _apply_statement_timeout(conn, effective_timeout)
                 cursor_result = conn.execute(text(sql))
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 if cursor_result.returns_rows:
