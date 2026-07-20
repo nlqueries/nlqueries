@@ -10,6 +10,7 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from nlqueries import config  # noqa: E402
 from nlqueries.connectors.duckdb import DuckDBConnector  # noqa: E402
 
 
@@ -69,3 +70,25 @@ def test_execute_query_bad_sql_surfaces_error(connector: DuckDBConnector) -> Non
 
 def test_extract_query_history_always_empty(connector: DuckDBConnector) -> None:
     assert connector.extract_query_history() == []
+
+
+def test_execute_query_watchdog_interrupts_runaway_query(connector: DuckDBConnector) -> None:
+    """A tiny timeout interrupts a long recursive query via the watchdog thread,
+    surfacing an error instead of hanging."""
+    slow = (
+        "WITH RECURSIVE t(n) AS ("
+        "  SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 100000000"
+        ") SELECT count(*) FROM t"
+    )
+    result = connector.execute_query(slow, timeout_seconds=0.3)
+
+    assert result.error is not None
+
+
+def test_execute_query_no_watchdog_when_disabled(connector: DuckDBConnector, monkeypatch) -> None:
+    """A 0 default disables the watchdog — a normal query runs to completion."""
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    result = connector.execute_query("SELECT 1 AS x")
+
+    assert result.error is None
+    assert result.rows == [[1]]

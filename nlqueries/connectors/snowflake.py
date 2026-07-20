@@ -16,6 +16,7 @@ from typing import Any
 
 import snowflake.connector
 
+from nlqueries import config
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -365,21 +366,29 @@ class SnowflakeConnector(DatabaseConnector):
     def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
-        *timeout_seconds* is accepted for interface parity with
-        :class:`~nlqueries.connectors.base.DatabaseConnector` but not yet
-        implemented for Snowflake (Task 26.5 — Sprint 26 only wired this up
-        for Postgres).
+        The query is bounded by *timeout_seconds* when given, else the
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — passed to the driver's
+        ``cursor.execute(timeout=…)`` so Snowflake cancels the query server-side
+        rather than letting it run indefinitely. A budget of 0 disables it.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
         query execution as always returning a result object.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+        )
         start = time.perf_counter()
         try:
             connection = self._require_connection()
             cursor = connection.cursor()
             try:
-                cursor.execute(sql)
+                if effective_timeout is not None and effective_timeout > 0:
+                    cursor.execute(sql, timeout=max(1, int(effective_timeout)))
+                else:
+                    cursor.execute(sql)
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
                 if cursor.description:
