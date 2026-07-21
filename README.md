@@ -20,11 +20,12 @@
 
 | Capability | Description |
 |---|---|
-| **Database connectors** | PostgreSQL, MySQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB |
+| **Database connectors** | PostgreSQL, MySQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB — plus a generic SQLAlchemy connector for any other SQLAlchemy-reachable database, driven by a connection URL |
 | **Document connectors** | PDF, Word, Excel, Notion, Confluence — ask questions over ingested documents with citations |
 | **Query pipeline** | Filter, cluster, and parameterize query history into reusable `QueryCapsule` templates |
 | **Knowledge base** | Auto-generated YAML schema + capsule file, with coverage reporting via `kb-stats` |
 | **Multi-agent orchestration** | Routes each question to a SQL agent, document agent, or both in parallel (hybrid) |
+| **Conversational follow-ups** | Carries context across questions so a follow-up like "and by region?" resolves against the previous query — on by default in `nlqueries query`, reset with `--new-session` |
 | **Semantic cache** | Returns previously-answered similar questions in under 50 ms, no LLM or DB round-trip |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |
 | **LLM client** | Anthropic, OpenAI, or any LiteLLM-supported provider |
@@ -107,7 +108,11 @@ nlqueries connect postgres --host localhost --database mydb --user alice --passw
 nlqueries process-history dev --days 30 --annotate
 nlqueries export-kb dev
 nlqueries query dev "How many orders shipped last month?"
+nlqueries query dev "and how many were returned?"   # follow-up — keeps prior context
 ```
+
+Follow-up context is on by default; pass `--new-session` to start fresh or
+`--no-session` to disable it for a one-off question.
 
 Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 
