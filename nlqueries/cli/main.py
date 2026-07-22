@@ -2200,6 +2200,13 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
     default=False,
     help="Start a fresh conversation, discarding prior context.",
 )
+@click.option(
+    "--explain",
+    is_flag=True,
+    default=False,
+    help="Collect answer provenance (route, capsules, cache, checks, timings) "
+    "and include it in the --json output.",
+)
 def query(
     agent_id: str,
     question: str,
@@ -2208,6 +2215,7 @@ def query(
     output_json: bool,
     session: bool,
     new_session: bool,
+    explain: bool,
 ) -> None:
     """Run a synchronous agent query and print the result.
 
@@ -2243,7 +2251,7 @@ def query(
 
     try:
         result: AgentQueryResult = run_query_sync(
-            question, agent_id, dialect=dialect, history=history
+            question, agent_id, dialect=dialect, history=history, explain=explain
         )
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Query failed:[/bold red] {exc}")
@@ -2321,6 +2329,8 @@ def query(
             "latency_ms": result.latency_ms,
             "session_id": result.session_id,
         }
+        if result.provenance is not None:
+            output["provenance"] = result.provenance.to_dict()
         console.print_json(json.dumps(output, default=str))
     else:
         if result.resolved_question and result.resolved_question != question:

@@ -36,6 +36,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nlqueries.orchestrator.provenance import record_capsule, record_prompt_section
+
 if TYPE_CHECKING:
     from nlqueries.orchestrator.document_retrieval import DocumentRetrievalResult
 
@@ -285,6 +287,8 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
         if desc:
             header += f" — {desc}"
         lines.append(header)
+        if name:
+            record_prompt_section(f"table_desc:{name}")  # provenance (SYL-1.1)
 
         col_parts: list[str] = []
         for col in table.get("columns", []):
@@ -359,6 +363,8 @@ def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
         name = table.get("name", "")
         desc = table.get("description", "")
         lines.append(f"### Table: {name}")
+        if name:
+            record_prompt_section(f"table_desc:{name}")  # provenance (SYL-1.1)
         if desc:
             lines.append(f"Description: {desc}")
         row_count = table.get("row_count")
@@ -390,7 +396,10 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
         lines.append("### Glossary")
         for entry in glossary:
             if isinstance(entry, dict):
-                lines.append(f"- {entry.get('term', '')}: {entry.get('definition', '')}")
+                term = str(entry.get("term", ""))
+                lines.append(f"- {term}: {entry.get('definition', '')}")
+                if term:
+                    record_prompt_section(f"glossary:{term}")  # provenance (SYL-1.1)
             else:
                 lines.append(f"- {entry}")
         lines.append("")
@@ -398,6 +407,7 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
         lines.append("### Business Rules")
         for rule in rules:
             lines.append(f"- {rule}")
+            record_prompt_section(f"rule:{str(rule)[:60]}")  # provenance (SYL-1.1)
         lines.append("")
     return "\n".join(lines)
 
@@ -456,6 +466,9 @@ def _format_dynamic_context(
                 cap_lines.append(f"   SQL Template: {template}")
             cap_lines.append("")
             idx += 1
+            # provenance (SYL-1.1): capsules carry no persisted id in the Qdrant
+            # payload, so the intent/description label is the stable handle we have.
+            record_capsule(intent or template[:60], intent)
         parts.append("\n".join(cap_lines))
 
     if not parts:
@@ -477,6 +490,7 @@ def _format_dynamic_context(
                 if template:
                     cap_lines.append(f"   SQL Template: {template}")
                 cap_lines.append("")
+                record_capsule(intent or str(template)[:60], intent)  # provenance (SYL-1.1)
             parts.append("\n".join(cap_lines))
 
     return "\n\n".join(parts)

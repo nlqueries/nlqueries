@@ -30,6 +30,7 @@ def _make_result(
     r.sql_result = sql_result
     r.citations = citations or []
     r.latency_ms = latency_ms
+    r.provenance = None  # default (no --explain); matches real AgentQueryResult
     return r
 
 

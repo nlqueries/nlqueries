@@ -58,6 +58,11 @@ from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrieva
 from nlqueries.orchestrator.followup_resolver import resolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent, coerce_intent
 from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, Orchestrator, _json_default
+from nlqueries.orchestrator.provenance import (
+    record_cache,
+    record_intent_confidence,
+    record_route,
+)
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 
 _log = logging.getLogger(__name__)
@@ -458,6 +463,8 @@ class MultiAgentOrchestrator:
         _cached = _cache.get(
             _cache_lookup_key, vector=_question_vector, payload_filter=cache_context
         )
+        if _cached is None:
+            record_cache(hit=False)  # provenance (SYL-1.1); a hit records tier+score itself
         if _cached is not None:
             # Serve cached answer word-by-word to simulate streaming.
             for _word in _cached.answer.split():
@@ -515,6 +522,8 @@ class MultiAgentOrchestrator:
         else:
             classification = classify_intent(effective_question, list(available_types))
             intent = classification.intent
+            record_intent_confidence(classification.confidence)  # provenance (SYL-1.1)
+        record_route(intent.value)  # provenance (SYL-1.1)
 
         # ------------------------------------------------------------------
         # Dispatch: single-agent branches stream tokens through immediately;

@@ -137,6 +137,7 @@ async def query(
     question: str,
     agent_id: str,
     dialect: str = "postgres",
+    explain: bool = False,
 ) -> str:
     """Ask a natural-language question to an NLQueries agent.
 
@@ -151,6 +152,8 @@ async def query(
         dialect:   SQL dialect for the target database (default: postgres).
                    Other supported values: snowflake, bigquery, redshift,
                    mysql, mssql, duckdb.
+        explain:   When true, append an answer-provenance summary (route,
+                   cache hit/miss, knowledge injected, checks, timings).
 
     Returns:
         Formatted string containing the natural-language answer, generated SQL
@@ -161,7 +164,7 @@ async def query(
 
     try:
         with anyio.fail_after(45):
-            result = await run_query(question, agent_id, dialect=dialect)
+            result = await run_query(question, agent_id, dialect=dialect, explain=explain)
     except TimeoutError:
         return (
             f"⏱ Query timed out after 45 s for agent '{agent_id}'.\n\n"
@@ -208,6 +211,27 @@ async def query(
             if c.excerpt:
                 excerpt = c.excerpt[:200] + "…" if len(c.excerpt) > 200 else c.excerpt
                 parts.append(f'\n  > "{excerpt}"')
+
+    if result.provenance is not None:
+        p = result.provenance
+        cache = "off"
+        if p.cache is not None:
+            cache = (
+                f"hit ({p.cache.tier}"
+                + (f", {p.cache.similarity:.2f}" if p.cache.similarity is not None else "")
+                + ")"
+                if p.cache.hit
+                else "miss"
+            )
+        checks = "no warnings" if not p.validator else f"{len(p.validator)} warning(s)"
+        parts.append(
+            "\n\n**Provenance**"
+            f"\n- route: {p.route or 'unknown'}"
+            f"\n- cache: {cache}"
+            f"\n- knowledge injected: {len(p.prompt_sections)} section(s), "
+            f"{len(p.capsules_used)} capsule(s)"
+            f"\n- checks: {checks}"
+        )
 
     parts.append(f"\n\n*{result.agent_type} agent · {result.latency_ms} ms*")
 
