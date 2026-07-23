@@ -15,6 +15,7 @@ NLQueries reads two kinds of sources: databases (for structured SQL answers) and
 | Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`) |
 | SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`) |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
+| SQLite | included (stdlib `sqlite3`) | None — file-based, no persisted history |
 
 See [cli-reference.md](cli-reference.md#connect) for `connect` examples per type.
 
@@ -53,6 +54,12 @@ Use `alice@my-server` as `--user` for Azure SQL with SQL authentication — the 
 ### DuckDB
 
 No query history across connections — `process-history` always returns an empty list; the KB comes from schema introspection only. Primary keys are detected via `duckdb_constraints()`; foreign keys are skipped (rarely declared in DuckDB analytics workloads).
+
+### SQLite
+
+Built on the standard-library `sqlite3` driver, so no extra install is needed. The `database` credential is a file path (`/data/app.db`) or `:memory:` for a transient in-process database — there is no host, port, or credentials. No query history (`process-history` returns an empty list); the KB is built from schema introspection via `PRAGMA table_info` (columns + primary keys) and `PRAGMA foreign_key_list` (foreign keys). SQLite has no server-side statement timeout, so a runaway query is bounded best-effort by a watchdog that interrupts it.
+
+> Already have a SQLite URL? The generic `sqlalchemy` connector also reaches SQLite (`--url "sqlite:///path.db"`); the dedicated `sqlite` type just gives you the simpler file-path form.
 
 ---
 

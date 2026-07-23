@@ -55,6 +55,7 @@ _DB_SCHEMES: dict[str, str] = {
     "redshift": "redshift+redshift_connector",
     "mssql": "mssql+pymssql",
     "duckdb": "duckdb",
+    "sqlite": "sqlite",
 }
 
 _DEFAULT_PORTS: dict[str, int] = {
@@ -238,10 +239,12 @@ def _build_url(
         acct = account or host
         return f"snowflake://{quote_plus(user)}:{quote_plus(password)}@{acct}/{database}"
 
-    if db_type_l == "duckdb":
-        # DuckDB uses a file path or :memory: — no host/port/user/password in the URL.
+    if db_type_l in ("duckdb", "sqlite"):
+        # File-based: a path or :memory: — no host/port/user/password in the URL.
         db_path = database or ":memory:"
-        return f"duckdb:///{db_path}" if db_path != ":memory:" else "duckdb:///:memory:"
+        if db_path == ":memory:":
+            return f"{scheme}:///:memory:"
+        return f"{scheme}:///{db_path}"
 
     return f"{scheme}://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{database}"
 
@@ -511,7 +514,8 @@ def connect(
     """Test a database connection and register it as a named connector.
 
     \b
-    DB_TYPE  one of: postgres, mysql, bigquery, snowflake, redshift, mssql, duckdb
+    DB_TYPE  one of: postgres, mysql, bigquery, snowflake, redshift, mssql,
+             duckdb, sqlite
 
     \b
     Examples:
@@ -521,6 +525,7 @@ def connect(
       nlqueries connect mssql --host myserver.database.windows.net \\
           --database mydb --user alice --password secret
       nlqueries connect duckdb --database /data/warehouse.db
+      nlqueries connect sqlite --database /data/app.db
       nlqueries connect snowflake --account acme-prod --database PROD --user bob \\
           --password s3cr3t --warehouse COMPUTE_WH --schema PUBLIC
       nlqueries connect bigquery --project-id acme-prod --dataset-id analytics \\
@@ -533,8 +538,9 @@ def connect(
     # Priority: --password-env VAR > --password <value> > interactive prompt.
     # BigQuery uses service-account auth and never needs a password.
     # ------------------------------------------------------------------
-    # DuckDB has no user/password — skip credential prompting entirely.
-    _no_auth_types = {"bigquery", "duckdb"}
+    # File-based (DuckDB, SQLite) and service-account (BigQuery) types have no
+    # user/password — skip credential prompting entirely.
+    _no_auth_types = {"bigquery", "duckdb", "sqlite"}
     if db_type_l not in _no_auth_types:
         if password_env is not None:
             password = os.environ.get(password_env) or ""
@@ -574,8 +580,8 @@ def connect(
                 f"  Example: nlqueries connect snowflake --account acme-prod "
                 f"--database PROD --user bob --password s3cr3t --warehouse COMPUTE_WH"
             )
-    elif db_type_l == "duckdb":
-        # DuckDB only needs a database path (or :memory: which is the default).
+    elif db_type_l in ("duckdb", "sqlite"):
+        # File-based: only a database path is needed (or :memory:, the default).
         pass
     else:
         missing = [
@@ -616,10 +622,11 @@ def connect(
 
     if db_type_l == "bigquery":
         console.print(f"[bold]Connecting[/bold] to BigQuery project [cyan]{project_id}[/cyan] …")
-    elif db_type_l == "duckdb":
+    elif db_type_l in ("duckdb", "sqlite"):
         db_label = database or ":memory:"
-        cid = connector_id or f"duckdb:{db_label}"
-        console.print(f"[bold]Connecting[/bold] to DuckDB at [cyan]{db_label}[/cyan] …")
+        cid = connector_id or f"{db_type_l}:{db_label}"
+        pretty = "DuckDB" if db_type_l == "duckdb" else "SQLite"
+        console.print(f"[bold]Connecting[/bold] to {pretty} at [cyan]{db_label}[/cyan] …")
     else:
         console.print(
             f"[bold]Connecting[/bold] to {db_type} at "
@@ -711,8 +718,8 @@ def connect(
             config["dataset_id"] = dataset_id
         if service_account_json:
             config["service_account_json"] = service_account_json
-    if db_type_l == "duckdb":
-        # DuckDB has no host/port/user — store the database path directly.
+    if db_type_l in ("duckdb", "sqlite"):
+        # File-based: no host/port/user — store the database path directly.
         config["host"] = ""
         config["port"] = 0
         config["user"] = ""

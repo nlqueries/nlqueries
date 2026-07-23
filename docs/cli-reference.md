@@ -62,7 +62,14 @@ nlqueries connect duckdb --database /data/warehouse.db --alias duck-local   # pe
 nlqueries connect duckdb --alias duck-mem                                   # in-memory, transient
 ```
 
-See [connectors.md](connectors.md) for per-database query-history and schema-introspection caveats (Redshift, MSSQL, and DuckDB in particular).
+**SQLite** — no install needed (stdlib); file-based, no host/port
+
+```bash
+nlqueries connect sqlite --database /data/app.db --alias app-local   # persistent
+nlqueries connect sqlite --alias app-mem                             # in-memory, transient
+```
+
+See [connectors.md](connectors.md) for per-database query-history and schema-introspection caveats (Redshift, MSSQL, DuckDB, and SQLite in particular).
 
 ---
 
