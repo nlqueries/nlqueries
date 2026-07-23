@@ -138,6 +138,7 @@ async def query(
     agent_id: str,
     dialect: str = "postgres",
     explain: bool = False,
+    paraphrase: bool = False,
 ) -> str:
     """Ask a natural-language question to an NLQueries agent.
 
@@ -154,6 +155,8 @@ async def query(
                    mysql, mssql, duckdb.
         explain:   When true, append an answer-provenance summary (route,
                    cache hit/miss, knowledge injected, checks, timings).
+        paraphrase: When true, append a deterministic plain-English rendering of
+                   the generated SQL (no LLM), so you can confirm what it does.
 
     Returns:
         Formatted string containing the natural-language answer, generated SQL
@@ -188,6 +191,14 @@ async def query(
 
     if result.sql:
         parts.append(f"\n\n**Generated SQL**\n```sql\n{result.sql}\n```")
+
+    if paraphrase and result.sql:
+        from nlqueries.verbalizer import verbalize  # noqa: PLC0415
+
+        described = verbalize(result.sql, dialect)
+        if described.text:
+            hint = "" if described.complete else " *(described in part)*"
+            parts.append(f"\n\n**In plain English**\n{described.text}{hint}")
 
     if result.sql_result and result.sql_result.error:
         parts.append(f"\n\n⚠ SQL execution error: {result.sql_result.error}")

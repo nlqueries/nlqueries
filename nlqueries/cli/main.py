@@ -2207,6 +2207,13 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
     help="Collect answer provenance (route, capsules, cache, checks, timings) "
     "and include it in the --json output.",
 )
+@click.option(
+    "--paraphrase",
+    is_flag=True,
+    default=False,
+    help="Render the generated SQL back into one plain-English sentence "
+    "(deterministic, no LLM) and print it / include it in the --json output.",
+)
 def query(
     agent_id: str,
     question: str,
@@ -2216,6 +2223,7 @@ def query(
     session: bool,
     new_session: bool,
     explain: bool,
+    paraphrase: bool,
 ) -> None:
     """Run a synchronous agent query and print the result.
 
@@ -2299,6 +2307,15 @@ def query(
         except Exception as exc:  # noqa: BLE001
             err_console.print(f"[bold red]✗ SQL execution failed:[/bold red] {exc}")
 
+    # Deterministic SQL-to-English paraphrase (ACE-1.1). Identifiers are humanized
+    # here (no KB vocab in the core CLI); the enterprise service supplies business
+    # names. Best-effort — verbalize never raises.
+    paraphrase_result = None
+    if paraphrase and result.sql:
+        from nlqueries.verbalizer import verbalize
+
+        paraphrase_result = verbalize(result.sql, dialect)
+
     if output_json:
         output = {
             "question": result.question,
@@ -2331,6 +2348,8 @@ def query(
         }
         if result.provenance is not None:
             output["provenance"] = result.provenance.to_dict()
+        if paraphrase_result is not None:
+            output["paraphrase"] = paraphrase_result.to_dict()
         console.print_json(json.dumps(output, default=str))
     else:
         if result.resolved_question and result.resolved_question != question:
@@ -2338,6 +2357,8 @@ def query(
         console.print(f"[bold]Agent type :[/bold] {result.agent_type}")
         if result.sql:
             console.print(f"[bold]SQL        :[/bold] [dim]{result.sql}[/dim]")
+        if paraphrase_result is not None and paraphrase_result.text:
+            console.print(f"[bold]In English :[/bold] {paraphrase_result.text}")
         if sql_result:
             if sql_result.error:
                 err_console.print(f"[bold red]✗ Execution error:[/bold red] {sql_result.error}")
