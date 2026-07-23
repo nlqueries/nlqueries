@@ -274,6 +274,58 @@ def test_static_system_omits_business_context_when_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Question-scoped glossary retrieval (CG-2.2, flag-gated)
+# ---------------------------------------------------------------------------
+
+_HIER_GLOSSARY = [
+    {"term": "Customer", "definition": "Placed an order."},
+    {"term": "Active Customer", "definition": "Ordered recently.", "parent": "Customer"},
+    {"term": "VIP Customer", "definition": "Big spender.", "parent": "Active Customer"},
+    {"term": "Widget", "definition": "A product."},
+]
+
+
+def test_glossary_wholesale_in_static_by_default() -> None:
+    # Flag off (default): the whole glossary lives in the cached static block.
+    prompt = assemble_prompt("show me the widget", _make_kb(glossary=_HIER_GLOSSARY))
+    assert "Widget" in prompt.static_system
+    assert "VIP Customer" in prompt.static_system
+    assert "relevant to your question" not in prompt.dynamic_context
+
+
+def test_glossary_question_scoped_selects_matched_and_hierarchy() -> None:
+    kb = _make_kb(glossary=_HIER_GLOSSARY)
+    with patch("nlqueries.config.GLOSSARY_QUESTION_SCOPED", True):
+        prompt = assemble_prompt("list every active customer", kb)
+    # Glossary omitted from the cached static block...
+    assert "### Glossary" not in prompt.static_system
+    # ...and rendered per-question in the dynamic block.
+    dyn = prompt.dynamic_context
+    assert "relevant to your question" in dyn
+    assert "Active Customer" in dyn  # directly matched
+    assert "Customer" in dyn  # ancestor (context)
+    assert "VIP Customer" in dyn  # descendant (candidate)
+    assert "Widget" not in dyn  # unrelated term excluded
+
+
+def test_glossary_question_scoped_no_match_injects_nothing() -> None:
+    kb = _make_kb(glossary=_HIER_GLOSSARY)
+    with patch("nlqueries.config.GLOSSARY_QUESTION_SCOPED", True):
+        prompt = assemble_prompt("what is the weather today", kb)
+    assert "### Glossary" not in prompt.static_system
+    assert "relevant to your question" not in prompt.dynamic_context
+
+
+def test_glossary_question_scoped_keeps_rules_wholesale() -> None:
+    kb = _make_kb(glossary=_HIER_GLOSSARY, rules=["Always exclude cancelled orders."])
+    with patch("nlqueries.config.GLOSSARY_QUESTION_SCOPED", True):
+        prompt = assemble_prompt("show me the widget", kb)
+    # Rules always stay in the static block, even when the glossary is scoped.
+    assert "Always exclude cancelled orders." in prompt.static_system
+    assert "### Glossary" not in prompt.static_system
+
+
+# ---------------------------------------------------------------------------
 # static_system — instructions always present
 # ---------------------------------------------------------------------------
 

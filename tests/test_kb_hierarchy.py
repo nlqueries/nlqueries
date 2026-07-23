@@ -76,6 +76,29 @@ def test_roots_and_depth() -> None:
     assert h.max_depth() == 2  # VipCustomer -> ActiveCustomer -> Customer
 
 
+def test_descendants_breadth_first_depth_capped() -> None:
+    glossary = [
+        {"term": "A"},
+        {"term": "B", "parent": "A"},
+        {"term": "C", "parent": "B"},
+        {"term": "D", "parent": "C"},
+        {"term": "E", "parent": "A"},
+    ]
+    h = build_glossary_hierarchy(glossary)
+    assert set(h.descendants("A", max_depth=1)) == {"B", "E"}
+    assert set(h.descendants("A", max_depth=2)) == {"B", "E", "C"}
+    assert set(h.descendants("A", max_depth=3)) == {"B", "E", "C", "D"}
+    assert h.descendants("D") == []  # a leaf has none
+
+
+def test_descendants_cycle_safe() -> None:
+    h = build_glossary_hierarchy(
+        [{"term": "A", "parent": "B"}, {"term": "B", "parent": "A"}], validate=False
+    )
+    # Must terminate (no infinite loop) despite the cycle.
+    assert set(h.descendants("A")) == {"B"}
+
+
 def test_bare_string_entry_has_no_parent() -> None:
     h = build_glossary_hierarchy(_GLOSSARY)
     assert h.parent("PlainString") is None

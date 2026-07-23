@@ -118,6 +118,33 @@ class GlossaryHierarchy:
             current = self.parent(current)
         return chain
 
+    def descendants(self, term: str, max_depth: int = 3) -> list[str]:
+        """Known descendants of *term*, breadth-first, capped at *max_depth* levels.
+
+        Cycle-safe (a visited set bounds it even on an unvalidated graph). Used by
+        question-scoped glossary retrieval to surface a matched term's subtypes as
+        candidates (CG-2.2)."""
+        children: dict[str, list[str]] = {}
+        for t in self.parents:
+            p = self.parent(t)
+            if p is not None:
+                children.setdefault(p, []).append(t)
+        out: list[str] = []
+        seen: set[str] = {term}
+        frontier = [term]
+        for _ in range(max(0, max_depth)):
+            nxt: list[str] = []
+            for node in frontier:
+                for child in sorted(children.get(node, [])):
+                    if child not in seen:
+                        seen.add(child)
+                        out.append(child)
+                        nxt.append(child)
+            if not nxt:
+                break
+            frontier = nxt
+        return out
+
     def orphans(self) -> list[str]:
         """Terms whose declared parent is not itself a known term (dangling refs)."""
         return sorted(

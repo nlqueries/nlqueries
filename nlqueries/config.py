@@ -116,6 +116,17 @@ KB_PATH: Path = Path(os.getenv("KB_PATH", str(Path.home() / ".nlqueries" / "know
 KB_REFRESH_INTERVAL: int = int(os.getenv("KB_REFRESH_INTERVAL", "3600"))
 """How often (seconds) the knowledge base is refreshed from the source DB."""
 
+GLOSSARY_QUESTION_SCOPED: bool = os.getenv("NLQ_GLOSSARY_QUESTION_SCOPED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""When True (CG-2.2), glossary terms are injected **per question** — only terms
+the question mentions, plus their hierarchy ancestors (context) and descendants
+(candidates, depth 3) — instead of the whole glossary in the cached static block.
+Off by default: the full glossary ships in the static prompt exactly as before.
+Business rules are always injected in full regardless of this flag."""
+
 # ---------------------------------------------------------------------------
 # Connectors registry
 # ---------------------------------------------------------------------------
