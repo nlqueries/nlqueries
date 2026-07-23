@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from nlqueries.knowledge.concept_hierarchy import HierarchyError, build_glossary_hierarchy
+
 if TYPE_CHECKING:
     from nlqueries.connectors.base import DatabaseConnector
 
@@ -66,6 +68,13 @@ class KBStats:
     capsule_count: int = 0
     capsule_with_intent: int = 0
     joins_in_capsules: int = 0
+
+    # --- Glossary hierarchy (CG-2.1) ---
+    glossary_terms: int = 0
+    glossary_with_parent: int = 0
+    hierarchy_depth: int = 0  # longest ancestor chain (0 = flat)
+    glossary_orphans: int = 0  # terms whose parent: names an unknown term
+    glossary_has_cycle: bool = False
 
     # --- Join coverage (requires live DB for FK declarations) ---
     fk_joins: int | None = None
@@ -169,6 +178,24 @@ def compute_kb_stats(
     stats.joins_in_capsules = sum(
         len(_JOIN_RE.findall(cap.get("template") or "")) for cap in capsules
     )
+
+    # -------------------------------------------------------------------------
+    # Glossary hierarchy (CG-2.1)
+    # -------------------------------------------------------------------------
+    glossary: list[Any] = (kb.get("business_context", {}) or {}).get("glossary", []) or []
+    stats.glossary_terms = sum(
+        1 for e in glossary if (isinstance(e, dict) and e.get("term")) or isinstance(e, str)
+    )
+    stats.glossary_with_parent = sum(
+        1 for e in glossary if isinstance(e, dict) and str(e.get("parent") or "").strip()
+    )
+    try:
+        hierarchy = build_glossary_hierarchy(glossary, validate=True)
+    except HierarchyError:
+        stats.glossary_has_cycle = True
+        hierarchy = build_glossary_hierarchy(glossary, validate=False)
+    stats.hierarchy_depth = hierarchy.max_depth()
+    stats.glossary_orphans = len(hierarchy.orphans())
 
     # -------------------------------------------------------------------------
     # Live DB counts + FK join analysis (optional)

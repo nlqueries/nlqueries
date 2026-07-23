@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
+from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
 from nlqueries.processing.parameterizer import QueryCapsule
 
 # Column names that strongly indicate PII — sample values are never included.
@@ -229,6 +230,20 @@ def generate_knowledge_base(
         for cap in capsules
     ]
 
+    # Preserve hand-authored business context (glossary + rules, incl. any
+    # glossary `parent:` hierarchy) across regenerations — mirroring how manual
+    # table/column descriptions are preserved above. A cycle in the preserved
+    # glossary hierarchy is rejected here (CG-2.1); a flat glossary is unaffected.
+    business_context: dict[str, Any] = {"glossary": [], "rules": []}
+    if existing_kb and isinstance(existing_kb.get("business_context"), dict):
+        prev_bc = existing_kb["business_context"]
+        business_context = {
+            "glossary": prev_bc.get("glossary") or [],
+            "rules": prev_bc.get("rules") or [],
+            **{k: v for k, v in prev_bc.items() if k not in ("glossary", "rules")},
+        }
+        build_glossary_hierarchy(business_context["glossary"], validate=True)
+
     kb: dict[str, Any] = {
         "kb_version": 2,
         "db_name": schema.database,
@@ -236,10 +251,7 @@ def generate_knowledge_base(
             "tables": tables,
             "foreign_keys": foreign_keys,
         },
-        "business_context": {
-            "glossary": [],
-            "rules": [],
-        },
+        "business_context": business_context,
         "query_capsules": query_capsules,
     }
 
