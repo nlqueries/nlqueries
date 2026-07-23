@@ -2873,6 +2873,13 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
                 "capsule_with_intent": stats.capsule_with_intent,
                 "joins_in_capsules": stats.joins_in_capsules,
             },
+            "glossary_hierarchy": {
+                "glossary_terms": stats.glossary_terms,
+                "glossary_with_parent": stats.glossary_with_parent,
+                "hierarchy_depth": stats.hierarchy_depth,
+                "glossary_orphans": stats.glossary_orphans,
+                "glossary_has_cycle": stats.glossary_has_cycle,
+            },
             "join_coverage": {
                 "fk_joins": stats.fk_joins,
                 "fk_joins_seen": stats.fk_joins_seen,
@@ -2971,6 +2978,24 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
         + (f"   ← {missing_intent} unannotated" if missing_intent else "")
     )
     console.print(f"  JOIN keywords in capsules : {stats.joins_in_capsules:>4}")
+
+    if stats.glossary_terms:
+        console.print()
+        console.print("[bold]Glossary hierarchy[/bold]")
+        console.print(f"  Glossary terms            : {stats.glossary_terms:>4}")
+        console.print(
+            f"  Terms with a parent       : {stats.glossary_with_parent:>4}"
+            f"   (max depth {stats.hierarchy_depth})"
+        )
+        if stats.glossary_orphans:
+            console.print(
+                f"  [yellow]Orphan terms (bad parent) : {stats.glossary_orphans:>4}"
+                "   ← parent names an unknown term[/yellow]"
+            )
+        if stats.glossary_has_cycle:
+            console.print(
+                "  [bold red]Hierarchy has a cycle[/bold red]   ← a term is its own ancestor"
+            )
 
     if stats.fk_joins is not None:
         console.print()

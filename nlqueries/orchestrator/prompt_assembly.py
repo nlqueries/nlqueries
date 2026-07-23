@@ -36,6 +36,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
 from nlqueries.orchestrator.provenance import record_capsule, record_prompt_section
 
 if TYPE_CHECKING:
@@ -393,11 +394,15 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
 
     lines: list[str] = ["## Business Context", ""]
     if glossary:
+        # Cycle-safe: a malformed hierarchy renders flat, never raises at query time.
+        hierarchy = build_glossary_hierarchy(glossary, validate=False)
         lines.append("### Glossary")
         for entry in glossary:
             if isinstance(entry, dict):
                 term = str(entry.get("term", ""))
-                lines.append(f"- {term}: {entry.get('definition', '')}")
+                parent = hierarchy.parent(term) if term else None
+                label = f"{term} (a kind of {parent})" if parent else term
+                lines.append(f"- {label}: {entry.get('definition', '')}")
                 if term:
                     record_prompt_section(f"glossary:{term}")  # provenance (SYL-1.1)
             else:

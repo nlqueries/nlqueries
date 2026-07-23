@@ -160,7 +160,7 @@ Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` repl
 
 ## kb-stats
 
-Structured coverage and quality report for the exported knowledge base: schema coverage, description coverage, query capsule / intent coverage, FK join coverage, cache entries, and feedback history.
+Structured coverage and quality report for the exported knowledge base: schema coverage, description coverage, query capsule / intent coverage, FK join coverage, glossary hierarchy, cache entries, and feedback history.
 
 ```bash
 nlqueries kb-stats <connector-or-alias>
@@ -169,6 +169,22 @@ nlqueries kb-stats <connector-or-alias> --json
 ```
 
 Exit code `0` if the KB exists, `1` if missing — useful as a CI gate before deployment. Works from the local KB file alone if the database is unreachable (DB-derived fields show `N/A`).
+
+### Glossary hierarchy
+
+A glossary term in the KB may carry an optional single `parent:` naming another term, giving a lightweight `is-a` hierarchy (`ActiveCustomer is-a Customer`). It is fully backward compatible — a glossary with no `parent:` keys behaves exactly as a flat list.
+
+```yaml
+business_context:
+  glossary:
+    - term: Customer
+      definition: A person or organization that has placed at least one order.
+    - term: ActiveCustomer
+      definition: A customer with an order in the last 90 days.
+      parent: Customer          # optional · single string · absent = a root term
+```
+
+When a term is injected into the SQL prompt, its parent is included as one line of context (`ActiveCustomer (a kind of Customer): …`). `kb-stats` reports the term count, how many declare a parent, the maximum hierarchy depth, and any **orphans** (a `parent:` that names a term which doesn't exist — allowed, treated as a root, and surfaced so you can fix the typo). A **cycle** (a term that is its own ancestor) is rejected when the KB is generated and flagged by `kb-stats`. Multiple inheritance is not supported — `parent:` is a single string.
 
 ---
 
