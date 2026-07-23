@@ -33,6 +33,7 @@ import yaml
 from nlqueries import config
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
+from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
 from nlqueries.orchestrator.sql_generation import _extract_sql, validate_and_repair
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
@@ -217,6 +218,8 @@ class Orchestrator:
             span.set_attribute("sql_valid", result.is_valid)
             span.set_attribute("attempt_count", result.attempt_count)
             span.set_attribute("intent_type", "sql")
+            if result.validation_error:
+                record_validator_warning(result.validation_error)  # provenance (SYL-1.1)
 
             # Execute the validated SQL and capture rows for the response.
             sql_table: dict[str, Any] = {}
@@ -244,6 +247,7 @@ class Orchestrator:
             elapsed_ms = time.perf_counter() * 1000 - start_ms
             query_counter.add(1, {"dialect": dialect, "agent_type": "sql"})
             query_latency.record(elapsed_ms, {"dialect": dialect, "agent_type": "sql"})
+            record_timing("sql_ms", elapsed_ms)  # provenance (SYL-1.1)
 
             yield json.dumps(
                 {

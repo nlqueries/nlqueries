@@ -414,6 +414,10 @@ class SemanticCache:
         """
         client = _get_client()
 
+        # Lazy import to avoid a cycle: the orchestrator package eagerly imports
+        # this module, so importing provenance at module top would be circular.
+        from nlqueries.orchestrator.provenance import record_cache  # noqa: PLC0415
+
         if not _collection_exists(client, self._collection):
             return None
 
@@ -452,6 +456,7 @@ class SemanticCache:
                     entry = self._payload_to_entry(payload)
                     if entry is not None:
                         entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
+                        record_cache(hit=True, tier="exact")  # provenance (SYL-1.1)
                         return entry
 
         # --- Tier 1: answer cache (cosine similarity, kind=answer filter) ---
@@ -473,6 +478,7 @@ class SemanticCache:
                 entry = self._payload_to_entry(payload)
                 if entry is not None:
                     entry.hit_count = self._increment_hit_count(client, hit.id, payload)
+                    record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
                     return entry
 
         # --- Tier 2: template cache (masked cosine similarity, kind=template) ---
@@ -522,6 +528,7 @@ class SemanticCache:
         entry.sql = bound_sql
         entry.hit_count = 0
         entry.kind = "template"
+        record_cache(hit=True, similarity=float(tmpl_hit.score), tier="template")  # SYL-1.1
         return entry
 
     def put(

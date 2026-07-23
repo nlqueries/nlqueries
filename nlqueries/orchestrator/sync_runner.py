@@ -41,6 +41,7 @@ from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_retrieval import Citation
 from nlqueries.orchestrator.followup_resolver import resolve_followup
 from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+from nlqueries.orchestrator.provenance import Provenance, use_provenance
 
 
 @dataclass
@@ -63,6 +64,11 @@ class AgentQueryResult:
     # it is a carrier so a wrapping layer and the CLI can surface the same
     # findings on the canonical result object.
     nexus_warnings: list[str] = field(default_factory=list)
+    # Answer provenance (SYL-1.1): how the answer was produced — route, capsules,
+    # KB parts injected, cache hit/miss, validator warnings, timings. Populated
+    # only when ``explain=True`` is passed to :func:`run_query`; ``None`` otherwise,
+    # so default behaviour is unchanged.
+    provenance: Provenance | None = None
 
 
 def _parse_final_chunk(
@@ -157,6 +163,7 @@ async def run_query(
     history: list[ConversationTurn] | None = None,
     timeout_seconds: float | None = None,
     extra_dynamic_context: str | None = None,
+    explain: bool = False,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -202,20 +209,25 @@ async def run_query(
     resolved = resolve_followup(question, history or [])
     resolved_question = resolved.resolved
 
-    # Drive the orchestrator to completion; collect every yielded token.
+    # Drive the orchestrator to completion; collect every yielded token. When
+    # ``explain`` is set, bind a provenance collector for the run so each
+    # orchestrator site records what it contributed (no-op / None otherwise, so
+    # behaviour is unchanged when not asked for).
     orchestrator = MultiAgentOrchestrator()
     tokens: list[str] = []
-    async for token in orchestrator.handle_question(
-        resolved_question,
-        agent_id,
-        available_types=list(available_types),
-        dialect=dialect,
-        history=None,  # already resolved above; avoids double LLM call
-        cache_key=question,  # original question — consistent key regardless of LLM rewrite
-        timeout_seconds=timeout_seconds,
-        extra_dynamic_context=extra_dynamic_context,
-    ):
-        tokens.append(token)
+    prov: Provenance | None = Provenance() if explain else None
+    with use_provenance(prov):
+        async for token in orchestrator.handle_question(
+            resolved_question,
+            agent_id,
+            available_types=list(available_types),
+            dialect=dialect,
+            history=None,  # already resolved above; avoids double LLM call
+            cache_key=question,  # original question — consistent key regardless of LLM rewrite
+            timeout_seconds=timeout_seconds,
+            extra_dynamic_context=extra_dynamic_context,
+        ):
+            tokens.append(token)
 
     # Split text tokens from the final structured chunk.
     text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache = (
@@ -226,6 +238,13 @@ async def run_query(
     answer = merged_answer if agent_type == "hybrid" and merged_answer else "".join(text_tokens)
 
     latency_ms = int((time.monotonic() - start) * 1000)
+    if prov is not None:
+        # The route is authoritative from the final chunk's agent_type; record the
+        # end-to-end wall-clock so timings has at least the total even when no
+        # sub-phase reported one.
+        if prov.route is None:
+            prov.route = agent_type
+        prov.timings.setdefault("total_ms", float(latency_ms))
 
     return AgentQueryResult(
         question=question,
@@ -239,6 +258,7 @@ async def run_query(
         latency_ms=latency_ms,
         session_id=session_id,
         from_cache=from_cache,
+        provenance=prov,
     )
 
 
