@@ -11,6 +11,7 @@ from nlqueries.connectors.base import (
 )
 from nlqueries.connectors.postgres import PostgresConnector
 from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
+from nlqueries.connectors.sqlite import SQLiteConnector
 
 # ---------------------------------------------------------------------------
 # Connector registry
@@ -26,6 +27,9 @@ from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
 CONNECTOR_REGISTRY: dict[str, type[DatabaseConnector]] = {
     "postgres": PostgresConnector,
     "sqlalchemy": SQLAlchemyConnector,
+    # SQLite ships with Python (stdlib ``sqlite3``), so it's always available —
+    # registered eagerly like postgres rather than behind an optional extra.
+    "sqlite": SQLiteConnector,
 }
 
 
@@ -76,6 +80,7 @@ __all__ = [
     "QueryRecord",
     "QueryResult",
     "SchemaSpec",
+    "SQLiteConnector",
     "TableSpec",
     "CONNECTOR_REGISTRY",
 ]
