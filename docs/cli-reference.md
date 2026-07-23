@@ -206,6 +206,27 @@ Conversational context is persisted per agent in `~/.nlqueries/sessions/` and ca
 
 ---
 
+## eval
+
+Regression-checks an agent's knowledge: re-asks each mined **query capsule** (and, with `--golden`, a golden question set), then checks that the generated SQL **parses** and **references only tables the agent knows**. Exits non-zero if any case fails, so it works as a CI gate.
+
+```bash
+nlqueries eval <connector-or-alias>
+nlqueries eval <connector-or-alias> --golden tests/golden/questions.yaml
+nlqueries eval <connector-or-alias> --json        # machine-readable per-case results
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--golden PATH` | none | A golden questions YAML (`- q: … / agent: … / expect_tables: […]`); cases scoped to this agent are added on top of the KB's capsules |
+| `--dialect` | `postgres` | SQL dialect used for generation + parsing (`postgres`, `snowflake`, `bigquery`) |
+| `--max-cases N` | `50` | Cap on cases evaluated per run |
+| `--json` | off | Emit JSON: `{total, passed, failed, cases: [{question, source, ok, reason, sql}]}` |
+
+Each case passes when the generated SQL parses as a `SELECT` referencing only known tables (CTE names excepted); golden cases additionally require their `expect_tables` to appear. This is the community check — the enterprise tier adds QueryGraph-shape drift classification (`same_shape` / `benign_diff` / `drift`).
+
+---
+
 ## ask
 
 Generates and validates SQL **without executing it** — no database connection is made. Use this to preview what SQL a question would produce.

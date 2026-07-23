@@ -2381,6 +2381,120 @@ def query(
 
 
 # ---------------------------------------------------------------------------
+# eval — community KB regression check (SYL-3.2)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("eval")
+@click.argument("agent_id")
+@click.option(
+    "--golden",
+    "golden_path",
+    default=None,
+    help="Golden questions YAML (adds cases scoped to this agent) on top of the KB's capsules.",
+)
+@click.option(
+    "--dialect",
+    default="postgres",
+    show_default=True,
+    type=click.Choice(["postgres", "snowflake", "bigquery"]),
+    help="SQL dialect used for generation + parsing.",
+)
+@click.option("--max-cases", default=50, show_default=True, help="Cap on cases per run.")
+@click.option("--json", "output_json", is_flag=True, default=False, help="Emit JSON.")
+def eval_cmd(
+    agent_id: str, golden_path: str | None, dialect: str, max_cases: int, output_json: bool
+) -> None:
+    """Regression-check an agent's knowledge.
+
+    \b
+    AGENT_ID  the agent whose KB (capsules) to re-ask
+
+    Re-asks each mined capsule (and, with --golden, a golden question set), then
+    checks the generated SQL **parses** and **references only tables the agent
+    knows**. Exits non-zero if any case fails — usable as a CI gate.
+
+    \b
+    Examples:
+      nlqueries eval my_agent
+      nlqueries eval my_agent --golden tests/golden/questions.yaml --json
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from nlqueries.kb_eval import build_cases, run_eval  # noqa: PLC0415
+    from nlqueries.orchestrator.sync_runner import run_query_sync  # noqa: PLC0415
+
+    agent_id = _resolve_alias(agent_id)
+    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    kb_path = KB_PATH / f"{safe_id}.yaml"
+    if not kb_path.exists():
+        err_console.print(
+            f"[bold red]✗ No knowledge base for agent {agent_id!r}[/bold red] "
+            f"({kb_path} not found — run export-kb first)."
+        )
+        sys.exit(1)
+
+    kb = yaml.safe_load(kb_path.read_text(encoding="utf-8")) or {}
+    golden = None
+    if golden_path:
+        golden = yaml.safe_load(Path(golden_path).read_text(encoding="utf-8")) or []
+
+    cases = build_cases(kb, agent_id, golden=golden, max_cases=max_cases)
+    if not cases:
+        err_console.print(
+            "[yellow]No cases to evaluate — the KB has no query capsules "
+            "(run process-history) and no --golden set was given.[/yellow]"
+        )
+        sys.exit(0)
+
+    def _generate(question: str) -> str | None:
+        try:
+            result = run_query_sync(question, agent_id, dialect=dialect)
+            sql: str | None = result.sql
+            return sql
+        except Exception:  # noqa: BLE001 — a generation failure is a case failure
+            return None
+
+    outcomes = run_eval(kb, cases, _generate, dialect=dialect)
+    passed = sum(1 for o in outcomes if o.ok)
+    failed = len(outcomes) - passed
+
+    if output_json:
+        console.print_json(
+            json.dumps(
+                {
+                    "agent_id": agent_id,
+                    "total": len(outcomes),
+                    "passed": passed,
+                    "failed": failed,
+                    "cases": [
+                        {
+                            "question": o.question,
+                            "source": o.source,
+                            "ok": o.ok,
+                            "reason": o.reason,
+                            "sql": o.sql,
+                        }
+                        for o in outcomes
+                    ],
+                }
+            )
+        )
+    else:
+        for outcome in outcomes:
+            if outcome.ok:
+                console.print(f"[green]✓[/green] [{outcome.source}] {outcome.question}")
+            else:
+                console.print(
+                    f"[red]✗[/red] [{outcome.source}] {outcome.question}\n"
+                    f"    [dim]{outcome.reason}[/dim]"
+                )
+        console.print(f"\n[bold]{passed}/{len(outcomes)} passed[/bold] ({failed} failed)")
+
+    sys.exit(1 if failed else 0)
+
+
+# ---------------------------------------------------------------------------
 # doc-sync-confluence
 # ---------------------------------------------------------------------------
 
