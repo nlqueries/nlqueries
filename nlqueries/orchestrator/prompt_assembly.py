@@ -33,10 +33,11 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
+from nlqueries.knowledge.concept_hierarchy import GlossaryHierarchy, build_glossary_hierarchy
 from nlqueries.orchestrator.provenance import record_capsule, record_prompt_section
 
 if TYPE_CHECKING:
@@ -132,6 +133,23 @@ def _append_extra_context(dynamic_context: str, extra: str | None) -> str:
     return f"{dynamic_context}\n\n{extra}" if dynamic_context else extra
 
 
+def _append_question_glossary(
+    dynamic_context: str, question: str, knowledge_base: dict[str, Any]
+) -> str:
+    """Append the question-scoped glossary block when the flag is on (CG-2.2).
+
+    A no-op unless ``GLOSSARY_QUESTION_SCOPED`` is set (default off), in which
+    case the glossary was omitted from the static block and is rendered here,
+    filtered to the terms this question is about plus their hierarchy neighbours.
+    """
+    from nlqueries import config as _cfg  # noqa: PLC0415
+
+    if not _cfg.GLOSSARY_QUESTION_SCOPED:
+        return dynamic_context
+    section = _build_question_glossary_section(question, knowledge_base)
+    return _append_extra_context(dynamic_context, section)
+
+
 def assemble_prompt(
     question: str,
     knowledge_base: dict[str, Any],
@@ -184,6 +202,7 @@ def assemble_prompt(
     dynamic_context = _build_dynamic_context(
         question, knowledge_base, top_k_capsules, collection, question_vector
     )
+    dynamic_context = _append_question_glossary(dynamic_context, question, knowledge_base)
     dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
 
     return AssembledPrompt(
@@ -242,6 +261,7 @@ async def assemble_prompt_async(
     dynamic_context = await _build_dynamic_context_async(
         question, knowledge_base, top_k_capsules, collection, question_vector
     )
+    dynamic_context = _append_question_glossary(dynamic_context, question, knowledge_base)
     dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
 
     return AssembledPrompt(
@@ -346,7 +366,11 @@ def _build_static_system(knowledge_base: dict[str, Any]) -> str:
 
     if schema_section:
         parts.append(schema_section)
-    business_section = _build_business_context_section(knowledge_base)
+    # In question-scoped mode (CG-2.2) the glossary moves to the per-question
+    # dynamic block; keep rules here. Off by default → full glossary stays static.
+    business_section = _build_business_context_section(
+        knowledge_base, include_glossary=not _cfg.GLOSSARY_QUESTION_SCOPED
+    )
     if business_section:
         parts.append(business_section)
     parts.append(_SQL_FORMAT_RULES)
@@ -384,10 +408,41 @@ def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
-    """Return a formatted Markdown section for glossary and business rules."""
+def _entry_term(entry: Any) -> str | None:
+    """The term name of a glossary entry (dict with ``term`` or a bare string)."""
+    if isinstance(entry, dict):
+        term = str(entry.get("term", "")).strip()
+        return term or None
+    if isinstance(entry, str):
+        return entry.strip() or None
+    return None
+
+
+def _render_glossary_line(
+    entry: Any, hierarchy: GlossaryHierarchy, *, provenance_prefix: str = "glossary"
+) -> str:
+    """One glossary bullet, with parent context, recording a provenance tag."""
+    if isinstance(entry, dict):
+        term = str(entry.get("term", ""))
+        parent = hierarchy.parent(term) if term else None
+        label = f"{term} (a kind of {parent})" if parent else term
+        if term:
+            record_prompt_section(f"{provenance_prefix}:{term}")  # provenance (SYL-1.1)
+        return f"- {label}: {entry.get('definition', '')}"
+    return f"- {entry}"
+
+
+def _build_business_context_section(
+    knowledge_base: dict[str, Any], *, include_glossary: bool = True
+) -> str:
+    """Return a formatted Markdown section for glossary and business rules.
+
+    When *include_glossary* is False (question-scoped mode, CG-2.2), the glossary
+    is omitted here and rendered per-question in the dynamic block instead; rules
+    are always included.
+    """
     biz: dict[str, Any] = knowledge_base.get("business_context", {})
-    glossary: list[Any] = biz.get("glossary", [])
+    glossary: list[Any] = biz.get("glossary", []) if include_glossary else []
     rules: list[Any] = biz.get("rules", [])
     if not glossary and not rules:
         return ""
@@ -398,15 +453,7 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
         hierarchy = build_glossary_hierarchy(glossary, validate=False)
         lines.append("### Glossary")
         for entry in glossary:
-            if isinstance(entry, dict):
-                term = str(entry.get("term", ""))
-                parent = hierarchy.parent(term) if term else None
-                label = f"{term} (a kind of {parent})" if parent else term
-                lines.append(f"- {label}: {entry.get('definition', '')}")
-                if term:
-                    record_prompt_section(f"glossary:{term}")  # provenance (SYL-1.1)
-            else:
-                lines.append(f"- {entry}")
+            lines.append(_render_glossary_line(entry, hierarchy))
         lines.append("")
     if rules:
         lines.append("### Business Rules")
@@ -414,6 +461,52 @@ def _build_business_context_section(knowledge_base: dict[str, Any]) -> str:
             lines.append(f"- {rule}")
             record_prompt_section(f"rule:{str(rule)[:60]}")  # provenance (SYL-1.1)
         lines.append("")
+    return "\n".join(lines)
+
+
+def _term_in_question(term: str, question_lower: str) -> bool:
+    """True when *term* appears in the (lower-cased) question on word boundaries."""
+    if not term:
+        return False
+    return re.search(rf"\b{re.escape(term.lower())}\b", question_lower) is not None
+
+
+def _build_question_glossary_section(question: str, knowledge_base: dict[str, Any]) -> str:
+    """Question-scoped glossary block (CG-2.2).
+
+    Selects glossary terms the question mentions, then expands with their
+    hierarchy **ancestors** (broader context) and **descendants** (narrower
+    candidates, depth 3). Directly-matched terms record ``glossary:<term>``
+    provenance; terms pulled in via the hierarchy record ``glossary_hier:<term>``
+    so the explanation tree can distinguish them. Returns "" when the question
+    mentions no glossary term (nothing relevant to inject).
+    """
+    biz: dict[str, Any] = knowledge_base.get("business_context", {})
+    glossary: list[Any] = biz.get("glossary", [])
+    if not glossary:
+        return ""
+
+    hierarchy = build_glossary_hierarchy(glossary, validate=False)
+    known_terms = {t for t in (_entry_term(e) for e in glossary) if t}
+    question_lower = question.lower()
+    matched = {t for t in known_terms if _term_in_question(t, question_lower)}
+    if not matched:
+        return ""
+
+    # term -> directly matched? (hierarchy-surfaced terms default to False)
+    selected: dict[str, bool] = {t: True for t in matched}
+    for t in matched:
+        for rel in (*hierarchy.ancestors(t), *hierarchy.descendants(t, max_depth=3)):
+            selected.setdefault(rel, False)
+
+    lines: list[str] = ["## Business Context (relevant to your question)", "", "### Glossary"]
+    for entry in glossary:  # keep KB order for stability
+        term = _entry_term(entry)
+        if term is None or term not in selected:
+            continue
+        prefix = "glossary" if selected[term] else "glossary_hier"
+        lines.append(_render_glossary_line(entry, hierarchy, provenance_prefix=prefix))
+    lines.append("")
     return "\n".join(lines)
 
 

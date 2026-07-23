@@ -33,6 +33,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `NLQ_CACHE_ANSWER_THRESHOLD` | No | `0.97` | Cosine similarity threshold for the Tier 1 answer cache. Questions within this distance of a cached question get the cached answer directly. |
 | `NLQ_CACHE_TEMPLATE_THRESHOLD` | No | `0.90` | Cosine similarity threshold for the Tier 2 template cache. |
 | `NLQ_EXPLAIN_VALIDATION` | No | `false` | When `true`, runs `EXPLAIN` on the final generated SQL via the connector to validate query plans before returning an answer. |
+| `NLQ_GLOSSARY_QUESTION_SCOPED` | No | `false` | When `true`, glossary terms are injected **per question** — only terms the question mentions, plus their [hierarchy](cli-reference.md#glossary-hierarchy) ancestors and descendants (depth 3) — instead of the whole glossary in the cached static prompt. Business rules are always injected in full. Off by default (the full glossary ships in the static block, exactly as before). |
 
 **Windows note:** `~` in default paths resolves to `C:\Users\<YourUsername>` in PowerShell. To set a variable for the current session use `$env:VAR = "value"`; to persist it, use **System Properties → Environment Variables** or add it to your PowerShell profile.
 

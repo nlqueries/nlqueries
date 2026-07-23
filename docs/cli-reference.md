@@ -193,6 +193,8 @@ business_context:
 
 When a term is injected into the SQL prompt, its parent is included as one line of context (`ActiveCustomer (a kind of Customer): …`). `kb-stats` reports the term count, how many declare a parent, the maximum hierarchy depth, and any **orphans** (a `parent:` that names a term which doesn't exist — allowed, treated as a root, and surfaced so you can fix the typo). A **cycle** (a term that is its own ancestor) is rejected when the KB is generated and flagged by `kb-stats`. Multiple inheritance is not supported — `parent:` is a single string.
 
+By default the whole glossary is injected into every prompt. Setting `NLQ_GLOSSARY_QUESTION_SCOPED=true` (see [configuration.md](configuration.md)) switches to **question-scoped** injection: only terms the question mentions are included, expanded with their hierarchy ancestors (for context) and descendants (as related candidates, up to depth 3). Business rules are always injected in full.
+
 ---
 
 ## annotate
