@@ -283,3 +283,43 @@ def test_extract_query_history_returns_empty_list_when_extension_missing(connect
 
     assert history == []
     assert any("pg_stat_statements" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# list_security_policies (RLS introspection — Block G)
+# ---------------------------------------------------------------------------
+
+
+def test_list_security_policies_finds_rls_policies(connector):
+    # Create a table with two RLS policies against the real database.
+    setup = [
+        "DROP TABLE IF EXISTS rls_orders",
+        "CREATE TABLE rls_orders (id SERIAL PRIMARY KEY, region TEXT, amount NUMERIC)",
+        "ALTER TABLE rls_orders ENABLE ROW LEVEL SECURITY",
+        "CREATE POLICY emea_only ON rls_orders USING (region = 'EMEA')",
+        # A WITH CHECK-only (write-time) policy has no USING clause → must be skipped.
+        "CREATE POLICY insert_guard ON rls_orders FOR INSERT WITH CHECK (amount > 0)",
+    ]
+    for stmt in setup:
+        assert connector.execute_query(stmt).error is None, stmt
+
+    report = connector.list_security_policies()
+    assert report.supported is True
+    by_name = {p.name: p for p in report.policies if p.table == "rls_orders"}
+
+    assert "emea_only" in by_name
+    emea = by_name["emea_only"]
+    assert emea.kind == "row"
+    assert emea.table_schema == "public"
+    assert "region" in emea.expression and "EMEA" in emea.expression
+    # The WITH CHECK-only policy has no read predicate → not surfaced.
+    assert "insert_guard" not in by_name
+
+    connector.execute_query("DROP TABLE IF EXISTS rls_orders")
+
+
+def test_list_security_policies_empty_when_no_policies(seeded_connector):
+    report = seeded_connector.list_security_policies()
+    assert report.supported is True
+    # The seeded schema (customers/orders/order_items) has no RLS policies.
+    assert all(p.table not in {"customers", "orders", "order_items"} for p in report.policies)

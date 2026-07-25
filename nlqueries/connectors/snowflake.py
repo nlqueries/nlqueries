@@ -18,11 +18,15 @@ import snowflake.connector
 
 from nlqueries import config
 from nlqueries.connectors.base import (
+    POLICY_COLUMN,
+    POLICY_ROW,
     ColumnSpec,
     DatabaseConnector,
     QueryRecord,
     QueryResult,
     SchemaSpec,
+    SecurityPolicy,
+    SecurityPolicyReport,
     TableSpec,
 )
 
@@ -417,6 +421,65 @@ class SnowflakeConnector(DatabaseConnector):
                 execution_time_ms=elapsed_ms,
                 error=str(exc),
             )
+
+    def list_security_policies(self) -> SecurityPolicyReport:
+        """Introspect Snowflake row-access + masking policies via ``ACCOUNT_USAGE``.
+
+        Uses ``SNOWFLAKE.ACCOUNT_USAGE.POLICY_REFERENCES``, which lists every place
+        a policy is attached, scoped here to the connected database. A **masking
+        policy** maps cleanly to a column exclusion, so it becomes a
+        :data:`POLICY_COLUMN` policy naming the masked column. A **row-access
+        policy** is an opaque SQL function whose body we do not fetch here, so it
+        becomes a :data:`POLICY_ROW` policy with an empty ``expression`` — the
+        caller treats an empty expression as "cannot translate, review manually",
+        which is the safe default for a security policy (never guess a predicate).
+
+        Reading ``ACCOUNT_USAGE`` needs ``IMPORTED PRIVILEGES`` on the ``SNOWFLAKE``
+        database; without it (or on any read error) this degrades to an empty but
+        supported report rather than raising.
+
+        NOTE: pending validation against a live Snowflake account (Block G entry
+        criterion) — the ``ACCOUNT_USAGE`` column names follow Snowflake's
+        documented ``POLICY_REFERENCES`` view.
+        """
+        connection = self._require_connection()
+        database = self._database or ""
+        try:
+            rows = self._query(
+                connection,
+                "SELECT POLICY_NAME, POLICY_KIND, REF_SCHEMA_NAME, REF_ENTITY_NAME, "
+                "REF_COLUMN_NAME "
+                "FROM SNOWFLAKE.ACCOUNT_USAGE.POLICY_REFERENCES "
+                f"WHERE REF_DATABASE_NAME = '{database}'",
+            )
+        except Exception:  # noqa: BLE001 — ACCOUNT_USAGE may be ungranted; degrade to empty
+            logger.warning(
+                "SnowflakeConnector.list_security_policies: POLICY_REFERENCES unavailable "
+                "(needs IMPORTED PRIVILEGES on the SNOWFLAKE database).",
+                exc_info=True,
+            )
+            return SecurityPolicyReport(supported=True, policies=[])
+
+        policies: list[SecurityPolicy] = []
+        for row in rows:
+            schema = str(row.get("REF_SCHEMA_NAME") or "")
+            if schema in _SYSTEM_SCHEMAS:
+                continue
+            is_masking = str(row.get("POLICY_KIND") or "").upper() == "MASKING_POLICY"
+            column = row.get("REF_COLUMN_NAME")
+            policies.append(
+                SecurityPolicy(
+                    name=str(row.get("POLICY_NAME") or ""),
+                    kind=POLICY_COLUMN if is_masking else POLICY_ROW,
+                    table_schema=schema,
+                    table=str(row.get("REF_ENTITY_NAME") or ""),
+                    columns=[str(column)] if (is_masking and column) else [],
+                    # bodies aren't fetched → the caller marks row policies untranslatable
+                    expression="",
+                    roles=[],
+                )
+            )
+        return SecurityPolicyReport(supported=True, policies=policies)
 
 
 def _in_clause(values: tuple[str, ...]) -> str:
