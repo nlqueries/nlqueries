@@ -133,6 +133,45 @@ def describe_columns(
     }
 
 
+#: Provenance of a table/column description, ranked so a re-sync knows what it
+#: may overwrite (Block C). ``manual`` is a human edit and is never overwritten;
+#: a legacy description with no recorded source is treated as ``manual`` so an
+#: upgrade or a first dbt sync never clobbers existing content.
+SOURCE_MANUAL = "manual"
+SOURCE_DBT = "dbt"
+SOURCE_SCHEMA = "schema"
+SOURCE_LLM = "llm"
+
+
+def _resolve_description(
+    *,
+    existing_desc: str,
+    existing_source: str,
+    dbt_desc: str,
+    schema_desc: str,
+    llm_desc: str,
+) -> tuple[str, str]:
+    """Pick a description + its source under the Block C precedence.
+
+    ``manual edit > dbt doc > db schema > LLM-generated``. A manual (or
+    legacy-untracked) existing description wins outright. Otherwise the highest
+    *fresh* source available is taken, so a dbt sync updates dbt/schema/llm
+    fields but a dropped dbt doc falls back rather than sticking. When nothing
+    fresh is available the prior value is preserved.
+    """
+    if existing_desc and existing_source in ("", SOURCE_MANUAL):
+        return existing_desc, SOURCE_MANUAL
+    if dbt_desc:
+        return dbt_desc, SOURCE_DBT
+    if schema_desc:
+        return schema_desc, SOURCE_SCHEMA
+    if llm_desc:
+        return llm_desc, SOURCE_LLM
+    if existing_desc:
+        return existing_desc, existing_source or SOURCE_MANUAL
+    return "", ""
+
+
 def generate_knowledge_base(
     schema: SchemaSpec,
     capsules: list[QueryCapsule],
@@ -141,6 +180,7 @@ def generate_knowledge_base(
     embed: bool = False,
     llm_column_descriptions: dict[str, dict[str, str]] | None = None,
     column_samples: dict[str, dict[str, list[str]]] | None = None,
+    dbt_docs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a structured knowledge-base dict from a schema and query capsules.
 
@@ -152,6 +192,13 @@ def generate_knowledge_base(
     mapping produced by :func:`describe_columns`), those descriptions fill columns
     that have no existing manual description and no description from the DB schema.
 
+    When *dbt_docs* is supplied (``{table_name: DbtTableDoc}`` from
+    :func:`nlqueries.knowledge.dbt_importer.parse_dbt_docs`), dbt model/column
+    docs are merged in with source ``dbt`` — above the DB schema and LLM
+    descriptions but below a human edit (Block C). Each description records its
+    provenance in a ``description_source`` field so a later dbt sync updates only
+    dbt-sourced fields.
+
     When *embed* is ``True``, table and column descriptions are also upserted
     into the Qdrant collection ``agent_{agent_name}_schema`` (Qdrant must be
     reachable).
@@ -162,42 +209,60 @@ def generate_knowledge_base(
     skipped.
     """
     existing_table_descs: dict[str, str] = {}
+    existing_table_srcs: dict[str, str] = {}
     existing_col_descs: dict[str, dict[str, str]] = {}
+    existing_col_srcs: dict[str, dict[str, str]] = {}
 
     if existing_kb:
         for tbl in existing_kb.get("schema", {}).get("tables", []):
             tname = tbl.get("name", "")
             if tbl.get("description"):
                 existing_table_descs[tname] = tbl["description"]
+                existing_table_srcs[tname] = str(tbl.get("description_source") or "")
             col_descs: dict[str, str] = {}
+            col_srcs: dict[str, str] = {}
             for col in tbl.get("columns", []):
                 cname = col.get("name", "")
                 if col.get("description"):
                     col_descs[cname] = col["description"]
+                    col_srcs[cname] = str(col.get("description_source") or "")
             if col_descs:
                 existing_col_descs[tname] = col_descs
+                existing_col_srcs[tname] = col_srcs
 
     llm_descs = llm_column_descriptions or {}
     col_samples_map = column_samples or {}
+    dbt = dbt_docs or {}
 
     # Collect foreign-key relationships for the M-Schema FK section.
     foreign_keys: list[dict[str, str]] = []
 
     tables = []
     for table in schema.tables:
-        table_desc = existing_table_descs.get(table.name) or table.description or ""
+        dbt_table = dbt.get(table.name)
+        dbt_table_desc = getattr(dbt_table, "description", "") if dbt_table is not None else ""
+        dbt_cols = getattr(dbt_table, "columns", {}) if dbt_table is not None else {}
+        table_desc, table_src = _resolve_description(
+            existing_desc=existing_table_descs.get(table.name, ""),
+            existing_source=existing_table_srcs.get(table.name, ""),
+            dbt_desc=dbt_table_desc,
+            schema_desc=table.description or "",
+            llm_desc="",
+        )
         columns = []
         for col in table.columns:
-            col_desc = (
-                existing_col_descs.get(table.name, {}).get(col.name)
-                or col.description
-                or llm_descs.get(table.name, {}).get(col.name)
-                or ""
+            col_desc, col_src = _resolve_description(
+                existing_desc=existing_col_descs.get(table.name, {}).get(col.name, ""),
+                existing_source=existing_col_srcs.get(table.name, {}).get(col.name, ""),
+                dbt_desc=dbt_cols.get(col.name, "") if isinstance(dbt_cols, dict) else "",
+                schema_desc=col.description or "",
+                llm_desc=llm_descs.get(table.name, {}).get(col.name, "") or "",
             )
             col_dict: dict[str, Any] = {
                 "name": col.name,
                 "type": col.type,
                 "description": col_desc,
+                "description_source": col_src,
                 "is_primary_key": col.is_primary_key,
                 "is_foreign_key": col.is_foreign_key,
                 "references": col.references,
@@ -216,6 +281,7 @@ def generate_knowledge_base(
             {
                 "name": table.name,
                 "description": table_desc,
+                "description_source": table_src,
                 "row_count": table.row_count,
                 "columns": columns,
             }

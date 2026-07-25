@@ -165,6 +165,25 @@ Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` repl
 
 ---
 
+## import-dbt
+
+Merge a dbt project's model and column documentation into a knowledge base. If your data is modelled in dbt, its docs are usually better than anything generated from the schema alone — this grounds the KB in them without a `dbt-core` dependency (it reads the artifacts with stdlib JSON only).
+
+```bash
+nlqueries import-dbt <artifacts> --kb kb.yaml [--output merged.yaml]
+```
+
+`<artifacts>` is a dbt target directory (containing `manifest.json`, and `semantic_manifest.json` if the project uses the Semantic Layer) or a `manifest.json` file directly.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--kb` | *(required)* | KB YAML to merge dbt docs into (created if missing) |
+| `--output` / `-o` | the `--kb` path (in place) | Where to write the merged KB |
+
+Descriptions merge with source precedence **manual edit > dbt doc > database schema > LLM-generated**, recorded per field in `description_source`. A human edit is never overwritten, and a later re-import updates only dbt-sourced fields. Semantic-layer metrics are listed in the output (they map to Beacons in the enterprise Nexus UI), not written to the KB.
+
+---
+
 ## kb-stats
 
 Structured coverage and quality report for the exported knowledge base: schema coverage, description coverage, query capsule / intent coverage, FK join coverage, glossary hierarchy, cache entries, and feedback history.
