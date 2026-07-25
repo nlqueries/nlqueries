@@ -1808,6 +1808,94 @@ def export_kb(
 
 
 # ---------------------------------------------------------------------------
+# import-dbt
+# ---------------------------------------------------------------------------
+
+
+@cli.command("import-dbt")
+@click.argument("artifacts", type=click.Path(exists=True))
+@click.option(
+    "--kb",
+    "kb_path",
+    required=True,
+    type=click.Path(dir_okay=False),
+    help="Knowledge-base YAML to merge dbt docs into (created if it does not exist).",
+)
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    type=click.Path(dir_okay=False, writable=True),
+    help="Where to write the merged KB. Defaults to the --kb path (in place).",
+)
+def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
+    """Merge dbt model/column docs into a knowledge base (KB-side only).
+
+    ARTIFACTS is a dbt target directory (containing manifest.json and, if the
+    project uses the Semantic Layer, semantic_manifest.json) or a manifest.json
+    file directly. dbt docs are merged with source precedence
+    manual > dbt > schema > llm, so a human edit is never overwritten and a
+    re-import updates only dbt-sourced fields. Semantic-layer metrics are listed
+    but not written to the KB (Beacon mapping is an enterprise concern).
+    """
+    import yaml
+
+    from nlqueries.knowledge.dbt_importer import load_dbt_artifacts
+
+    docs, metrics = load_dbt_artifacts(artifacts)
+    if not docs and not metrics:
+        click.echo("No dbt docs or metrics found in the given artifacts.")
+        return
+
+    kb_file = Path(kb_path)
+    kb: dict[str, Any] = {}
+    if kb_file.exists():
+        loaded = yaml.safe_load(kb_file.read_text(encoding="utf-8"))
+        kb = loaded if isinstance(loaded, dict) else {}
+
+    tables = (kb.get("schema") or {}).get("tables") or []
+    matched = 0
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        doc = docs.get(str(table.get("name") or ""))
+        if doc is None:
+            continue
+        matched += 1
+        # A dbt doc outranks schema/llm but never a manual (or legacy) edit —
+        # same rule for the table description and every column (Block C).
+        t_src = str(table.get("description_source") or "")
+        if doc.description and not (table.get("description") and t_src in ("manual", "")):
+            table["description"] = doc.description
+            table["description_source"] = "dbt"
+        for col in table.get("columns") or []:
+            if not isinstance(col, dict):
+                continue
+            col_doc = doc.columns.get(str(col.get("name") or ""))
+            if not col_doc:
+                continue
+            src = str(col.get("description_source") or "")
+            if col.get("description") and src in ("manual", ""):
+                continue  # a human edit (or legacy) is never overwritten
+            col["description"] = col_doc
+            col["description_source"] = "dbt"
+
+    out_file = Path(output) if output else kb_file
+    out_file.write_text(yaml.safe_dump(kb, sort_keys=False), encoding="utf-8")
+
+    click.echo(
+        f"Merged dbt docs for {matched} of {len(tables)} tables into {out_file}.\n"
+        f"Found {len(docs)} documented models and {len(metrics)} metrics "
+        f"({sum(1 for m in metrics if m.column)} resolved to a measure)."
+    )
+    if metrics:
+        click.echo("Metrics (map to Beacons in the enterprise UI):")
+        for m in metrics:
+            target = f"{m.agg}({m.column})" if m.column else (m.expression or "derived")
+            click.echo(f"  - {m.name}: {target}")
+
+
+# ---------------------------------------------------------------------------
 # annotate
 # ---------------------------------------------------------------------------
 

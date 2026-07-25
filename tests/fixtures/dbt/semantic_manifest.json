@@ -1,0 +1,33 @@
+{
+  "semantic_models": [
+    {
+      "name": "orders",
+      "node_relation": { "alias": "orders", "schema_name": "finance" },
+      "measures": [
+        { "name": "order_total", "agg": "sum", "expr": "amount" },
+        { "name": "order_count", "agg": "count", "expr": "order_id" }
+      ],
+      "entities": [{ "name": "order", "type": "primary", "expr": "order_id" }]
+    }
+  ],
+  "metrics": [
+    {
+      "name": "revenue",
+      "label": "Revenue",
+      "type": "simple",
+      "type_params": { "measure": { "name": "order_total" } }
+    },
+    {
+      "name": "total_orders",
+      "label": "Total Orders",
+      "type": "simple",
+      "type_params": { "measure": "order_count" }
+    },
+    {
+      "name": "revenue_growth",
+      "label": "Revenue Growth",
+      "type": "derived",
+      "type_params": { "expr": "revenue / revenue_prev" }
+    }
+  ]
+}
