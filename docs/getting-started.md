@@ -264,12 +264,14 @@ The Docker Compose stack runs an MCP server on port 8080. See [cli-reference.md]
 import asyncio
 from nlqueries.orchestrator.sync_runner import run_query
 
+
 async def main() -> None:
     result = await run_query(
         question="How many orders last month?",
-        agent_id="postgres:localhost:mydb",   # connector ID or alias
+        agent_id="postgres:localhost:mydb",  # connector ID or alias
     )
     print(result.answer, result.sql, result.agent_type)
+
 
 asyncio.run(main())
 ```
