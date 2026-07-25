@@ -19,11 +19,14 @@ from sqlalchemy.engine import URL, Engine
 
 from nlqueries import config
 from nlqueries.connectors.base import (
+    POLICY_ROW,
     ColumnSpec,
     DatabaseConnector,
     QueryRecord,
     QueryResult,
     SchemaSpec,
+    SecurityPolicy,
+    SecurityPolicyReport,
     TableSpec,
 )
 from nlqueries.telemetry import get_tracer
@@ -419,6 +422,64 @@ class PostgresConnector(DatabaseConnector):
                     execution_time_ms=elapsed_ms,
                     error=str(exc),
                 )
+
+    def list_security_policies(self) -> SecurityPolicyReport:
+        """Introspect Postgres Row-Level Security policies via ``pg_catalog.pg_policies``.
+
+        Each policy's ``USING`` predicate (``qual``) becomes a :data:`POLICY_ROW`
+        policy the caller can translate to a row filter. ``pg_policies`` shows only
+        policies on tables the connection role can see, and is world-readable, so
+        this degrades to an empty (but supported) report on any read error rather
+        than raising. Policies with no ``USING`` clause (``WITH CHECK`` only, i.e.
+        write-time policies) are skipped — they don't restrict reads.
+        """
+        policies: list[SecurityPolicy] = []
+        try:
+            engine = self._require_engine()
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        """
+                        SELECT schemaname, tablename, policyname, roles, qual
+                        FROM pg_catalog.pg_policies
+                        WHERE schemaname NOT IN :system_schemas
+                        ORDER BY schemaname, tablename, policyname
+                        """
+                    ),
+                    {"system_schemas": _SYSTEM_SCHEMAS},
+                )
+                for row in rows.mappings():
+                    qual = row["qual"]
+                    if not qual:  # WITH CHECK-only policy — doesn't restrict reads
+                        continue
+                    policies.append(
+                        SecurityPolicy(
+                            name=row["policyname"],
+                            kind=POLICY_ROW,
+                            table_schema=row["schemaname"],
+                            table=row["tablename"],
+                            columns=[],
+                            expression=str(qual),
+                            roles=_pg_roles(row["roles"]),
+                        )
+                    )
+        except Exception:  # noqa: BLE001 — introspection is best-effort; degrade to empty
+            logger.warning("PostgresConnector.list_security_policies failed", exc_info=True)
+            return SecurityPolicyReport(supported=True, policies=[])
+        return SecurityPolicyReport(supported=True, policies=policies)
+
+
+def _pg_roles(raw: Any) -> list[str]:
+    """Normalise the ``pg_policies.roles`` value (a Postgres text[]) to a list.
+
+    The driver may hand it back as a Python list already, or as the raw array
+    literal ``{role_a,role_b}`` / ``{public}``; handle both.
+    """
+    if isinstance(raw, list):
+        return [str(r) for r in raw]
+    if isinstance(raw, str):
+        return [r for r in raw.strip("{}").split(",") if r]
+    return []
 
 
 def _utc_now_iso() -> str:

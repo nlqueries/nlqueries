@@ -2,11 +2,15 @@
 # This package must NEVER import from the enterprise layer.
 
 from nlqueries.connectors.base import (
+    POLICY_COLUMN,
+    POLICY_ROW,
     ColumnSpec,
     DatabaseConnector,
     QueryRecord,
     QueryResult,
     SchemaSpec,
+    SecurityPolicy,
+    SecurityPolicyReport,
     TableSpec,
 )
 from nlqueries.connectors.postgres import PostgresConnector
@@ -83,4 +87,8 @@ __all__ = [
     "SQLiteConnector",
     "TableSpec",
     "CONNECTOR_REGISTRY",
+    "POLICY_ROW",
+    "POLICY_COLUMN",
+    "SecurityPolicy",
+    "SecurityPolicyReport",
 ]

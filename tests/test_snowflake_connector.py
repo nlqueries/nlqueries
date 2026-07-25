@@ -414,3 +414,66 @@ def test_extract_query_history_returns_empty_list_when_both_sources_fail(caplog)
 
     assert history == []
     assert any("returning an empty query history" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# list_security_policies (row-access + masking introspection — Block G)
+# ---------------------------------------------------------------------------
+
+
+def test_list_security_policies_maps_masking_and_row_access():
+    connector, _ = _connector_with_mock_connection()
+    refs = [
+        {
+            "POLICY_NAME": "mask_email",
+            "POLICY_KIND": "MASKING_POLICY",
+            "REF_SCHEMA_NAME": "PUBLIC",
+            "REF_ENTITY_NAME": "CUSTOMERS",
+            "REF_COLUMN_NAME": "EMAIL",
+        },
+        {
+            "POLICY_NAME": "region_rap",
+            "POLICY_KIND": "ROW_ACCESS_POLICY",
+            "REF_SCHEMA_NAME": "PUBLIC",
+            "REF_ENTITY_NAME": "ORDERS",
+            "REF_COLUMN_NAME": None,
+        },
+        # A policy on the INFORMATION_SCHEMA is a system artifact → skipped.
+        {
+            "POLICY_NAME": "sys",
+            "POLICY_KIND": "MASKING_POLICY",
+            "REF_SCHEMA_NAME": "INFORMATION_SCHEMA",
+            "REF_ENTITY_NAME": "X",
+            "REF_COLUMN_NAME": "Y",
+        },
+    ]
+    with patch.object(SnowflakeConnector, "_query", return_value=refs):
+        report = connector.list_security_policies()
+
+    assert report.supported is True
+    by_name = {p.name: p for p in report.policies}
+    assert set(by_name) == {"mask_email", "region_rap"}  # system schema dropped
+
+    mask = by_name["mask_email"]
+    assert mask.kind == "column"
+    assert mask.columns == ["EMAIL"]
+    assert mask.table == "CUSTOMERS"
+
+    rap = by_name["region_rap"]
+    assert rap.kind == "row"
+    assert rap.columns == []
+    # Row-access bodies aren't fetched → empty expression → caller marks untranslatable.
+    assert rap.expression == ""
+
+
+def test_list_security_policies_degrades_when_account_usage_unavailable(caplog):
+    connector, _ = _connector_with_mock_connection()
+    with (
+        caplog.at_level(logging.WARNING, logger="nlqueries.connectors.snowflake"),
+        patch.object(SnowflakeConnector, "_query", side_effect=RuntimeError("not granted")),
+    ):
+        report = connector.list_security_policies()
+
+    assert report.supported is True
+    assert report.policies == []
+    assert any("POLICY_REFERENCES unavailable" in r.message for r in caplog.records)

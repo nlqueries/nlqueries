@@ -52,6 +52,31 @@ def test_subclass_implementing_all_methods_can_be_instantiated(missing_methods, 
     assert connector.test_connection() is True
 
 
+def test_list_security_policies_defaults_to_unsupported():
+    """A connector that doesn't override the optional capability reports it
+    unsupported (empty), so introspection is safe to call on any connector."""
+
+    class MinimalConnector(DatabaseConnector):
+        def connect(self, credentials: dict) -> None:
+            return None
+
+        def test_connection(self) -> bool:
+            return True
+
+        def extract_schema(self) -> SchemaSpec:
+            return SchemaSpec(database="db", tables=[], extracted_at="2026-01-01T00:00:00Z")
+
+        def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
+            return []
+
+        def execute_query(self, sql: str) -> QueryResult:
+            return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
+
+    report = MinimalConnector().list_security_policies()
+    assert report.supported is False
+    assert report.policies == []
+
+
 @pytest.mark.parametrize(
     "method_to_omit",
     [

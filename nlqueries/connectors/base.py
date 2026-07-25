@@ -73,6 +73,47 @@ class QueryResult:
     error: str | None
 
 
+# Policy kinds surfaced by :meth:`DatabaseConnector.list_security_policies`.
+POLICY_ROW = "row"  # restricts which rows are visible (RLS / row-access policy)
+POLICY_COLUMN = "column"  # masks/hides a column (column masking policy)
+
+
+@dataclass
+class SecurityPolicy:
+    """A row- or column-level security artifact discovered in the source database.
+
+    Read-only introspection surfaces these so the caller can *suggest* equivalent
+    NLQueries row filters / column exclusions — it never enforces them here.
+    ``expression`` is the raw predicate the database reports (e.g. a Postgres RLS
+    ``USING`` clause); it may be empty when the source doesn't expose a translatable
+    body (e.g. a Snowflake policy defined as an opaque function), in which case the
+    caller must treat the policy as "cannot translate — review manually" rather
+    than guess. ``columns`` names the masked column(s) for :data:`POLICY_COLUMN`
+    policies and is empty for :data:`POLICY_ROW` policies.
+    """
+
+    name: str
+    kind: str  # POLICY_ROW | POLICY_COLUMN
+    table_schema: str
+    table: str
+    columns: list[str]
+    expression: str
+    roles: list[str]
+
+
+@dataclass
+class SecurityPolicyReport:
+    """The result of :meth:`DatabaseConnector.list_security_policies`.
+
+    ``supported`` is ``False`` when the connector type can't introspect security
+    policies at all (the default) — distinct from a supported connector that
+    simply found none (``supported=True, policies=[]``).
+    """
+
+    supported: bool
+    policies: list[SecurityPolicy]
+
+
 class DatabaseConnector(ABC):
     """Abstract base class for all database connectors.
 
@@ -130,3 +171,19 @@ class DatabaseConnector(ABC):
         """
         spec = self.extract_schema()
         return len(spec.tables), sum(len(t.columns) for t in spec.tables)
+
+    def list_security_policies(self) -> SecurityPolicyReport:
+        """Introspect row-/column-level security policies in the source database.
+
+        An **optional, read-only** capability: the default reports it unsupported,
+        so connectors that can't (or don't yet) introspect their security catalog
+        keep working unchanged. Connectors that can (Postgres RLS, Snowflake
+        row-access / masking) override this.
+
+        Implementations must be **best-effort and degrade gracefully**: if the
+        metadata views aren't readable by the connector's role, return
+        ``SecurityPolicyReport(supported=True, policies=[])`` rather than raising —
+        a missing grant is not an error, it just means "nothing to suggest".
+        Introspection reuses the existing connection; it needs no new credentials.
+        """
+        return SecurityPolicyReport(supported=False, policies=[])
