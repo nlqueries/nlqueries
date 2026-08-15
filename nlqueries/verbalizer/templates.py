@@ -160,6 +160,12 @@ def _render_predicate(node: exp.Expression, shape: QueryShape, vocab: Vocab) -> 
 
     if isinstance(node, exp.Is) and isinstance(node.expression, exp.Null):
         operand, ok = _operand(node.this, shape, vocab)
+        # `IS NOT NULL` has two AST shapes depending on sqlglot version/dialect:
+        # older builds wrap it as Not(Is(…)) — handled above — while newer ones
+        # (30.17+ on postgres) keep a single Is node with negate=True. Missing
+        # the flag inverts the sentence, which is worse than not rendering it.
+        if node.args.get("negate"):
+            return f"{operand} is present", ok
         return f"{operand} is missing", ok
 
     if isinstance(node, exp.In):

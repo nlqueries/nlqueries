@@ -358,3 +358,35 @@ def test_paraphrase_to_dict() -> None:
     assert set(d) == {"text", "complete", "unhandled"}
     assert d["complete"] is False
     assert isinstance(d["unhandled"], list)
+
+
+# ---------------------------------------------------------------------------
+# IS NOT NULL — both sqlglot AST shapes
+# ---------------------------------------------------------------------------
+
+
+def test_is_not_null_reads_as_present_whichever_ast_sqlglot_produces() -> None:
+    """`IS NOT NULL` has two parse shapes, and getting it wrong inverts the text.
+
+    Older sqlglot builds wrap it as ``Not(Is(col, Null))``; 30.17+ on the
+    postgres dialect keeps a single ``Is`` node carrying ``negate=True``. The
+    goldens above only exercise whichever shape the installed version happens to
+    produce, so both are asserted here against a hand-built AST — a version-drift
+    regression that renders "is missing" for `IS NOT NULL` would otherwise only
+    surface once CI's resolved sqlglot moved.
+    """
+    import sqlglot
+    from nlqueries.verbalizer.ast_walk import analyze
+    from nlqueries.verbalizer.templates import _render_predicate
+    from sqlglot import exp
+
+    shape = analyze("SELECT id FROM orders WHERE status IS NOT NULL", "postgres")
+    column = sqlglot.parse_one("status", dialect="postgres")
+
+    negate_form = exp.Is(this=column.copy(), expression=exp.Null(), negate=True)
+    not_form = exp.Not(this=exp.Is(this=column.copy(), expression=exp.Null()))
+    plain_form = exp.Is(this=column.copy(), expression=exp.Null())
+
+    assert _render_predicate(negate_form, shape, Vocab())[0] == "status is present"
+    assert _render_predicate(not_form, shape, Vocab())[0] == "status is present"
+    assert _render_predicate(plain_form, shape, Vocab())[0] == "status is missing"
