@@ -29,6 +29,16 @@ QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "nlqueries")
 """Name of the Qdrant collection used for query embeddings."""
 
+QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
+"""API key for a Qdrant instance running with authentication enabled.
+
+Empty (the default) means an unauthenticated instance, which is the usual local
+setup. When a deployment turns Qdrant's ``service.api_key`` on, every client here
+must send it or the request is rejected with 401 — and because the vector store
+is used behind graceful degradation (the semantic cache silently skips, retrieval
+falls back to full-YAML injection), that failure is easy to miss.
+"""
+
 # ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------

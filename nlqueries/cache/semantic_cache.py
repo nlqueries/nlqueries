@@ -267,7 +267,7 @@ def _get_client() -> Any:
     if _cache_client is None:
         from qdrant_client import QdrantClient  # noqa: PLC0415
 
-        _cache_client = QdrantClient(url=config.QDRANT_URL)
+        _cache_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY or None)
     return _cache_client
 
 
