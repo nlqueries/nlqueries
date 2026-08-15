@@ -166,7 +166,7 @@ def promote_feedback(agent_id: str, *, dry_run: bool = False) -> int | list[dict
 
         from nlqueries import config as _cfg  # noqa: PLC0415
 
-        client = QdrantClient(url=_cfg.QDRANT_URL)
+        client = QdrantClient(url=_cfg.QDRANT_URL, api_key=_cfg.QDRANT_API_KEY or None)
     except Exception as exc:  # noqa: BLE001
         _log.warning("promote_feedback: Qdrant unavailable — %s", exc)
         return 0

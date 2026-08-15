@@ -719,7 +719,7 @@ def _search_verified(
 
         from nlqueries import config as _cfg  # noqa: PLC0415
 
-        client = QdrantClient(url=_cfg.QDRANT_URL)
+        client = QdrantClient(url=_cfg.QDRANT_URL, api_key=_cfg.QDRANT_API_KEY or None)
         existing = {c.name for c in client.get_collections().collections}
         if verified_collection not in existing:
             return []

@@ -70,7 +70,7 @@ def _get_client() -> _QdrantClient:
     if _client is None:
         from qdrant_client import QdrantClient  # deferred — heavy import
 
-        _client = QdrantClient(url=config.QDRANT_URL)
+        _client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY or None)
     return _client
 
 
