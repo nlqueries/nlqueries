@@ -40,6 +40,7 @@ import contextlib
 import hashlib
 import re
 import string
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -57,6 +58,20 @@ _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_\-]")
 
 # Module-level set of known-existing Qdrant collection names.
 _known_collections: set[str] = set()
+
+# Collections we have looked for and not found, with the time each entry stops
+# being trusted.
+#
+# Without this, only *hits* were cached: an agent whose cache collection does not
+# exist yet paid a full get_collections() round trip on every single query,
+# forever, until its first cache write created the collection. New agents were
+# therefore slower than warm ones for a reason nobody would guess from the code.
+#
+# The entries expire because a collection created by another process — the CLI,
+# a worker, a second API replica — would otherwise stay invisible here. Sixty
+# seconds of staleness on a cache lookup is harmless: the consequence is a cache
+# miss, which is what was happening anyway.
+_missing_collections: dict[str, float] = {}
 
 # ---------------------------------------------------------------------------
 # Entity masking helpers (Tier 2 template cache)
@@ -277,16 +292,36 @@ def _get_client() -> Any:
 
 
 def _collection_exists(client: Any, collection: str) -> bool:
-    """Return True if *collection* exists in Qdrant, using a module-level set as
-    a positive cache so repeated calls skip the get_collections() HTTP round-trip."""
+    """Return True if *collection* exists in Qdrant.
+
+    Both answers are cached. The positive cache is unbounded, which is fine —
+    collection names are bounded by agent count. The negative cache expires
+    after ``CACHE_COLLECTION_NEGATIVE_TTL_SECONDS`` so a collection created
+    elsewhere becomes visible without a restart.
+    """
     if collection in _known_collections:
         return True
+
+    expires_at = _missing_collections.get(collection)
+    if expires_at is not None:
+        if time.time() < expires_at:
+            return False
+        del _missing_collections[collection]
+
     try:
         existing = {c.name for c in client.get_collections().collections}
     except Exception:  # noqa: BLE001
+        # Qdrant is unreachable, which is not the same as "the collection is
+        # missing" — so this is not remembered. Caching it would extend an
+        # outage past its end.
         return False
+
     _known_collections.update(existing)
-    return collection in existing
+    if collection in existing:
+        return True
+
+    _missing_collections[collection] = time.time() + config.CACHE_COLLECTION_NEGATIVE_TTL_SECONDS
+    return False
 
 
 def _point_id_for_question(question: str) -> int:
@@ -562,6 +597,11 @@ class SemanticCache:
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
         ensure_collection(self._collection, CACHE_VECTOR_SIZE, payload_indexes=["kind"])
+        # It exists as of now, so stop remembering that it did not — otherwise
+        # the very process that just created it would keep reporting a miss for
+        # up to the negative TTL.
+        _missing_collections.pop(self._collection, None)
+        _known_collections.add(self._collection)
 
         # Answer entry (Tier 0 exact-match + Tier 1 cosine)
         normalized = _normalize_question(question)
