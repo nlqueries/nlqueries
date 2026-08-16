@@ -101,7 +101,21 @@ class PostgresConnector(DatabaseConnector):
             connect_args["sslcert"] = ssl_client_cert
         if ssl_client_key := credentials.get("ssl_client_key"):
             connect_args["sslkey"] = ssl_client_key
-        self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+        # Pooling only pays off now that connectors are reused across
+        # requests (see loader's cache). Each cached connector holds up to
+        # pool_size + max_overflow connections, so the ceiling per API worker is
+        # connectors_in_cache * (CONNECTOR_POOL_SIZE + CONNECTOR_MAX_OVERFLOW) —
+        # worth knowing before raising either against a customer's database.
+        # pool_recycle keeps a connection from outliving a firewall or proxy idle
+        # timeout, which otherwise surfaces as a random dead connection.
+        self._engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=config.CONNECTOR_POOL_SIZE,
+            max_overflow=config.CONNECTOR_MAX_OVERFLOW,
+            pool_recycle=1800,
+            connect_args=connect_args,
+        )
 
     def _require_engine(self) -> Engine:
         if self._engine is None:
