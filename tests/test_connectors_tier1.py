@@ -105,6 +105,7 @@ class TestRedshiftConnector:
         cur = MagicMock()
         cur.description = [("id",), ("name",)]
         cur.fetchall.return_value = [(1, "Alice"), (2, "Bob")]
+        cur.__iter__.return_value = iter([(1, "Alice"), (2, "Bob")])
         conn = _make_conn(cur)
 
         connector = RedshiftConnector()
@@ -291,6 +292,7 @@ class TestMSSQLConnector:
         cursor_result.returns_rows = True
         cursor_result.keys.return_value = ["id", "name"]
         cursor_result.fetchall.return_value = [(1, "Alice")]
+        cursor_result.__iter__.return_value = iter([(1, "Alice")])
         mock_conn.execute.return_value = cursor_result
 
         connector = MSSQLConnector()
@@ -382,6 +384,7 @@ class TestDuckDBConnector:
         mock_result = MagicMock()
         mock_result.description = [("n",), ("label",)]
         mock_result.fetchall.return_value = [(42, "hello")]
+        mock_result.__iter__.return_value = iter([(42, "hello")])
 
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
@@ -420,14 +423,17 @@ class TestDuckDBConnector:
         # duckdb_tables() rows: (schema_name, table_name, estimated_size)
         tables_result = MagicMock()
         tables_result.fetchall.return_value = [("main", "sales", 1000)]
+        tables_result.__iter__.return_value = iter([("main", "sales", 1000)])
 
         # information_schema.columns rows: (schema, table, col, dtype, nullable)
         cols_result = MagicMock()
         cols_result.fetchall.return_value = [("main", "sales", "amount", "DOUBLE", "NO")]
+        cols_result.__iter__.return_value = iter([("main", "sales", "amount", "DOUBLE", "NO")])
 
         # duckdb_constraints() rows: (schema, table, col_names_list)
         pk_result = MagicMock()
         pk_result.fetchall.return_value = [("main", "sales", ["amount"])]
+        pk_result.__iter__.return_value = iter([("main", "sales", ["amount"])])
 
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = [tables_result, cols_result, pk_result]

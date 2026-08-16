@@ -18,6 +18,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 
 from nlqueries import config
+from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -304,7 +305,12 @@ class BigQueryConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Run ``sql`` as a BigQuery query job and return a :class:`QueryResult`.
 
         The job is bounded by *timeout_seconds* when given, else the
@@ -327,6 +333,7 @@ class BigQueryConnector(DatabaseConnector):
             else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
         )
         start = time.perf_counter()
+        _truncated, _reason = False, None
         try:
             client = self._require_client()
             if effective_timeout is not None and effective_timeout > 0:
@@ -339,7 +346,11 @@ class BigQueryConnector(DatabaseConnector):
 
             schema = result.schema or []
             columns = [field.name for field in schema]
-            rows = [list(row.values()) for row in result] if columns else []
+            rows, _truncated, _reason = (
+                collect((list(row.values()) for row in result), max_rows)
+                if columns
+                else ([], False, None)
+            )
 
             logger.info(
                 "BigQueryConnector.execute_query metadata: total_bytes_processed=%s (job_id=%s)",
@@ -351,6 +362,8 @@ class BigQueryConnector(DatabaseConnector):
                 columns=columns,
                 rows=rows,
                 row_count=len(rows),
+                truncated=_truncated,
+                truncation_reason=_reason,
                 execution_time_ms=elapsed_ms,
                 error=None,
             )
