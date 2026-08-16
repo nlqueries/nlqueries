@@ -28,6 +28,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine
 
 from nlqueries import config
+from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -350,7 +351,12 @@ class MSSQLConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         *timeout_seconds* is accepted for interface parity with
@@ -366,15 +372,18 @@ class MSSQLConnector(DatabaseConnector):
             with engine.begin() as conn:
                 cursor_result = conn.execute(text(sql))
                 elapsed_ms = (time.perf_counter() - start) * 1000
+                _truncated, _reason = False, None
                 if cursor_result.returns_rows:
                     columns = list(cursor_result.keys())
-                    rows = [list(r) for r in cursor_result.fetchall()]
+                    rows, _truncated, _reason = collect(cursor_result, max_rows)
                 else:
                     columns, rows = [], []
                 return QueryResult(
                     columns=columns,
                     rows=rows,
                     row_count=len(rows),
+                    truncated=_truncated,
+                    truncation_reason=_reason,
                     execution_time_ms=elapsed_ms,
                     error=None,
                 )

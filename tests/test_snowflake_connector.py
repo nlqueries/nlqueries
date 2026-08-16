@@ -141,6 +141,7 @@ def test_execute_query_returns_columns_and_rows():
     mock_cursor = MagicMock()
     mock_cursor.description = [("ONE", None), ("TWO", None)]
     mock_cursor.fetchall.return_value = [(1, "two")]
+    mock_cursor.__iter__.return_value = iter([(1, "two")])
     mock_connection.cursor.return_value = mock_cursor
 
     result = connector.execute_query("SELECT 1 AS one, 'two' AS two")

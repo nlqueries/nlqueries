@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from nlqueries import config
+from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -185,7 +186,12 @@ class SQLiteConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         SQLite has no server-side statement timeout, so a runaway query is bounded
@@ -211,9 +217,10 @@ class SQLiteConnector(DatabaseConnector):
                 watchdog.start()
             try:
                 cursor = conn.execute(sql)
+                _truncated, _reason = False, None
                 if cursor.description:
                     columns = [desc[0] for desc in cursor.description]
-                    rows = [list(r) for r in cursor.fetchall()]
+                    rows, _truncated, _reason = collect(cursor, max_rows)
                 else:
                     columns, rows = [], []
             finally:
@@ -224,6 +231,8 @@ class SQLiteConnector(DatabaseConnector):
                 columns=columns,
                 rows=rows,
                 row_count=len(rows),
+                truncated=_truncated,
+                truncation_reason=_reason,
                 execution_time_ms=elapsed_ms,
                 error=None,
             )

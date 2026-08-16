@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
@@ -344,7 +345,12 @@ class RedshiftConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         *timeout_seconds* is accepted for interface parity with
@@ -360,9 +366,10 @@ class RedshiftConnector(DatabaseConnector):
             cur = conn.cursor()
             cur.execute(sql)
             elapsed_ms = (time.perf_counter() - start) * 1000
+            _truncated, _reason = False, None
             if cur.description:
                 columns = [desc[0] for desc in cur.description]
-                rows = [list(r) for r in cur.fetchall()]
+                rows, _truncated, _reason = collect(cur, max_rows)
             else:
                 columns, rows = [], []
             cur.close()
@@ -370,6 +377,8 @@ class RedshiftConnector(DatabaseConnector):
                 columns=columns,
                 rows=rows,
                 row_count=len(rows),
+                truncated=_truncated,
+                truncation_reason=_reason,
                 execution_time_ms=elapsed_ms,
                 error=None,
             )

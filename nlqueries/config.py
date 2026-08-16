@@ -200,6 +200,26 @@ CONNECTORS_FILE: Path = Path(
 # ---------------------------------------------------------------------------
 # Connector execution
 # ---------------------------------------------------------------------------
+CONNECTOR_MAX_FETCH_ROWS: int = int(os.getenv("CONNECTOR_MAX_FETCH_ROWS", "10000"))
+"""Most rows a connector will materialise from one query.
+
+An availability bound, not a result cap. The caps that shape an *answer* live
+above the connector (200 rows in the orchestrator, 1000 in the enterprise API),
+but they were applied after the whole result had already been built in memory —
+so one `SELECT *` over a large table could OOM the worker before anything
+upstream got the chance to discard it.
+"""
+
+CONNECTOR_MAX_RESULT_BYTES: int = int(
+    os.getenv("CONNECTOR_MAX_RESULT_BYTES", str(64 * 1024 * 1024))
+)
+"""Approximate memory ceiling for one result set, alongside the row budget.
+
+Rows are a poor proxy for memory: ten thousand rows of two integers and ten
+thousand rows each carrying a JSON document differ by orders of magnitude.
+Whichever budget binds first stops the read, and the result says which.
+"""
+
 CONNECTOR_STATEMENT_TIMEOUT_SECONDS: float = float(
     os.getenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", "120")
 )

@@ -71,6 +71,11 @@ class QueryResult:
     row_count: int
     execution_time_ms: float
     error: str | None
+    # Both default so every existing constructor keeps working. A result that
+    # stopped early has to say so: silently returning the first N rows of a
+    # larger answer is a wrong answer, not a partial one.
+    truncated: bool = False
+    truncation_reason: str | None = None  # "row_budget" | "byte_budget" | None
 
 
 # Policy kinds surfaced by :meth:`DatabaseConnector.list_security_policies`.
@@ -148,7 +153,12 @@ class DatabaseConnector(ABC):
         ...
 
     @abstractmethod
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` against the connected database and return the result.
 
         Args:
@@ -158,6 +168,16 @@ class DatabaseConnector(ABC):
                 itself rather than left running — and holding locks/connections
                 — after the caller has already given up waiting. Connectors
                 that don't support a statement-level timeout ignore this.
+            max_rows: Most rows to materialise. ``None`` uses
+                ``CONNECTOR_MAX_FETCH_ROWS``; the effective budget is never
+                larger than that, so a caller cannot ask for an unbounded read.
+
+                This is a memory bound, not a LIMIT: the row cap that shapes the
+                *answer* lives above the connector, and injecting a LIMIT into
+                the SQL here would change aggregate semantics and produce
+                silently wrong results. What it prevents is one ``SELECT *``
+                over a large table materialising every row in the worker before
+                anything upstream gets to discard them.
         """
         ...
 

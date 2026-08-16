@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine
 
 from nlqueries import config
+from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     POLICY_ROW,
     ColumnSpec,
@@ -32,6 +33,22 @@ from nlqueries.connectors.base import (
 from nlqueries.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
+
+# Rows per network round trip while streaming. Small enough that a wide
+# result cannot blow the budget between checks, large enough that a narrow
+# one is not paying a round trip per handful of rows.
+_YIELD_PER = 1000
+
+# Statements that can be read through a server-side cursor. Deliberately a
+# prefix check rather than a parse: it runs on every query, and the cost of
+# being wrong is only that a read is not streamed.
+_STREAMABLE_PREFIXES = ("select", "with", "table", "values")
+
+
+def _returns_rows(sql: str) -> bool:
+    """True when *sql* is a read that psycopg2 can stream."""
+    return sql.lstrip().lstrip("(").lower().startswith(_STREAMABLE_PREFIXES)
+
 
 # Schemas that are part of Postgres / the catalog itself, never user data.
 _SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
@@ -361,7 +378,12 @@ class PostgresConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         Any exception raised during execution is caught and surfaced via
@@ -393,23 +415,51 @@ class PostgresConnector(DatabaseConnector):
                     if effective_timeout is not None and effective_timeout > 0:
                         statement_timeout_ms = max(1, int(effective_timeout * 1000))
                         conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))
-                    cursor_result = conn.execute(text(sql))
+
+                    # Server-side cursor for reads: rows arrive in batches
+                    # instead of the driver building the entire result before
+                    # returning. Safe here because the connection is opened per
+                    # query and the transaction stays open for the whole read,
+                    # which is what psycopg2's streaming mode requires.
+                    #
+                    # Only for reads. psycopg2 cannot run DDL or DML through a
+                    # named cursor at all — it fails outright — so streaming is
+                    # requested only for statements that plainly return rows.
+                    # Misjudging one costs streaming, never correctness: the
+                    # budget below still bounds what is turned into Python
+                    # objects either way.
+                    executor = (
+                        conn.execution_options(stream_results=True, yield_per=_YIELD_PER)
+                        if _returns_rows(sql)
+                        else conn
+                    )
+                    cursor_result = executor.execute(text(sql))
                     elapsed_ms = (time.perf_counter() - start) * 1000
 
+                    truncated = False
+                    reason: str | None = None
                     if cursor_result.returns_rows:
                         columns = list(cursor_result.keys())
-                        rows = [list(row) for row in cursor_result.fetchall()]
+                        rows, truncated, reason = collect(iter(cursor_result), max_rows)
+                        if truncated:
+                            # Stop the server sending the rest of a result we
+                            # have already decided not to read.
+                            cursor_result.close()
+                            logger.warning("Result truncated (%s) after %d rows", reason, len(rows))
                     else:
                         columns = []
                         rows = []
 
                     span.set_attribute("db.row_count", len(rows))
+                    span.set_attribute("db.result_truncated", truncated)
                     return QueryResult(
                         columns=columns,
                         rows=rows,
                         row_count=len(rows),
                         execution_time_ms=elapsed_ms,
                         error=None,
+                        truncated=truncated,
+                        truncation_reason=reason,
                     )
             except Exception as exc:  # noqa: BLE001 — surfaced via QueryResult.error, not raised
                 elapsed_ms = (time.perf_counter() - start) * 1000

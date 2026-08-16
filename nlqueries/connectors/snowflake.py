@@ -17,6 +17,7 @@ from typing import Any
 import snowflake.connector
 
 from nlqueries import config
+from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     POLICY_COLUMN,
     POLICY_ROW,
@@ -367,7 +368,12 @@ class SnowflakeConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         The query is bounded by *timeout_seconds* when given, else the
@@ -395,9 +401,10 @@ class SnowflakeConnector(DatabaseConnector):
                     cursor.execute(sql)
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
+                _truncated, _reason = False, None
                 if cursor.description:
                     columns = [col[0] for col in cursor.description]
-                    rows = [list(row) for row in cursor.fetchall()]
+                    rows, _truncated, _reason = collect(cursor, max_rows)
                 else:
                     columns = []
                     rows = []
@@ -406,6 +413,8 @@ class SnowflakeConnector(DatabaseConnector):
                     columns=columns,
                     rows=rows,
                     row_count=len(rows),
+                    truncated=_truncated,
+                    truncation_reason=_reason,
                     execution_time_ms=elapsed_ms,
                     error=None,
                 )
