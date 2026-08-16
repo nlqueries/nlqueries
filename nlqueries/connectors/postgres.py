@@ -424,12 +424,7 @@ class PostgresConnector(DatabaseConnector):
                             # Stop the server sending the rest of a result we
                             # have already decided not to read.
                             cursor_result.close()
-                            logger.warning(
-                                "Result truncated (%s) after %d rows for a query on %s",
-                                reason,
-                                len(rows),
-                                self.database or "the connected database",
-                            )
+                            logger.warning("Result truncated (%s) after %d rows", reason, len(rows))
                     else:
                         columns = []
                         rows = []
