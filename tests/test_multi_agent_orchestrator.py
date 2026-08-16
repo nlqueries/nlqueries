@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -988,3 +989,170 @@ class TestExtensionPointSeams:
         cache = asyncio.run(run())
         assert cache.get.call_args.kwargs["payload_filter"] == ctx
         assert cache.put.call_args.kwargs["payload_extra"] == ctx
+
+
+# ---------------------------------------------------------------------------
+# W-2: the cache lookup must not block the event loop
+#
+# embed_text and SemanticCache.get are both synchronous and both do network
+# I/O — a urllib call to the embedding daemon, and up to three Qdrant round
+# trips plus a second embed on a full miss. Called bare inside the async
+# generator they froze the whole uvicorn worker, so one user's cache lookup
+# stopped every other user's chat turn on that worker.
+# ---------------------------------------------------------------------------
+
+
+class TestCacheLookupDoesNotBlockTheEventLoop:
+    def _slow_cache(self, delay: float) -> MagicMock:
+        """A cache whose get() sleeps synchronously, as a real one does on a miss."""
+        import time
+
+        cache = MagicMock()
+        cache.get.side_effect = lambda *_a, **_kw: (time.sleep(delay), None)[1]
+        return cache
+
+    @contextlib.contextmanager
+    def _patched(self, sql_instance: MagicMock, cache: MagicMock):
+        """Patch once around the whole run.
+
+        Patching per turn breaks under concurrency: two `patch` contexts on the
+        same target form a stack, so the first to exit restores the real object
+        while the second is still relying on the mock.
+        """
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                return_value=cache,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                return_value=sql_instance,
+            ),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+        ):
+            yield
+
+    async def _turn(self, question: str) -> list[str]:
+        tokens: list[str] = []
+        async for token in MultiAgentOrchestrator().handle_question(
+            question, "agent1", available_types=["sql"]
+        ):
+            tokens.append(token)
+        return tokens
+
+    def test_two_turns_overlap_instead_of_queueing(self) -> None:
+        """Two 300 ms lookups must take about 300 ms together, not 600.
+
+        This is the measurement that matters: a blocking lookup does not slow
+        the turn that pays for it, it stops every other turn on the worker.
+        """
+        import time
+
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        cache = self._slow_cache(0.3)
+
+        async def run() -> float:
+            started = time.monotonic()
+            await asyncio.gather(self._turn("first question"), self._turn("second question"))
+            return time.monotonic() - started
+
+        with self._patched(sql_instance, cache):
+            elapsed = asyncio.run(run())
+
+        assert elapsed < 0.5, f"two concurrent 300ms lookups took {elapsed:.3f}s — they serialised"
+
+    def test_an_unrelated_task_keeps_running_during_a_lookup(self) -> None:
+        """The direct symptom: while one turn is in its cache lookup, everything
+        else on the loop must continue to be scheduled."""
+        import time
+
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        cache = self._slow_cache(0.4)
+
+        async def run() -> int:
+            ticks = 0
+
+            async def _heartbeat() -> None:
+                nonlocal ticks
+                deadline = time.monotonic() + 0.35
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(0.02)
+                    ticks += 1
+
+            await asyncio.gather(self._turn("a question"), _heartbeat())
+            return ticks
+
+        with self._patched(sql_instance, cache):
+            ticks = asyncio.run(run())
+
+        # A blocked loop yields roughly zero ticks; a free one yields ~17.
+        assert ticks > 5, f"the event loop only ticked {ticks} times during a 400ms lookup"
+
+    def test_the_vector_still_reaches_the_cache_and_the_prompt(self) -> None:
+        """The Phase 1C optimisation must survive the move: the vector computed
+        here is handed to the cache lookup and then on to the SQL orchestrator,
+        so a miss does not pay for a second embed."""
+        sentinel = [0.25] * 384
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        cache = MagicMock()
+        cache.get.return_value = None
+
+        async def run() -> None:
+            with (
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                    return_value=cache,
+                ),
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.embeddings.embedder.embed_text", return_value=sentinel),
+            ):
+                async for _token in MultiAgentOrchestrator().handle_question(
+                    "how many orders", "agent1", available_types=["sql"]
+                ):
+                    pass
+
+        asyncio.run(run())
+
+        assert cache.get.call_args.kwargs["vector"] == sentinel
+
+    def test_a_failing_embedder_still_looks_the_cache_up(self) -> None:
+        """Text-only lookup is the documented degradation, and it must survive
+        being moved into a worker thread."""
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        cache = MagicMock()
+        cache.get.return_value = None
+
+        async def run() -> None:
+            with (
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                    return_value=cache,
+                ),
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch(
+                    "nlqueries.embeddings.embedder.embed_text",
+                    side_effect=RuntimeError("daemon down"),
+                ),
+            ):
+                async for _token in MultiAgentOrchestrator().handle_question(
+                    "how many orders", "agent1", available_types=["sql"]
+                ):
+                    pass
+
+        asyncio.run(run())
+
+        assert cache.get.called
+        assert cache.get.call_args.kwargs["vector"] is None
