@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -432,29 +433,39 @@ class TestEmbedHandlerLegacyCompat:
         assert vectors == [expected]
         mock_model.encode.assert_not_called()
 
-    def test_serve_sets_encoder_attribute(self) -> None:
-        from nlqueries.embeddings.embed_server import _EmbedHandler
+    def test_serve_wires_the_loaded_encoder_into_the_server(self) -> None:
+        """The encoder reaches the server that will use it.
+
+        It used to be asserted on ``_EmbedHandler.encoder``, a class attribute
+        shared by every server in the process — which is exactly why the daemon
+        now builds a handler subclass per server instead (two servers in one
+        process would otherwise overwrite each other's encoder). The contract
+        being checked is unchanged: whatever ``_load_encoder`` returns is what
+        the running server encodes with.
+        """
+        from nlqueries.embeddings import embed_server
 
         fake_encoder = MagicMock(return_value=[[0.1] * 384])
+        captured: dict[str, Any] = {}
+
+        class _FakeServer:
+            def __init__(self, address: tuple[str, int], handler: type) -> None:
+                captured["handler"] = handler
+
+            def serve_forever(self) -> None:
+                raise KeyboardInterrupt
 
         with (
-            patch("nlqueries.embeddings.embed_server._load_encoder", return_value=fake_encoder),
-            patch("nlqueries.embeddings.embed_server._PID_FILE") as mock_pid,
-            patch("nlqueries.embeddings.embed_server.HTTPServer") as mock_http,
+            patch.object(embed_server, "_load_encoder", return_value=fake_encoder),
+            patch.object(embed_server, "_PID_FILE") as mock_pid,
+            patch.object(embed_server, "_ThreadingEmbedServer", _FakeServer),
         ):
             mock_pid.parent.mkdir = MagicMock()
             mock_pid.write_text = MagicMock()
             mock_pid.unlink = MagicMock()
 
-            server_instance = MagicMock()
-            server_instance.serve_forever.side_effect = KeyboardInterrupt
-            mock_http.return_value = server_instance
-
-            try:
-                from nlqueries.embeddings import embed_server
-
+            with contextlib.suppress(KeyboardInterrupt, SystemExit):
                 embed_server.serve(port=19999, backend="torch")
-            except (KeyboardInterrupt, SystemExit):
-                pass
 
-        assert _EmbedHandler.encoder is fake_encoder
+        assert captured["handler"].encoder is fake_encoder
+        assert captured["handler"].gate is not None, "the concurrency bound must be applied"

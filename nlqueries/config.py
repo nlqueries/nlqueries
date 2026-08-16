@@ -117,6 +117,31 @@ connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
 EMBED_SERVER_PORT: int = int(os.getenv("EMBED_SERVER_PORT", "8765"))
 """Port for the persistent embedding daemon (``nlqueries embed-server start``)."""
 
+EMBED_SERVER_MAX_CONCURRENCY: int = int(
+    os.getenv("EMBED_SERVER_MAX_CONCURRENCY", str(min(4, os.cpu_count() or 1)))
+)
+"""How many embeddings the daemon will compute at once.
+
+The daemon serves every process on the host and sits on the hot path of every
+chat turn, so serialising it makes it the bottleneck for the whole machine. It
+still needs a ceiling: each concurrent encode holds its own activations, and an
+unbounded queue of them is an out-of-memory kill rather than a slowdown.
+
+Set to 1 to serialise, which reproduces the single-threaded behaviour exactly.
+"""
+
+EMBED_SERVER_TORCH_THREADS: int = int(os.getenv("EMBED_SERVER_TORCH_THREADS", "1"))
+"""Intra-op thread count for the torch backend inside the daemon.
+
+Defaults to 1 because the daemon's workload is many small independent encodes,
+not one large one. Left at torch's default, every concurrent request would spawn
+threads for every core, and N requests would oversubscribe the machine N-fold —
+the threads then spend their time contending rather than working. N concurrent
+single-threaded encodes beat one N-threaded encode here.
+
+Set to 0 to leave torch's own default alone.
+"""
+
 # ---------------------------------------------------------------------------
 # Knowledge base
 # ---------------------------------------------------------------------------
