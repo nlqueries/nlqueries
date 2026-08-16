@@ -50,7 +50,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from nlqueries.cache.semantic_cache import SemanticCache
+from nlqueries.cache.semantic_cache import CacheEntry, SemanticCache
 from nlqueries.connectors.base import QueryResult
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
@@ -439,30 +439,45 @@ class MultiAgentOrchestrator:
         effective_question = resolved.resolved
 
         # ------------------------------------------------------------------
-        # Pre-compute the question embedding once.
-        # The same vector is reused by the semantic cache lookup AND passed
-        # through to assemble_prompt() inside the SQL orchestrator, saving a
-        # second embed_text() round-trip on every cache miss (Phase 1C).
-        # ------------------------------------------------------------------
-        _question_vector: list[float] | None = None
-        try:
-            from nlqueries.embeddings.embedder import embed_text as _embed_text  # noqa: PLC0415
-
-            _question_vector = _embed_text(effective_question)
-        except Exception:  # noqa: BLE001
-            pass
-
-        # ------------------------------------------------------------------
-        # Semantic cache check (Sprint 21)
+        # Embed the question and check the semantic cache — off the event loop.
+        #
+        # Both are synchronous and both do network I/O: embed_text makes a
+        # urllib call to the embedding daemon, and SemanticCache.get performs up
+        # to three Qdrant round trips plus a second embed on a full miss. Called
+        # bare inside this async generator they froze the entire uvicorn worker,
+        # so every other WebSocket on it — every other user's chat turn — stopped
+        # for the duration. That is the difference between roughly 3 concurrent
+        # turns per worker and roughly 15.
+        #
+        # One thread hop, not two: the embed's result is the cache lookup's
+        # input, so splitting them into separate to_thread calls would pay the
+        # hop twice for work that is strictly sequential anyway.
+        #
+        # The vector is reused for the cache lookup AND passed through to
+        # assemble_prompt() inside the SQL orchestrator, saving a second
+        # embed_text() round-trip on every cache miss (Phase 1C).
         # ------------------------------------------------------------------
         _cache = SemanticCache(agent_id)
         # Use caller-supplied cache_key when provided (e.g. run_query passes
         # the original pre-resolution question so repeated identical queries
         # always hit the same cache entry regardless of LLM rewrite variance).
         _cache_lookup_key = cache_key if cache_key is not None else effective_question
-        _cached = _cache.get(
-            _cache_lookup_key, vector=_question_vector, payload_filter=cache_context
-        )
+
+        def _embed_and_lookup() -> tuple[list[float] | None, CacheEntry | None]:
+            vector: list[float] | None = None
+            try:
+                from nlqueries.embeddings.embedder import (  # noqa: PLC0415
+                    embed_text as _embed_text,
+                )
+
+                vector = _embed_text(effective_question)
+            except Exception:  # noqa: BLE001 — a missing embedder degrades to a text-only lookup
+                pass
+            return vector, _cache.get(
+                _cache_lookup_key, vector=vector, payload_filter=cache_context
+            )
+
+        _question_vector, _cached = await asyncio.to_thread(_embed_and_lookup)
         if _cached is None:
             record_cache(hit=False)  # provenance (SYL-1.1); a hit records tier+score itself
         if _cached is not None:
