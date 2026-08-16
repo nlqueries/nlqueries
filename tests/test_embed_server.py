@@ -298,3 +298,175 @@ def test_embed_text_falls_back_to_local_model_when_daemon_down():
 
     assert result == sentinel
     mock_model.encode.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# W-4: failing loudly instead of loading a model in the caller's process
+#
+# The in-process fallback is right for the CLI and wrong for a server: it loads
+# roughly a gigabyte of torch into a uvicorn worker, mid-request, and keeps it.
+# Under load — exactly when the daemon is most likely to time out — that turns a
+# transient queue into a permanent memory increase on every worker.
+# ---------------------------------------------------------------------------
+
+
+def _unreachable_port() -> int:
+    """A port with nothing listening, so a connection is refused immediately."""
+    return _free_port()
+
+
+def test_a_refused_connection_and_a_timeout_are_told_apart():
+    """They have different remedies — start the daemon, versus give it more
+    room — so "unavailable" is not a useful thing to be told."""
+    import urllib.error
+    from unittest.mock import patch as _patch
+
+    from nlqueries.embeddings import embedder
+
+    with _patch.object(
+        embedder.urllib.request,
+        "urlopen",
+        side_effect=urllib.error.URLError(ConnectionRefusedError("refused")),
+    ):
+        try:
+            embedder._daemon_post("/embed", {"text": "x"}, "vector")
+            raised = None
+        except embedder.EmbeddingServiceUnavailable as exc:
+            raised = exc
+    assert raised is not None and raised.reason == embedder.ABSENT
+
+    with _patch.object(
+        embedder.urllib.request,
+        "urlopen",
+        side_effect=urllib.error.URLError(TimeoutError("timed out")),
+    ):
+        try:
+            embedder._daemon_post("/embed", {"text": "x"}, "vector")
+            raised = None
+        except embedder.EmbeddingServiceUnavailable as exc:
+            raised = exc
+    assert raised is not None and raised.reason == embedder.FAILING
+
+
+def test_a_server_error_from_a_live_daemon_counts_as_failing():
+    """It answered, so it exists — it is just not healthy."""
+    import urllib.error
+    from unittest.mock import patch as _patch
+
+    from nlqueries.embeddings import embedder
+
+    error = urllib.error.HTTPError(
+        url="http://127.0.0.1:8765/embed", code=503, msg="busy", hdrs=None, fp=None
+    )
+    with _patch.object(embedder.urllib.request, "urlopen", side_effect=error):
+        try:
+            embedder._daemon_post("/embed", {"text": "x"}, "vector")
+            raised = None
+        except embedder.EmbeddingServiceUnavailable as exc:
+            raised = exc
+
+    assert raised is not None and raised.reason == embedder.FAILING
+    assert "503" in str(raised)
+
+
+def test_when_required_no_model_is_loaded_in_this_process(monkeypatch):
+    """The assertion that matters: not merely that it raised, but that it did
+    not import a gigabyte of torch on its way out."""
+    import sys
+
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", True)
+    monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{_unreachable_port()}")
+    embedder.embed_text.cache_clear()
+    sys.modules.pop("sentence_transformers", None)
+
+    try:
+        embedder.embed_text("a question nobody has asked before")
+        raised = None
+    except embedder.EmbeddingServiceUnavailable as exc:
+        raised = exc
+
+    assert raised is not None
+    assert "sentence_transformers" not in sys.modules, "the heavy import happened anyway"
+
+
+def test_when_not_required_the_fallback_still_happens(monkeypatch):
+    """Default behaviour is unchanged: the CLI has no daemon and this is simply
+    how it embeds."""
+    from unittest.mock import patch as _patch
+
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", False)
+    monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{_unreachable_port()}")
+    embedder.embed_text.cache_clear()
+
+    sentinel = [0.5] * 384
+    model = MagicMock()
+    model.encode.return_value = MagicMock(tolist=lambda: sentinel)
+
+    with _patch.object(embedder, "_get_model", return_value=model):
+        result = embedder.embed_text("another unseen question")
+
+    assert result == sentinel
+
+
+def test_the_fallback_is_logged_rather_than_silent(monkeypatch, caplog):
+    """It used to be silent, which is how a deployment can spend weeks loading
+    torch models into its request path with nobody the wiser."""
+    import logging
+    from unittest.mock import patch as _patch
+
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", False)
+    monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{_unreachable_port()}")
+    embedder.embed_text.cache_clear()
+
+    model = MagicMock()
+    model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 384)
+
+    with (
+        _patch.object(embedder, "_get_model", return_value=model),
+        caplog.at_level(logging.WARNING),
+    ):
+        embedder.embed_text("a third unseen question")
+
+    assert any("Embedding daemon" in r.message for r in caplog.records)
+
+
+def test_the_client_timeout_is_configurable(monkeypatch):
+    """Two seconds suited a serialised daemon. With a concurrent one, waiting is
+    usually better than the alternative."""
+    from unittest.mock import patch as _patch
+
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    monkeypatch.setattr(config, "EMBED_CLIENT_TIMEOUT_SECONDS", 7.5)
+    captured: dict[str, object] = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read(self):
+            import json
+
+            return json.dumps({"vector": [0.0] * 384}).encode()
+
+    def _fake_urlopen(_req, timeout=None):
+        captured["timeout"] = timeout
+        return _Resp()
+
+    with _patch.object(embedder.urllib.request, "urlopen", _fake_urlopen):
+        embedder._daemon_post("/embed", {"text": "x"}, "vector")
+
+    assert captured["timeout"] == 7.5

@@ -7,19 +7,33 @@ Uses ``all-MiniLM-L6-v2`` (384 dimensions).  When the embedding daemon is
 running (``nlqueries embed-server start``), requests are forwarded to it over
 localhost so the model is never re-loaded per CLI invocation (~10 ms vs ~9 s).
 Falls back to loading the model in-process when the daemon is not running.
+
+That fallback is right for the CLI and wrong for a server. In a uvicorn worker
+it loads roughly a gigabyte of torch in the middle of a request, taking seconds,
+and then keeps it — so a daemon that is merely *busy* leaves every worker
+permanently fatter. Set ``EMBED_SERVER_REQUIRED`` on a server and the same
+situation raises :class:`EmbeddingServiceUnavailable` instead, naming which of
+the two problems it is: nothing listening, or something listening that could not
+answer in time.
 """
 
 from __future__ import annotations
 
 import functools
 import json as _json
+import logging
 import os as _os
+import socket
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
+
+from nlqueries import config
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Daemon connection
@@ -28,34 +42,100 @@ if TYPE_CHECKING:
 _DAEMON_PORT = int(_os.environ.get("EMBED_SERVER_PORT", "8765"))
 _DAEMON_BASE = f"http://127.0.0.1:{_DAEMON_PORT}"
 
+# Why the daemon did not answer. The two have different remedies — start it
+# versus give it more room — so the difference is worth carrying rather than
+# flattening into "unavailable".
+ABSENT = "absent"  # nothing listening: no daemon on this host
+FAILING = "failing"  # something listening, but it timed out or errored
+
+
+class EmbeddingServiceUnavailable(RuntimeError):
+    """The embedding daemon was required for this call and could not serve it.
+
+    Raised only when ``EMBED_SERVER_REQUIRED`` is set. Without it the caller
+    falls back to embedding in-process, which is right for the CLI and wrong for
+    a server — see the config docstring.
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        self.reason = reason
+        super().__init__(
+            f"Embedding daemon {reason}: {detail}. "
+            f"EMBED_SERVER_REQUIRED is set, so this call will not load a model "
+            f"in-process instead."
+        )
+
+
+def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:
+    """POST to the daemon, translating transport failures into a reason.
+
+    Raises:
+        EmbeddingServiceUnavailable: always, on failure. Callers decide whether
+            to propagate it or fall back, based on EMBED_SERVER_REQUIRED.
+    """
+    request = urllib.request.Request(
+        f"{_DAEMON_BASE}{path}",
+        data=_json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=config.EMBED_CLIENT_TIMEOUT_SECONDS
+        ) as response:
+            return _json.loads(response.read())[key]
+    except urllib.error.HTTPError as exc:
+        # It answered, so it exists — it is just not healthy.
+        raise EmbeddingServiceUnavailable(FAILING, f"HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        # A refused connection means no daemon. A timeout means one that is too
+        # busy to answer — which is precisely when falling back to loading a
+        # model in this process does the most damage.
+        if isinstance(exc.reason, TimeoutError | socket.timeout):
+            raise EmbeddingServiceUnavailable(
+                FAILING, f"no response in {config.EMBED_CLIENT_TIMEOUT_SECONDS}s"
+            ) from exc
+        raise EmbeddingServiceUnavailable(ABSENT, str(exc.reason)) from exc
+    except TimeoutError as exc:  # raised directly by the socket on some platforms
+        raise EmbeddingServiceUnavailable(
+            FAILING, f"no response in {config.EMBED_CLIENT_TIMEOUT_SECONDS}s"
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — a malformed reply is still a failure
+        raise EmbeddingServiceUnavailable(FAILING, str(exc)) from exc
+
+
+def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
+    """Log the degradation, and re-raise it when the daemon is mandatory.
+
+    The fallback used to be silent, which is how a deployment could spend weeks
+    loading torch models into its request path without anyone knowing. It is a
+    warning now whether or not it is fatal.
+    """
+    if config.EMBED_SERVER_REQUIRED:
+        raise exc
+    logger.warning(
+        "Embedding daemon %s (%s); embedding in-process instead. "
+        "This loads a full model into THIS process — set EMBED_SERVER_REQUIRED "
+        "on a server to make it a failure instead.",
+        exc.reason,
+        exc,
+    )
+
 
 def _try_daemon_single(text: str) -> list[float] | None:
-    """Return the embedding vector from the daemon, or None if unreachable."""
+    """Return the embedding vector from the daemon, or None to fall back."""
     try:
-        body = _json.dumps({"text": text}).encode()
-        req = urllib.request.Request(
-            f"{_DAEMON_BASE}/embed",
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return cast(list[float], _json.loads(resp.read())["vector"])
-    except Exception:  # noqa: BLE001
+        return cast(list[float], _daemon_post("/embed", {"text": text}, "vector"))
+    except EmbeddingServiceUnavailable as exc:
+        _fall_back_or_raise(exc)
         return None
 
 
 def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
-    """Return batch vectors from the daemon, or None if unreachable."""
+    """Return batch vectors from the daemon, or None to fall back."""
     try:
-        body = _json.dumps({"texts": texts}).encode()
-        req = urllib.request.Request(
-            f"{_DAEMON_BASE}/embed-batch",
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return cast(list[list[float]], _json.loads(resp.read())["vectors"])
-    except Exception:  # noqa: BLE001
+        return cast(list[list[float]], _daemon_post("/embed-batch", {"texts": texts}, "vectors"))
+    except EmbeddingServiceUnavailable as exc:
+        _fall_back_or_raise(exc)
         return None
 
 

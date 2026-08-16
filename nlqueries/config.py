@@ -117,6 +117,33 @@ connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
 EMBED_SERVER_PORT: int = int(os.getenv("EMBED_SERVER_PORT", "8765"))
 """Port for the persistent embedding daemon (``nlqueries embed-server start``)."""
 
+EMBED_SERVER_REQUIRED: bool = os.getenv("EMBED_SERVER_REQUIRED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""When True, a daemon failure raises instead of embedding in the calling process.
+
+The in-process fallback is right for the CLI, where there may be no daemon at
+all and loading the model is simply how the command works. It is wrong for a
+server: a roughly 1 GB torch model loads into the uvicorn worker, taking several
+seconds, in the middle of a request — and it stays loaded. Under load, which is
+exactly when the daemon is most likely to time out, that converts a transient
+queue into a permanent memory increase on every worker.
+
+Servers should set this true. Then a daemon problem surfaces as a clean failure
+naming the daemon, instead of a deployment that quietly gets slower and fatter.
+"""
+
+EMBED_CLIENT_TIMEOUT_SECONDS: float = float(os.getenv("EMBED_CLIENT_TIMEOUT_SECONDS", "2.0"))
+"""How long to wait for the embedding daemon before giving up on a request.
+
+Two seconds suited a single-threaded daemon where a queue meant a long wait for
+nothing. With a concurrent daemon (EMBED_SERVER_MAX_CONCURRENCY) waiting is
+usually better than the alternative, so a larger value is often the right call —
+particularly with EMBED_SERVER_REQUIRED, where the alternative is a failed turn.
+"""
+
 EMBED_SERVER_MAX_CONCURRENCY: int = int(
     os.getenv("EMBED_SERVER_MAX_CONCURRENCY", str(min(4, os.cpu_count() or 1)))
 )
