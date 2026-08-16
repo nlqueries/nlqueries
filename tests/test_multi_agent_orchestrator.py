@@ -77,7 +77,7 @@ class TestMultiAgentOrchestratorSpec:
         async def run() -> tuple[list[str], MagicMock]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ),
                 patch(
@@ -114,7 +114,7 @@ class TestMultiAgentOrchestratorSpec:
         async def run() -> tuple[list[str], MagicMock]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.document),
                 ),
                 patch(
@@ -151,7 +151,7 @@ class TestMultiAgentOrchestratorSpec:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ),
                 patch(
@@ -189,7 +189,7 @@ class TestMultiAgentOrchestratorExtra:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ),
                 patch(
@@ -219,7 +219,7 @@ class TestMultiAgentOrchestratorExtra:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.document),
                 ),
                 patch(
@@ -250,7 +250,7 @@ class TestMultiAgentOrchestratorExtra:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ),
                 patch(
@@ -277,7 +277,7 @@ class TestMultiAgentOrchestratorExtra:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.unclear),
                 ),
                 patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
@@ -322,7 +322,7 @@ class TestMultiAgentOrchestratorExtra:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.hybrid),
                 ),
                 patch(
@@ -366,7 +366,7 @@ class TestMultiAgentOrchestratorExtra:
         async def run() -> bool:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ),
                 patch(
@@ -405,7 +405,7 @@ class TestMultiAgentOrchestratorNewPaths:
         async def run_sql_only() -> MagicMock:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent"
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent"
                 ) as mock_classify,
                 patch(
                     "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
@@ -427,7 +427,7 @@ class TestMultiAgentOrchestratorNewPaths:
         async def run_document_only() -> MagicMock:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent"
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent"
                 ) as mock_classify,
                 patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
                 patch(
@@ -449,7 +449,7 @@ class TestMultiAgentOrchestratorNewPaths:
         async def run_multi_type() -> MagicMock:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ) as mock_classify,
                 patch(
@@ -632,7 +632,7 @@ class TestMultiAgentOrchestratorNewPaths:
         async def run(history_arg: list[ConversationTurn] | None) -> MagicMock:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.resolve_followup",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aresolve_followup",
                     return_value=ResolvedQuestion(
                         original="And this month?",
                         resolved="How many orders this month?",
@@ -837,7 +837,7 @@ class TestExtensionPointSeams:
         async def run() -> tuple[list[str], MagicMock]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent"
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent"
                 ) as mock_classify,
                 patch(
                     "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
@@ -875,7 +875,7 @@ class TestExtensionPointSeams:
         async def run() -> MagicMock:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=_classify_result(IntentType.sql),
                 ) as mock_classify,
                 patch(
@@ -1156,3 +1156,87 @@ class TestCacheLookupDoesNotBlockTheEventLoop:
 
         assert cache.get.called
         assert cache.get.call_args.kwargs["vector"] is None
+
+
+# ---------------------------------------------------------------------------
+# W-3: the auxiliary LLM calls must not block the event loop either
+#
+# resolve_followup and classify_intent are each a full LLM round trip, one to
+# three seconds, and both were called bare inside this async generator. The only
+# escape was CONVERSATION_ENGINE_ENABLED=true, which skips them — a workaround
+# that is off by default, not a fix.
+# ---------------------------------------------------------------------------
+
+
+class TestAuxiliaryLlmCallsDoNotBlockTheEventLoop:
+    def test_two_turns_overlap_through_followup_and_intent(self) -> None:
+        """Two turns whose follow-up resolution and classification each take
+        300 ms must overlap, not queue: about 600 ms in total rather than 1.2 s.
+
+        History is supplied and no intent_override is given, so both auxiliary
+        calls actually run — the configuration this is slowest under, and the
+        default one.
+        """
+        import time
+
+        from nlqueries.orchestrator.conversation import create_session
+
+        session = create_session("agent1")
+        session.add_turn("user", "Show orders by region")
+        session.add_turn("assistant", "Here they are.")
+
+        async def _slow_resolve(question: str, _history: object) -> object:
+            from nlqueries.orchestrator.followup_resolver import ResolvedQuestion
+
+            await asyncio.sleep(0.3)
+            return ResolvedQuestion(
+                original=question, resolved=question, is_followup=False, reasoning="stub"
+            )
+
+        async def _slow_classify(_question: str, _types: object) -> object:
+            await asyncio.sleep(0.3)
+            return _classify_result(IntentType.sql)
+
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        cache = MagicMock()
+        cache.get.return_value = None
+
+        async def _turn(question: str) -> None:
+            async for _token in MultiAgentOrchestrator().handle_question(
+                question,
+                "agent1",
+                available_types=["sql", "document"],
+                history=session.turns,
+            ):
+                pass
+
+        async def run() -> float:
+            started = time.monotonic()
+            await asyncio.gather(_turn("first question"), _turn("second question"))
+            return time.monotonic() - started
+
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.aresolve_followup",
+                _slow_resolve,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
+                _slow_classify,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                return_value=cache,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                return_value=sql_instance,
+            ),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+        ):
+            elapsed = asyncio.run(run())
+
+        # Serialised this would be ~1.2s; overlapped it is ~0.6s.
+        assert elapsed < 0.95, f"two concurrent turns took {elapsed:.3f}s — they serialised"

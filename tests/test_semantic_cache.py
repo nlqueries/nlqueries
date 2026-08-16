@@ -400,7 +400,7 @@ class TestOrchestratorSkipsLlmOnCacheHit:
                 return_value=mock_cache,
             ),
             patch(
-                "nlqueries.orchestrator.multi_agent_orchestrator.resolve_followup",
+                "nlqueries.orchestrator.multi_agent_orchestrator.aresolve_followup",
                 return_value=MagicMock(resolved="How many orders?"),
             ),
         ):
@@ -489,7 +489,7 @@ class TestCacheWriteFromOrchestratorAsyncContext:
                 return_value=mock_cache,
             ),
             patch(
-                "nlqueries.orchestrator.multi_agent_orchestrator.resolve_followup",
+                "nlqueries.orchestrator.multi_agent_orchestrator.aresolve_followup",
                 return_value=MagicMock(resolved="How many languages?"),
             ),
             patch(

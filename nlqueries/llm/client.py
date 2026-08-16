@@ -54,7 +54,18 @@ class LLMClient(ABC):
         return await asyncio.to_thread(self.complete, system, user, max_tokens)
 
     async def astream(self, system: SystemParam, user: str) -> AsyncIterator[str]:
-        """Async token stream.  Default: collects sync stream() in a thread, then yields."""
+        """Async token stream.  Default: collects sync stream() in a thread, then yields.
+
+        .. warning::
+           This default **destroys time to first token**: it drains the entire
+           response in a worker thread before yielding anything, so a caller
+           streaming to a user sees nothing until the model has finished. It is
+           a correctness shim, not a streaming implementation.
+
+           Both shipped providers override it, so nothing pays this today. A new
+           provider that does not override it will look fine in tests — the
+           tokens all arrive — and feel broken in the product.
+        """
         tokens: list[str] = await asyncio.to_thread(list, self.stream(system, user))
         for token in tokens:
             yield token

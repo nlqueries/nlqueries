@@ -137,7 +137,34 @@ def classify_intent(
     llm = get_llm_client(tier="fast")
     user_prompt = _build_user_prompt(question, available_agent_types)
     raw = llm.complete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
+    return _parse_classification(raw, available_agent_types)
 
+
+async def aclassify_intent(
+    question: str,
+    available_agent_types: list[str],
+) -> IntentClassificationResult:
+    """Async counterpart to :func:`classify_intent`.
+
+    Same prompt, same parsing, same coercion — it awaits the LLM instead of
+    blocking on it. The synchronous version was being called bare inside an
+    async generator, where a one-to-three-second round trip froze every other
+    request sharing that worker.
+
+    The sync version stays, unchanged, for the CLI and MCP paths.
+    """
+    llm = get_llm_client(tier="fast")
+    user_prompt = _build_user_prompt(question, available_agent_types)
+    raw = await llm.acomplete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
+    return _parse_classification(raw, available_agent_types)
+
+
+def _parse_classification(
+    raw: str,
+    available_agent_types: list[str],
+) -> IntentClassificationResult:
+    """Shared by both variants, so the two cannot drift into classifying the
+    same response differently."""
     try:
         parsed = json.loads(raw.strip())
         intent = IntentType(parsed["intent"])
