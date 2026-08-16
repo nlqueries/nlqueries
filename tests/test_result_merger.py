@@ -133,7 +133,7 @@ class TestResultMergerSpec:
         async def run() -> list[str]:
             with (
                 patch(
-                    "nlqueries.orchestrator.multi_agent_orchestrator.classify_intent",
+                    "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
                     return_value=IntentClassificationResult(
                         intent=IntentType.hybrid,
                         confidence=0.95,
