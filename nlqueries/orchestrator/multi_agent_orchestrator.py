@@ -55,8 +55,8 @@ from nlqueries.connectors.base import QueryResult
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
-from nlqueries.orchestrator.followup_resolver import resolve_followup
-from nlqueries.orchestrator.intent_classifier import IntentType, classify_intent, coerce_intent
+from nlqueries.orchestrator.followup_resolver import aresolve_followup
+from nlqueries.orchestrator.intent_classifier import IntentType, aclassify_intent, coerce_intent
 from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, Orchestrator, _json_default
 from nlqueries.orchestrator.provenance import (
     record_cache,
@@ -435,7 +435,7 @@ class MultiAgentOrchestrator:
             String tokens from the agent response, then a final JSON chunk
             with ``"agent_type"`` set to ``"sql"``, ``"document"``, or ``"hybrid"``.
         """
-        resolved = resolve_followup(question, history or [])
+        resolved = await aresolve_followup(question, history or [])
         effective_question = resolved.resolved
 
         # ------------------------------------------------------------------
@@ -535,7 +535,7 @@ class MultiAgentOrchestrator:
             intent = override_intent
             _log.debug("Intent classification skipped: caller override %s", intent)
         else:
-            classification = classify_intent(effective_question, list(available_types))
+            classification = await aclassify_intent(effective_question, list(available_types))
             intent = classification.intent
             record_intent_confidence(classification.confidence)  # provenance (SYL-1.1)
         record_route(intent.value)  # provenance (SYL-1.1)

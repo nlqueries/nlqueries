@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nlqueries.orchestrator.intent_classifier import (
     IntentClassificationResult,
     IntentType,
+    aclassify_intent,
     classify_intent,
 )
 
@@ -298,3 +300,90 @@ class TestClassifyIntentExtra:
 
         _, call_kwargs = mock_llm.complete.call_args
         assert call_kwargs.get("max_tokens") == 200
+
+
+# ---------------------------------------------------------------------------
+# The async variant (W-3)
+#
+# classify_intent is a full LLM round trip called bare inside an async
+# generator, where it froze every other request on the worker. The async twin
+# is only worth having if it classifies identically.
+# ---------------------------------------------------------------------------
+
+
+def _async_mock_llm(response: dict | str) -> MagicMock:  # type: ignore[type-arg]
+    raw = response if isinstance(response, str) else json.dumps(response)
+    mock = MagicMock()
+    mock.acomplete = AsyncMock(return_value=raw)
+    return mock
+
+
+_IDENTICAL_CASES = [
+    ({"intent": "sql", "confidence": 0.95, "reasoning": "Counting rows."}, ["sql", "document"]),
+    ({"intent": "document", "confidence": 0.8, "reasoning": "Policy text."}, ["sql", "document"]),
+    # hybrid coerced down to the one available type
+    ({"intent": "hybrid", "confidence": 0.7, "reasoning": "Both."}, ["sql"]),
+    # an intent that is not available at all
+    ({"intent": "document", "confidence": 0.9, "reasoning": "Docs."}, ["sql"]),
+    # malformed responses must fall back the same way
+    ("not valid json at all", ["sql", "document"]),
+    ({"intent": "nonsense", "confidence": 0.5, "reasoning": "?"}, ["sql", "document"]),
+]
+
+
+@pytest.mark.parametrize(("response", "available"), _IDENTICAL_CASES)
+def test_sync_and_async_classify_identically(response, available) -> None:
+    """Two implementations of one behaviour is a drift risk — and this one
+    decides SQL versus document routing, so drift would be a wrong answer
+    rather than a slow one."""
+    raw = response if isinstance(response, str) else json.dumps(response)
+    sync_llm = MagicMock()
+    sync_llm.complete.return_value = raw
+
+    with patch("nlqueries.orchestrator.intent_classifier.get_llm_client", return_value=sync_llm):
+        sync_result = classify_intent("a question", available_agent_types=available)
+
+    with patch(
+        "nlqueries.orchestrator.intent_classifier.get_llm_client",
+        return_value=_async_mock_llm(response),
+    ):
+        async_result = asyncio.run(aclassify_intent("a question", available_agent_types=available))
+
+    assert async_result == sync_result
+
+
+def test_async_classification_uses_the_fast_tier() -> None:
+    """Classification is a short-output auxiliary call; paying for the large
+    model on every turn would be a quiet cost regression."""
+    with patch(
+        "nlqueries.orchestrator.intent_classifier.get_llm_client",
+        return_value=_async_mock_llm({"intent": "sql", "confidence": 1.0, "reasoning": "x"}),
+    ) as mock_get:
+        asyncio.run(aclassify_intent("a question", available_agent_types=["sql"]))
+
+    assert mock_get.call_args.kwargs["tier"] == "fast"
+
+
+def test_async_classification_does_not_block_the_event_loop() -> None:
+    """The reason the async variant exists at all."""
+    import time
+
+    async def _slow_acomplete(*_a: object, **_kw: object) -> str:
+        await asyncio.sleep(0.3)
+        return json.dumps({"intent": "sql", "confidence": 1.0, "reasoning": "ok"})
+
+    mock = MagicMock()
+    mock.acomplete = _slow_acomplete
+
+    async def run() -> float:
+        started = time.monotonic()
+        await asyncio.gather(
+            aclassify_intent("question one", available_agent_types=["sql", "document"]),
+            aclassify_intent("question two", available_agent_types=["sql", "document"]),
+        )
+        return time.monotonic() - started
+
+    with patch("nlqueries.orchestrator.intent_classifier.get_llm_client", return_value=mock):
+        elapsed = asyncio.run(run())
+
+    assert elapsed < 0.5, f"two concurrent 300ms classifications took {elapsed:.3f}s"

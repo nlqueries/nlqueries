@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from nlqueries.orchestrator.conversation import ConversationTurn, create_session
-from nlqueries.orchestrator.followup_resolver import ResolvedQuestion, resolve_followup
+from nlqueries.orchestrator.followup_resolver import (
+    ResolvedQuestion,
+    aresolve_followup,
+    resolve_followup,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -176,3 +182,107 @@ def test_complete_called_with_max_tokens_200() -> None:
 
     _, call_kwargs = mock_llm.complete.call_args
     assert call_kwargs.get("max_tokens") == 200
+
+
+# ---------------------------------------------------------------------------
+# The async variant (W-3)
+#
+# resolve_followup is a full LLM round trip, typically one to three seconds.
+# Called bare inside an async generator it froze every other request on the
+# worker for that whole time, which is why an async twin exists. The twin is
+# only worth having if it answers identically, so that is what is asserted.
+# ---------------------------------------------------------------------------
+
+
+def _async_mock_llm(response_dict: dict) -> MagicMock:  # type: ignore[type-arg]
+    """A mock LLMClient whose acomplete() returns *response_dict* as JSON."""
+    mock = MagicMock()
+    mock.acomplete = AsyncMock(return_value=json.dumps(response_dict))
+    return mock
+
+
+_IDENTICAL_CASES = [
+    # (question, history_pairs, llm_response)
+    (
+        "How many orders last month?",
+        [("user", "Show me orders by region"), ("assistant", "Here they are.")],
+        None,  # no follow-up signal — never reaches the LLM
+    ),
+    (
+        "filter those to North America",
+        [],
+        None,  # signal, but no history to resolve against
+    ),
+    (
+        "filter those to North America",
+        [("user", "Show orders by region"), ("assistant", "Here they are.")],
+        {"resolved": "Filter orders by region to North America", "reasoning": "'those' refers."},
+    ),
+    (
+        "what about them",
+        [("user", "Top customers"), ("assistant", "Acme, Globex.")],
+        {"resolved": "what about them", "reasoning": "Nothing to change."},
+    ),
+]
+
+
+@pytest.mark.parametrize(("question", "pairs", "response"), _IDENTICAL_CASES)
+def test_sync_and_async_resolve_identically(question, pairs, response) -> None:
+    """Two implementations of one behaviour is a drift risk; this is the check
+    that keeps them honest."""
+    history = _make_history(pairs) if pairs else []
+
+    with patch(
+        "nlqueries.orchestrator.followup_resolver.get_llm_client",
+        return_value=_mock_llm(response) if response else MagicMock(),
+    ):
+        sync_result = resolve_followup(question, history)
+
+    with patch(
+        "nlqueries.orchestrator.followup_resolver.get_llm_client",
+        return_value=_async_mock_llm(response) if response else MagicMock(),
+    ):
+        async_result = asyncio.run(aresolve_followup(question, history))
+
+    assert async_result == sync_result
+
+
+def test_async_resolution_failure_returns_the_original_question() -> None:
+    """Fail open, exactly as the sync path does: an unresolvable follow-up is
+    still answerable as the user asked it."""
+    history = _make_history([("user", "Show orders"), ("assistant", "Here.")])
+    mock = MagicMock()
+    mock.acomplete = AsyncMock(side_effect=Exception("LLM unavailable"))
+
+    with patch("nlqueries.orchestrator.followup_resolver.get_llm_client", return_value=mock):
+        result = asyncio.run(aresolve_followup("filter those to Europe", history))
+
+    assert result.is_followup is False
+    assert result.resolved == "filter those to Europe"
+
+
+def test_async_resolution_does_not_block_the_event_loop() -> None:
+    """The reason the async variant exists at all."""
+    import time
+
+    history = _make_history([("user", "Show orders"), ("assistant", "Here.")])
+
+    async def _slow_acomplete(*_a: object, **_kw: object) -> str:
+        await asyncio.sleep(0.3)
+        return json.dumps({"resolved": "resolved question", "reasoning": "ok"})
+
+    mock = MagicMock()
+    mock.acomplete = _slow_acomplete
+
+    async def run() -> float:
+        started = time.monotonic()
+        await asyncio.gather(
+            aresolve_followup("filter those to Europe", history),
+            aresolve_followup("what about those", history),
+        )
+        return time.monotonic() - started
+
+    with patch("nlqueries.orchestrator.followup_resolver.get_llm_client", return_value=mock):
+        elapsed = asyncio.run(run())
+
+    assert elapsed < 0.5, f"two concurrent 300ms resolutions took {elapsed:.3f}s"

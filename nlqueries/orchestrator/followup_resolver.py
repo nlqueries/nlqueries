@@ -119,6 +119,61 @@ def resolve_followup(
         :class:`ResolvedQuestion` with ``original``, ``resolved``,
         ``is_followup``, and ``reasoning`` fields.
     """
+    shortcut = _shortcut(question, history)
+    if shortcut is not None:
+        return shortcut
+
+    try:
+        llm = get_llm_client(tier="fast")
+        raw = llm.complete(_SYSTEM_PROMPT, _build_user_prompt(question, history), max_tokens=200)
+    except Exception:
+        logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)
+        return _unresolved(question)
+
+    return _parse_response(question, raw)
+
+
+async def aresolve_followup(
+    question: str,
+    history: list[ConversationTurn],
+) -> ResolvedQuestion:
+    """Async counterpart to :func:`resolve_followup`.
+
+    Identical in every respect except that it awaits the LLM instead of blocking
+    on it. That difference matters only to the caller's event loop, and it
+    matters a great deal: this is a full LLM round trip, typically one to three
+    seconds, and the synchronous version was being called bare inside an async
+    generator — freezing every other request on that worker for its duration.
+
+    The sync version stays, unchanged, for the CLI and MCP paths.
+    """
+    shortcut = _shortcut(question, history)
+    if shortcut is not None:
+        return shortcut
+
+    try:
+        llm = get_llm_client(tier="fast")
+        raw = await llm.acomplete(
+            _SYSTEM_PROMPT, _build_user_prompt(question, history), max_tokens=200
+        )
+    except Exception:
+        logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)
+        return _unresolved(question)
+
+    return _parse_response(question, raw)
+
+
+# ---------------------------------------------------------------------------
+# Shared between the two variants.
+#
+# Everything except the LLM call itself lives here, so the sync and async paths
+# cannot drift into answering the same question differently — which is the real
+# risk of keeping two of anything.
+# ---------------------------------------------------------------------------
+
+
+def _shortcut(question: str, history: list[ConversationTurn]) -> ResolvedQuestion | None:
+    """The two cases that need no LLM at all, or None to go on and ask one."""
     if not _has_followup_signal(question):
         return ResolvedQuestion(
             original=question,
@@ -126,7 +181,6 @@ def resolve_followup(
             is_followup=False,
             reasoning="No follow-up references detected.",
         )
-
     if not history:
         return ResolvedQuestion(
             original=question,
@@ -134,29 +188,36 @@ def resolve_followup(
             is_followup=False,
             reasoning="No conversation history available to resolve references.",
         )
+    return None
 
-    history_text = _format_history_for_prompt(history)
-    user_prompt = (
-        f"Conversation history:\n{history_text}\n\n"
+
+def _build_user_prompt(question: str, history: list[ConversationTurn]) -> str:
+    return (
+        f"Conversation history:\n{_format_history_for_prompt(history)}\n\n"
         f"Follow-up question: {question}\n\n"
         "Rewrite the follow-up question as fully self-contained. "
         "Respond with only the JSON object."
     )
 
+
+def _unresolved(question: str) -> ResolvedQuestion:
+    """Fail open: an unresolvable follow-up is still answerable as asked."""
+    return ResolvedQuestion(
+        original=question,
+        resolved=question,
+        is_followup=False,
+        reasoning="Resolution failed; original question returned.",
+    )
+
+
+def _parse_response(question: str, raw: str) -> ResolvedQuestion:
     try:
-        llm = get_llm_client(tier="fast")
-        raw = llm.complete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
         parsed = json.loads(raw.strip())
         resolved_text = str(parsed["resolved"])
         reasoning = str(parsed["reasoning"])
     except Exception:
         logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)
-        return ResolvedQuestion(
-            original=question,
-            resolved=question,
-            is_followup=False,
-            reasoning="Resolution failed; original question returned.",
-        )
+        return _unresolved(question)
 
     return ResolvedQuestion(
         original=question,
