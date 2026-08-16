@@ -9,6 +9,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1138,3 +1139,112 @@ class TestPayloadScopedEntries:
         query_filter = client.query_points.call_args.kwargs["query_filter"]
         keys = [cond.key for cond in query_filter.must]
         assert keys == ["kind"]
+
+
+# ---------------------------------------------------------------------------
+# W-9: the negative lookup is cached too
+#
+# Only hits were remembered, so an agent whose collection did not exist yet paid
+# a get_collections() round trip on every single query — forever, until its
+# first cache write. New agents were slower than warm ones for a reason nobody
+# would guess from reading the code.
+# ---------------------------------------------------------------------------
+
+
+class TestNegativeCollectionCache:
+    def _client(self, existing: list[str]) -> MagicMock:
+        client = MagicMock()
+        collections = []
+        for name in existing:
+            entry = MagicMock()
+            entry.name = name  # MagicMock(name=...) is reserved
+            collections.append(entry)
+        client.get_collections.return_value.collections = collections
+        return client
+
+    def _clear(self) -> None:
+        from nlqueries.cache import semantic_cache as sc
+
+        sc._known_collections.clear()
+        sc._missing_collections.clear()
+
+    def test_ten_lookups_for_a_missing_collection_ask_qdrant_once(self) -> None:
+        from nlqueries.cache import semantic_cache as sc
+
+        self._clear()
+        client = self._client(existing=["cache_other"])
+
+        results = [sc._collection_exists(client, "cache_new_agent") for _ in range(10)]
+
+        assert results == [False] * 10
+        assert client.get_collections.call_count == 1, (
+            f"asked Qdrant {client.get_collections.call_count} times for the same missing "
+            "collection"
+        )
+
+    def test_the_negative_answer_expires(self, monkeypatch) -> None:
+        """A collection created by another process — the CLI, a worker, a second
+        replica — must become visible without a restart."""
+        from nlqueries.cache import semantic_cache as sc
+
+        self._clear()
+        client = self._client(existing=[])
+        assert sc._collection_exists(client, "cache_agent") is False
+
+        # Now it exists, and the remembered "no" has aged out.
+        client = self._client(existing=["cache_agent"])
+        monkeypatch.setattr(sc.time, "time", lambda: 10_000_000_000.0)
+
+        assert sc._collection_exists(client, "cache_agent") is True
+
+    def test_creating_the_collection_clears_the_negative_entry(self) -> None:
+        """Otherwise the very process that just created it keeps reporting a
+        miss until the TTL runs out."""
+        from nlqueries.cache import semantic_cache as sc
+
+        self._clear()
+        client = self._client(existing=[])
+        cache = sc.SemanticCache("agent-x")
+        sc._collection_exists(client, cache._collection)
+        assert cache._collection in sc._missing_collections
+
+        with (
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=MagicMock()),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+        ):
+            result = SimpleNamespace(
+                resolved_question="a question",
+                agent_type="sql",
+                answer="an answer",
+                sql="SELECT 1",
+            )
+            cache.put("a question", result)
+
+        assert cache._collection not in sc._missing_collections
+        assert cache._collection in sc._known_collections
+
+    def test_an_unreachable_qdrant_is_not_remembered_as_missing(self) -> None:
+        """ "I could not ask" is not "it does not exist" — caching that would
+        extend an outage past its end."""
+        from nlqueries.cache import semantic_cache as sc
+
+        self._clear()
+        client = MagicMock()
+        client.get_collections.side_effect = ConnectionError("qdrant down")
+
+        assert sc._collection_exists(client, "cache_agent") is False
+        assert sc._missing_collections == {}
+
+        # Qdrant recovers; the very next lookup sees the truth.
+        recovered = self._client(existing=["cache_agent"])
+        assert sc._collection_exists(recovered, "cache_agent") is True
+
+    def test_a_known_collection_still_short_circuits(self) -> None:
+        from nlqueries.cache import semantic_cache as sc
+
+        self._clear()
+        client = self._client(existing=["cache_agent"])
+        assert sc._collection_exists(client, "cache_agent") is True
+        assert sc._collection_exists(client, "cache_agent") is True
+        assert client.get_collections.call_count == 1

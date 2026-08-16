@@ -226,6 +226,21 @@ QUERY_HISTORY_LIMIT: int = int(os.getenv("QUERY_HISTORY_LIMIT", "500"))
 FEEDBACK_DIR: Path = Path(os.getenv("FEEDBACK_DIR", str(Path.home() / ".nlqueries" / "feedback")))
 """Directory where per-agent feedback JSONL files are stored."""
 
+CACHE_COLLECTION_NEGATIVE_TTL_SECONDS: float = float(
+    os.getenv("CACHE_COLLECTION_NEGATIVE_TTL_SECONDS", "60")
+)
+"""How long to remember that a semantic-cache collection does not exist.
+
+Only positive results used to be cached, so an agent whose collection had not
+been created yet paid a get_collections() round trip on every query until its
+first cache write — making new agents slower than warm ones for a reason nobody
+would guess.
+
+It expires because a collection created by another process (the CLI, a worker,
+another replica) would otherwise stay invisible. A minute of staleness costs a
+cache miss, which is exactly what was happening anyway.
+"""
+
 # ---------------------------------------------------------------------------
 # Cache thresholds
 # ---------------------------------------------------------------------------
