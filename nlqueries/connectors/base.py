@@ -14,6 +14,7 @@ This module is part of the public OSS API: it ships in the open-source
 
 from __future__ import annotations
 
+import contextlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -151,6 +152,21 @@ class DatabaseConnector(ABC):
         descending so the most-used queries are always included.
         """
         ...
+
+    def close(self) -> None:
+        """Release whatever this connector holds open.
+
+        A default rather than an abstract method: most connectors keep a
+        SQLAlchemy engine on ``_engine`` and nothing else, and the ones that do
+        not should not be made to write an empty override. Called when a cached
+        connector is evicted — without it, engines would be released only by
+        garbage collection, which is not a schedule a customer's DBA would
+        recognise as one.
+        """
+        engine = getattr(self, "_engine", None)
+        if engine is not None:
+            with contextlib.suppress(Exception):
+                engine.dispose()
 
     @abstractmethod
     def execute_query(

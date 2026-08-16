@@ -220,6 +220,40 @@ thousand rows each carrying a JSON document differ by orders of magnitude.
 Whichever budget binds first stops the read, and the result says which.
 """
 
+CONNECTOR_CACHE_ENABLED: bool = os.getenv("CONNECTOR_CACHE_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""Reuse open connectors across queries instead of building one per query.
+
+Every query used to read the connectors file, load a password, and build a new
+SQLAlchemy engine — a fresh TCP connection, TLS handshake and authentication
+against the customer's database, every single time — and then never dispose it.
+At any real concurrency that is visible connection churn on the customer's side,
+and it defeats SQLAlchemy's pooling entirely: a pool discarded after one query
+has pooled nothing.
+
+Set false to restore the old behaviour without a rollback.
+"""
+
+CONNECTOR_CACHE_TTL_SECONDS: float = float(os.getenv("CONNECTOR_CACHE_TTL_SECONDS", "900"))
+"""How long a cached connector may be reused before it is rebuilt."""
+
+CONNECTOR_CACHE_MAX_ENTRIES: int = int(os.getenv("CONNECTOR_CACHE_MAX_ENTRIES", "32"))
+"""How many connectors to keep open at once; least-recently-used evicted first."""
+
+CONNECTOR_POOL_SIZE: int = int(os.getenv("CONNECTOR_POOL_SIZE", "5"))
+"""Connections held open per cached connector."""
+
+CONNECTOR_MAX_OVERFLOW: int = int(os.getenv("CONNECTOR_MAX_OVERFLOW", "5"))
+"""Extra connections a cached connector may open under burst, then discard.
+
+Total per API worker is connectors_in_cache * (CONNECTOR_POOL_SIZE +
+CONNECTOR_MAX_OVERFLOW) — worth computing before raising either against a
+customer's database, which has its own max_connections.
+"""
+
 CONNECTOR_STATEMENT_TIMEOUT_SECONDS: float = float(
     os.getenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", "120")
 )
