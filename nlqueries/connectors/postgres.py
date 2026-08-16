@@ -39,6 +39,17 @@ logger = logging.getLogger(__name__)
 # one is not paying a round trip per handful of rows.
 _YIELD_PER = 1000
 
+# Statements that can be read through a server-side cursor. Deliberately a
+# prefix check rather than a parse: it runs on every query, and the cost of
+# being wrong is only that a read is not streamed.
+_STREAMABLE_PREFIXES = ("select", "with", "table", "values")
+
+
+def _returns_rows(sql: str) -> bool:
+    """True when *sql* is a read that psycopg2 can stream."""
+    return sql.lstrip().lstrip("(").lower().startswith(_STREAMABLE_PREFIXES)
+
+
 # Schemas that are part of Postgres / the catalog itself, never user data.
 _SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
 
@@ -405,14 +416,24 @@ class PostgresConnector(DatabaseConnector):
                         statement_timeout_ms = max(1, int(effective_timeout * 1000))
                         conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))
 
-                    # Server-side cursor: rows arrive in batches instead of the
-                    # driver building the entire result before returning. Safe
-                    # here because this connection is opened per query and the
-                    # surrounding transaction stays open for the whole read,
+                    # Server-side cursor for reads: rows arrive in batches
+                    # instead of the driver building the entire result before
+                    # returning. Safe here because the connection is opened per
+                    # query and the transaction stays open for the whole read,
                     # which is what psycopg2's streaming mode requires.
-                    cursor_result = conn.execution_options(
-                        stream_results=True, yield_per=_YIELD_PER
-                    ).execute(text(sql))
+                    #
+                    # Only for reads. psycopg2 cannot run DDL or DML through a
+                    # named cursor at all — it fails outright — so streaming is
+                    # requested only for statements that plainly return rows.
+                    # Misjudging one costs streaming, never correctness: the
+                    # budget below still bounds what is turned into Python
+                    # objects either way.
+                    executor = (
+                        conn.execution_options(stream_results=True, yield_per=_YIELD_PER)
+                        if _returns_rows(sql)
+                        else conn
+                    )
+                    cursor_result = executor.execute(text(sql))
                     elapsed_ms = (time.perf_counter() - start) * 1000
 
                     truncated = False
