@@ -660,3 +660,89 @@ def test_explain_gate_not_run_on_already_invalid_result() -> None:
     result = asyncio.run(_run())
     assert result.is_valid is False
     connector.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Prose-as-SQL: the model answers in English and it reaches the SQL path
+#
+# Both cases below were taken from a production log during the W-0 load
+# baseline, not invented. They are the reason this section exists.
+# ---------------------------------------------------------------------------
+
+# "I can't help with that." — the English preposition, mid-sentence.
+PROSE_WITH = (
+    "I'm sorry, I can't help with that.\n\n"
+    "If you have a specific question based on the tables provided in the "
+    "schema, please ask, and I can help generate a valid SQL query for you."
+)
+
+# A clarification request. The apostrophe in "I'll" opens a string literal that
+# never closes, so this fails in the TOKENIZER, before parsing begins.
+PROSE_APOSTROPHE = (
+    "I need more detail (for example which titles, ratings, or professions), "
+    "please let me know and I'll help."
+)
+
+
+def test_validate_sql_catches_tokenizer_errors_not_just_parse_errors() -> None:
+    """A tokenizer failure must be a validation error, never an exception.
+
+    ``TokenError`` is a *sibling* of ``ParseError`` under ``SqlglotError``, not a
+    subclass, so ``except ParseError`` did not catch it. It escaped
+    ``_validate_sql`` and surfaced to the user as a 500 from the chat socket —
+    the exact outcome this function exists to prevent.
+    """
+    error = _validate_sql(PROSE_APOSTROPHE, _make_kb(), "postgres")
+
+    assert error is not None
+    assert "parse error" in error.lower()
+
+
+def test_validate_sql_reports_rather_than_raises_on_arbitrary_prose() -> None:
+    """No English input may raise out of the validator, whatever it contains."""
+    for text in (PROSE_WITH, PROSE_APOSTROPHE, "Sorry — I don't know.", "¯\_(ツ)_/¯"):
+        assert _validate_sql(text, _make_kb(), "postgres") is not None
+
+
+def test_extract_sql_does_not_treat_the_english_word_with_as_a_cte() -> None:
+    """`help with that.` is not a CTE.
+
+    The keyword scan used a substring search, so this prose was returned as the
+    statement ``with that.\n\nIf you have a specific question…`` — which is how
+    an English sentence came to be handed on as the model's SQL.
+    """
+    extracted = _extract_sql(PROSE_WITH)
+
+    assert not extracted.lower().startswith("with that")
+
+
+def test_extract_sql_still_finds_a_real_cte() -> None:
+    """The fix must not cost us actual CTE extraction."""
+    text = (
+        "Here is the query you asked for:\n\n"
+        "WITH recent AS (SELECT id FROM orders) SELECT * FROM recent"
+    )
+
+    assert _extract_sql(text).upper().startswith("WITH RECENT AS")
+
+
+def test_extract_sql_finds_a_cte_with_a_column_list_and_recursive() -> None:
+    """`WITH RECURSIVE name (cols) AS` is still a CTE head."""
+    text = "Sure. WITH RECURSIVE tree (id, parent) AS (SELECT 1, NULL) SELECT * FROM tree"
+
+    assert _extract_sql(text).upper().startswith("WITH RECURSIVE TREE")
+
+
+def test_extract_sql_prefers_a_real_select_over_a_prose_with() -> None:
+    """Prose containing "with" must not shadow the SELECT that follows it."""
+    text = "I can help with that. SELECT id FROM orders"
+
+    assert _extract_sql(text).upper().startswith("SELECT ID FROM ORDERS")
+
+
+def test_prose_never_becomes_valid_sql_end_to_end() -> None:
+    """The whole point: prose in, a validation error out — not an exception,
+    and never a statement the caller would be willing to execute."""
+    for prose in (PROSE_WITH, PROSE_APOSTROPHE):
+        result = _validate_sql(_extract_sql(prose), _make_kb(), "postgres")
+        assert result is not None

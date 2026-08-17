@@ -9,7 +9,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from nlqueries.orchestrator.intent_classifier import IntentClassificationResult, IntentType
-from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+from nlqueries.orchestrator.multi_agent_orchestrator import (
+    MultiAgentOrchestrator,
+    drain_background_tasks,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1240,3 +1243,129 @@ class TestAuxiliaryLlmCallsDoNotBlockTheEventLoop:
 
         # Serialised this would be ~1.2s; overlapped it is ~0.6s.
         assert elapsed < 0.95, f"two concurrent turns took {elapsed:.3f}s — they serialised"
+
+
+# ---------------------------------------------------------------------------
+# Prose-as-SQL: the cache half
+#
+# A model answering in English produced a "SQL" string that failed validation.
+# It was cached anyway, and every subsequent cache hit sent that English to the
+# customer's database — three executions in two seconds in the log that found
+# this. The generation-side fix is in sql_generation; these cover the cache.
+# ---------------------------------------------------------------------------
+
+
+class TestCacheDoesNotStoreOrRunInvalidSQL:
+    def test_invalid_sql_is_not_written_to_the_cache(self) -> None:
+        """The frame carries `is_valid` alongside `sql`; storing the latter
+        without consulting the former caches a statement the orchestrator itself
+        refused to run."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import _schedule_cache_write
+
+        cache = MagicMock()
+        frame = json.dumps(
+            {
+                "type": "sql",
+                "sql": "with that.\n\nIf you have a specific question, please ask.",
+                "is_valid": False,
+                "validation_error": "SQL parse error: Expecting (",
+            }
+        )
+
+        async def run() -> None:
+            _schedule_cache_write(cache, "k", "q", "sql", ["Sorry, I cannot help. ", frame])
+            await drain_background_tasks()
+
+        asyncio.run(run())
+
+        cache.put.assert_called_once()
+        stored = cache.put.call_args[0][1]
+        assert stored.sql is None, f"invalid SQL was cached: {stored.sql!r}"
+        assert stored.answer  # the prose answer itself is still cached
+
+    def test_valid_sql_is_still_written_to_the_cache(self) -> None:
+        """The guard must not stop the cache doing its job."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import _schedule_cache_write
+
+        cache = MagicMock()
+        frame = json.dumps({"type": "sql", "sql": "SELECT 1 FROM orders", "is_valid": True})
+
+        async def run() -> None:
+            _schedule_cache_write(cache, "k", "q", "sql", ["Answer. ", frame])
+            await drain_background_tasks()
+
+        asyncio.run(run())
+
+        assert cache.put.call_args[0][1].sql == "SELECT 1 FROM orders"
+
+    def test_a_poisoned_cache_entry_is_never_executed(self) -> None:
+        """Entries written before the fix are still live in deployed caches, and
+        this is the one path that hands a stored statement to a customer's
+        database with no generation step in front of it."""
+        from datetime import UTC, datetime
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+
+        poisoned = CacheEntry(
+            question="Total revenue?",
+            resolved_question="Total revenue?",
+            agent_type="sql",
+            answer="I can't help with that.",
+            sql="with that.\n\nIf you have a specific question, please ask.",
+            created_at=datetime.now(UTC),
+            hit_count=1,
+        )
+        fake_connector = MagicMock()
+
+        async def run() -> dict[str, Any]:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch(
+                    "nlqueries.connectors.loader.open_connector_for_agent",
+                    return_value=fake_connector,
+                ),
+            ):
+                MockCache.return_value.get.return_value = poisoned
+                orch = MultiAgentOrchestrator()
+                tokens: list[str] = []
+                async for token in orch.handle_question("Total revenue?", "agent1"):
+                    tokens.append(token)
+                return json.loads(tokens[-1])
+
+        final = asyncio.run(run())
+
+        fake_connector.execute_query.assert_not_called()
+        assert final["sql_table"]["error"]
+
+    def test_a_non_select_cache_entry_is_never_executed(self) -> None:
+        """Nothing should be able to arrive at a customer's database through the
+        cache except a read."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
+
+        assert not _is_executable_select("DROP TABLE users", "postgres")
+        assert not _is_executable_select("DELETE FROM orders", "postgres")
+        assert not _is_executable_select("", "postgres")
+
+    def test_dialect_specific_sql_is_still_executable(self) -> None:
+        """The guard parses with the request's dialect, not a generic one.
+
+        sqlglot's generic dialect rejects BigQuery backticks, Snowflake's `:`
+        JSON accessor and T-SQL's TOP — checking generically would refuse to run
+        good cached SQL for three supported connectors, which is a worse failure
+        than the one being fixed.
+        """
+        from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
+
+        assert _is_executable_select("SELECT x FROM `proj.ds.tbl`", "bigquery")
+        assert _is_executable_select("SELECT v:a::string AS a FROM t", "snowflake")
+        assert _is_executable_select("SELECT TOP 10 name FROM tbl", "tsql")
+        assert _is_executable_select("SELECT x::int FROM t", "postgres")
+
+    def test_an_unknown_dialect_does_not_block_execution(self) -> None:
+        """An unrecognised dialect name raises the same error type as bad SQL;
+        it must not be mistaken for one."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
+
+        assert _is_executable_select("SELECT 1 FROM t", "not_a_real_dialect")

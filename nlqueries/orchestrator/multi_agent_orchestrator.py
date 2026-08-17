@@ -168,6 +168,12 @@ def _schedule_cache_write(
     ``get(..., payload_filter=...)`` can scope the hit — see seam S2.
     """
     # Extract answer (all text tokens) and sql (from final JSON chunk).
+    #
+    # Only SQL that PASSED validation is stored. The frame carries both `sql` and
+    # `is_valid`, and taking the former without the latter caches a statement the
+    # orchestrator itself refused to run — which is how a single prose answer
+    # ("I can't help with that.") poisoned an agent's cache, after which every
+    # cache hit re-executed that prose against the customer's database.
     answer = ""
     sql: str | None = None
     if tokens:
@@ -176,7 +182,7 @@ def _schedule_cache_write(
             try:
                 parsed = json.loads(t)
                 if isinstance(parsed, dict) and "type" in parsed:
-                    sql = parsed.get("sql") or None
+                    sql = (parsed.get("sql") or None) if parsed.get("is_valid") else None
                     continue
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -295,8 +301,47 @@ def _merge_hybrid(
     return merge_results(question, sql_result=sql_query_result, document_result=doc_retrieval)
 
 
+def _is_executable_select(sql: str, dialect: str) -> bool:
+    """Return ``True`` when *sql* parses as a single ``SELECT`` for *dialect*.
+
+    Schema-free: this is a last gate in front of someone else's database, not a
+    substitute for ``_validate_sql``.
+
+    *dialect* is required rather than defaulted. Parsing with sqlglot's generic
+    dialect rejects BigQuery backtick identifiers, Snowflake's ``:`` JSON
+    accessor and T-SQL's ``TOP`` — so a generic check would refuse to run
+    perfectly good cached SQL for three supported connectors, which is a worse
+    failure than the one being fixed.
+
+    Catches ``SqlglotError``, not ``ParseError``: ``TokenError`` is a sibling of
+    ``ParseError``, not a subclass, and prose with an apostrophe fails in the
+    tokenizer. Also catches ``ValueError``, which is what an unrecognised
+    dialect *name* raises — a different failure from bad SQL, and one that must
+    not propagate out of a guard whose whole purpose is to stop this path
+    raising.
+    """
+    import sqlglot  # noqa: PLC0415
+    import sqlglot.errors  # noqa: PLC0415
+    import sqlglot.expressions as sqlglot_exp  # noqa: PLC0415
+
+    if not sql or not sql.strip():
+        return False
+    try:
+        statement = sqlglot.parse_one(sql, dialect=dialect)
+    except ValueError:
+        # Unknown dialect name — fall back to generic parsing so a dialect we
+        # cannot name never blocks execution of otherwise good SQL.
+        try:
+            statement = sqlglot.parse_one(sql)
+        except (sqlglot.errors.SqlglotError, ValueError):
+            return False
+    except sqlglot.errors.SqlglotError:
+        return False
+    return isinstance(statement, sqlglot_exp.Select)
+
+
 async def _execute_cached_sql(
-    agent_id: str, sql: str, timeout_seconds: float | None
+    agent_id: str, sql: str, timeout_seconds: float | None, dialect: str = "postgres"
 ) -> dict[str, Any] | None:
     """Execute *sql* for *agent_id* and return a ``sql_table`` dict (or ``None``).
 
@@ -307,8 +352,18 @@ async def _execute_cached_sql(
     shape as a fresh one — the expensive LLM SQL-generation is still skipped;
     only the cheap query execution runs. Best-effort: any failure is surfaced as
     an ``{"error": ...}`` table rather than dropping the result entirely.
+
+    Cached SQL is re-checked before it runs. The write side now stores only
+    validated SQL, but entries written before that fix are still live in
+    deployed caches, and this is the one path that sends a stored statement to a
+    customer's database with no generation step in front of it. Requiring a
+    parseable ``SELECT`` keeps a poisoned entry — prose, or anything that is not
+    a read — from being executed on their server.
     """
     from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
+
+    if not _is_executable_select(sql, dialect):
+        return {"error": "Cached SQL failed revalidation and was not executed"}
 
     try:
         connector = await asyncio.to_thread(open_connector_for_agent, agent_id)
@@ -499,7 +554,7 @@ class MultiAgentOrchestrator:
                     # no ``sql_table``, and table-rendering callers (enterprise
                     # chat, CLI, MCP) show no data for repeated queries.
                     _hit_chunk["sql_table"] = await _execute_cached_sql(
-                        agent_id, _cached.sql, timeout_seconds
+                        agent_id, _cached.sql, timeout_seconds, dialect
                     )
             elif _cached.agent_type == "document":
                 _hit_chunk["type"] = "citations"

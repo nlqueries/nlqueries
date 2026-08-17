@@ -405,6 +405,14 @@ def _format_schema_for_prompt(knowledge_base: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# A CTE head: WITH [RECURSIVE] <name> [(col, …)] AS. Used instead of a substring
+# search for "WITH" so the English preposition does not start a SQL statement.
+_CTE_START = re.compile(
+    r"\bWITH\s+(?:RECURSIVE\s+)?(?:\"[^\"]+\"|`[^`]+`|\w+)\s*(?:\([^()]*\))?\s+AS\b",
+    re.IGNORECASE,
+)
+
+
 def _extract_sql(text: str) -> str:
     """Extract the SQL statement from an LLM response.
 
@@ -430,10 +438,19 @@ def _extract_sql(text: str) -> str:
     # 3. Find whichever SQL-starting keyword (SELECT or WITH) appears earliest
     upper = text.upper()
     candidates: list[int] = []
-    for keyword in ("SELECT", "WITH"):
-        idx = upper.find(keyword)
-        if idx != -1:
-            candidates.append(idx)
+
+    select_idx = upper.find("SELECT")
+    if select_idx != -1:
+        candidates.append(select_idx)
+
+    # WITH is matched on CTE *grammar*, not as a substring. A bare `.find("WITH")`
+    # fires on the English word — "I can't help with that." became the statement
+    # `with that.\n\nIf you have a specific question...`, which was then handed on
+    # as though it were the model's SQL. A CTE must be `WITH [RECURSIVE] name
+    # [(cols)] AS`, so anything else is prose and is not a statement start.
+    cte_match = _CTE_START.search(text)
+    if cte_match:
+        candidates.append(cte_match.start())
 
     if candidates:
         return text[min(candidates) :].strip()
@@ -462,9 +479,16 @@ def _validate_sql(
         return "Generated SQL is empty"
 
     # Parse -----------------------------------------------------------------
+    # SqlglotError, not ParseError. TokenError is a SIBLING of ParseError under
+    # SqlglotError, not a subclass — so `except ParseError` misses it entirely.
+    # The tokenizer, not the parser, is what fails when the model answers in
+    # prose containing an apostrophe ("I'll", "can't"): the quote opens a string
+    # literal that never closes. That escaped this handler and surfaced to the
+    # user as a 500 from the chat socket, which is the one outcome this function
+    # exists to prevent. Found by the W-0 load baseline, not by a test.
     try:
         statement = sqlglot.parse_one(sql, dialect=dialect)
-    except sqlglot.errors.ParseError as exc:
+    except sqlglot.errors.SqlglotError as exc:
         return f"SQL parse error: {exc}"
 
     if statement is None:
