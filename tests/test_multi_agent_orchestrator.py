@@ -596,6 +596,13 @@ class TestMultiAgentOrchestratorNewPaths:
                     return_value=sql_instance,
                 ),
                 patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                # Every other test in this class stubs the embedder; this one did
+                # not, so it called the real embed_text. With no embedding daemon
+                # on the machine, that loads a full model in-process — about 20
+                # seconds against a 0.3 s budget. The test then failed for a
+                # reason with nothing to do with whether the cache write blocks,
+                # which is what it is actually asserting.
+                patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
             ):
                 MockCache.return_value.get.return_value = None
                 MockCache.return_value.put.side_effect = slow_put

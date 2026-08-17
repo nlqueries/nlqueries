@@ -95,9 +95,19 @@ def test_a_changed_credential_rebuilds_without_a_restart(connectors_file, built)
     assert built[0].closed is True, "the superseded connector was not disposed"
 
 
-def test_an_expired_entry_is_rebuilt_and_disposed(connectors_file, built, monkeypatch) -> None:
+def test_an_expired_entry_is_rebuilt_and_disposed(connectors_file, built) -> None:
     loader.open_connector_for_agent("postgres:localhost:db")
-    monkeypatch.setattr(config, "CONNECTOR_CACHE_TTL_SECONDS", 0.0)
+
+    # Backdate the entry rather than setting the TTL to 0 and trusting the clock
+    # to have moved. time.monotonic() has ~15.6 ms resolution on Windows, so two
+    # calls inside one tick differ by exactly 0.0 — and `elapsed > 0.0` is then
+    # False, so the entry was NOT considered expired and nothing was rebuilt.
+    # The test passed on Linux and failed on Windows for a reason that had
+    # nothing to do with the behaviour under test, which is the least useful
+    # kind of failure there is. Making the entry genuinely old states the
+    # premise directly and holds on any clock.
+    entry = loader._cache["postgres:localhost:db"]
+    entry.created_at -= config.CONNECTOR_CACHE_TTL_SECONDS + 1
 
     loader.open_connector_for_agent("postgres:localhost:db")
 
