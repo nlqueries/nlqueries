@@ -1,0 +1,38 @@
+# gitleaks configuration
+#
+# The default rule set, plus an allowlist for the two placeholders in this
+# repository's history that trip it. Both were triaged during the REM-02 secret
+# scan (2026-08-20); neither is, or ever was, an issued credential.
+#
+# Allowlisted by VALUE rather than by commit fingerprint. A fingerprint pins a
+# finding to one commit and one line number, so moving the line — or reusing the
+# same placeholder in a new file — produces a fresh finding and a red pipeline
+# for the same non-problem. Matching the literal says what is actually true:
+# this string is a fake, wherever it appears.
+#
+# Nothing here weakens the scan. Each entry is a specific literal, not a pattern
+# or a path exclusion, so a real key in the same file would still be caught.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented placeholders, triaged 2026-08-20 (REM-02)"
+
+# Test the whole matched line rather than just the extracted secret: for the PEM
+# case the rule matches on the header, and the giveaway is in the body.
+regexTarget = "line"
+
+regexes = [
+  # The SDK's example API key, in sdk/README.md and sdk/tests/test_client.py.
+  # 35 characters of "abc1234567890abcdef…", which is long enough to look
+  # random to an entropy check and obvious to a human.
+  '''nlq_abc1234567890abcdef1234567890ab''',
+
+  # tests/test_connectors_api_auth_methods.py — the input to
+  # test_keypair_rejects_malformed_pem, which asserts the API returns 400 for a
+  # malformed key. The rule matches "-----BEGIN PRIVATE KEY-----"; the body of
+  # that PEM is the string below. The VALID key in the same file is generated at
+  # runtime by rsa.generate_private_key() and never committed.
+  '''not-a-real-key''',
+]
