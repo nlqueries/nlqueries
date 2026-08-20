@@ -177,7 +177,10 @@ def embed_text(text: str) -> list[float]:
     if result is not None:
         return result
     model = _get_model()
-    return model.encode(text, normalize_embeddings=True).tolist()
+    # ndarray.tolist() is typed as Any, so the annotation is the only thing
+    # asserting the shape here — same reason the daemon responses above are
+    # cast. The model is fixed at 384 dimensions (see _MODEL_NAME).
+    return cast(list[float], model.encode(text, normalize_embeddings=True).tolist())
 
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
