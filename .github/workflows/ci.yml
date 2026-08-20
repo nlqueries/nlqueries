@@ -80,7 +80,48 @@ jobs:
           pip-audit --skip-editable --ignore-vuln CVE-2025-3000
 
   # -------------------------------------------------------------------------
-  # 3. Lint & type-check
+  # 3. Secret scan (SOC 2 REM-02)
+  #    gitleaks over the FULL history on every push and PR. A secret committed
+  #    once and "removed" later is still in the history and still compromised,
+  #    so scanning the tip alone finds nothing and says so confidently.
+  # -------------------------------------------------------------------------
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # THE line that makes this job mean anything. checkout defaults to
+          # fetch-depth 1 — a single commit — so without this the "full history
+          # scan" reads one commit, finds nothing, and passes.
+          fetch-depth: 0
+
+      - name: Refuse to scan a shallow clone
+        # Rather than scanning a fraction of the history and reporting success.
+        # If someone later trims fetch-depth for speed, this fails loudly
+        # instead of quietly narrowing what is checked.
+        run: |
+          if [ "$(git rev-parse --is-shallow-repository)" != "false" ]; then
+            echo "::error::Shallow clone — this scan would cover only part of the history."
+            exit 1
+          fi
+          echo "Scanning $(git rev-list --count --all) commits across all refs"
+
+      - name: gitleaks
+        # The binary in a digest-pinned container, not gitleaks/gitleaks-action:
+        # that action requires a GITLEAKS_LICENSE for repositories owned by an
+        # organisation, and this one is. Pinned by digest rather than tag for
+        # the same reason the deployment images are (REM-30).
+        #
+        # --redact so a finding names the rule, file and commit without copying
+        # the secret into a public workflow log.
+        run: |
+          GITLEAKS=ghcr.io/gitleaks/gitleaks@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46
+          docker run --rm -v "$PWD:/repo" -w /repo "$GITLEAKS" \
+            detect --source /repo --log-opts="--all" --redact --no-banner --verbose
+
+  # -------------------------------------------------------------------------
+  # 4. Lint & type-check
   # -------------------------------------------------------------------------
   lint:
     name: Lint & type-check
