@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
 from nlqueries.processing.parameterizer import QueryCapsule
+
+logger = logging.getLogger(__name__)
 
 # Column names that strongly indicate PII — sample values are never included.
 # No word boundaries: underscore-delimited names like `user_email` must match.
@@ -39,6 +42,54 @@ _GENERIC_PHRASES = (
 )
 
 _MAX_DESC_WORDS = 15
+
+# Output budget for one describe-columns reply. It used to be a flat 512 tokens
+# no matter how many columns were being described, which silently capped the
+# feature at roughly twenty columns: a 34-column fact table got a reply cut off
+# mid-word, the JSON never closed, and every description was discarded. The
+# table came back "0 descriptions written" after a charged LLM call.
+#
+# A description is capped at fifteen words, so forty tokens per column is
+# generous — observed replies run to about sixteen — and the ceiling keeps a
+# pathologically wide table from asking for an unbounded completion.
+_TOKENS_PER_COLUMN = 40
+_MIN_DESCRIPTION_TOKENS = 512
+_MAX_DESCRIPTION_TOKENS = 8192
+
+#: One `"column": "description"` pair. Used to recover a reply that stopped
+#: mid-object, where json.loads has nothing it can work with.
+_JSON_PAIR_RE = re.compile(r'"([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _description_token_budget(column_count: int) -> int:
+    """Output tokens to allow for describing *column_count* columns."""
+    scaled = 64 + _TOKENS_PER_COLUMN * column_count
+    return max(_MIN_DESCRIPTION_TOKENS, min(_MAX_DESCRIPTION_TOKENS, scaled))
+
+
+def _parse_descriptions(raw: str) -> tuple[dict[str, str], bool]:
+    """Pull `{column: description}` out of an LLM reply.
+
+    Returns ``(descriptions, recovered)``, where *recovered* means the reply was
+    not valid JSON and the pairs were salvaged from it. A reply truncated by the
+    token limit is well-formed right up to the byte it stops on; throwing all of
+    it away for want of the closing brace is how a wide table produced nothing.
+    """
+    start = raw.find("{")
+    if start == -1:
+        return {}, False
+
+    end = raw.rfind("}")
+    if end > start:
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pass
+        else:
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}, False
+
+    return {k: v for k, v in _JSON_PAIR_RE.findall(raw[start:])}, True
 
 
 def _should_skip_column(col: ColumnSpec) -> bool:
@@ -117,14 +168,39 @@ def describe_columns(
     )
     user = "\n".join(lines)
 
+    budget = _description_token_budget(len(eligible))
     try:
-        raw = llm.complete(system, user, max_tokens=512)
-        match = re.search(r"\{[^{}]+\}", raw, re.DOTALL)
-        if not match:
-            return {}
-        parsed: dict[str, Any] = json.loads(match.group())
+        raw = llm.complete(system, user, max_tokens=budget)
     except Exception:  # noqa: BLE001
+        logger.warning(
+            "describe_columns: the LLM call for %r failed; no descriptions written.",
+            table.name,
+            exc_info=True,
+        )
         return {}
+
+    parsed, recovered = _parse_descriptions(raw)
+    if not parsed:
+        # Say so. This returned an empty dict silently, so a caller reporting
+        # what it wrote could only report zero, with nothing to explain it.
+        logger.warning(
+            "describe_columns: no usable JSON in the reply for %r "
+            "(%d columns, %d-token budget, %d-char reply); no descriptions written.",
+            table.name,
+            len(eligible),
+            budget,
+            len(raw),
+        )
+        return {}
+    if recovered:
+        logger.warning(
+            "describe_columns: the reply for %r was not valid JSON (likely cut off at "
+            "the %d-token budget); recovered %d of %d columns.",
+            table.name,
+            budget,
+            len(parsed),
+            len(eligible),
+        )
 
     return {
         col.name: str(parsed[col.name]).strip()
