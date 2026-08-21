@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.kb_generator import (
+    _description_token_budget,
     describe_columns,
     generate_knowledge_base,
     save_knowledge_base,
@@ -441,3 +443,107 @@ def test_manual_description_wins_over_llm():
     )
     status_col = next(c for c in kb["schema"]["tables"][0]["columns"] if c["name"] == "status")
     assert status_col["description"] == "Manual: human-reviewed label"
+
+
+# ---------------------------------------------------------------------------
+# Wide tables: the 512-token cap
+# ---------------------------------------------------------------------------
+
+
+def _wide_table(n: int) -> TableSpec:
+    """A fact table of *n* describable columns, TPC-DS web_sales shaped."""
+    return _make_table("web_sales", columns=[_plain_column(f"ws_measure_{i}") for i in range(n)])
+
+
+def test_the_token_budget_grows_with_the_column_count():
+    """A flat cap silently limited the feature to roughly twenty columns.
+
+    web_sales has 34. The reply stopped mid-word, the JSON never closed, and
+    every description was discarded after a charged LLM call — the table came
+    back "0 descriptions written" with nothing to explain it.
+    """
+    narrow = _description_token_budget(3)
+    wide = _description_token_budget(34)
+
+    assert wide > narrow
+    # Comfortably more than the ~16 tokens per column a real reply uses.
+    assert wide >= 34 * 20
+    # And bounded, so a 2000-column table cannot ask for an unbounded completion.
+    assert _description_token_budget(5000) <= 8192
+
+
+def test_a_wide_table_asks_for_more_room_than_the_old_flat_cap():
+    tbl = _wide_table(34)
+    llm = _mock_llm({f"ws_measure_{i}": f"Measure number {i}" for i in range(34)})
+
+    describe_columns(tbl, [["1"] * 34], [f"ws_measure_{i}" for i in range(34)], llm)
+
+    assert llm.complete.call_args.kwargs["max_tokens"] > 512
+
+
+def test_a_reply_cut_off_mid_object_keeps_the_columns_it_did_finish():
+    """The exact failure seen on web_sales, reproduced.
+
+    Recovering 30 of 34 descriptions is worth far more than discarding all 34
+    because the closing brace never arrived.
+    """
+    tbl = _wide_table(5)
+    llm = MagicMock()
+    llm.complete.return_value = (
+        '{\n  "ws_measure_0": "Quantity sold",\n'
+        '  "ws_measure_1": "Wholesale unit cost",\n'
+        '  "ws_measure_2": "List price per unit",\n'
+        '  "ws_measure_3": "Extended discount amoun'
+    )
+
+    result = describe_columns(tbl, [["1"] * 5], [f"ws_measure_{i}" for i in range(5)], llm)
+
+    assert result["ws_measure_0"] == "Quantity sold"
+    assert result["ws_measure_1"] == "Wholesale unit cost"
+    assert result["ws_measure_2"] == "List price per unit"
+    # The one it was cut off inside is dropped; the rest survive.
+    assert "ws_measure_3" not in result
+
+
+def test_a_reply_with_no_json_at_all_still_yields_nothing():
+    tbl = _wide_table(3)
+    llm = MagicMock()
+    llm.complete.return_value = "I am unable to describe these columns."
+
+    assert describe_columns(tbl, [["1"] * 3], [f"ws_measure_{i}" for i in range(3)], llm) == {}
+
+
+def test_an_empty_result_is_explained_in_the_log(caplog):
+    """It returned {} silently, so a caller could only report zero and no reason."""
+    tbl = _wide_table(3)
+    llm = MagicMock()
+    llm.complete.return_value = "no json here"
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.knowledge.kb_generator"):
+        describe_columns(tbl, [["1"] * 3], [f"ws_measure_{i}" for i in range(3)], llm)
+
+    assert "web_sales" in caplog.text
+    assert "no descriptions written" in caplog.text
+
+
+def test_a_recovered_reply_says_so_in_the_log(caplog):
+    tbl = _wide_table(3)
+    llm = MagicMock()
+    llm.complete.return_value = '{"ws_measure_0": "Quantity sold", "ws_measure_1": "Cut off'
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.knowledge.kb_generator"):
+        result = describe_columns(tbl, [["1"] * 3], [f"ws_measure_{i}" for i in range(3)], llm)
+
+    assert result["ws_measure_0"] == "Quantity sold"
+    assert "cut off" in caplog.text.lower()
+
+
+def test_a_failed_llm_call_is_logged_rather_than_swallowed(caplog):
+    tbl = _wide_table(3)
+    llm = MagicMock()
+    llm.complete.side_effect = RuntimeError("upstream 529")
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.knowledge.kb_generator"):
+        assert describe_columns(tbl, [["1"] * 3], [f"ws_measure_{i}" for i in range(3)], llm) == {}
+
+    assert "web_sales" in caplog.text
