@@ -11,6 +11,7 @@ import yaml
 
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
+from nlqueries.knowledge.description_dates import stamp_descriptions
 from nlqueries.processing.parameterizer import QueryCapsule
 
 logger = logging.getLogger(__name__)
@@ -396,6 +397,13 @@ def generate_knowledge_base(
         "business_context": business_context,
         "query_capsules": query_capsules,
     }
+
+    # Date the descriptions that actually changed, and carry forward the dates of
+    # the ones that did not. Every table dict above is rebuilt from scratch on
+    # each run, so a field this function does not emit is dropped — which is how
+    # a timestamp added anywhere else would quietly disappear on the next
+    # regeneration.
+    stamp_descriptions(kb, existing_kb)
 
     if embed and schema.tables:
         from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_schema
