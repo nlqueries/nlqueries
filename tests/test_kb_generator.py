@@ -547,3 +547,82 @@ def test_a_failed_llm_call_is_logged_rather_than_swallowed(caplog):
         assert describe_columns(tbl, [["1"] * 3], [f"ws_measure_{i}" for i in range(3)], llm) == {}
 
     assert "web_sales" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Description dates survive a regeneration
+#
+# Every table dict here is rebuilt from scratch on each run, carrying over only
+# the fields this module names. A timestamp written anywhere else — by the KB
+# editor, by a dbt sync — would be dropped on the next regeneration without a
+# word. So the generator has to be the thing that carries it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_kept_description_keeps_its_date_through_a_rebuild() -> None:
+    existing = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "orders",
+                    "description": "Hand-written.",
+                    "description_source": "manual",
+                    "description_updated_at": "2026-08-16T09:00:00+00:00",
+                    "columns": [],
+                }
+            ]
+        }
+    }
+
+    kb = generate_knowledge_base(
+        _make_schema([_make_table("orders")]), [], agent_name="agent1", existing_kb=existing
+    )
+
+    table = kb["schema"]["tables"][0]
+    assert table["description"] == "Hand-written."
+    assert table["description_updated_at"] == "2026-08-16T09:00:00+00:00"
+
+
+def test_a_description_the_rebuild_changed_is_redated() -> None:
+    existing = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "orders",
+                    "description": "Stale.",
+                    "description_source": "schema",
+                    "description_updated_at": "2026-08-16T09:00:00+00:00",
+                    "columns": [],
+                }
+            ]
+        }
+    }
+    schema = _make_schema([_make_table("orders", description="What the database says now.")])
+
+    kb = generate_knowledge_base(schema, [], agent_name="agent1", existing_kb=existing)
+
+    table = kb["schema"]["tables"][0]
+    assert table["description"] == "What the database says now."
+    assert table["description_updated_at"] != "2026-08-16T09:00:00+00:00"
+
+
+def test_a_knowledge_base_without_dates_does_not_get_back_filled() -> None:
+    """A rebuild of an older KB must not claim every description is new today."""
+    existing = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "orders",
+                    "description": "Written some time ago.",
+                    "description_source": "manual",
+                    "columns": [],
+                }
+            ]
+        }
+    }
+
+    kb = generate_knowledge_base(
+        _make_schema([_make_table("orders")]), [], agent_name="agent1", existing_kb=existing
+    )
+
+    assert "description_updated_at" not in kb["schema"]["tables"][0]
