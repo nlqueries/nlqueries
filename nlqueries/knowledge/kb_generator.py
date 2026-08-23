@@ -93,11 +93,33 @@ def _parse_descriptions(raw: str) -> tuple[dict[str, str], bool]:
     return {k: v for k, v in _JSON_PAIR_RE.findall(raw[start:])}, True
 
 
+def is_describable_column(
+    name: str, *, is_primary_key: bool = False, is_foreign_key: bool = False
+) -> bool:
+    """Whether asking an LLM to describe this column could produce anything.
+
+    Keys and key-suffixed names are skipped: their meaning is structural, the
+    sample values are opaque, and a model given them writes "the identifier of
+    the row" — which costs a token budget to say nothing.
+
+    Public because callers outside the generator need the same answer. A UI
+    offering columns to describe has to know which ones will be skipped before
+    it offers them, or it invites someone to unselect a column that was never
+    going to cost anything or produce anything. One rule, asked in both places,
+    rather than a copy that drifts.
+    """
+    if is_primary_key or is_foreign_key:
+        return False
+    return not name.lower().endswith(_SKIP_SUFFIXES)
+
+
 def _should_skip_column(col: ColumnSpec) -> bool:
     """Return True for columns whose descriptions cannot be inferred from data."""
-    if col.is_primary_key or col.is_foreign_key:
-        return True
-    return col.name.lower().endswith(_SKIP_SUFFIXES)
+    return not is_describable_column(
+        col.name,
+        is_primary_key=col.is_primary_key,
+        is_foreign_key=col.is_foreign_key,
+    )
 
 
 def _is_valid_description(desc: str) -> bool:

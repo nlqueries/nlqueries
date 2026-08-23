@@ -11,8 +11,10 @@ import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.kb_generator import (
     _description_token_budget,
+    _should_skip_column,
     describe_columns,
     generate_knowledge_base,
+    is_describable_column,
     save_knowledge_base,
 )
 from nlqueries.processing.parameterizer import Placeholder, QueryCapsule
@@ -626,3 +628,43 @@ def test_a_knowledge_base_without_dates_does_not_get_back_filled() -> None:
     )
 
     assert "description_updated_at" not in kb["schema"]["tables"][0]
+
+
+# ---------------------------------------------------------------------------
+# Which columns are worth describing
+#
+# The rule was private and applied inside describe_columns, which is fine while
+# the generator is the only thing that needs the answer. A UI offering columns
+# to describe needs it too — before it offers them, or it invites someone to
+# unselect a column that was never going to cost anything or produce anything.
+# ---------------------------------------------------------------------------
+
+
+def test_a_plain_column_is_describable() -> None:
+    assert is_describable_column("order_total") is True
+
+
+def test_keys_are_not_worth_asking_about() -> None:
+    # Their meaning is structural and the sample values are opaque; a model given
+    # one writes "the identifier of the row".
+    assert is_describable_column("id", is_primary_key=True) is False
+    assert is_describable_column("customer_id", is_foreign_key=True) is False
+
+
+def test_key_suffixed_names_are_skipped_even_without_a_constraint() -> None:
+    # Plenty of warehouses declare no keys at all, which is the case this rule
+    # exists for.
+    assert is_describable_column("customer_id") is False
+    assert is_describable_column("ORDER_KEY") is False
+
+
+def test_it_agrees_with_the_rule_the_generator_applies() -> None:
+    """One rule, asked in two places — the copy is what would drift."""
+    key = _make_column("customer_id")
+    key.is_foreign_key = True
+    plain = _make_column("order_total")
+
+    assert _should_skip_column(key) is not is_describable_column(
+        key.name, is_primary_key=key.is_primary_key, is_foreign_key=key.is_foreign_key
+    )
+    assert _should_skip_column(plain) is not is_describable_column(plain.name)
