@@ -25,8 +25,24 @@ _PII_COLUMN_RE = re.compile(
 )
 
 
+def is_pii_column(name: str) -> bool:
+    """Whether a column's *values* are too sensitive to copy out of the database.
+
+    Name-based and deliberately broad: passwords, tokens, national identifiers,
+    card numbers, dates of birth, email, phone, address. A regex over column
+    names is a blunt instrument and the right one here, because the alternative
+    is inspecting values — which means reading the thing being protected.
+
+    Public because the generator is no longer the only caller. It refuses to
+    store sample values for these columns in a knowledge base; anything else
+    that shows sample data has to make the same refusal, and two copies of a
+    list like this drift the moment one of them learns about a new column name.
+    """
+    return bool(_PII_COLUMN_RE.search(name))
+
+
 def _is_pii_column(col_name: str) -> bool:
-    return bool(_PII_COLUMN_RE.search(col_name))
+    return is_pii_column(col_name)
 
 
 # Column name suffixes that indicate surrogate/technical keys with no business meaning.
