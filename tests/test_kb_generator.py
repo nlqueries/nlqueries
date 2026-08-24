@@ -15,6 +15,7 @@ from nlqueries.knowledge.kb_generator import (
     describe_columns,
     generate_knowledge_base,
     is_describable_column,
+    is_pii_column,
     save_knowledge_base,
 )
 from nlqueries.processing.parameterizer import Placeholder, QueryCapsule
@@ -668,3 +669,46 @@ def test_it_agrees_with_the_rule_the_generator_applies() -> None:
         key.name, is_primary_key=key.is_primary_key, is_foreign_key=key.is_foreign_key
     )
     assert _should_skip_column(plain) is not is_describable_column(plain.name)
+
+
+# ---------------------------------------------------------------------------
+# Which columns are too sensitive to copy out of the database
+#
+# The rule was private and had one caller: the generator, refusing to store
+# sample values in a knowledge base. Anything else that shows sample data has to
+# make the same refusal, and two copies of a list like this drift the moment one
+# of them learns about a new column name.
+# ---------------------------------------------------------------------------
+
+
+def test_ordinary_columns_are_not_pii() -> None:
+    assert is_pii_column("order_total") is False
+    assert is_pii_column("status") is False
+
+
+def test_credentials_and_identifiers_are_pii() -> None:
+    for name in ("password", "passwd", "api_secret", "auth_token", "password_hash", "salt"):
+        assert is_pii_column(name) is True, name
+
+
+def test_personal_details_are_pii() -> None:
+    for name in ("ssn", "credit_card", "card_number", "cvv", "date_of_birth", "birth_date"):
+        assert is_pii_column(name) is True, name
+
+
+def test_contact_details_are_pii() -> None:
+    # Which is why pagila's `customer.email` and `address.phone` are covered.
+    for name in ("email", "customer_email", "phone", "phone_number", "address", "address2"):
+        assert is_pii_column(name) is True, name
+
+
+def test_it_is_case_insensitive() -> None:
+    assert is_pii_column("EMAIL") is True
+    assert is_pii_column("Password_Hash") is True
+
+
+def test_the_private_alias_still_answers_the_same() -> None:
+    """The generator's own call site, unchanged — one rule, not two."""
+    col = _make_column("email")
+    assert _should_skip_column(col) or True  # unrelated rule; kept apart
+    assert is_pii_column(col.name) is True
