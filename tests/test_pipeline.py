@@ -120,7 +120,7 @@ class _MockConnector(DatabaseConnector):
     def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
         return self._records
 
-    def execute_query(self, sql: str) -> QueryResult:
+    def _execute_query(self, sql: str) -> QueryResult:
         return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
 
 

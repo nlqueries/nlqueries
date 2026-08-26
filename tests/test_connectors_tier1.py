@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.conftest import granted
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -42,7 +44,7 @@ class TestRedshiftConnector:
         from nlqueries.connectors.redshift import RedshiftConnector
 
         with patch.dict(sys.modules, {"redshift_connector": None}):
-            connector = RedshiftConnector()
+            connector = granted(RedshiftConnector())
             with pytest.raises(ImportError, match="redshift-connector"):
                 connector.connect(
                     {"host": "x", "port": 5439, "database": "dev", "user": "u", "password": "p"}
@@ -53,7 +55,7 @@ class TestRedshiftConnector:
         from nlqueries.connectors.redshift import RedshiftConnector
 
         cur = _make_cursor([(1,)])
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = _make_conn(cur)
         assert connector.test_connection() is True
 
@@ -63,7 +65,7 @@ class TestRedshiftConnector:
 
         conn = MagicMock()
         conn.cursor.side_effect = Exception("connection lost")
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = conn
         assert connector.test_connection() is False
 
@@ -83,7 +85,7 @@ class TestRedshiftConnector:
 
         conn.cursor.side_effect = [cur_tables, cur_cols, cur_pks, cur_fks]
 
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = conn
         connector._database = "dev"
         spec = connector.extract_schema()
@@ -108,7 +110,7 @@ class TestRedshiftConnector:
         cur.__iter__.return_value = iter([(1, "Alice"), (2, "Bob")])
         conn = _make_conn(cur)
 
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = conn
         result = connector.execute_query("SELECT id, name FROM users")
 
@@ -124,7 +126,7 @@ class TestRedshiftConnector:
         conn = MagicMock()
         conn.cursor.side_effect = Exception("syntax error")
 
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = conn
         result = connector.execute_query("BAD SQL")
 
@@ -137,7 +139,7 @@ class TestRedshiftConnector:
         from nlqueries.connectors.redshift import RedshiftConnector
 
         cur = _make_cursor([("SELECT * FROM users", 10, 42.5, "2026-06-01 10:00:00")])
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = _make_conn(cur)
         records = connector.extract_query_history(days=30, limit=100)
 
@@ -152,7 +154,7 @@ class TestRedshiftConnector:
 
         cur = MagicMock()
         cur.execute.side_effect = Exception("permission denied")
-        connector = RedshiftConnector()
+        connector = granted(RedshiftConnector())
         connector._conn = _make_conn(cur)
         records = connector.extract_query_history()
         assert records == []
@@ -169,7 +171,7 @@ class TestMSSQLConnector:
         from nlqueries.connectors.mssql import MSSQLConnector
 
         with patch.dict(sys.modules, {"pymssql": None}):
-            connector = MSSQLConnector()
+            connector = granted(MSSQLConnector())
             with pytest.raises(ImportError, match="pymssql"):
                 connector.connect(
                     {"host": "srv", "port": 1433, "database": "mydb", "user": "u", "password": "p"}
@@ -184,7 +186,7 @@ class TestMSSQLConnector:
         mock_engine.connect.return_value.__enter__ = lambda s: mock_conn_ctx
         mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
 
-        connector = MSSQLConnector()
+        connector = granted(MSSQLConnector())
         connector._engine = mock_engine
         assert connector.test_connection() is True
 
@@ -195,7 +197,7 @@ class TestMSSQLConnector:
         mock_engine = MagicMock()
         mock_engine.connect.side_effect = Exception("server unreachable")
 
-        connector = MSSQLConnector()
+        connector = granted(MSSQLConnector())
         connector._engine = mock_engine
         assert connector.test_connection() is False
 
@@ -247,7 +249,7 @@ class TestMSSQLConnector:
         mock_conn.execute.return_value.scalar_one.return_value = "mydb"
 
         # Override _fetch_* staticmethods
-        connector = MSSQLConnector()
+        connector = granted(MSSQLConnector())
         connector._engine = mock_engine
 
         with (
@@ -295,7 +297,7 @@ class TestMSSQLConnector:
         cursor_result.__iter__.return_value = iter([(1, "Alice")])
         mock_conn.execute.return_value = cursor_result
 
-        connector = MSSQLConnector()
+        connector = granted(MSSQLConnector())
         connector._engine = mock_engine
         result = connector.execute_query("SELECT id, name FROM users")
 
@@ -313,7 +315,7 @@ class TestMSSQLConnector:
         mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
         mock_conn.execute.side_effect = Exception("VIEW SERVER STATE required")
 
-        connector = MSSQLConnector()
+        connector = granted(MSSQLConnector())
         connector._engine = mock_engine
         records = connector.extract_query_history()
         assert records == []
@@ -330,7 +332,7 @@ class TestDuckDBConnector:
         from nlqueries.connectors.duckdb import DuckDBConnector
 
         with patch.dict(sys.modules, {"duckdb": None}):
-            connector = DuckDBConnector()
+            connector = granted(DuckDBConnector())
             with pytest.raises(ImportError, match="duckdb"):
                 connector.connect({"database": ":memory:"})
 
@@ -340,7 +342,7 @@ class TestDuckDBConnector:
         with patch.dict(sys.modules, {"duckdb": mock_duckdb}):
             from nlqueries.connectors.duckdb import DuckDBConnector
 
-            connector = DuckDBConnector()
+            connector = granted(DuckDBConnector())
             connector.connect({})
             mock_duckdb.connect.assert_called_once_with(database=":memory:")
             assert connector._database == ":memory:"
@@ -354,7 +356,7 @@ class TestDuckDBConnector:
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
 
-        connector = DuckDBConnector()
+        connector = granted(DuckDBConnector())
         connector._conn = mock_conn
         assert connector.test_connection() is True
 
@@ -365,7 +367,7 @@ class TestDuckDBConnector:
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = Exception("file not found")
 
-        connector = DuckDBConnector()
+        connector = granted(DuckDBConnector())
         connector._conn = mock_conn
         assert connector.test_connection() is False
 
@@ -373,7 +375,7 @@ class TestDuckDBConnector:
         """extract_query_history always returns an empty list (no DuckDB history)."""
         from nlqueries.connectors.duckdb import DuckDBConnector
 
-        connector = DuckDBConnector()
+        connector = granted(DuckDBConnector())
         connector._conn = MagicMock()
         assert connector.extract_query_history() == []
 
@@ -389,7 +391,7 @@ class TestDuckDBConnector:
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
 
-        connector = DuckDBConnector()
+        connector = granted(DuckDBConnector())
         connector._conn = mock_conn
         result = connector.execute_query("SELECT 42 AS n, 'hello' AS label")
 
@@ -405,7 +407,7 @@ class TestDuckDBConnector:
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = Exception("Parser error")
 
-        connector = DuckDBConnector()
+        connector = granted(DuckDBConnector())
         connector._conn = mock_conn
         result = connector.execute_query("BAD SQL")
 
@@ -417,7 +419,7 @@ class TestDuckDBConnector:
         """extract_schema returns a SchemaSpec with tables and columns."""
         from nlqueries.connectors.duckdb import DuckDBConnector
 
-        connector = DuckDBConnector()
+        connector = granted(DuckDBConnector())
         connector._database = ":memory:"
 
         # duckdb_tables() rows: (schema_name, table_name, estimated_size)

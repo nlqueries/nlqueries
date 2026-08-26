@@ -241,7 +241,9 @@ class Orchestrator:
 
                 connector = None
                 try:
-                    connector = await asyncio.to_thread(open_connector_for_agent, agent_id)
+                    connector = await asyncio.to_thread(
+                        open_connector_for_agent, agent_id, execution
+                    )
                     if connector is not None:
                         qr = await asyncio.to_thread(
                             connector.execute_query, result.sql, timeout_seconds

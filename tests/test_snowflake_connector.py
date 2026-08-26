@@ -19,6 +19,8 @@ from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryRecord, QueryResult, SchemaSpec, TableSpec
 from nlqueries.connectors.snowflake import SnowflakeConnector
 
+from tests.conftest import granted
+
 CREDENTIALS = {
     "account": "acme-prod",
     "user": "alice",
@@ -46,7 +48,7 @@ def test_snowflake_is_registered_under_snowflake_key():
 def test_connect_builds_connection_with_expected_kwargs(mock_connect):
     mock_connect.return_value = MagicMock()
 
-    connector = SnowflakeConnector()
+    connector = granted(SnowflakeConnector())
     connector.connect(CREDENTIALS)
 
     mock_connect.assert_called_once_with(
@@ -64,7 +66,7 @@ def test_connect_builds_connection_with_expected_kwargs(mock_connect):
 def test_connect_includes_schema_only_when_provided(mock_connect):
     mock_connect.return_value = MagicMock()
 
-    connector = SnowflakeConnector()
+    connector = granted(SnowflakeConnector())
     connector.connect({**CREDENTIALS, "schema": "PUBLIC"})
 
     _, kwargs = mock_connect.call_args
@@ -76,7 +78,7 @@ def test_connect_includes_schema_only_when_provided(mock_connect):
 def test_connect_omits_schema_when_not_provided(mock_connect):
     mock_connect.return_value = MagicMock()
 
-    connector = SnowflakeConnector()
+    connector = granted(SnowflakeConnector())
     connector.connect(CREDENTIALS)
 
     _, kwargs = mock_connect.call_args
@@ -84,7 +86,7 @@ def test_connect_omits_schema_when_not_provided(mock_connect):
 
 
 def test_methods_behave_before_connect_is_called():
-    connector = SnowflakeConnector()
+    connector = granted(SnowflakeConnector())
 
     # _require_connection() raises directly...
     with pytest.raises(RuntimeError):
@@ -101,7 +103,7 @@ def test_methods_behave_before_connect_is_called():
 
 def _connector_with_mock_connection() -> tuple[SnowflakeConnector, MagicMock]:
     """Build a connector whose ``_connection`` is a fully-mocked driver connection."""
-    connector = SnowflakeConnector()
+    connector = granted(SnowflakeConnector())
     connector._connection = MagicMock()
     connector._database = "ANALYTICS"
     return connector, connector._connection

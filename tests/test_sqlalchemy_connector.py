@@ -18,10 +18,12 @@ from nlqueries.connectors.sqlalchemy_connector import (
     _apply_statement_timeout,
 )
 
+from tests.conftest import granted
+
 
 def _connect(tmp_path: Path) -> SQLAlchemyConnector:
     db = tmp_path / "t.db"
-    c = SQLAlchemyConnector()
+    c = granted(SQLAlchemyConnector())
     c.connect({"url": f"sqlite:///{db}"})
     return c
 

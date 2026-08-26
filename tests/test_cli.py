@@ -47,7 +47,7 @@ class _StubConnector(DatabaseConnector):
             for i in range(20)
         ]
 
-    def execute_query(self, sql: str) -> QueryResult:
+    def _execute_query(self, sql: str) -> QueryResult:
         return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
 
 

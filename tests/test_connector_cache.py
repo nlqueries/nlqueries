@@ -67,10 +67,19 @@ def built(monkeypatch):
 
 
 def test_a_second_query_reuses_the_first_connector(connectors_file, built) -> None:
+    """The pooled connector is shared; the handle around it is not.
+
+    Each call returns a fresh per-request wrapper carrying that request's
+    execution permission, because a policy stored on the shared object would be
+    inherited by whoever got the connector next. What must be reused — and what
+    this test is actually about — is the pool underneath, since a pool rebuilt
+    per query has pooled nothing.
+    """
     first = loader.open_connector_for_agent("postgres:localhost:db")
     second = loader.open_connector_for_agent("postgres:localhost:db")
 
-    assert first is second
+    assert first is not second, "the permission-bearing handle should be per request"
+    assert first._inner is second._inner, "the pooled connector should be shared"
     assert len(built) == 1, f"built {len(built)} connectors for two queries"
 
 

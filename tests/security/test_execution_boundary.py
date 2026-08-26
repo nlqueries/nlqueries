@@ -135,3 +135,72 @@ def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
         "AgentQueryResult, so `sql_result is None` reads as 'not run yet' rather "
         "than 'refused'"
     )
+
+
+class TestTheConnectorRefusesOnItsOwn:
+    """The layer that does not depend on the orchestrator being right.
+
+    Orchestration already refuses to reach a connector without permission. This
+    is the independent check underneath it: a connector nobody granted anything
+    to will not run a statement, whoever asks.
+    """
+
+    def _connector(self):
+        from nlqueries.connectors.sqlite import SQLiteConnector
+
+        connector = SQLiteConnector()
+        connector.connect({"database": ":memory:"})
+        return connector
+
+    def test_an_ungranted_connector_refuses(self) -> None:
+        from nlqueries.execution import ExecutionNotPermitted
+
+        connector = self._connector()
+
+        with pytest.raises(ExecutionNotPermitted) as excinfo:
+            connector.execute_query("SELECT 1")
+
+        # The message has to name what to do, because whoever reads it is
+        # holding a connector and wondering why it will not work.
+        assert "generate_only" in str(excinfo.value)
+        assert "execute_read_only" in str(excinfo.value)
+
+    def test_a_granted_connector_runs(self) -> None:
+        from nlqueries.execution import ExecutionPolicy
+
+        connector = self._connector()
+        connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
+
+        assert connector.execute_query("SELECT 1").error is None
+
+    def test_granting_generate_only_is_not_granting(self) -> None:
+        """`bind_execution_policy` is not a synonym for permission."""
+        from nlqueries.execution import ExecutionNotPermitted, ExecutionPolicy
+
+        connector = self._connector()
+        connector.bind_execution_policy(ExecutionPolicy.generate_only())
+
+        with pytest.raises(ExecutionNotPermitted):
+            connector.execute_query("SELECT 1")
+
+    def test_permission_does_not_leak_between_requests(self) -> None:
+        """The reason permission lives on a per-request wrapper.
+
+        Connectors are pooled and shared across in-flight requests. If the
+        policy lived on the shared object, one request granted execution would
+        grant it to every other request holding the same connector — and nothing
+        about the shared connector would look different.
+        """
+        from nlqueries.connectors.base import PermittedConnector
+        from nlqueries.execution import ExecutionNotPermitted, ExecutionPolicy
+
+        shared = self._connector()
+        allowed = PermittedConnector(shared, ExecutionPolicy.execute_read_only())
+        denied = PermittedConnector(shared, ExecutionPolicy.generate_only())
+
+        assert allowed.execute_query("SELECT 1").error is None
+        with pytest.raises(ExecutionNotPermitted):
+            denied.execute_query("SELECT 1")
+        # And the grant did not rub off on the pooled object itself.
+        with pytest.raises(ExecutionNotPermitted):
+            shared.execute_query("SELECT 1")

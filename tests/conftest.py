@@ -26,3 +26,21 @@ def _no_semantic_cache():
         return_value=mock_cache,
     ):
         yield
+
+
+def granted(connector):
+    """Give *connector* permission to execute, explicitly.
+
+    Connectors deny execution until something grants it (SEC-07): in production
+    the loader binds this request's policy to a per-request wrapper. A unit test
+    that builds a connector directly has to say the same thing out loud.
+
+    Deliberately a helper called at each site rather than an autouse fixture.
+    Blanket-granting in conftest would mean no test could ever observe a refusal,
+    and the first thing to notice would be a security control that had quietly
+    stopped working.
+    """
+    from nlqueries.execution import ExecutionPolicy
+
+    connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
+    return connector

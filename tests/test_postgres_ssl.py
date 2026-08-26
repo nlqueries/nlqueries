@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 from nlqueries.connectors.postgres import PostgresConnector
 
+from tests.conftest import granted
+
 _BASE_CREDS: dict[str, Any] = {
     "host": "db.example.com",
     "port": 5432,
@@ -31,7 +33,7 @@ def _connect_and_capture(extra_creds: dict[str, Any]) -> dict[str, Any]:
         return MagicMock()
 
     with patch("nlqueries.connectors.postgres.create_engine", side_effect=fake_create_engine):
-        connector = PostgresConnector()
+        connector = granted(PostgresConnector())
         connector.connect({**_BASE_CREDS, **extra_creds})
 
     result: dict[str, Any] = captured.get("connect_args", {})

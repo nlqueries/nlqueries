@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import granted
+
 pytest.importorskip("duckdb", reason="the duckdb package is not installed")
 
 from nlqueries.connectors.duckdb import DuckDBConnector  # noqa: E402
@@ -37,7 +39,7 @@ def duckdb_lab(tmp_path: Path) -> tuple[DuckDBConnector, Path]:
     canary = tmp_path / "not-the-database.csv"
     canary.write_text(f"secret\n{_CANARY}\n", encoding="utf-8")
 
-    connector = DuckDBConnector()
+    connector = granted(DuckDBConnector())
     connector.connect({"database": str(tmp_path / "lab.duckdb")})
     with contextlib.suppress(Exception):  # setup only; the tests below say why
         connector.execute_query("CREATE TABLE orders AS SELECT 1 AS id, 9.99 AS total")
