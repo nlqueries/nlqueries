@@ -54,6 +54,11 @@ services:
       - .env
     environment:
       QDRANT_URL: "http://qdrant:6333"
+      # The server binds 0.0.0.0 *inside the container*; the ports mapping below
+      # publishes it on the host's loopback only, and that is the actual
+      # boundary. Setting this here rather than in the image means one
+      # deployment's decision, not every `docker run`'s.
+      NLQ_ALLOW_INSECURE_BIND: "1"
       QDRANT_API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
     volumes:
       - nlqueries-data:/data/nlqueries

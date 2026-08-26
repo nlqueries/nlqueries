@@ -866,3 +866,99 @@ class TestMcpServerObject:
             "get_cache_stats",
         }
         assert expected <= self._tool_names()
+
+
+# ---------------------------------------------------------------------------
+# health cost, and the module entry point (SEC-12 / SEC-13)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCostsNothingByDefault:
+    """`health` is reachable without credentials.
+
+    It used to send a real completion on every call, so anyone who could reach
+    the listener could bill the operator for asking whether their server was up
+    — and a container healthcheck polling it every fifteen seconds would have
+    done the same, on a schedule.
+    """
+
+    def _stack(self, **kwargs):
+        return TestHealth()._patches(**kwargs)
+
+    def test_no_model_call_unless_asked(self) -> None:
+        from nlqueries.mcp_server.server import health
+
+        mock_llm = MagicMock()
+        with (
+            self._stack(daemon_vec=[0.1] * 384),
+            patch("nlqueries.llm.get_llm_client", return_value=mock_llm),
+        ):
+            out = health()
+
+        mock_llm.complete.assert_not_called()
+        # Still reports what is configured — the check is cheaper, not emptier.
+        assert "anthropic" in out
+        assert "claude-sonnet-4-5" in out
+        assert "probe_llm" in out
+
+    def test_probe_llm_opts_into_the_round_trip(self) -> None:
+        from nlqueries.mcp_server.server import health
+
+        mock_llm = MagicMock()
+        with (
+            self._stack(daemon_vec=[0.1] * 384),
+            patch("nlqueries.llm.get_llm_client", return_value=mock_llm),
+        ):
+            health(probe_llm=True)
+
+        mock_llm.complete.assert_called_once()
+
+    def test_a_missing_key_is_still_reported_without_probing(self) -> None:
+        from nlqueries.mcp_server.server import health
+
+        with self._stack(llm_key=""):
+            out = health()
+
+        assert "❌" in out
+        assert "ANTHROPIC_API_KEY" in out
+
+
+class TestModuleEntryPoint:
+    """`python -m nlqueries.mcp_server` is the image's CMD and did not exist."""
+
+    def test_the_module_is_runnable(self) -> None:
+        import importlib.util
+
+        assert importlib.util.find_spec("nlqueries.mcp_server.__main__") is not None
+
+    def test_defaults_match_the_library_entry_point(self, monkeypatch) -> None:
+        """Running the module and calling `main()` should mean the same thing —
+        stdio on loopback — so only a deployment that sets the environment gets
+        a network listener."""
+        from nlqueries.mcp_server import __main__ as entry
+
+        for var in ("MCP_TRANSPORT", "MCP_HOST", "MCP_PORT"):
+            monkeypatch.delenv(var, raising=False)
+
+        assert entry._transport() == "stdio"
+        assert entry._port() == 8000
+
+    def test_an_unknown_transport_is_refused_by_name(self, monkeypatch) -> None:
+        from nlqueries.mcp_server import __main__ as entry
+
+        monkeypatch.setenv("MCP_TRANSPORT", "carrier-pigeon")
+
+        with pytest.raises(SystemExit) as excinfo:
+            entry._transport()
+
+        assert "carrier-pigeon" in str(excinfo.value)
+
+    def test_a_non_numeric_port_is_refused_by_name(self, monkeypatch) -> None:
+        from nlqueries.mcp_server import __main__ as entry
+
+        monkeypatch.setenv("MCP_PORT", "eight thousand")
+
+        with pytest.raises(SystemExit) as excinfo:
+            entry._port()
+
+        assert "eight thousand" in str(excinfo.value)
