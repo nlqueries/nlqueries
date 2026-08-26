@@ -38,9 +38,35 @@ def _connect_and_capture(extra_creds: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def test_connect_sets_sslmode_prefer_by_default() -> None:
+def test_connect_requires_tls_by_default() -> None:
+    """Reverses an earlier default, so the reasoning is recorded.
+
+    psycopg2's `prefer` tries TLS and takes a plaintext session when the server
+    offers none — silently, with nothing to show that the credentials and every
+    row of every result crossed the network in the clear. `require` removes the
+    downgrade; a server with no TLS now fails to connect rather than quietly
+    succeeding in the open.
+    """
     args = _connect_and_capture({})
-    assert args["sslmode"] == "prefer"
+    assert args["sslmode"] == "require"
+
+
+def test_plaintext_is_still_possible_but_has_to_be_asked_for() -> None:
+    """The old behaviour is still available — it just has to be written down.
+
+    `ssl_mode: disable` in a connector's config says the same thing the old
+    default did, where somebody can read it.
+    """
+    args = _connect_and_capture({"ssl_mode": "disable"})
+    assert args["sslmode"] == "disable"
+
+
+def test_verify_full_is_propagated() -> None:
+    """`require` encrypts but verifies nothing — it stops eavesdropping, not an
+    active man-in-the-middle. This is the setting production wants."""
+    args = _connect_and_capture({"ssl_mode": "verify-full", "ssl_ca_cert": "/tmp/ca.pem"})
+    assert args["sslmode"] == "verify-full"
+    assert args["sslrootcert"] == "/tmp/ca.pem"
 
 
 def test_connect_propagates_ssl_mode() -> None:

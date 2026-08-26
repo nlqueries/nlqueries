@@ -93,7 +93,22 @@ class PostgresConnector(DatabaseConnector):
             database=credentials["database"],
         )
         connect_args: dict[str, Any] = {"connect_timeout": 10}
-        ssl_mode = credentials.get("ssl_mode", "prefer")
+        # `require`, not psycopg2's `prefer`. Under `prefer` a server that
+        # offers no TLS gets a plaintext session instead, silently — an audit
+        # confirmed exactly that against a TLS-less server, and there is no
+        # signal anywhere that the credentials and every row of every result
+        # crossed the network in the clear.
+        #
+        # `require` is the smallest change that removes the silent downgrade,
+        # not the end of this work: it insists on encryption but verifies no
+        # certificate, so it stops passive eavesdropping and not an active
+        # man-in-the-middle. `verify-full` is the production setting, and
+        # making it mandatory is its own piece of work.
+        #
+        # A database with no TLS at all now fails to connect rather than
+        # quietly downgrading. That is the point: `ssl_mode: disable` says the
+        # same thing as the old default, out loud, in the connector's config.
+        ssl_mode = credentials.get("ssl_mode", "require")
         connect_args["sslmode"] = ssl_mode
         if ssl_ca_cert := credentials.get("ssl_ca_cert"):
             connect_args["sslrootcert"] = ssl_ca_cert
