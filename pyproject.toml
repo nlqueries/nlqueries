@@ -8,13 +8,20 @@ version = "0.2.0"
 description = "Natural-language query engine — open-source core (CLI, connectors, MCP server)"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11,<3.14"
+# Upper bound = the first version CI does not test. Keep it in step with the
+# matrix in .github/workflows/ci.yml; a bound that is not tied to something
+# checkable is one that outlives its reason. The previous <3.14 was added for
+# langchain_text_splitters, which was removed five days later, and the cap then
+# stood for seven weeks after the thing it described had gone.
+requires-python = ">=3.11,<3.15"
 keywords = ["nlp", "sql", "natural-language", "mcp", "query"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
 ]
