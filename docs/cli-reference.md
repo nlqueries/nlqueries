@@ -413,9 +413,17 @@ Manage and start the NLQueries MCP server. Two transports are supported:
 
 ```bash
 nlqueries mcp-server start                        # stdio — for Claude Desktop (default)
-nlqueries mcp-server start --sse --port 8000      # SSE — for network/browser clients
-nlqueries mcp-server start --sse --host 0.0.0.0 --port 8000
+nlqueries mcp-server start --sse --port 8000      # SSE on 127.0.0.1
 ```
+
+The SSE listener binds loopback and **refuses a wildcard address**. Every tool
+it exposes is reachable without credentials — including `query`, which runs SQL
+against a configured database — so binding every interface publishes a
+database-query API to anything that can route to the host.
+
+For remote access, put an authenticating proxy in front of the loopback port. If
+you understand that and want the wildcard bind anyway, set
+`NLQ_ALLOW_INSECURE_BIND=1`; the server will start and log a warning each time.
 
 **Claude Desktop config** (`claude_desktop_config.json`):
 
