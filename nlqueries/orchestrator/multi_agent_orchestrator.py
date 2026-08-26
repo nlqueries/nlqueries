@@ -52,6 +52,7 @@ from typing import Any
 
 from nlqueries.cache.semantic_cache import CacheEntry, SemanticCache
 from nlqueries.connectors.base import QueryResult
+from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
@@ -229,10 +230,17 @@ def _is_final_chunk(token: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def _run_sql(question: str, agent_id: str, dialect: str) -> list[str]:
+async def _run_sql(
+    question: str, agent_id: str, dialect: str, execution: ExecutionPolicy = DEFAULT_POLICY
+) -> list[str]:
+    # Passed down, never constructed here. A sub-agent that could decide its own
+    # permission would be a way to launder one: route to it, and the answer to
+    # "may this run" changes without the caller's intent changing.
     orch = Orchestrator()
     tokens: list[str] = []
-    async for token in orch.handle_question(question, agent_id, dialect=dialect):
+    async for token in orch.handle_question(
+        question, agent_id, dialect=dialect, execution=execution
+    ):
         tokens.append(token)
     return tokens
 
@@ -253,6 +261,7 @@ async def _run_hybrid(
     dialect: str,
     timeout_seconds: float | None = None,
     extra_dynamic_context: str | None = None,
+    execution: ExecutionPolicy = DEFAULT_POLICY,
 ) -> tuple[list[str], list[str], list[Citation] | None]:
     """Run SQL and Document agents concurrently via ``asyncio.gather``."""
     sql_orch = Orchestrator()
@@ -267,6 +276,7 @@ async def _run_hybrid(
             dialect=dialect,
             timeout_seconds=timeout_seconds,
             extra_dynamic_context=extra_dynamic_context,
+            execution=execution,
         ):
             tokens.append(token)
         return tokens
@@ -353,7 +363,11 @@ def _is_executable_select(sql: str, dialect: str) -> bool:
 
 
 async def _execute_cached_sql(
-    agent_id: str, sql: str, timeout_seconds: float | None, dialect: str = "postgres"
+    agent_id: str,
+    sql: str,
+    timeout_seconds: float | None,
+    dialect: str = "postgres",
+    execution: ExecutionPolicy = DEFAULT_POLICY,
 ) -> dict[str, Any] | None:
     """Execute *sql* for *agent_id* and return a ``sql_table`` dict (or ``None``).
 
@@ -373,6 +387,12 @@ async def _execute_cached_sql(
     a read — from being executed on their server.
     """
     from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
+
+    # A cache hit is a shortcut past generation, not past permission. This path
+    # is the one that sends a stored statement to a customer's database with no
+    # model in front of it, so it asks the same question the fresh path asks.
+    if not execution.may_execute:
+        return None
 
     if not _is_executable_select(sql, dialect):
         return {"error": "Cached SQL failed revalidation and was not executed"}
@@ -438,6 +458,7 @@ class MultiAgentOrchestrator:
         extra_dynamic_context: str | None = None,
         intent_override: str | None = None,
         cache_context: dict[str, str] | None = None,
+        execution: ExecutionPolicy = DEFAULT_POLICY,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -566,7 +587,7 @@ class MultiAgentOrchestrator:
                     # no ``sql_table``, and table-rendering callers (enterprise
                     # chat, CLI, MCP) show no data for repeated queries.
                     _hit_chunk["sql_table"] = await _execute_cached_sql(
-                        agent_id, _cached.sql, timeout_seconds, dialect
+                        agent_id, _cached.sql, timeout_seconds, dialect, execution
                     )
             elif _cached.agent_type == "document":
                 _hit_chunk["type"] = "citations"
@@ -623,6 +644,7 @@ class MultiAgentOrchestrator:
                 question_vector=_question_vector,
                 timeout_seconds=timeout_seconds,
                 extra_dynamic_context=extra_dynamic_context,
+                execution=execution,
             ):
                 seen.append(token)
                 if _is_final_chunk(token):
@@ -664,7 +686,12 @@ class MultiAgentOrchestrator:
 
         if intent == IntentType.hybrid:
             sql_tokens, document_tokens, citations = await _run_hybrid(
-                effective_question, agent_id, dialect, timeout_seconds, extra_dynamic_context
+                effective_question,
+                agent_id,
+                dialect,
+                timeout_seconds,
+                extra_dynamic_context,
+                execution,
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 

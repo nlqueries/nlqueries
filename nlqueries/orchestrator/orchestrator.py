@@ -31,6 +31,7 @@ from typing import Any
 import yaml
 
 from nlqueries import config
+from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
@@ -84,6 +85,7 @@ class Orchestrator:
         question_vector: list[float] | None = None,
         timeout_seconds: float | None = None,
         extra_dynamic_context: str | None = None,
+        execution: ExecutionPolicy = DEFAULT_POLICY,
     ) -> AsyncGenerator[str, None]:
         """Translate *question* into a reasoning stream followed by a SQL chunk.
 
@@ -222,8 +224,19 @@ class Orchestrator:
                 record_validator_warning(result.validation_error)  # provenance (SYL-1.1)
 
             # Execute the validated SQL and capture rows for the response.
+            #
+            # Two conditions, and they are different questions. `is_valid` asks
+            # whether the statement survived validation; `execution.may_execute`
+            # asks whether this caller is allowed to run anything at all. The
+            # second used to be asked one layer up, after this had already run,
+            # which is how `--no-execute` came to mean "do not run it twice".
+            #
+            # Defaulting to generate-only means a caller that forgets to pass a
+            # policy gets SQL and no rows. That is a visible, reportable bug;
+            # the opposite default is a language model's output on somebody's
+            # database.
             sql_table: dict[str, Any] = {}
-            if result.is_valid:
+            if result.is_valid and execution.may_execute:
                 from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
 
                 connector = None
@@ -254,6 +267,10 @@ class Orchestrator:
                     "type": "sql",
                     "sql": result.sql,
                     "is_valid": result.is_valid,
+                    # What the request was actually permitted to do, so a caller
+                    # can tell "no rows because nothing ran" from "no rows in
+                    # the table" without guessing from an empty result.
+                    "execution_mode": execution.mode.value,
                     "validation_error": result.validation_error,
                     "dialect": result.dialect,
                     "attempt_count": result.attempt_count,

@@ -11,9 +11,11 @@ That is the right question, because the fix is a capability the caller mints and
 the connector demands. A test asserting "no rows came back" would pass against a
 connector that connected, ran the statement, and had its result discarded.
 
-The register rows are `xfail(strict=True)` while they are open, so the moment the
-execution capability lands these turn into build failures and force the markers
-out.
+Both were `xfail(strict=True)` until the execution capability landed, at which
+point they XPASSed and the build failed until the markers came out — which is
+what the strictness is for. They are ordinary tests now, and they stay: a
+regression here would put a language model's output back on a database that a
+generation-only run was never meant to touch.
 """
 
 from __future__ import annotations
@@ -30,7 +32,12 @@ pytestmark = pytest.mark.security
 _SQL = "SELECT count(*) FROM lab.orders"
 
 
-def _result(sql: str | None = _SQL, sql_result: QueryResult | None = None) -> AgentQueryResult:
+def _result(
+    sql: str | None = _SQL,
+    sql_result: QueryResult | None = None,
+    *,
+    sql_is_valid: bool = True,
+) -> AgentQueryResult:
     """What the orchestrator hands the CLI."""
     return AgentQueryResult(
         question="how many orders?",
@@ -43,13 +50,11 @@ def _result(sql: str | None = _SQL, sql_result: QueryResult | None = None) -> Ag
         merged_answer=None,
         latency_ms=1,
         session_id=None,
+        sql_is_valid=sql_is_valid,
+        execution_mode="execute_read_only",
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SEC-07 — the execution capability (W2) is what carries this; remove when it lands",
-)
 def test_no_execute_reaches_the_orchestrator() -> None:
     """SEC-07.
 
@@ -88,10 +93,6 @@ def test_no_execute_reaches_the_orchestrator() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SEC-08 — validity is not carried on AgentQueryResult; fixed with W2-4",
-)
 def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
     """SEC-08 — the July review's finding 3, still live on this path.
 
@@ -117,7 +118,7 @@ def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
     with (
         patch(
             "nlqueries.orchestrator.sync_runner.run_query_sync",
-            return_value=_result(sql=rejected, sql_result=None),
+            return_value=_result(sql=rejected, sql_result=None, sql_is_valid=False),
         ),
         patch("nlqueries.cli.main._resolve_alias", side_effect=lambda a: a),
         patch(
