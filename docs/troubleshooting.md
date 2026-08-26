@@ -101,7 +101,7 @@ UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or
 
 **Why:** Some LangChain-ecosystem packages use a `pydantic.v1` compatibility shim that relies on CPython internals removed in 3.14.
 
-**Update (2026-07-01):** multi-agent/hybrid query routing (`query`) previously depended on `langgraph`/`langchain_core` for a simple classify → dispatch → merge flow. That dependency has been removed — routing is now plain async dispatch with no LangGraph/LangChain-core import, so `query`, intent classification, and hybrid queries are **no longer affected** by this issue on any Python version. `pyproject.toml` also now caps `requires-python` at `<3.14` as a backstop.
+**Update (2026-07-01):** multi-agent/hybrid query routing (`query`) previously depended on `langgraph`/`langchain_core` for a simple classify → dispatch → merge flow. That dependency has been removed — routing is now plain async dispatch with no LangGraph/LangChain-core import, so `query`, intent classification, and hybrid queries are **no longer affected** by this issue on any Python version. `pyproject.toml` capped `requires-python` at `<3.14` as a backstop at the time; that cap was lifted on 2026-08-27 once the last LangChain-ecosystem dependency was gone and CI began testing 3.13 and 3.14.
 
 **Resolved:** `langchain_text_splitters` has now been fully removed from the four document
 connectors (PDF, Word, Notion, Confluence), replaced with a small built-in chunker

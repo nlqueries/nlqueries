@@ -8,7 +8,7 @@ This guide walks you from zero to your first natural-language query in six steps
 
 ## Prerequisites
 
-- Python 3.11 or 3.12 **or** Docker + Docker Compose. Python 3.14+ is not yet supported — see [troubleshooting.md](troubleshooting.md#w6--pydantic-v1-incompatibility-python-314).
+- Python 3.11–3.14 **or** Docker + Docker Compose. (Python 3.14 was unsupported while document ingestion depended on a LangChain package; that dependency is gone — see [troubleshooting.md](troubleshooting.md#w6--pydantic-v1-incompatibility-python-314) for the history.)
 - A running PostgreSQL, MySQL, Snowflake, BigQuery, Redshift, SQL Server/Azure SQL, or DuckDB database
 - An API key for an LLM provider (Anthropic, OpenAI, or any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers))
 - *(Optional)* A running [Qdrant](https://qdrant.tech/) instance — required for `--embed`, the semantic cache, and document connectors. The Docker Compose stack starts one automatically. See [qdrant-setup.md](qdrant-setup.md) if you're not using Docker.
