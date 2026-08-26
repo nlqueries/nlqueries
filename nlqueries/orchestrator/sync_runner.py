@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nlqueries.connectors.base import QueryResult
+from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_retrieval import Citation
 from nlqueries.orchestrator.followup_resolver import resolve_followup
@@ -54,6 +55,15 @@ class AgentQueryResult:
     answer: str  # natural-language answer text (all streamed tokens joined)
     sql: str | None  # generated SQL if agent_type in ("sql", "hybrid")
     sql_result: QueryResult | None  # raw SQL rows if executed
+    #: Did the generated SQL survive validation?
+    #:
+    #: Absent, a caller could only infer it from `sql_result is None` — which is
+    #: also what a generation-only run looks like, and what a rejected statement
+    #: looks like. The CLI inferred exactly that and ran SQL the validator had
+    #: refused (2026-07-02 review, finding 3).
+    sql_is_valid: bool
+    #: What this request was permitted to do, so "no rows" is legible.
+    execution_mode: str
     citations: list[Citation]  # empty list if agent_type == "sql"
     merged_answer: str | None  # set only for hybrid
     latency_ms: int  # total time from question to result
@@ -73,11 +83,19 @@ class AgentQueryResult:
 
 def _parse_final_chunk(
     tokens: list[str],
-) -> tuple[list[str], str, str | None, list[Citation], str | None, QueryResult | None, bool]:
+) -> tuple[
+    list[str], str, str | None, list[Citation], str | None, QueryResult | None, bool, dict[str, Any]
+]:
     """Parse the last token as a structured JSON chunk.
 
     Returns:
-        (text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache)
+        (text_tokens, agent_type, sql, citations, merged_answer, sql_result,
+        from_cache, chunk)
+
+    The raw chunk comes back as well as the unpacked fields. Every time the
+    orchestrator learned to report something new this signature grew another
+    element, and callers that wanted one fact had to know its index; the fields
+    that matter to the caller stay unpacked and the rest is readable by name.
     """
     agent_type = "unclear"
     sql: str | None = None
@@ -87,15 +105,15 @@ def _parse_final_chunk(
     text_tokens = tokens
 
     if not tokens:
-        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False, {}
 
     try:
         parsed: Any = json.loads(tokens[-1])
     except (json.JSONDecodeError, TypeError):
-        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False, {}
 
     if not isinstance(parsed, dict) or "agent_type" not in parsed:
-        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False
+        return text_tokens, agent_type, sql, citations, merged_answer, sql_result, False, {}
 
     from_cache = bool(parsed.get("from_cache", False))
     agent_type = str(parsed.get("agent_type", "unclear"))
@@ -151,7 +169,16 @@ def _parse_final_chunk(
                 error=sql_table.get("error"),
             )
 
-    return text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache
+    return (
+        text_tokens,
+        agent_type,
+        sql,
+        citations,
+        merged_answer,
+        sql_result,
+        from_cache,
+        parsed,
+    )
 
 
 async def run_query(
@@ -164,6 +191,7 @@ async def run_query(
     timeout_seconds: float | None = None,
     extra_dynamic_context: str | None = None,
     explain: bool = False,
+    execution: ExecutionPolicy = DEFAULT_POLICY,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -226,11 +254,12 @@ async def run_query(
             cache_key=question,  # original question — consistent key regardless of LLM rewrite
             timeout_seconds=timeout_seconds,
             extra_dynamic_context=extra_dynamic_context,
+            execution=execution,
         ):
             tokens.append(token)
 
     # Split text tokens from the final structured chunk.
-    text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache = (
+    text_tokens, agent_type, sql, citations, merged_answer, sql_result, from_cache, chunk = (
         _parse_final_chunk(tokens)
     )
 
@@ -253,6 +282,11 @@ async def run_query(
         answer=answer,
         sql=sql,
         sql_result=sql_result,
+        # Carried rather than inferred. `sql_result is None` means three
+        # different things — not run, refused, or ran and returned nothing —
+        # and a caller that guesses picks the wrong one at the worst moment.
+        sql_is_valid=bool(chunk.get("is_valid", True)),
+        execution_mode=str(chunk.get("execution_mode", execution.mode.value)),
         citations=citations,
         merged_answer=merged_answer,
         latency_ms=latency_ms,

@@ -8,6 +8,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.intent_classifier import IntentClassificationResult, IntentType
 from nlqueries.orchestrator.multi_agent_orchestrator import (
     MultiAgentOrchestrator,
@@ -556,7 +557,14 @@ class TestMultiAgentOrchestratorNewPaths:
                 MockCache.return_value.get.return_value = cache_entry
                 orch = MultiAgentOrchestrator()
                 tokens: list[str] = []
-                async for token in orch.handle_question("Total revenue?", "agent1"):
+                # A cache hit is still an execution, so the caller has to hold
+                # permission for one — the point of the capability is that a
+                # replay cannot quietly do what a fresh run may not.
+                async for token in orch.handle_question(
+                    "Total revenue?",
+                    "agent1",
+                    execution=ExecutionPolicy.execute_read_only(),
+                ):
                     tokens.append(token)
                 MockOrch.assert_not_called()  # LLM SQL-generation is still skipped
                 return json.loads(tokens[-1])
@@ -1337,7 +1345,15 @@ class TestCacheDoesNotStoreOrRunInvalidSQL:
                 MockCache.return_value.get.return_value = poisoned
                 orch = MultiAgentOrchestrator()
                 tokens: list[str] = []
-                async for token in orch.handle_question("Total revenue?", "agent1"):
+                # Execute permission granted deliberately. Without it the
+                # execution policy refuses the replay before the validator is
+                # consulted, and this test would pass while no longer testing
+                # the thing it is named after.
+                async for token in orch.handle_question(
+                    "Total revenue?",
+                    "agent1",
+                    execution=ExecutionPolicy.execute_read_only(),
+                ):
                     tokens.append(token)
                 return json.loads(tokens[-1])
 

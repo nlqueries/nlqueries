@@ -2352,9 +2352,23 @@ def query(
         else:
             history = _load_session(agent_id)
 
+    # Minted here, at the edge, from what the person asked for — and carried
+    # the whole way down. The flag used to be read after run_query_sync had
+    # already executed, so it suppressed a second run rather than the first.
+    from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+
+    execution = (
+        ExecutionPolicy.execute_read_only() if execute_sql else ExecutionPolicy.generate_only()
+    )
+
     try:
         result: AgentQueryResult = run_query_sync(
-            question, agent_id, dialect=dialect, history=history, explain=explain
+            question,
+            agent_id,
+            dialect=dialect,
+            history=history,
+            explain=explain,
+            execution=execution,
         )
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Query failed:[/bold red] {exc}")
@@ -2373,7 +2387,19 @@ def query(
 
     # Execute the generated SQL against the registered connector.
     sql_result: QueryResult | None = result.sql_result
-    if execute_sql and result.sql and result.agent_type == "sql" and sql_result is None:
+    # `sql_result is None` alone used to be the whole condition, and it means
+    # three different things: nothing ran, the validator refused it, or it ran
+    # and returned nothing. Taking it as "not run yet" is how SQL the validator
+    # had already rejected reached the database (2026-07-02 review, finding 3).
+    if not result.sql_is_valid and result.sql:
+        err_console.print("[yellow]⚠ Not executed:[/yellow] the generated SQL failed validation.")
+    if (
+        execute_sql
+        and result.sql_is_valid
+        and result.sql
+        and result.agent_type == "sql"
+        and sql_result is None
+    ):
         try:
             from sqlalchemy.engine import make_url
 
@@ -2516,6 +2542,7 @@ def eval_cmd(
     """
     from pathlib import Path  # noqa: PLC0415
 
+    from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
     from nlqueries.kb_eval import build_cases, run_eval  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query_sync  # noqa: PLC0415
 
@@ -2544,7 +2571,16 @@ def eval_cmd(
 
     def _generate(question: str) -> str | None:
         try:
-            result = run_query_sync(question, agent_id, dialect=dialect)
+            # Evaluation measures generation, so it generates. It used to
+            # call this exactly like an ordinary query and run every golden
+            # case against whatever connector happened to be configured —
+            # against production, if that is what was registered.
+            result = run_query_sync(
+                question,
+                agent_id,
+                dialect=dialect,
+                execution=ExecutionPolicy.generate_only(),
+            )
             sql: str | None = result.sql
             return sql
         except Exception:  # noqa: BLE001 — a generation failure is a case failure
