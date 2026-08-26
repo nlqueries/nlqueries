@@ -426,6 +426,28 @@ class PostgresConnector(DatabaseConnector):
             try:
                 engine = self._require_engine()
                 with engine.begin() as conn:
+                    # First statement in the transaction, and it has to be: this
+                    # is what stops a SELECT from writing.
+                    #
+                    # Generated SQL is an LLM's output, and every validator in
+                    # front of this one asks only whether the root node is a
+                    # Select. `SELECT some_volatile_function(...)` satisfies
+                    # that and can still INSERT — which is exactly what a
+                    # security audit reproduced through this connector, twice,
+                    # eight weeks apart. `engine.begin()` then committed it.
+                    #
+                    # PostgreSQL's own guard is broader than the validator's
+                    # could be, because it applies to whatever the statement
+                    # eventually does rather than to how it is spelled: DML and
+                    # DDL anywhere in the call graph, and sequence functions,
+                    # which it refuses by name.
+                    #
+                    # It is not the whole boundary, and should not be read as
+                    # one. A read-only transaction still permits advisory locks,
+                    # sleeps and privileged file reads; refusing those needs a
+                    # least-privilege role, which only the operator can grant.
+                    conn.execute(text("SET TRANSACTION READ ONLY"))
+
                     if effective_timeout is not None and effective_timeout > 0:
                         statement_timeout_ms = max(1, int(effective_timeout * 1000))
                         conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))

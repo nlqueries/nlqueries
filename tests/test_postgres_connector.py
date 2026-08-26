@@ -18,6 +18,7 @@ from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryResult, SchemaSpec, TableSpec
 from nlqueries.connectors.postgres import PostgresConnector
+from sqlalchemy import text as sa_text
 
 testcontainers_postgres = pytest.importorskip(
     "testcontainers.postgres", reason="testcontainers[postgres] is not installed"
@@ -115,9 +116,13 @@ def seeded_connector(credentials):
         "INSERT INTO order_items (order_id, sku, quantity) VALUES (1, 'WIDGET-1', 2)",
         "ANALYZE",
     ]
-    for stmt in setup_statements:
-        result = c.execute_query(stmt)
-        assert result.error is None, f"setup statement failed: {stmt!r} -> {result.error}"
+    # Through the engine, not execute_query(). execute_query() is the path that
+    # runs LLM-generated SQL and is deliberately read-only (SEC-01); setting a
+    # fixture up through it would be asking the untrusted-input seam to do
+    # administration, and would only pass because the guard was missing.
+    with c._require_engine().begin() as conn:
+        for stmt in setup_statements:
+            conn.execute(sa_text(stmt))
 
     return c
 
@@ -300,8 +305,9 @@ def test_list_security_policies_finds_rls_policies(connector):
         # A WITH CHECK-only (write-time) policy has no USING clause → must be skipped.
         "CREATE POLICY insert_guard ON rls_orders FOR INSERT WITH CHECK (amount > 0)",
     ]
-    for stmt in setup:
-        assert connector.execute_query(stmt).error is None, stmt
+    with connector._require_engine().begin() as conn:
+        for stmt in setup:
+            conn.execute(sa_text(stmt))
 
     report = connector.list_security_policies()
     assert report.supported is True
@@ -315,7 +321,8 @@ def test_list_security_policies_finds_rls_policies(connector):
     # The WITH CHECK-only policy has no read predicate → not surfaced.
     assert "insert_guard" not in by_name
 
-    connector.execute_query("DROP TABLE IF EXISTS rls_orders")
+    with connector._require_engine().begin() as conn:
+        conn.execute(sa_text("DROP TABLE IF EXISTS rls_orders"))
 
 
 def test_list_security_policies_empty_when_no_policies(seeded_connector):
@@ -323,3 +330,99 @@ def test_list_security_policies_empty_when_no_policies(seeded_connector):
     assert report.supported is True
     # The seeded schema (customers/orders/order_items) has no RLS policies.
     assert all(p.table not in {"customers", "orders", "order_items"} for p in report.policies)
+
+
+# ---------------------------------------------------------------------------
+# Read-only execution (SEC-01)
+# ---------------------------------------------------------------------------
+#
+# Generated SQL used to run inside `engine.begin()`, which opens a transaction
+# and COMMITS it. Nothing constrained the statement to be side-effect-free, so a
+# volatile function that writes — reached through a plain SELECT, which every
+# validator here accepts — committed its write. Found independently by the
+# 2026-07-02 core review (finding 1) and the 2026-08-25 audit (NLQ-006).
+#
+# These prove the effect is absent, not merely that a statement was issued: the
+# marker table is read back afterwards.
+
+
+@pytest.fixture()
+def marker_table(connector):
+    """A table a SELECT should never be able to write to, and a function that tries."""
+    engine = connector._require_engine()
+    with engine.begin() as conn:
+        conn.execute(sa_text("DROP TABLE IF EXISTS sec01_marker CASCADE"))
+        conn.execute(sa_text("CREATE TABLE sec01_marker (note text)"))
+        conn.execute(
+            sa_text(
+                """
+                CREATE OR REPLACE FUNCTION sec01_mark(note text) RETURNS text AS $$
+                BEGIN
+                    INSERT INTO sec01_marker VALUES (note);
+                    RETURN note;
+                END;
+                $$ LANGUAGE plpgsql VOLATILE
+                """
+            )
+        )
+        conn.execute(sa_text("DROP SEQUENCE IF EXISTS sec01_seq"))
+        conn.execute(sa_text("CREATE SEQUENCE sec01_seq"))
+    yield
+    with engine.begin() as conn:
+        conn.execute(sa_text("DROP FUNCTION IF EXISTS sec01_mark(text)"))
+        conn.execute(sa_text("DROP TABLE IF EXISTS sec01_marker"))
+        conn.execute(sa_text("DROP SEQUENCE IF EXISTS sec01_seq"))
+
+
+def _marker_rows(connector) -> int:
+    with connector._require_engine().begin() as conn:
+        return int(conn.execute(sa_text("SELECT count(*) FROM sec01_marker")).scalar_one())
+
+
+def test_a_select_calling_a_writing_function_commits_nothing(connector, marker_table):
+    """The audit's own payload shape: a SELECT whose function writes.
+
+    Every validator in this codebase accepts it — the root node is a Select. The
+    database is the layer that has to refuse, and this is the test that says so.
+    """
+    result = connector.execute_query("SELECT sec01_mark('sec-01')")
+
+    assert result.error is not None
+    assert "read-only" in result.error.lower()
+    assert _marker_rows(connector) == 0
+
+
+def test_sequence_functions_are_refused(connector, marker_table):
+    """`nextval` advances state on disk; PostgreSQL guards it explicitly."""
+    result = connector.execute_query("SELECT nextval('sec01_seq')")
+
+    assert result.error is not None
+    assert "read-only" in result.error.lower()
+
+
+def test_direct_dml_is_refused(connector, marker_table):
+    """Not reachable through the validators today, but the boundary must not
+    depend on that remaining true."""
+    result = connector.execute_query("INSERT INTO sec01_marker VALUES ('direct')")
+
+    assert result.error is not None
+    assert _marker_rows(connector) == 0
+
+
+def test_ordinary_reads_are_unaffected(connector, marker_table):
+    """The control has to be invisible to every legitimate query, or it will be
+    turned off by whoever meets the first false refusal."""
+    result = connector.execute_query("SELECT count(*) AS n, max(note) AS m FROM sec01_marker")
+
+    assert result.error is None
+    assert result.columns == ["n", "m"]
+
+
+def test_explain_analyze_of_a_select_still_works(connector, marker_table):
+    """`query_analyzer` runs EXPLAIN (ANALYZE) through this path. PostgreSQL
+    permits it for a read-only statement, and this pins that it stays permitted."""
+    result = connector.execute_query(
+        "EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM sec01_marker"
+    )
+
+    assert result.error is None
