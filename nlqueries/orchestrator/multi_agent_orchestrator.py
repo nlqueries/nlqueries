@@ -315,10 +315,21 @@ def _is_executable_select(sql: str, dialect: str) -> bool:
 
     Catches ``SqlglotError``, not ``ParseError``: ``TokenError`` is a sibling of
     ``ParseError``, not a subclass, and prose with an apostrophe fails in the
-    tokenizer. Also catches ``ValueError``, which is what an unrecognised
-    dialect *name* raises — a different failure from bad SQL, and one that must
-    not propagate out of a guard whose whole purpose is to stop this path
-    raising.
+    tokenizer.
+
+    An unrecognised dialect *name* raises ``ValueError``, and this used to fall
+    back to sqlglot's generic dialect so that "a dialect we cannot name never
+    blocks execution of otherwise good SQL". That reasoning is right about
+    availability and wrong about this function, which is a security gate: parsing
+    with the wrong grammar and then executing against the real database means the
+    thing that was checked is not the thing that runs. ``mssql`` is a registered
+    ``db_type`` and is not a sqlglot dialect name, so the fallback was reachable
+    through a supported connector rather than only through a typo.
+
+    So it fails closed, and says why at ERROR level — an unknown dialect is a
+    configuration problem an operator can fix, not a property of the SQL, and it
+    should not be diagnosed by noticing that cached queries quietly stopped
+    running.
     """
     import sqlglot  # noqa: PLC0415
     import sqlglot.errors  # noqa: PLC0415
@@ -329,12 +340,13 @@ def _is_executable_select(sql: str, dialect: str) -> bool:
     try:
         statement = sqlglot.parse_one(sql, dialect=dialect)
     except ValueError:
-        # Unknown dialect name — fall back to generic parsing so a dialect we
-        # cannot name never blocks execution of otherwise good SQL.
-        try:
-            statement = sqlglot.parse_one(sql)
-        except (sqlglot.errors.SqlglotError, ValueError):
-            return False
+        _log.error(
+            "Cached SQL was not executed: %r is not a sqlglot dialect, so the "
+            "statement could not be checked against the grammar it will run "
+            "under. Map this connector's db_type to a sqlglot dialect name.",
+            dialect,
+        )
+        return False
     except sqlglot.errors.SqlglotError:
         return False
     return isinstance(statement, sqlglot_exp.Select)
