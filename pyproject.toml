@@ -80,6 +80,9 @@ dev = [
     # Optional connector deps — installed in CI so their tests keep running
     "snowflake-connector-python>=3.0",
     "google-cloud-bigquery>=3.0",
+    # DuckDB reads local files through table functions, so the security corpus
+    # needs it present to check that it cannot.
+    "duckdb>=1.0",
 ]
 # Alternate embed-server daemon backend — lighter-weight ONNX Runtime instead
 # of the sentence-transformers/PyTorch path, which is a base dependency.
@@ -138,6 +141,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts   = "--tb=short -q"
+markers = [
+    # The disposable security lab: real containers, real payloads, assertions
+    # about the absence of an effect. Run them alone with `-m security`.
+    "security: reproduces a security finding against a disposable database",
+    "slow: takes long enough to be worth skipping during a tight edit loop",
+]
 
 # ---------------------------------------------------------------------------
 # Mypy
