@@ -280,9 +280,10 @@ def _get_client() -> Any:
     """Return a shared QdrantClient instance, creating it lazily on first call."""
     global _cache_client  # noqa: PLW0603
     if _cache_client is None:
-        from qdrant_client import QdrantClient  # noqa: PLC0415
+        # One factory, one authentication rule — see qdrant_client's docstring.
+        from nlqueries.embeddings.qdrant_client import build_qdrant_client  # noqa: PLC0415
 
-        _cache_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY or None)
+        _cache_client = build_qdrant_client()
     return _cache_client
 
 

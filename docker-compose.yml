@@ -3,7 +3,8 @@
 #
 # Quickstart:
 #   cp .env.example .env
-#   # edit .env — set DATABASE_URL and your LLM API key
+#   # edit .env — set DATABASE_URL, your LLM API key, and QDRANT_API_KEY
+#   #   (generate one with: openssl rand -hex 32)
 #   docker compose up
 #
 #   Once running:
@@ -21,9 +22,18 @@ services:
     image: qdrant/qdrant:v1.9.3
     container_name: nlqueries-qdrant
     restart: unless-stopped
+    environment:
+      # Qdrant is a write path into the semantic cache, and cached SQL is
+      # executed against your database. An anonymous writer here reached a
+      # committed side effect in an audit, so the key is required rather than
+      # optional; the app refuses to start without it for a non-loopback URL.
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
     ports:
-      - "${QDRANT_HTTP_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
+      # Loopback by default. The app reaches Qdrant over the compose network,
+      # so publishing these binds them for host tools only — and on a cloud
+      # host, 0.0.0.0 published an unauthenticated vector store to the internet.
+      - "${BIND_ADDR:-127.0.0.1}:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${BIND_ADDR:-127.0.0.1}:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant-data:/qdrant/storage
     networks:
@@ -44,6 +54,7 @@ services:
       - .env
     environment:
       QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
     volumes:
       - nlqueries-data:/data/nlqueries
     ports:

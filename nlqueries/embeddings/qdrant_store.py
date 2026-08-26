@@ -44,7 +44,6 @@ import hashlib
 import time
 from typing import TYPE_CHECKING, Any
 
-from nlqueries import config
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
@@ -68,9 +67,9 @@ def _get_client() -> _QdrantClient:
     """Return the shared ``QdrantClient``, creating it on first call."""
     global _client  # noqa: PLW0603
     if _client is None:
-        from qdrant_client import QdrantClient  # deferred — heavy import
+        from nlqueries.embeddings.qdrant_client import build_qdrant_client  # deferred
 
-        _client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY or None)
+        _client = build_qdrant_client()
     return _client
 
 
