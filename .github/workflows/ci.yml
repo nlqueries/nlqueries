@@ -5,6 +5,15 @@ on:
     branches: [main, develop, "feature/**", "fix/**"]
   pull_request:
     branches: [main, develop]
+  # Run it on demand, against any ref.
+  #
+  # A GitHub Actions outage on 2026-08-26 created run objects, assigned no
+  # runners, and failed them in seconds. Those runs cannot be retried, and once
+  # the queue recovered nothing re-fired for commits that had already landed —
+  # so `main` carried merges no CI had ever seen, which is indistinguishable
+  # from `main` being green. Without this trigger the only remedy was an empty
+  # commit.
+  workflow_dispatch:
 
 jobs:
   # -------------------------------------------------------------------------
