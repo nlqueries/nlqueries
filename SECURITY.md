@@ -16,6 +16,18 @@ Email **[security@nlqueries.com](mailto:security@nlqueries.com)** with:
 
 We aim to acknowledge reports within 5 business days. Once a fix is available, we'll credit the reporter (unless you'd prefer to stay anonymous) in the release notes and coordinate disclosure timing with you.
 
+## Hardening the database you point it at
+
+NLQueries generates SQL with a language model and runs it against your database.
+The connector opens every query in a read-only transaction, but that is one
+layer, and it does not stop a role that can read files off the database host or
+tables you never meant to expose.
+
+The database's own permission system is the boundary that does not depend on
+this project being free of bugs. See
+[docs/database-hardening.md](docs/database-hardening.md) for the role to create,
+per engine.
+
 ## Scope
 
 This policy covers the `nlqueries-core` OSS package (this repository). For the enterprise edition (web UI, team auth, admin panel), report through your enterprise support channel or the same [security@nlqueries.com](mailto:security@nlqueries.com) address.

@@ -4,6 +4,15 @@ NLQueries reads two kinds of sources: databases (for structured SQL answers) and
 
 ---
 
+## Before you connect: the role to use
+
+Give NLQueries a login that cannot write and cannot read more than you would put
+in an answer. The connector requires TLS and runs every query in a read-only
+transaction, but neither of those limits *what* the role can read, and neither
+is a substitute for a least-privilege grant.
+
+[docs/database-hardening.md](database-hardening.md) has the SQL, per engine.
+
 ## Database connectors
 
 | Connector | Install | Query history source |
