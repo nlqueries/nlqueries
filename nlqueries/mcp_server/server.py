@@ -297,14 +297,22 @@ def submit_feedback(
     return msg
 
 
-def health() -> str:
+def health(probe_llm: bool = False) -> str:
     """Check connectivity to all NLQueries dependencies.
 
     Runs four checks in sequence:
-    - LLM: sends a minimal completion request to verify the API key and model.
+    - LLM: reports the configured provider and model. Sends a real completion
+      only when *probe_llm* is true.
     - Qdrant: hits the /healthz endpoint.
     - Embed daemon: probes the local embedding server.
     - Config: verifies KB_PATH exists and required env vars are set.
+
+    Args:
+        probe_llm: Spend a token on a live round-trip to the model. Off by
+            default: this tool is reachable without credentials, and a health
+            check that costs money is a way to bill someone for asking whether
+            their server is up. Off, the LLM line reports configuration; on, it
+            reports latency and a working key.
 
     Returns:
         A formatted status report string.
@@ -318,6 +326,11 @@ def health() -> str:
     llm_key = config.ANTHROPIC_API_KEY or ""
     if not llm_key:
         lines.append("❌ **LLM** — no ANTHROPIC_API_KEY set")
+    elif not probe_llm:
+        lines.append(
+            f"✅ **LLM** — {config.LLM_PROVIDER} / {config.LLM_MODEL} "
+            "(configured; pass probe_llm=true to test the key)"
+        )
     else:
         try:
             from nlqueries.llm import get_llm_client  # noqa: PLC0415
