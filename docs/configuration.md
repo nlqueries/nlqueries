@@ -9,7 +9,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `LLM_MODEL` | No | `claude-sonnet-4-5` | LLM model identifier |
 | `LLM_PROVIDER` | No | Auto-detected | `anthropic`, `openai`, or any LiteLLM provider. **Setting `OPENAI_API_KEY` alone does not switch the provider** — also set `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/<model>` to use OpenAI. |
 | `DATABASE_URL` | No | — | Connection string for the database being queried, e.g. `postgresql+psycopg2://user:password@localhost:5432/mydb` |
-| `SSL_MODE` | No | `prefer` | SSL mode for the source database connection |
+| `SSL_MODE` | No | `require` | TLS mode for the source database connection. `require` encrypts but verifies no certificate; use `verify-full` (with a CA) in production. `disable` restores plaintext, explicitly. |
 | `SSL_CA_CERT` | No | — | Path to an SSL CA certificate bundle (e.g. for AWS RDS/Aurora with `verify-full`) |
 | `QDRANT_URL` | No | `http://localhost:6333` | Qdrant URL. Required for `--embed`, the semantic cache, and document connectors. |
 | `QDRANT_API_KEY` | No | — | Required if using Qdrant Cloud |

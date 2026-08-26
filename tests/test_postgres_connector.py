@@ -68,6 +68,12 @@ def credentials(pg_container) -> dict:
         "database": pg_container.dbname,
         "user": pg_container.username,
         "password": pg_container.password,
+        # The throwaway container serves no TLS, and the connector now requires
+        # it by default rather than silently accepting a plaintext session. So
+        # the fixture says so — which is the whole point of the change: the old
+        # default did this quietly, and nothing anywhere recorded that the
+        # connection was in the clear.
+        "ssl_mode": "disable",
     }
 
 
