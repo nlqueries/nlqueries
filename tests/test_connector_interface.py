@@ -13,6 +13,8 @@ from nlqueries.connectors import (
 )
 from nlqueries.connectors.base import DatabaseConnector as DatabaseConnectorFromBase
 
+from tests.conftest import granted
+
 
 def test_database_connector_cannot_be_instantiated_directly():
     """ABC with abstract methods must reject direct instantiation."""
@@ -44,10 +46,10 @@ def test_subclass_implementing_all_methods_can_be_instantiated(missing_methods, 
         def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
             return []
 
-        def execute_query(self, sql: str) -> QueryResult:
+        def _execute_query(self, sql: str) -> QueryResult:
             return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
 
-    connector = CompleteConnector()
+    connector = granted(CompleteConnector())
     assert isinstance(connector, DatabaseConnector) is expected
     assert connector.test_connection() is True
 
@@ -69,10 +71,10 @@ def test_list_security_policies_defaults_to_unsupported():
         def extract_query_history(self, days: int = 30) -> list[QueryRecord]:
             return []
 
-        def execute_query(self, sql: str) -> QueryResult:
+        def _execute_query(self, sql: str) -> QueryResult:
             return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
 
-    report = MinimalConnector().list_security_policies()
+    report = granted(MinimalConnector()).list_security_policies()
     assert report.supported is False
     assert report.policies == []
 
@@ -84,7 +86,7 @@ def test_list_security_policies_defaults_to_unsupported():
         "test_connection",
         "extract_schema",
         "extract_query_history",
-        "execute_query",
+        "_execute_query",
     ],
 )
 def test_subclass_missing_any_abstract_method_cannot_be_instantiated(method_to_omit):
@@ -96,7 +98,7 @@ def test_subclass_missing_any_abstract_method_cannot_be_instantiated(method_to_o
             database="db", tables=[], extracted_at="2026-01-01T00:00:00Z"
         ),
         "extract_query_history": lambda self, days=30: [],
-        "execute_query": lambda self, sql: QueryResult(
+        "_execute_query": lambda self, sql: QueryResult(
             columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None
         ),
     }

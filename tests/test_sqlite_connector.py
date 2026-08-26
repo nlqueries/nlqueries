@@ -13,6 +13,8 @@ from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.connectors.sqlite import SQLiteConnector, _quote_ident
 
+from tests.conftest import granted
+
 
 def _seeded(tmp_path: Path) -> SQLiteConnector:
     """A connector on a temp-file DB with a two-table FK schema and some rows."""
@@ -38,7 +40,7 @@ def _seeded(tmp_path: Path) -> SQLiteConnector:
     raw.commit()
     raw.close()
 
-    c = SQLiteConnector()
+    c = granted(SQLiteConnector())
     c.connect({"database": str(db)})
     return c
 
@@ -49,7 +51,7 @@ def _seeded(tmp_path: Path) -> SQLiteConnector:
 
 
 def test_connect_defaults_to_in_memory() -> None:
-    c = SQLiteConnector()
+    c = granted(SQLiteConnector())
     c.connect({})  # no "database" key
     assert c._database == ":memory:"
     assert c.test_connection() is True
@@ -58,7 +60,7 @@ def test_connect_defaults_to_in_memory() -> None:
 def test_connect_ignores_server_credential_keys() -> None:
     # host/port/user/password are accepted (same dict shape as server connectors)
     # and ignored — only "database" matters.
-    c = SQLiteConnector()
+    c = granted(SQLiteConnector())
     c.connect({"database": ":memory:", "host": "x", "port": 5432, "user": "u", "password": "p"})
     assert c.test_connection() is True
 
@@ -153,7 +155,7 @@ def test_extract_schema_skips_internal_tables(tmp_path: Path) -> None:
     raw.execute("INSERT INTO t (v) VALUES ('a')")
     raw.commit()
     raw.close()
-    c = SQLiteConnector()
+    c = granted(SQLiteConnector())
     c.connect({"database": str(db)})
     names = {t.name for t in c.extract_schema().tables}
     assert names == {"t"}

@@ -9,6 +9,7 @@ failure, since these tests may not be runnable in every environment.
 from __future__ import annotations
 
 import pytest
+from tests.conftest import granted
 
 pytest.importorskip("testcontainers")
 pytest.importorskip("pymssql")
@@ -32,7 +33,7 @@ def mssql_container() -> object:
 
 @pytest.fixture
 def connector(mssql_container: SqlServerContainer) -> MSSQLConnector:
-    conn = MSSQLConnector()
+    conn = granted(MSSQLConnector())
     conn.connect(
         {
             "host": mssql_container.get_container_host_ip(),

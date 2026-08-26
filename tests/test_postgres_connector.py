@@ -20,6 +20,8 @@ from nlqueries.connectors.base import ColumnSpec, QueryResult, SchemaSpec, Table
 from nlqueries.connectors.postgres import PostgresConnector
 from sqlalchemy import text as sa_text
 
+from tests.conftest import granted
+
 testcontainers_postgres = pytest.importorskip(
     "testcontainers.postgres", reason="testcontainers[postgres] is not installed"
 )
@@ -79,7 +81,7 @@ def credentials(pg_container) -> dict:
 
 @pytest.fixture()
 def connector(credentials) -> PostgresConnector:
-    c = PostgresConnector()
+    c = granted(PostgresConnector())
     c.connect(credentials)
     return c
 
@@ -87,7 +89,7 @@ def connector(credentials) -> PostgresConnector:
 @pytest.fixture(scope="module")
 def seeded_connector(credentials):
     """A connected PostgresConnector with a small schema (PK + FK) created."""
-    c = PostgresConnector()
+    c = granted(PostgresConnector())
     c.connect(credentials)
 
     setup_statements = [
@@ -148,20 +150,20 @@ def test_postgres_is_registered_under_postgres_key():
 
 
 def test_connect_builds_engine_and_test_connection_succeeds(credentials):
-    connector = PostgresConnector()
+    connector = granted(PostgresConnector())
     connector.connect(credentials)
     assert connector.test_connection() is True
 
 
 def test_test_connection_returns_false_for_bad_credentials(credentials):
     bad_credentials = {**credentials, "password": "definitely-not-the-password"}
-    connector = PostgresConnector()
+    connector = granted(PostgresConnector())
     connector.connect(bad_credentials)
     assert connector.test_connection() is False
 
 
 def test_methods_behave_before_connect_is_called():
-    connector = PostgresConnector()
+    connector = granted(PostgresConnector())
 
     # _require_engine() raises directly...
     with pytest.raises(RuntimeError):

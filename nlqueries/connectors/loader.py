@@ -25,6 +25,8 @@ import yaml
 
 from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY, DatabaseConnector
+from nlqueries.connectors.base import PermittedConnector
+from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +189,9 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
     return url
 
 
-def open_connector_for_agent(agent_id: str) -> DatabaseConnector | None:
+def open_connector_for_agent(
+    agent_id: str, execution: ExecutionPolicy = DEFAULT_POLICY
+) -> DatabaseConnector | None:
     """Return a connected DatabaseConnector for *agent_id*.
 
     Returns ``None`` when the connector cannot be found, the required driver is
@@ -200,6 +204,12 @@ def open_connector_for_agent(agent_id: str) -> DatabaseConnector | None:
     has pooled nothing.
 
     Set ``CONNECTOR_CACHE_ENABLED=false`` to restore the previous behaviour.
+
+    *execution* is this request's permission, and it is wrapped around the
+    shared connector rather than set on it: the pooled object outlives the
+    request, so a policy stored there would be inherited by whoever got the
+    connector next. Defaults to generate-only, so a caller that does not ask for
+    execution does not get it.
     """
     connector_id = _find_connector_id(agent_id)
     if connector_id is None:
@@ -218,7 +228,7 @@ def open_connector_for_agent(agent_id: str) -> DatabaseConnector | None:
         fingerprint = _fingerprint(connector_id, cfg)
         cached = _cache_get(connector_id, fingerprint)
         if cached is not None:
-            return cached
+            return PermittedConnector(cached, execution)
 
     db_type = cfg.get("db_type", "").lower()
     connector_cls = CONNECTOR_REGISTRY.get(db_type)
@@ -245,6 +255,6 @@ def open_connector_for_agent(agent_id: str) -> DatabaseConnector | None:
         )
         if config.CONNECTOR_CACHE_ENABLED:
             _cache_put(connector_id, connector, fingerprint)
-        return connector
+        return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
         return None

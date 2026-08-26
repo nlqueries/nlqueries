@@ -19,6 +19,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from nlqueries.execution import (
+    DEFAULT_POLICY,
+    ExecutionNotPermitted,
+    ExecutionPolicy,
+)
+
 
 @dataclass
 class ColumnSpec:
@@ -168,14 +174,56 @@ class DatabaseConnector(ABC):
             with contextlib.suppress(Exception):
                 engine.dispose()
 
-    @abstractmethod
+    def bind_execution_policy(self, policy: ExecutionPolicy) -> None:
+        """Grant this connector permission to run statements.
+
+        Bound to the object rather than passed per call, and that is the whole
+        design. A per-call parameter is one every call site has to supply, which
+        makes it one every call site can supply *wrongly* — and "the permission
+        was reconstructed at the point of use" is the defect this replaces, not
+        a smaller version of it. A connector that exists in an executable state
+        is one somebody was deliberately allowed to open.
+        """
+        self._execution_policy = policy
+
+    @property
+    def execution_policy(self) -> ExecutionPolicy:
+        """What this connector is permitted to do. Deny until told otherwise."""
+        return getattr(self, "_execution_policy", DEFAULT_POLICY)
+
     def execute_query(
         self,
         sql: str,
         timeout_seconds: float | None = None,
         max_rows: int | None = None,
     ) -> QueryResult:
+        """Execute ``sql``, if this connector is allowed to.
+
+        Concrete on purpose: the check belongs to the interface, not to each
+        implementation. Nine connectors each remembering to ask is nine chances
+        to forget, and a tenth connector added next year would start out
+        forgetting. Implementations override :meth:`_execute_query`, which is
+        only ever reached through here.
+
+        The orchestration layer already refuses to get this far without
+        permission. This is the layer that does not depend on that being right.
+        """
+        policy = self.execution_policy
+        if not policy.may_execute:
+            raise ExecutionNotPermitted(f"{type(self).__name__}.execute_query", policy)
+        return self._execute_query(sql, timeout_seconds, max_rows)
+
+    @abstractmethod
+    def _execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
         """Execute ``sql`` against the connected database and return the result.
+
+        Reached only through :meth:`execute_query`, which checks permission
+        first. Do not call it directly, and do not re-implement the check here.
 
         Args:
             sql: The SQL statement to execute.
@@ -223,3 +271,70 @@ class DatabaseConnector(ABC):
         Introspection reuses the existing connection; it needs no new credentials.
         """
         return SecurityPolicyReport(supported=False, policies=[])
+
+
+class PermittedConnector(DatabaseConnector):
+    """A per-request view of a shared connector, carrying this request's permission.
+
+    Connectors are pooled and reused across in-flight requests — that is what
+    makes the pool a pool. So permission cannot live on the connector itself:
+    one request granting execution would grant it to every other request holding
+    the same object, and the leak would be invisible because nothing about the
+    shared connector changes shape.
+
+    The permission lives here instead, on a wrapper created per request, while
+    the pooled connection stays shared. The gate is still the one in
+    :meth:`DatabaseConnector.execute_query`, inherited — there is exactly one
+    implementation of the rule, and this class only decides which policy it sees.
+
+    Opening a connector is deliberately *not* gated. Schema extraction, history
+    mining and connection tests are reads of metadata that generation-only
+    callers legitimately need; refusing to construct one would mean a
+    `--no-execute` run could not describe the tables it was writing SQL against.
+    Execution is the thing being permitted, so execution is the thing gated.
+    """
+
+    def __init__(self, inner: DatabaseConnector, policy: ExecutionPolicy) -> None:
+        self._inner = inner
+        self._execution_policy = policy
+
+    # -- delegation ------------------------------------------------------
+    def connect(self, credentials: dict[str, Any]) -> None:
+        self._inner.connect(credentials)
+
+    def test_connection(self) -> bool:
+        return self._inner.test_connection()
+
+    def extract_schema(self) -> SchemaSpec:
+        return self._inner.extract_schema()
+
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
+        return self._inner.extract_query_history(days, limit)
+
+    def get_schema_summary(self) -> tuple[int, int]:
+        return self._inner.get_schema_summary()
+
+    def list_security_policies(self) -> SecurityPolicyReport:
+        return self._inner.list_security_policies()
+
+    def close(self) -> None:
+        """Deliberately does nothing.
+
+        The wrapped connector is shared and pooled; closing it here would
+        dispose of an engine other in-flight requests are using. The loader's
+        contract already says callers must not close what it hands them, and
+        this makes that true rather than merely documented.
+        """
+
+    # -- the one thing that is gated -------------------------------------
+    def _execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
+        # Reached only through the inherited `execute_query`, which has already
+        # checked this wrapper's policy. Calling the inner private directly is
+        # what keeps the check in one place: going through the inner's public
+        # method would ask its (unbound, denying) policy a second time.
+        return self._inner._execute_query(sql, timeout_seconds, max_rows)

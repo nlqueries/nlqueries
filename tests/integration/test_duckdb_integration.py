@@ -7,6 +7,7 @@ with no containers or external services required. They must always pass.
 from __future__ import annotations
 
 import pytest
+from tests.conftest import granted
 
 pytest.importorskip("duckdb")
 
@@ -16,7 +17,7 @@ from nlqueries.connectors.duckdb import DuckDBConnector  # noqa: E402
 
 @pytest.fixture
 def connector() -> DuckDBConnector:
-    conn = DuckDBConnector()
+    conn = granted(DuckDBConnector())
     conn.connect({"database": ":memory:"})
     return conn
 

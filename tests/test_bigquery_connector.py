@@ -18,6 +18,8 @@ from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryRecord, QueryResult, SchemaSpec, TableSpec
 from nlqueries.connectors.bigquery import BigQueryConnector
 
+from tests.conftest import granted
+
 CREDENTIALS = {
     "project_id": "acme-prod",
     "dataset_id": "analytics",
@@ -44,7 +46,7 @@ def test_connect_uses_application_default_credentials_when_no_key_given(mock_cli
     mock_client.get_dataset.return_value = MagicMock(location=None)
     mock_client_cls.return_value = mock_client
 
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector.connect({"project_id": "acme-prod"})
 
     mock_client_cls.assert_called_once_with(project="acme-prod")
@@ -63,7 +65,7 @@ def test_connect_builds_credentials_from_dict(mock_client_cls, mock_from_info):
     mock_client_cls.return_value = mock_client
 
     key_dict = {"type": "service_account", "project_id": "acme-prod"}
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector.connect({**CREDENTIALS, "service_account_json": key_dict})
 
     mock_from_info.assert_called_once_with(key_dict)
@@ -79,7 +81,7 @@ def test_connect_builds_credentials_from_path(mock_client_cls, mock_from_file):
     mock_client.get_dataset.return_value = MagicMock(location="US")
     mock_client_cls.return_value = mock_client
 
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector.connect({**CREDENTIALS, "service_account_json": "/path/to/key.json"})
 
     mock_from_file.assert_called_once_with("/path/to/key.json")
@@ -92,7 +94,7 @@ def test_connect_resolves_region_qualifier_from_dataset_location(mock_client_cls
     mock_client.get_dataset.return_value = MagicMock(location="EUROPE-WEST1")
     mock_client_cls.return_value = mock_client
 
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector.connect(CREDENTIALS)
 
     mock_client.get_dataset.assert_called_once_with("analytics")
@@ -103,7 +105,7 @@ def test_connect_resolves_region_qualifier_from_dataset_location(mock_client_cls
 def test_connect_falls_back_to_default_region_without_dataset_id(mock_client_cls):
     mock_client_cls.return_value = MagicMock()
 
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector.connect({"project_id": "acme-prod"})
 
     assert connector._region_qualifier == "region-us"
@@ -115,14 +117,14 @@ def test_connect_falls_back_to_default_region_when_lookup_fails(mock_client_cls)
     mock_client.get_dataset.side_effect = RuntimeError("not found")
     mock_client_cls.return_value = mock_client
 
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector.connect(CREDENTIALS)
 
     assert connector._region_qualifier == "region-us"
 
 
 def test_methods_behave_before_connect_is_called():
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
 
     # _require_client() raises directly...
     with pytest.raises(RuntimeError):
@@ -139,7 +141,7 @@ def test_methods_behave_before_connect_is_called():
 
 def _connector_with_mock_client() -> tuple[BigQueryConnector, MagicMock]:
     """Build a connector whose ``_client`` is a fully-mocked BigQuery client."""
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector._client = MagicMock()
     connector._project_id = "acme-prod"
     connector._dataset_id = "analytics"
@@ -387,7 +389,7 @@ def test_extract_schema_returns_full_schema_spec_for_single_dataset():
 
 
 def test_extract_schema_iterates_every_dataset_when_no_dataset_id_given():
-    connector = BigQueryConnector()
+    connector = granted(BigQueryConnector())
     connector._client = MagicMock()
     connector._project_id = "acme-prod"
     connector._dataset_id = None

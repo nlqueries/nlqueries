@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import yaml
 
+from tests.conftest import granted
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -440,7 +442,7 @@ class TestPostgresConnectorSpan:
         mock_tracer, mock_span = _make_mock_tracer()
         from nlqueries.connectors.postgres import PostgresConnector
 
-        connector = PostgresConnector()
+        connector = granted(PostgresConnector())
         mock_cursor = MagicMock()
         mock_cursor.returns_rows = True
         mock_cursor.keys.return_value = ["id"]
@@ -464,7 +466,7 @@ class TestPostgresConnectorSpan:
         mock_tracer, mock_span = _make_mock_tracer()
         from nlqueries.connectors.postgres import PostgresConnector
 
-        connector = PostgresConnector()
+        connector = granted(PostgresConnector())
         mock_cursor = MagicMock()
         mock_cursor.returns_rows = False
         mock_conn = MagicMock()
@@ -484,7 +486,7 @@ class TestPostgresConnectorSpan:
         mock_tracer, mock_span = _make_mock_tracer()
         from nlqueries.connectors.postgres import PostgresConnector
 
-        connector = PostgresConnector()
+        connector = granted(PostgresConnector())
         mock_engine = MagicMock()
         mock_engine.begin.side_effect = RuntimeError("connection refused")
         connector._engine = mock_engine

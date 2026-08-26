@@ -20,13 +20,14 @@ import pytest
 import sqlalchemy as sa
 from nlqueries.connectors.postgres import PostgresConnector
 
+from tests.conftest import granted
 from tests.security.payloads import POSTGRES, SAFE_POSTGRES, Payload
 
 pytestmark = pytest.mark.security
 
 
 def _run(credentials: dict, sql: str):
-    connector = PostgresConnector()
+    connector = granted(PostgresConnector())
     connector.connect(credentials)
     try:
         return connector.execute_query(sql)

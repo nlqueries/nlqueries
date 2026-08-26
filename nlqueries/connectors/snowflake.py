@@ -368,7 +368,7 @@ class SnowflakeConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
-    def execute_query(
+    def _execute_query(
         self,
         sql: str,
         timeout_seconds: float | None = None,

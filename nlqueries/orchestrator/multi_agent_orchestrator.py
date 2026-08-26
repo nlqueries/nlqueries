@@ -398,7 +398,7 @@ async def _execute_cached_sql(
         return {"error": "Cached SQL failed revalidation and was not executed"}
 
     try:
-        connector = await asyncio.to_thread(open_connector_for_agent, agent_id)
+        connector = await asyncio.to_thread(open_connector_for_agent, agent_id, execution)
         if connector is None:
             return None
         qr = await asyncio.to_thread(connector.execute_query, sql, timeout_seconds)
