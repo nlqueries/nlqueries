@@ -162,11 +162,9 @@ def promote_feedback(agent_id: str, *, dry_run: bool = False) -> int | list[dict
     ensure_collection(collection, VERIFIED_VECTOR_SIZE)
 
     try:
-        from qdrant_client import QdrantClient  # noqa: PLC0415
+        from nlqueries.embeddings.qdrant_client import build_qdrant_client  # noqa: PLC0415
 
-        from nlqueries import config as _cfg  # noqa: PLC0415
-
-        client = QdrantClient(url=_cfg.QDRANT_URL, api_key=_cfg.QDRANT_API_KEY or None)
+        client = build_qdrant_client()
     except Exception as exc:  # noqa: BLE001
         _log.warning("promote_feedback: Qdrant unavailable — %s", exc)
         return 0
