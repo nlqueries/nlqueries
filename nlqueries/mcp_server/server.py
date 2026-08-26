@@ -26,6 +26,7 @@ get_cache_stats     Return cache size and collection info for an agent.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from typing import Any, Literal
@@ -522,6 +523,50 @@ mcp = _build_server()
 # ---------------------------------------------------------------------------
 
 
+#: Hosts that expose the listener beyond this machine. `0.0.0.0` and `::` are
+#: every interface; an empty host is how some stacks spell the same thing.
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # noqa: S104
+
+#: Set to `1` to bind a network interface anyway. Named for what it does.
+_INSECURE_BIND_ENV = "NLQ_ALLOW_INSECURE_BIND"
+
+
+def _refuse_unauthenticated_exposure(host: str) -> None:
+    """Refuse a wildcard bind while the MCP server has no authentication.
+
+    Every tool on this server is reachable without credentials — including
+    `query`, which runs SQL against a configured database, and
+    `invalidate_cache`. Binding to every interface therefore publishes a
+    database-query API to whatever can route to the host, and the CLI used to
+    default to exactly that.
+
+    Unlike the Qdrant rule in `embeddings/qdrant_client`, this one has an escape
+    hatch, and the difference is deliberate: talking to a remote vector store
+    anonymously has no legitimate use, whereas a network-reachable MCP transport
+    is a supported deployment that simply is not safe *yet*. The switch is the
+    honest way to say "I know, and I am doing it anyway" — and it should be
+    deleted, along with this function, once authentication lands.
+    """
+    if host not in _WILDCARD_HOSTS:
+        return
+    if os.getenv(_INSECURE_BIND_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        _log.warning(
+            "MCP server bound to %s with no authentication: every tool, "
+            "including query and invalidate_cache, is reachable by anything "
+            "that can route here.",
+            host,
+        )
+        return
+
+    raise SystemExit(
+        f"Refusing to bind the MCP server to {host!r}: it has no authentication, "
+        "so every tool — including query, which runs SQL against your database — "
+        "would be reachable by anything that can route to this host. "
+        "Use --host 127.0.0.1 (the default) and put a proxy in front if you need "
+        f"remote access, or set {_INSECURE_BIND_ENV}=1 to bind anyway."
+    )
+
+
 def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
     """Start the MCP server.
 
@@ -531,5 +576,9 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
         host:      Bind host for SSE transport (ignored for stdio).
         port:      Port for SSE transport (ignored for stdio).
     """
+    if transport == "sse":
+        # In `main`, not in the CLI: `mcp_entry.py` and `nlqueries-mcp` both
+        # reach the server without passing through Click.
+        _refuse_unauthenticated_exposure(host)
     server = _build_server(host=host, port=port) if transport == "sse" else mcp
     server.run(transport=transport)

@@ -58,7 +58,10 @@ services:
     volumes:
       - nlqueries-data:/data/nlqueries
     ports:
-      - "${MCP_PORT:-8080}:8080"
+      # Loopback, like the Qdrant ports above. The MCP server has no
+      # authentication: published on every interface, this is a database-query
+      # API open to whatever can route to the host.
+      - "${BIND_ADDR:-127.0.0.1}:${MCP_PORT:-8080}:8080"
     networks:
       - nlqueries
     depends_on:
