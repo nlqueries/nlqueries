@@ -1370,9 +1370,33 @@ class TestCacheDoesNotStoreOrRunInvalidSQL:
         assert _is_executable_select("SELECT TOP 10 name FROM tbl", "tsql")
         assert _is_executable_select("SELECT x::int FROM t", "postgres")
 
-    def test_an_unknown_dialect_does_not_block_execution(self) -> None:
-        """An unrecognised dialect name raises the same error type as bad SQL;
-        it must not be mistaken for one."""
+    def test_an_unknown_dialect_fails_closed(self, caplog) -> None:
+        """Reverses an earlier deliberate choice, so the reasoning is recorded.
+
+        This used to fall back to sqlglot's generic dialect, on the grounds that
+        a dialect we cannot name should not block otherwise good SQL. That is
+        right about availability and wrong about this function: it is the only
+        gate in front of a statement replayed from cache onto a customer's
+        database, and parsing with the wrong grammar means the thing checked is
+        not the thing that runs.
+
+        It is reachable, too — ``mssql`` is a registered ``db_type`` and is not a
+        sqlglot dialect name, so this was not merely a typo's blast radius.
+        """
+        import logging
+
         from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
 
-        assert _is_executable_select("SELECT 1 FROM t", "not_a_real_dialect")
+        with caplog.at_level(logging.ERROR):
+            assert not _is_executable_select("SELECT 1 FROM t", "not_a_real_dialect")
+
+        # An unknown dialect is an operator's configuration problem, and saying
+        # so is the difference between a fix and a mystery about cached queries
+        # that quietly stopped running.
+        assert "not_a_real_dialect" in caplog.text
+
+    def test_a_known_dialect_still_executes(self) -> None:
+        """Failing closed must not become failing always."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
+
+        assert _is_executable_select("SELECT 1 FROM t", "postgres")
