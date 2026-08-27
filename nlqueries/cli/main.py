@@ -288,6 +288,23 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
         return _CheckResult("Qdrant", "fail", f"unexpected error: {exc}", str(exc))
 
 
+def _identity_check(service: str, identity: Any) -> _CheckResult:
+    """Report the database login's privileges.
+
+    An identity that could not be read is a failure rather than a warning: the
+    check exists to answer the question, and "unknown" answered as "fine" is the
+    failure mode it is meant to remove. An identity that was read and found
+    over-privileged is a warning, because the privileges are the operator's to
+    grant and the deployment is working.
+    """
+    label = f"{service} identity"
+    if identity.undetermined_reason is not None:
+        return _CheckResult(label, "fail", identity.summary())
+    if identity.concerns:
+        return _CheckResult(label, "warn", f"{identity.summary()} — see docs/database-hardening.md")
+    return _CheckResult(label, "ok", identity.summary())
+
+
 def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
     connectors = _load_connectors()
     if not connectors:
@@ -342,6 +359,12 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
             else:
                 db_name = cfg.get("database", "?")
                 results.append(_CheckResult(service, "ok", f"{db_name} connected ({ms} ms)"))
+                # Populated by the pool's connect event, so it is available
+                # once a query has opened a connection. Absent on connectors
+                # that do not implement the check.
+                identity = getattr(connector, "identity", None)
+                if identity is not None:
+                    results.append(_identity_check(service, identity))
         except Exception as exc:  # noqa: BLE001
             results.append(
                 _CheckResult(

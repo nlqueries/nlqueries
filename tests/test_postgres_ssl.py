@@ -9,8 +9,9 @@ credential keys to psycopg2's ``connect_args``.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+import sqlalchemy as sa
 from nlqueries.connectors.postgres import PostgresConnector
 
 from tests.conftest import granted
@@ -28,9 +29,13 @@ def _connect_and_capture(extra_creds: dict[str, Any]) -> dict[str, Any]:
     """Connect with merged credentials and return the captured connect_args."""
     captured: dict[str, Any] = {}
 
-    def fake_create_engine(url: object, **kwargs: Any) -> MagicMock:
+    def fake_create_engine(url: object, **kwargs: Any) -> sa.Engine:
         captured.update(kwargs)
-        return MagicMock()
+        # A real Engine rather than a MagicMock: connect() attaches the
+        # identity-check listener to it, and SQLAlchemy's event system cannot
+        # bind to a mock. Nothing here opens a connection, so the URL only has
+        # to be one SQLAlchemy will parse.
+        return sa.create_engine("sqlite://")
 
     with patch("nlqueries.connectors.postgres.create_engine", side_effect=fake_create_engine):
         connector = granted(PostgresConnector())
