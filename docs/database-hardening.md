@@ -177,6 +177,47 @@ visible.
 
 ---
 
+## Transport security
+
+The connector refuses a server that offers no TLS. What it verifies beyond that
+depends on `ssl_mode` and whether `ssl_ca_cert` is configured.
+
+Measured against PostgreSQL 16 and libpq, using servers presenting a correct
+certificate, one naming a different host, one signed by an untrusted CA, and an
+expired one:
+
+| `ssl_mode` | untrusted CA | expired | wrong hostname |
+|---|---|---|---|
+| `require`, no `ssl_ca_cert` | accepted | accepted | accepted |
+| `require` + `ssl_ca_cert` | refused | refused | accepted |
+| `verify-ca` + `ssl_ca_cert` | refused | refused | accepted |
+| `verify-full` + `ssl_ca_cert` | refused | refused | refused |
+
+`require` without a root certificate performs no verification. It encrypts the
+connection to whichever server answers, which does not exclude an attacker
+positioned between NLQueries and the database.
+
+`ssl_ca_cert` is not ignored under `require`: libpq documents that `require`
+with a valid root certificate behaves as `verify-ca`, and the measurements
+confirm it. The remaining difference is hostname verification.
+
+**Configure `ssl_ca_cert`.** When you do and set no explicit `ssl_mode`, the
+connector uses `verify-full`, which is the only setting in the table that
+refuses all three. Set `ssl_mode` explicitly only to select something weaker,
+and `nlqueries health` will report what that leaves unverified:
+
+```
+[OK]   Database (shop) transport: ssl_mode 'verify-full': chain and hostname verified
+[WARN] Database (shop) transport: ssl_mode is 'require' with no ssl_ca_cert, so the
+       server's certificate is not verified …
+```
+
+A certificate whose subject does not name the host you connect to will be
+refused under `verify-full`. Connecting by IP address to a certificate issued
+for a hostname is the usual cause.
+
+---
+
 ## Row-level security
 
 If tenants share tables, RLS is the mechanism. Two caveats apply.
