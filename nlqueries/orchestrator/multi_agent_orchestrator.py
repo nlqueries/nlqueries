@@ -50,6 +50,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from nlqueries.cache.envelope import binding_for_agent
 from nlqueries.cache.semantic_cache import CacheEntry, SemanticCache
 from nlqueries.connectors.base import QueryResult
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
@@ -528,7 +529,9 @@ class MultiAgentOrchestrator:
         # assemble_prompt() inside the SQL orchestrator, saving a second
         # embed_text() round-trip on every cache miss (Phase 1C).
         # ------------------------------------------------------------------
-        _cache = SemanticCache(agent_id)
+        # Bound to this agent, connector, dialect, schema and policy version, so a
+        # forged or stale entry does not verify and is treated as a miss.
+        _cache = SemanticCache(agent_id, binding=binding_for_agent(agent_id, dialect))
         # Use caller-supplied cache_key when provided (e.g. run_query passes
         # the original pre-resolution question so repeated identical queries
         # always hit the same cache entry regardless of LLM rewrite variance).
