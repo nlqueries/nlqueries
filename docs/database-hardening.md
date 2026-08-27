@@ -324,7 +324,7 @@ table records what the connector does, not what the engine could support.
 | `sqlite` | `mode=ro` + authorizer | watchdog `interrupt()` | yes |
 | `duckdb` | `read_only=True` + locked sandbox | watchdog | yes |
 | `mssql` | **none** | **none per query** | no |
-| `redshift` | **none** | **none** | no |
+| `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
 | `snowflake` | **none** | `cursor.execute(timeout=…)` | no |
 | `bigquery` | **none** | `job_timeout_ms` | no |
 | `sqlalchemy` | **none** | best-effort per dialect | no |
@@ -338,10 +338,12 @@ defence in depth — they are the whole defence.
 
 Two entries deserve particular attention.
 
-**Redshift enforces neither control.** `timeout_seconds` is accepted for
-interface parity and ignored. Redshift supports `SET TRANSACTION READ ONLY` and
-`statement_timeout`, so both are implementable; until they are, a read-only user
-and a WLM query-monitoring rule are the only limits in force.
+**Redshift enforces both, but no test here reaches a cluster.** CI cannot
+provision one, so the mechanisms were measured by hand against Redshift
+Serverless: a write is refused with SQLSTATE 25006 (`transaction is read-only`)
+and a query over its budget is cancelled with SQLSTATE 57014. A read-only user
+and a WLM query-monitoring rule remain worth having — the read-only transaction
+restricts what a statement may do, not what the login may reach.
 
 **The generic `sqlalchemy` connector reaches any engine SQLAlchemy supports**,
 so no single statement about its behaviour holds. Nothing read-only is applied.

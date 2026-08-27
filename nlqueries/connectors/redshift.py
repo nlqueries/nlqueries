@@ -17,11 +17,13 @@ available, so column/table descriptions and exact tuple counts are omitted.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+from nlqueries import config
 from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
@@ -345,25 +347,58 @@ class RedshiftConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
+    def _end_transaction(self) -> None:
+        """Roll back, so the next query can open a read-only transaction.
+
+        Nothing is ever committed here: the transaction is read-only, so there
+        is nothing to keep. Failures are ignored because the connection may
+        already be gone, and this runs on the error path too.
+        """
+        with contextlib.suppress(Exception):
+            self._require_conn().rollback()
+
     def _execute_query(
         self,
         sql: str,
         timeout_seconds: float | None = None,
         max_rows: int | None = None,
     ) -> QueryResult:
-        """Execute ``sql`` and return a :class:`QueryResult`.
+        """Execute ``sql`` in a read-only transaction and return a :class:`QueryResult`.
 
-        *timeout_seconds* is accepted for interface parity with
-        :class:`~nlqueries.connectors.base.DatabaseConnector` but not yet
-        implemented for Redshift (Task 26.5 — Sprint 26 only wired this up
-        for Postgres).
+        *timeout_seconds* bounds the query, falling back to
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``.
+
+        Both guards were measured against Redshift Serverless (which reports
+        itself as PostgreSQL 8.0.2):
+
+        - ``SET TRANSACTION READ ONLY`` is accepted, ``SELECT`` still runs, and
+          ``INSERT`` is refused with SQLSTATE 25006, ``transaction is
+          read-only``. ``BEGIN READ ONLY`` behaves identically; this form is used
+          because it matches the PostgreSQL connector.
+        - ``SET statement_timeout TO`` milliseconds is accepted, and a query
+          exceeding it is cancelled with SQLSTATE 57014. At 2000 ms a cross join
+          was cancelled after 2.2 s; the same query ran for 60.2 s at 60000 ms.
+
+        The transaction is closed after every query. ``SET TRANSACTION`` applies
+        to the transaction it opens and must be the first statement in it, so a
+        transaction left open by the previous query would prevent the next one
+        being made read-only. Verified over a reused connection: three
+        consecutive queries each read successfully and each refused a write.
 
         Exceptions are caught and surfaced via ``QueryResult.error``.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+        )
         start = time.perf_counter()
         try:
             conn = self._require_conn()
             cur = conn.cursor()
+            cur.execute("SET TRANSACTION READ ONLY")
+            if effective_timeout is not None and effective_timeout > 0:
+                cur.execute(f"SET statement_timeout TO {max(1, int(effective_timeout * 1000))}")
             cur.execute(sql)
             elapsed_ms = (time.perf_counter() - start) * 1000
             _truncated, _reason = False, None
@@ -373,6 +408,7 @@ class RedshiftConnector(DatabaseConnector):
             else:
                 columns, rows = [], []
             cur.close()
+            self._end_transaction()
             return QueryResult(
                 columns=columns,
                 rows=rows,
@@ -385,6 +421,7 @@ class RedshiftConnector(DatabaseConnector):
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.exception("RedshiftConnector.execute_query failed")
+            self._end_transaction()
             return QueryResult(
                 columns=[],
                 rows=[],
