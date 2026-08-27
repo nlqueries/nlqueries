@@ -200,3 +200,64 @@ class TestTheGatesUseThePolicy:
 
         assert error is not None
         assert "Insert" in error
+
+
+class TestDialectFromUrl:
+    """The generic SQLAlchemy connector names no grammar of its own.
+
+    Its `db_type` is `sqlalchemy` whatever engine it reaches, so the dialect is
+    taken from the URL. Backend names were measured against SQLAlchemy 2.0 and
+    checked against sqlglot 30.9.
+    """
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("postgresql+psycopg2://u:p@h/db", "postgres"),
+            ("postgresql://u:p@h/db", "postgres"),
+            ("mysql+pymysql://u:p@h/db", "mysql"),
+            ("mariadb+pymysql://u:p@h/db", "mysql"),
+            ("mssql+pyodbc://u:p@h/db", "tsql"),
+            ("sqlite:///x.db", "sqlite"),
+            ("snowflake://u:p@acct/db", "snowflake"),
+            ("bigquery://project/dataset", "bigquery"),
+            ("duckdb:///x.duckdb", "duckdb"),
+        ],
+    )
+    def test_known_backends_resolve(self, url: str, expected: str) -> None:
+        from nlqueries.sql_policy import dialect_from_url
+
+        assert dialect_from_url(url) == expected
+
+    @pytest.mark.parametrize("url", ["not a url at all", "", "://"])
+    def test_an_unreadable_url_resolves_to_nothing(self, url: str) -> None:
+        """None rather than a guess: the caller decides what to do about a
+        dialect it cannot name, and a statement checked against the wrong
+        grammar has not been checked."""
+        from nlqueries.sql_policy import dialect_from_url
+
+        assert dialect_from_url(url) is None
+
+    def test_every_resolved_dialect_is_one_sqlglot_accepts(self) -> None:
+        """The mapping exists because three backend names are not sqlglot
+        dialects. This fails if a mapping stops being correct."""
+        from nlqueries.sql_policy import dialect_from_url
+
+        for url in (
+            "postgresql://u:p@h/db",
+            "mysql://u:p@h/db",
+            "mariadb://u:p@h/db",
+            "mssql://u:p@h/db",
+            "sqlite:///x.db",
+        ):
+            dialect = dialect_from_url(url)
+            assert dialect is not None
+            assert evaluate("SELECT 1", dialect).allowed, dialect
+
+
+def test_a_refused_root_is_not_also_reported_as_contained() -> None:
+    """`DROP TABLE t` is a Drop at the root. Reporting it as both "is a Drop"
+    and "contains Drop" states one fact twice."""
+    summary = evaluate("DROP TABLE t", "postgres").summary()
+
+    assert summary == "statement is a Drop, not a query"
