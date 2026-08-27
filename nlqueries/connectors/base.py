@@ -175,20 +175,19 @@ class DatabaseConnector(ABC):
                 engine.dispose()
 
     def bind_execution_policy(self, policy: ExecutionPolicy) -> None:
-        """Grant this connector permission to run statements.
+        """Grant this connector permission to execute statements.
 
-        Bound to the object rather than passed per call, and that is the whole
-        design. A per-call parameter is one every call site has to supply, which
-        makes it one every call site can supply *wrongly* — and "the permission
-        was reconstructed at the point of use" is the defect this replaces, not
-        a smaller version of it. A connector that exists in an executable state
-        is one somebody was deliberately allowed to open.
+        Bound to the connector rather than passed per call. A per-call
+        parameter must be supplied at every call site, and can therefore be
+        supplied incorrectly at any of them, which is the defect this replaces
+        rather than a reduced form of it. A connector in an executable state is
+        one that a caller was deliberately permitted to open.
         """
         self._execution_policy = policy
 
     @property
     def execution_policy(self) -> ExecutionPolicy:
-        """What this connector is permitted to do. Deny until told otherwise."""
+        """The permission held by this connector. Denied unless granted."""
         return getattr(self, "_execution_policy", DEFAULT_POLICY)
 
     def execute_query(
@@ -197,16 +196,15 @@ class DatabaseConnector(ABC):
         timeout_seconds: float | None = None,
         max_rows: int | None = None,
     ) -> QueryResult:
-        """Execute ``sql``, if this connector is allowed to.
+        """Execute ``sql`` if this connector holds permission to do so.
 
-        Concrete on purpose: the check belongs to the interface, not to each
-        implementation. Nine connectors each remembering to ask is nine chances
-        to forget, and a tenth connector added next year would start out
-        forgetting. Implementations override :meth:`_execute_query`, which is
-        only ever reached through here.
+        Deliberately concrete: the check belongs to the interface rather than
+        to each implementation, so that no connector -- including one added
+        later -- can omit it. Implementations override :meth:`_execute_query`,
+        which is reached only through this method.
 
-        The orchestration layer already refuses to get this far without
-        permission. This is the layer that does not depend on that being right.
+        The orchestration layer performs its own check before reaching here.
+        This layer does not depend on that check being correct.
         """
         policy = self.execution_policy
         if not policy.may_execute:
@@ -274,24 +272,23 @@ class DatabaseConnector(ABC):
 
 
 class PermittedConnector(DatabaseConnector):
-    """A per-request view of a shared connector, carrying this request's permission.
+    """A per-request view of a shared connector, carrying that request's permission.
 
-    Connectors are pooled and reused across in-flight requests — that is what
-    makes the pool a pool. So permission cannot live on the connector itself:
-    one request granting execution would grant it to every other request holding
-    the same object, and the leak would be invisible because nothing about the
-    shared connector changes shape.
+    Connectors are pooled and reused across concurrent requests, so permission
+    cannot be stored on the connector itself: a grant made by one request would
+    apply to every other request holding the same object, and the resulting
+    escalation would not be observable from the connector's state.
 
-    The permission lives here instead, on a wrapper created per request, while
-    the pooled connection stays shared. The gate is still the one in
-    :meth:`DatabaseConnector.execute_query`, inherited — there is exactly one
-    implementation of the rule, and this class only decides which policy it sees.
+    The permission is held here instead, on a wrapper created per request,
+    while the pooled connection remains shared. Enforcement remains the
+    inherited :meth:`DatabaseConnector.execute_query`, so the rule has a single
+    implementation; this class determines only which policy that rule consults.
 
-    Opening a connector is deliberately *not* gated. Schema extraction, history
-    mining and connection tests are reads of metadata that generation-only
-    callers legitimately need; refusing to construct one would mean a
-    `--no-execute` run could not describe the tables it was writing SQL against.
-    Execution is the thing being permitted, so execution is the thing gated.
+    Opening a connector is deliberately not gated. Schema extraction, history
+    mining and connection tests read metadata that generation-only callers
+    require; refusing construction would prevent a ``--no-execute`` run from
+    describing the tables it generates SQL against. Execution is what is
+    permitted, and execution is therefore what is checked.
     """
 
     def __init__(self, inner: DatabaseConnector, policy: ExecutionPolicy) -> None:
@@ -318,12 +315,12 @@ class PermittedConnector(DatabaseConnector):
         return self._inner.list_security_policies()
 
     def close(self) -> None:
-        """Deliberately does nothing.
+        """Intentionally a no-op.
 
-        The wrapped connector is shared and pooled; closing it here would
-        dispose of an engine other in-flight requests are using. The loader's
-        contract already says callers must not close what it hands them, and
-        this makes that true rather than merely documented.
+        The wrapped connector is pooled and shared; closing it here would
+        dispose of an engine that concurrent requests are using. The loader's
+        contract already states that callers must not close what it returns,
+        and this enforces that contract rather than only documenting it.
         """
 
     # -- the one thing that is gated -------------------------------------
@@ -333,8 +330,8 @@ class PermittedConnector(DatabaseConnector):
         timeout_seconds: float | None = None,
         max_rows: int | None = None,
     ) -> QueryResult:
-        # Reached only through the inherited `execute_query`, which has already
-        # checked this wrapper's policy. Calling the inner private directly is
-        # what keeps the check in one place: going through the inner's public
-        # method would ask its (unbound, denying) policy a second time.
+        # Reached only through the inherited `execute_query`, which has
+        # already checked this wrapper's policy. The inner private method is
+        # called directly to keep enforcement in one place: the inner public
+        # method would consult its own unbound, denying policy.
         return self._inner._execute_query(sql, timeout_seconds, max_rows)

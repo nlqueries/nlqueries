@@ -37,26 +37,26 @@ from nlqueries.connectors.base import (
 
 logger = logging.getLogger(__name__)
 
-#: The only pragmas any query may run -- the two this connector needs itself to
-#: read the schema (``extract_schema``). Everything else is refused.
+#: The only pragmas permitted. These are the two that :meth:`extract_schema`
+#: issues to introspect the database; all others are refused.
 #:
-#: An allow-list rather than a deny-list because the interesting pragmas are the
-#: ones nobody thought of: ``writable_schema`` turns the catalogue into an
-#: ordinary table, ``temp_store`` decides whether scratch data lands on disk,
-#: and ``database_list`` reports the paths of everything attached.
+#: Specified as an allow-list rather than a deny-list, because the pragmas
+#: requiring restriction are not confined to an obvious set: ``writable_schema``
+#: exposes the catalogue as a writable table, ``temp_store`` controls whether
+#: scratch data is written to disk, and ``database_list`` discloses the file
+#: paths of attached databases.
 _ALLOWED_PRAGMAS = frozenset({"table_info", "foreign_key_list"})
 
 
 def _read_only_uri(path: Path) -> str:
-    """The URI for opening *path* read-only, with the path kept a path.
+    """Return the URI that opens *path* read-only.
 
-    Built with :meth:`~pathlib.Path.as_uri` rather than an f-string, and that is
-    a security decision rather than a tidiness one. Measured on SQLite 3.50.4: a
-    ``database`` credential ending ``?mode=rwc&`` turns a naive
-    ``f"file:{path}?mode=ro"`` into a URI carrying two ``mode`` parameters, and
-    SQLite honours the first -- so the credential reopens the database
-    writable. ``as_uri`` percent-encodes ``?`` and ``&``, so a value that looks
-    like a query string stays part of the filename.
+    Constructed with :meth:`~pathlib.Path.as_uri` rather than by string
+    formatting. Measured on SQLite 3.50.4: where *path* ends ``?mode=rwc&``,
+    the expression ``f"file:{path}?mode=ro"`` produces a URI containing two
+    ``mode`` parameters, and SQLite applies the first, so the credential would
+    determine the access mode. ``as_uri`` percent-encodes ``?`` and ``&``, so
+    such a value remains part of the filename.
     """
     return path.resolve().as_uri() + "?mode=ro"
 
@@ -64,12 +64,11 @@ def _read_only_uri(path: Path) -> str:
 def _authorize(
     action: int, arg1: str | None, arg2: str | None, database: str | None, trigger: str | None
 ) -> int:
-    """Refuse the operations that reach outside this one database.
+    """Refuse operations that reach outside the connected database.
 
-    ``mode=ro`` stops writes, and it is the wrong tool for the rest: measured on
-    SQLite 3.50.4, a read-only connection will still ``ATTACH`` another database
-    file and read every row in it. Read-only describes what may be written, not
-    which files may be opened.
+    ``mode=ro`` prevents writes but does not restrict which files may be
+    opened. Measured on SQLite 3.50.4: a read-only connection will still
+    ``ATTACH`` another database file and read its contents.
     """
     if action == sqlite3.SQLITE_PRAGMA:
         if (arg1 or "").lower() in _ALLOWED_PRAGMAS:
@@ -120,16 +119,15 @@ class SQLiteConnector(DatabaseConnector):
         self._database = str(credentials.get("database") or ":memory:")
 
         if self._database == ":memory:":
-            # Cannot be opened read-only, and does not need to be: it is private
-            # to this process and gone when it exits. The authorizer below still
-            # applies, because ATTACH would reach the filesystem from here too.
+            # SQLite rejects read-only mode for an in-memory database, which
+            # is private to this process and discarded on exit. The authorizer
+            # is still installed, as ATTACH reaches the filesystem from here.
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         else:
             path = Path(self._database)
             if not path.exists():
-                # SQLite would otherwise create an empty database and answer
-                # every question with "no tables" -- a misconfiguration
-                # reported as a success.
+                # SQLite would otherwise create an empty database at this
+                # path, so a misconfiguration would present as success.
                 raise FileNotFoundError(
                     f"SQLite database {self._database!r} does not exist. This connector "
                     f"reads an existing database; it does not create one. Use ':memory:' "

@@ -42,30 +42,29 @@ logger = logging.getLogger(__name__)
 # DuckDB internal schemas that contain no user data.
 _SYSTEM_SCHEMAS = frozenset({"information_schema", "pg_catalog"})
 
-#: Applied to every DuckDB connection, with no way to switch it off.
+#: Configuration applied to every DuckDB connection. It cannot be overridden
+#: by credentials or by any later statement.
 #:
-#: DuckDB is unlike the other engines here. It reads files through ordinary
-#: table functions -- ``read_csv_auto``, ``read_text``, ``read_blob``, ``glob``
-#: -- so a file read arrives inside a perfectly well-formed ``SELECT``, and the
-#: database file is not the boundary. Opening the database read-only does
-#: nothing about any of them. That was measured rather than assumed.
+#: DuckDB exposes file access through table functions -- ``read_csv_auto``,
+#: ``read_text``, ``read_blob``, ``glob`` -- so a file read is syntactically an
+#: ordinary ``SELECT``, and the database file does not bound what a query may
+#: reach. Opening the database read-only does not restrict these functions.
 #:
-#: Measured against DuckDB 1.5.5 with this absent: ``read_csv_auto``,
-#: ``read_text``, ``read_blob``, ``glob``, ``ATTACH``, ``COPY TO`` (a file
-#: *write*) and ``INSTALL httpfs`` (the network) all succeeded. With it, every
-#: one is refused and ordinary queries are unaffected.
+#: Measured on DuckDB 1.5.5. Without this configuration, ``read_csv_auto``,
+#: ``read_text``, ``read_blob``, ``glob``, ``ATTACH``, ``COPY TO`` and
+#: ``INSTALL httpfs`` all succeed. With it, each is refused, and ordinary
+#: queries against the database are unaffected.
 #:
-#: The cost is real and worth stating: a database whose tables are views over
-#: external parquet or CSV will stop working, because reading those files is
-#: the thing being refused. Such a deployment has to materialise the data into
-#: the DuckDB file. That is the trade this makes, deliberately.
+#: Known limitation: a database whose tables are views over external parquet or
+#: CSV files will no longer function, since reading those files is what this
+#: refuses. Such deployments must materialise the data into the DuckDB file.
 # Typed as duckdb's own `config` parameter rather than dict[str, str]:
 # dict is invariant, so the narrower annotation does not fit the call.
 _SANDBOX: dict[str, str | bool | int | float | list[str]] = {
     "enable_external_access": "false",
     "autoinstall_known_extensions": "false",
     "autoload_known_extensions": "false",
-    # Last, and the reason the others hold: no later SET can reopen them.
+    # Applied last. Prevents a subsequent SET from re-enabling any of the above.
     "lock_configuration": "true",
 }
 
@@ -115,9 +114,9 @@ class DuckDBConnector(DatabaseConnector):
         in_memory = self._database == ":memory:"
 
         if not in_memory and not Path(self._database).exists():
-            # DuckDB would otherwise create an empty database here, and the
-            # deployment would get "no tables" instead of "that path is wrong"
-            # -- a misconfiguration reported as a success.
+            # DuckDB would otherwise create an empty database at this path.
+            # The deployment would then report "no tables" rather than an
+            # incorrect path, so a misconfiguration would present as success.
             raise FileNotFoundError(
                 f"DuckDB database {self._database!r} does not exist. This connector "
                 f"reads an existing database; it does not create one. Use ':memory:' "
@@ -126,10 +125,9 @@ class DuckDBConnector(DatabaseConnector):
 
         self._conn = duckdb.connect(
             database=self._database,
-            # A database on disk is somebody's data, so it is opened for
-            # reading. An in-memory database cannot be opened read-only at all
-            # -- DuckDB refuses -- and it is private to this process and gone
-            # when it exits, so there is nothing there to protect.
+            # A database on disk holds customer data and is opened for
+            # reading only. DuckDB rejects read-only mode for an in-memory
+            # database, which is private to this process and discarded on exit.
             read_only=not in_memory,
             config=_SANDBOX,
         )
