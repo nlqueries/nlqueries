@@ -1,28 +1,24 @@
 """
 nlqueries.execution
 ~~~~~~~~~~~~~~~~~~~
-Whether this request is allowed to touch a database, decided once at the edge
-and carried the whole way down.
+Execution permission, determined once at the entry point and carried to the
+connector.
 
-`--no-execute` was defined on the CLI and never reached the orchestrator, whose
-signature is `run_query_sync(question, agent_id, **kwargs)`. The orchestrator
-executed, populated the result, and only then did the CLI consult the flag — so
-it suppressed a *second*, CLI-level execution and not the first one. Evaluation
-had the same shape: it called the same function the same way and executed every
-golden case against whatever connector was configured.
+Background. ``--no-execute`` was defined on the CLI but never reached the
+orchestrator, whose signature is ``run_query_sync(question, agent_id,
+**kwargs)``. The orchestrator executed the query and populated the result
+before the CLI consulted the flag, so the flag suppressed only a second,
+CLI-level execution. Evaluation had the same defect and executed every golden
+case against the configured connector.
 
-The lesson is not "add a check in the orchestrator too". It is that a boolean
-reconstructed at each layer is a boolean that will eventually be reconstructed
-wrongly, and no single reader can tell by looking. So permission becomes a value
-the caller mints and everything downstream carries: immutable, explicit, and
-impossible to widen — retries, sub-agents, cache replays and analysis all
-inherit the policy they were given and none of them can hand themselves a better
-one.
+Permission is therefore modelled as a value the caller mints and every
+downstream component carries, rather than a boolean re-derived at each layer.
+The policy is immutable and cannot be widened, so retries, sub-agents, cache
+replays and analysis inherit the permission they were given.
 
-Deny is the default everywhere it is absent. A generation-only run that fails
-closed produces SQL and no rows, which is inconvenient; an execute-by-default
-run that fails open runs a language model's output against a customer's
-database.
+Where no policy is supplied, execution is denied. A generation-only run that
+fails closed returns SQL and no rows; an execute-by-default run that fails open
+executes model output against a customer's database.
 """
 
 from __future__ import annotations
@@ -34,23 +30,22 @@ from enum import StrEnum
 class ExecutionMode(StrEnum):
     """What a caller is permitted to do with the SQL that comes back."""
 
-    #: Produce SQL. Open no connector, make no connection, run nothing.
+    #: Produce SQL only. No connector is opened and no statement is executed.
     GENERATE_ONLY = "generate_only"
 
-    #: Run it, as a read. The read-only transaction and the database's own
-    #: grants remain in force underneath — this permits execution, it does not
-    #: promise the statement is safe.
+    #: Execute as a read. The read-only transaction and the database's own
+    #: grants remain in force. This permits execution; it does not assert that
+    #: the statement is safe.
     EXECUTE_READ_ONLY = "execute_read_only"
 
 
 @dataclass(frozen=True)
 class ExecutionPolicy:
-    """An immutable permission to execute, or not.
+    """An immutable permission to execute.
 
-    Frozen so it cannot be widened in place by code that receives it. There is
-    deliberately no `escalate()` and no setter: a sub-agent, a retry or a cache
-    replay that wants to execute must have been handed a policy that already
-    said so.
+    Frozen so that receiving code cannot widen it in place. No escalation
+    method or setter is provided: a sub-agent, retry or cache replay that
+    executes must have been passed a policy that already permitted it.
     """
 
     mode: ExecutionMode
@@ -66,10 +61,10 @@ class ExecutionPolicy:
 
     @classmethod
     def execute_read_only(cls) -> ExecutionPolicy:
-        """Permission to run the statement as a read.
+        """Permission to execute the statement as a read.
 
-        Minted at an entry point that has decided a human asked for data —
-        never reconstructed downstream from a flag that happens to be in scope.
+        Minted at an entry point that has established the request is a user
+        asking for data. It is not re-derived downstream from a flag in scope.
         """
         return cls(mode=ExecutionMode.EXECUTE_READ_ONLY)
 
@@ -78,11 +73,11 @@ class ExecutionPolicy:
 
 
 class ExecutionNotPermitted(RuntimeError):
-    """Raised when something tried to reach a database without permission.
+    """Raised when a caller attempts to reach a database without permission.
 
-    An exception rather than a silent skip: code that asks for rows and gets
-    none has to be able to tell "the policy forbade this" from "the query
-    returned nothing", and a caller that reaches here has a bug worth seeing.
+    Raised rather than silently skipped, so that a caller which requests rows
+    and receives none can distinguish a refusal by policy from an empty result
+    set. Reaching this exception indicates a defect in the calling path.
     """
 
     def __init__(self, what: str, policy: ExecutionPolicy) -> None:
@@ -95,5 +90,5 @@ class ExecutionNotPermitted(RuntimeError):
         self.policy = policy
 
 
-#: What a caller gets when nobody says otherwise.
+#: The policy applied when a caller supplies none.
 DEFAULT_POLICY = ExecutionPolicy.generate_only()

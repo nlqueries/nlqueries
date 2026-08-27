@@ -205,11 +205,11 @@ def open_connector_for_agent(
 
     Set ``CONNECTOR_CACHE_ENABLED=false`` to restore the previous behaviour.
 
-    *execution* is this request's permission, and it is wrapped around the
-    shared connector rather than set on it: the pooled object outlives the
-    request, so a policy stored there would be inherited by whoever got the
-    connector next. Defaults to generate-only, so a caller that does not ask for
-    execution does not get it.
+    *execution* is the calling request's permission. It is applied by wrapping
+    the shared connector rather than by setting it on the connector, because the
+    pooled object outlives the request and a policy stored there would be
+    inherited by the next caller to receive it. Defaults to generate-only, so a
+    caller that does not request execution is not granted it.
     """
     connector_id = _find_connector_id(agent_id)
     if connector_id is None:
