@@ -120,14 +120,19 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     ),
     "redshift": DialectCapabilities(
         dialect="redshift",
-        read_only_mechanism=None,
-        statement_timeout_mechanism=None,
+        read_only_mechanism=(
+            "SET TRANSACTION READ ONLY, as the first statement of every transaction"
+        ),
+        statement_timeout_mechanism="SET statement_timeout, applied per query",
+        # No test in this repository reaches a Redshift cluster; CI cannot
+        # provision one. Both mechanisms were measured by hand against Redshift
+        # Serverless on 2026-08-27: a write is refused with SQLSTATE 25006, and
+        # a query exceeding the budget is cancelled with SQLSTATE 57014.
         verified_here=False,
         operator_requirement=(
-            "Neither control is implemented for Redshift: timeout_seconds is accepted for "
-            "interface parity and ignored. Redshift supports SET TRANSACTION READ ONLY and "
-            "statement_timeout, so both are implementable; until they are, a read-only user "
-            "and a WLM query-monitoring rule are the only limits in force."
+            "A read-only user and a WLM query-monitoring rule remain worth having. The "
+            "connector's read-only transaction restricts what a statement may do, not what "
+            "the login may reach."
         ),
     ),
     "snowflake": DialectCapabilities(

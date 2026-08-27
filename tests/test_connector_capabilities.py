@@ -52,21 +52,34 @@ class TestTheRecordedFacts:
 
         assert verified == {"postgres", "sqlite", "duckdb"}
 
-    def test_only_the_verified_dialects_enforce_read_only(self) -> None:
-        """No other connector applies a read-only mechanism of its own."""
+    def test_the_dialects_that_enforce_read_only(self) -> None:
+        """The remaining four apply no read-only mechanism of their own.
+
+        Redshift enforces one but is not in the verified set: no test here
+        reaches a cluster, so it was measured by hand instead.
+        """
         enforcing = {name for name, c in CAPABILITIES.items() if c.enforces_read_only}
 
-        assert enforcing == {"postgres", "sqlite", "duckdb"}
+        assert enforcing == {"postgres", "sqlite", "duckdb", "redshift"}
 
-    def test_redshift_enforces_neither_control(self) -> None:
-        """Its timeout_seconds is accepted for interface parity and ignored."""
+    def test_redshift_enforces_both_controls(self) -> None:
+        """Measured against Redshift Serverless: a write is refused with
+        SQLSTATE 25006, and a query over budget is cancelled with 57014."""
         caps = CAPABILITIES["redshift"]
 
-        assert not caps.enforces_read_only
-        assert not caps.enforces_statement_timeout
+        assert caps.enforces_read_only
+        assert caps.enforces_statement_timeout
+
+    def test_redshift_is_not_recorded_as_verified_here(self) -> None:
+        """No test in this repository reaches a cluster, so the entry still
+        reports that its mechanism is unexercised by CI."""
+        caps = CAPABILITIES["redshift"]
+
+        assert not caps.verified_here
+        assert any("not exercised by any test" in c for c in caps.concerns)
 
     def test_a_dialect_without_read_only_says_so_first(self) -> None:
-        for name in ("mssql", "redshift", "snowflake", "bigquery", "sqlalchemy"):
+        for name in ("mssql", "snowflake", "bigquery", "sqlalchemy"):
             assert "no read-only mechanism" in CAPABILITIES[name].concerns[0], name
 
     def test_every_entry_states_what_the_operator_must_do(self) -> None:
