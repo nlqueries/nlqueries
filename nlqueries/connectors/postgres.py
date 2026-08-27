@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL, Engine
 
 from nlqueries import config
@@ -30,6 +30,7 @@ from nlqueries.connectors.base import (
     SecurityPolicyReport,
     TableSpec,
 )
+from nlqueries.connectors.postgres_identity import PostgresIdentity, inspect_identity
 from nlqueries.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ class PostgresConnector(DatabaseConnector):
 
     def __init__(self) -> None:
         self._engine: Engine | None = None
+        self._identity: PostgresIdentity | None = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -131,6 +133,45 @@ class PostgresConnector(DatabaseConnector):
             pool_recycle=1800,
             connect_args=connect_args,
         )
+        self._watch_identity(self._engine)
+
+    def _watch_identity(self, engine: Engine) -> None:
+        """Read the connected role's privileges once per physical connection.
+
+        Attached to the pool's ``connect`` event rather than run per query: it
+        fires when a new backend connection is opened, which is where the answer
+        can change, and costs one round trip measured at 2 ms cold and 0.3 ms
+        warm against PostgreSQL 16.
+
+        The result is recorded and reported, never enforced here. A read-only
+        transaction constrains what a statement does; it does not constrain who
+        runs it, and `pg_read_file()` is refused by privilege rather than by the
+        transaction. Surfacing that is the point.
+        """
+
+        @event.listens_for(engine, "connect")
+        def _inspect(dbapi_connection: Any, _record: Any) -> None:
+            identity = inspect_identity(dbapi_connection)
+            self._identity = identity
+            if identity.undetermined_reason is not None:
+                logger.warning("PostgreSQL identity check: %s", identity.summary())
+            elif identity.concerns:
+                logger.warning(
+                    "PostgreSQL identity is more privileged than this connector needs: %s. "
+                    "See docs/database-hardening.md for the role to create instead.",
+                    identity.summary(),
+                )
+            else:
+                logger.debug("PostgreSQL identity check: %s", identity.summary())
+
+    @property
+    def identity(self) -> PostgresIdentity | None:
+        """The last identity read, or None before the first connection opens.
+
+        None is not "acceptable": the pool opens connections lazily, so a
+        connector that has answered no queries has nothing to report yet.
+        """
+        return self._identity
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

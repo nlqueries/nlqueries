@@ -149,6 +149,32 @@ CREATE TABLE should_fail (x int);                                -- expect: erro
 
 If the third line succeeds, nothing above is in effect.
 
+**NLQueries also checks this for you.** Each time the pool opens a connection,
+the connector reads the login's privileges and records what it finds. The result
+appears in `nlqueries health`:
+
+```
+[OK]   Database (shop) identity: nlqueries@shop: least privilege
+[WARN] Database (shop) identity: postgres@shop: connects as a superuser, which
+       bypasses every privilege check — see docs/database-hardening.md
+[FAIL] Database (shop) identity: identity could not be determined: <reason>
+```
+
+The check reports; it does not refuse a connection. The privileges are yours to
+grant, and a deployment that is working should not stop working because the
+application disagrees with a decision you made.
+
+An identity that could not be read is a failure rather than a warning. The check
+exists to answer the question, and an unknown answer recorded as "fine" is the
+outcome it is meant to remove.
+
+What it looks for: `SUPERUSER`, `BYPASSRLS`, `CREATEDB`, `CREATEROLE`,
+`REPLICATION`, and membership of `pg_read_server_files`,
+`pg_write_server_files`, `pg_execute_server_program`, `pg_read_all_data` or
+`pg_write_all_data`. It also reports `search_path` and whether the role sets
+`default_transaction_read_only`, so a path or a default you did not intend is
+visible.
+
 ---
 
 ## Row-level security
