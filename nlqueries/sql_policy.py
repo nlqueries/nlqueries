@@ -78,15 +78,41 @@ ALLOWED_ANONYMOUS: dict[str, frozenset[str]] = {
     "duckdb": frozenset({"every"}),
 }
 
-#: Connector names that sqlglot knows under a different name. Measured against
-#: sqlglot 30.9: of the eight names in CONNECTOR_REGISTRY, `mssql` is `tsql`
-#: there, and `sqlalchemy` is not a dialect at all -- it is a connector that
-#: reaches many engines, so the caller has to supply the engine's own dialect.
-_DIALECT_ALIASES = {"mssql": "tsql"}
+#: Names sqlglot knows under a different spelling. The keys are both connector
+#: `db_type` values and SQLAlchemy backend names, since the two vocabularies
+#: overlap and neither matches sqlglot's exactly.
+#:
+#: Measured against sqlglot 30.9 and SQLAlchemy 2.0: `postgresql`, `mssql` and
+#: `mariadb` are rejected by sqlglot; `mysql`, `sqlite`, `oracle`, `snowflake`,
+#: `bigquery`, `redshift`, `duckdb` and `clickhouse` are accepted unchanged.
+_DIALECT_ALIASES = {
+    "mssql": "tsql",
+    "postgresql": "postgres",
+    "mariadb": "mysql",
+}
 
 
 def _sqlglot_dialect(dialect: str) -> str:
     return _DIALECT_ALIASES.get(dialect.lower(), dialect.lower())
+
+
+def dialect_from_url(url: str) -> str | None:
+    """The sqlglot dialect for a SQLAlchemy *url*, or None if unreadable.
+
+    The generic SQLAlchemy connector reaches any engine SQLAlchemy supports, so
+    its ``db_type`` names no grammar. The engine is named by the URL instead:
+    ``mysql+pymysql://...`` is MySQL whatever the connector is called.
+
+    Returning None rather than a guess keeps the caller's decision explicit: a
+    statement checked against the wrong grammar has not been checked.
+    """
+    try:
+        from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+        backend = make_url(url).get_backend_name()
+    except Exception:  # noqa: BLE001 - an unreadable URL names no dialect
+        return None
+    return _sqlglot_dialect(backend) if backend else None
 
 
 #: A statement longer than this is refused before parsing. Generated SQL is
@@ -212,10 +238,13 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
 
     tree = parsed[0]
 
+    root_name = type(tree).__name__
     if not isinstance(tree, _ALLOWED_ROOTS):
-        reasons.append(f"statement is a {type(tree).__name__}, not a query")
+        reasons.append(f"statement is a {root_name}, not a query")
 
-    forbidden = sorted({type(n).__name__ for n in tree.find_all(*_FORBIDDEN_NODES)})
+    # The root is excluded: reporting `DROP TABLE t` as both "is a Drop" and
+    # "contains Drop" states one fact twice.
+    forbidden = sorted({type(n).__name__ for n in tree.find_all(*_FORBIDDEN_NODES)} - {root_name})
     if forbidden:
         reasons.append(f"contains {', '.join(forbidden)}")
 
