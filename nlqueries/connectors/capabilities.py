@@ -4,17 +4,14 @@ nlqueries.connectors.capabilities
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 What each connector enforces, and what it leaves to the operator.
 
-The read-only transaction and the sandbox settings applied by the PostgreSQL,
-SQLite and DuckDB connectors are not available on every engine, and several
-connectors apply nothing equivalent. Recording that here keeps the claim
-checkable: a connector's entry states the mechanism it uses, or states that it
-has none.
+The read-only transaction and sandbox settings applied by the PostgreSQL,
+SQLite and DuckDB connectors are not available on every engine, and five
+connectors apply nothing equivalent. Each entry states the mechanism used, or
+states that there is none.
 
-``verified_here`` distinguishes a mechanism measured by this repository's tests
-from one that is only documented by the vendor. Only the first kind is evidence.
-Engines requiring an account that cannot be provisioned in a test run --
-Snowflake, BigQuery, Redshift -- are recorded as unverified regardless of what
-their documentation says.
+``verified_here`` distinguishes a mechanism exercised by this repository's tests
+from one only documented by the vendor. Snowflake, BigQuery and Redshift require
+accounts a test run cannot provision and are recorded as unverified.
 """
 
 from __future__ import annotations
@@ -171,7 +168,7 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
 def for_dialect(dialect: str) -> DialectCapabilities | None:
     """The capabilities recorded for *dialect*, or None if it has no entry.
 
-    None means the dialect is not described here, which is itself worth
-    reporting: it is not a statement that the dialect is safe.
+    None indicates the dialect is not described here. It does not indicate that
+    the dialect is safe.
     """
     return CAPABILITIES.get(dialect.lower())

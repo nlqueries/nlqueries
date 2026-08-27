@@ -4,20 +4,15 @@ nlqueries.sql_policy_report
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 What :mod:`nlqueries.sql_policy` would refuse, reported without refusing it.
 
-The policy denies any function sqlglot does not model. That set is the vendor,
-extension and user-defined one, and it contains both the payloads the policy
-exists to stop and a minority of ordinary analytics functions. Which ordinary
-functions appear depends on the deployment, so the allowlist cannot be settled
-from a list written in advance.
+The policy denies any function sqlglot does not model. That set contains both
+the payloads the policy refuses and a minority of ordinary analytics functions,
+and which of the latter appear depends on the deployment.
 
-This module runs the policy over statements a deployment has actually issued and
-reports the outcome: how many would be refused, for what reason, and which
-unrecognised functions were called and how often. The functions it lists are the
-candidates for :data:`~nlqueries.sql_policy.ALLOWED_ANONYMOUS`; the refusals are
-the cost of enabling it.
-
-Enforcement is a separate change. Running this first is what makes the allowlist
-a record of observed usage rather than a guess.
+This module runs the policy over statements a deployment has issued and reports
+the outcome: how many would be refused, for what reason, and which unrecognised
+functions were called and how often. The functions listed are candidates for
+:data:`~nlqueries.sql_policy.ALLOWED_ANONYMOUS`; the refusals are the cost of
+enabling enforcement.
 """
 
 from __future__ import annotations
@@ -51,8 +46,7 @@ class InventoryReport:
     allowed: int = 0
     refusals: list[Refusal] = field(default_factory=list)
     #: Every unrecognised function seen, with the number of statements calling
-    #: it. Includes functions already allowlisted, so the list also shows which
-    #: existing entries are still earning their place.
+    #: it. Includes allowlisted functions, so unused entries are also visible.
     anonymous_counts: Counter[str] = field(default_factory=Counter)
 
     @property
@@ -63,8 +57,8 @@ class InventoryReport:
     def candidates(self) -> list[tuple[str, int]]:
         """Unrecognised functions not yet allowlisted, most-used first.
 
-        These are what an operator would have to add for the refused statements
-        to run. Ordered by usage because the first entries buy the most back.
+        These would have to be added for the refused statements to run.
+        Ordered by usage.
         """
         permitted = ALLOWED_ANONYMOUS.get(self.dialect.lower(), frozenset())
         return [

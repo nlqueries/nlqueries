@@ -2,9 +2,9 @@
 
 A Qdrant instance running with ``service.api_key`` rejects unauthenticated
 requests with 401. Every path here degrades gracefully on failure — the semantic
-cache skips silently, retrieval falls back to full-YAML injection — so a client
-that forgets the key doesn't crash anything. It just quietly stops using the
-vector store, which is a slow, expensive failure nobody notices.
+cache skips silently and retrieval falls back to full-YAML injection, so a
+client that omits the key does not fail visibly. It stops using the vector store
+instead, which degrades answer quality and increases cost without an error.
 """
 
 from __future__ import annotations

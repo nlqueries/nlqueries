@@ -4,8 +4,7 @@ Qdrant must be authenticated unless it is loopback (SEC-09).
 A security audit reproduced the full chain: an anonymous writer put a forged
 entry into the semantic cache, the cache returned it for a matching question,
 and the SQL inside it executed against the customer's database. Qdrant is an
-input, not merely a cache, and it was an input nobody had to authenticate to
-write.
+input rather than a cache, and it accepted writes without authentication.
 """
 
 from __future__ import annotations
