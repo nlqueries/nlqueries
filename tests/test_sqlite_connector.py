@@ -95,11 +95,19 @@ def test_execute_query_returns_rows(tmp_path: Path) -> None:
     assert result.execution_time_ms >= 0
 
 
-def test_execute_query_non_select_has_no_columns(tmp_path: Path) -> None:
+def test_a_write_is_refused_by_the_database_itself(tmp_path: Path) -> None:
+    """This asserted the opposite until the database was opened read-only.
+
+    It checked that a non-SELECT came back with no columns, which required the
+    UPDATE to succeed -- so the suite recorded "this connector can write to a
+    customer's database" as the expected behaviour. It cannot any more, and the
+    refusal comes from SQLite rather than from anything here inspecting how the
+    statement was spelled.
+    """
     c = _seeded(tmp_path)
     result = c.execute_query("UPDATE customers SET note = 'x' WHERE id = 1")
-    assert result.error is None
-    assert result.columns == []
+    assert result.error is not None
+    assert "readonly" in result.error.lower()
     assert result.rows == []
 
 

@@ -33,9 +33,9 @@ read-only transaction still permits:
 Every row of that table is a privilege question, and privileges are granted by
 you. The rest of this page is how.
 
-DuckDB is the exception to "the rest is yours to configure": its file access is
-reachable from any `SELECT` rather than granted by a DBA, so the connector
-closes it in code. See [DuckDB](#duckdb) below.
+SQLite and DuckDB are the exceptions to "the rest is yours to configure". Their
+file access is reachable from any `SELECT` rather than granted by a DBA, so the
+connectors close it in code. See [SQLite](#sqlite) and [DuckDB](#duckdb) below.
 
 ---
 
@@ -166,14 +166,43 @@ the query cannot reach, and reset pooled connections on return.
 
 ## SQLite
 
-Point the connector at a database file the process cannot write:
+**The connector opens the database read-only and installs an authorizer, and
+neither can be switched off from configuration.** Read-only alone is not enough,
+and it is worth saying why: measured on SQLite 3.50.4, a connection opened
+`mode=ro` will still `ATTACH` another database file and read every row in it.
+Read-only describes what may be *written*, not which files may be *opened*.
 
-- open it read-only (`file:...?mode=ro`), and
+| | before | after |
+|---|---|---|
+| `INSERT`, `UPDATE`, `CREATE`, `DROP` | wrote to your database | refused (`mode=ro`) |
+| `ATTACH '/some/other.db'` | **opened it and read its rows** | refused (authorizer) |
+| `PRAGMA writable_schema`, `temp_store`, `database_list` | allowed | refused (allow-list) |
+| `PRAGMA table_info`, `foreign_key_list` | allowed | allowed — the schema needs them |
+| `load_extension()` | already refused by Python's `sqlite3` | refused |
+| ordinary `SELECT` | worked | works |
+
+Pragmas are allow-listed rather than deny-listed, because the dangerous ones are
+the ones nobody thinks to name.
+
+The `mode=ro` flag travels as a URI parameter, which makes the database path
+worth care: a `database` credential ending `?mode=rwc&` would turn a URI built
+by string concatenation into one carrying two `mode` parameters, and SQLite
+honours the first. The path is percent-encoded so a value that looks like a
+query string stays part of the filename.
+
+A path that does not exist is refused rather than created, for the same reason
+as DuckDB: an empty database answers every question with "no tables", which is a
+misconfiguration reported as a success.
+
+Still worth doing yourself:
+
 - make the file and its directory read-only at the filesystem level, because a
   read-only handle is an application-level promise and file permissions are not.
 
 `:memory:` is not a substitute for a missing file. It succeeds, answers
-questions about nothing, and looks like it is working.
+questions about nothing, and looks like it is working. It is also the one case
+that is not opened read-only — SQLite cannot — but the authorizer still applies,
+because `ATTACH` reaches the filesystem from there too.
 
 ---
 

@@ -21,6 +21,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from nlqueries import config
@@ -35,6 +36,48 @@ from nlqueries.connectors.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The only pragmas any query may run -- the two this connector needs itself to
+#: read the schema (``extract_schema``). Everything else is refused.
+#:
+#: An allow-list rather than a deny-list because the interesting pragmas are the
+#: ones nobody thought of: ``writable_schema`` turns the catalogue into an
+#: ordinary table, ``temp_store`` decides whether scratch data lands on disk,
+#: and ``database_list`` reports the paths of everything attached.
+_ALLOWED_PRAGMAS = frozenset({"table_info", "foreign_key_list"})
+
+
+def _read_only_uri(path: Path) -> str:
+    """The URI for opening *path* read-only, with the path kept a path.
+
+    Built with :meth:`~pathlib.Path.as_uri` rather than an f-string, and that is
+    a security decision rather than a tidiness one. Measured on SQLite 3.50.4: a
+    ``database`` credential ending ``?mode=rwc&`` turns a naive
+    ``f"file:{path}?mode=ro"`` into a URI carrying two ``mode`` parameters, and
+    SQLite honours the first -- so the credential reopens the database
+    writable. ``as_uri`` percent-encodes ``?`` and ``&``, so a value that looks
+    like a query string stays part of the filename.
+    """
+    return path.resolve().as_uri() + "?mode=ro"
+
+
+def _authorize(
+    action: int, arg1: str | None, arg2: str | None, database: str | None, trigger: str | None
+) -> int:
+    """Refuse the operations that reach outside this one database.
+
+    ``mode=ro`` stops writes, and it is the wrong tool for the rest: measured on
+    SQLite 3.50.4, a read-only connection will still ``ATTACH`` another database
+    file and read every row in it. Read-only describes what may be written, not
+    which files may be opened.
+    """
+    if action == sqlite3.SQLITE_PRAGMA:
+        if (arg1 or "").lower() in _ALLOWED_PRAGMAS:
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
 
 
 class SQLiteConnector(DatabaseConnector):
@@ -75,7 +118,26 @@ class SQLiteConnector(DatabaseConnector):
         threads); access is otherwise single-threaded per query.
         """
         self._database = str(credentials.get("database") or ":memory:")
-        self._conn = sqlite3.connect(self._database, check_same_thread=False)
+
+        if self._database == ":memory:":
+            # Cannot be opened read-only, and does not need to be: it is private
+            # to this process and gone when it exits. The authorizer below still
+            # applies, because ATTACH would reach the filesystem from here too.
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        else:
+            path = Path(self._database)
+            if not path.exists():
+                # SQLite would otherwise create an empty database and answer
+                # every question with "no tables" -- a misconfiguration
+                # reported as a success.
+                raise FileNotFoundError(
+                    f"SQLite database {self._database!r} does not exist. This connector "
+                    f"reads an existing database; it does not create one. Use ':memory:' "
+                    f"for a transient database."
+                )
+            self._conn = sqlite3.connect(_read_only_uri(path), uri=True, check_same_thread=False)
+
+        self._conn.set_authorizer(_authorize)
 
     def _require_conn(self) -> sqlite3.Connection:
         if self._conn is None:
