@@ -36,10 +36,18 @@ def _run(credentials: dict, sql: str):
 
 #: Payloads the layers shipped so far do not stop. Each names the wave that will.
 #: Remove an entry when its wave lands; strict xfail will insist.
+#: Payloads the database still accepts when the statement reaches it.
+#:
+#: These execute directly against the lab database, so no application-level
+#: control is in their path. The SQL policy refuses all three before a connector
+#: is reached -- each calls a function sqlglot does not model -- and that is
+#: asserted in tests/test_sql_policy_adversarial.py. What is recorded here is
+#: what the database permits a statement to do once it arrives, which is the
+#: operator's to restrict.
 STILL_OPEN = {
-    "advisory_lock": "SEC-02 — needs the SQL policy (W4); a read-only transaction permits locks",
-    "sleep": "SEC-02 — needs the SQL policy (W4); bounded only by statement_timeout",
-    "server_file_read": "SEC-02 — needs the SQL policy (W4) or a role without pg_read_server_files",
+    "advisory_lock": "SEC-02 — a read-only transaction permits advisory locks",
+    "sleep": "SEC-02 — bounded by statement_timeout, not refused",
+    "server_file_read": "SEC-02 — refused only by not granting pg_read_server_files",
     # `row_lock` was listed here and the lab refused it on the first run:
     # PostgreSQL declines `SELECT ... FOR UPDATE` in a read-only transaction.
     # The entry had been assumed rather than measured, and the strict xfail
