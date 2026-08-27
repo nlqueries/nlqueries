@@ -231,9 +231,9 @@ class Orchestrator:
             # second used to be asked one layer up, after this had already run,
             # which is how `--no-execute` came to mean "do not run it twice".
             #
-            # Defaulting to generate-only means a caller that forgets to pass a
-            # policy gets SQL and no rows. That is a visible, reportable bug;
-            # the opposite default is a language model's output on somebody's
+            # Defaulting to generate-only means a caller that omits a policy
+            # receives SQL and no rows, which is observable and reportable. The
+            # opposite default would execute model output against a customer's
             # database.
             sql_table: dict[str, Any] = {}
             if result.is_valid and execution.may_execute:

@@ -291,11 +291,10 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
 def _identity_check(service: str, identity: Any) -> _CheckResult:
     """Report the database login's privileges.
 
-    An identity that could not be read is a failure rather than a warning: the
-    check exists to answer the question, and "unknown" answered as "fine" is the
-    failure mode it is meant to remove. An identity that was read and found
-    over-privileged is a warning, because the privileges are the operator's to
-    grant and the deployment is working.
+    An identity that could not be read is reported as a failure, so that an
+    incomplete check is distinguishable from a completed one. An identity that
+    was read and found over-privileged is reported as a warning: the privileges
+    are granted by the operator and the deployment is functional.
     """
     label = f"{service} identity"
     if identity.undetermined_reason is not None:
@@ -359,9 +358,9 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
             else:
                 db_name = cfg.get("database", "?")
                 results.append(_CheckResult(service, "ok", f"{db_name} connected ({ms} ms)"))
-                # Populated by the pool's connect event, so it is available
-                # once a query has opened a connection. Absent on connectors
-                # that do not implement the check.
+                # Populated by the pool's connect event, and therefore
+                # available once a query has opened a connection. Absent on
+                # connectors that do not implement the check.
                 identity = getattr(connector, "identity", None)
                 if identity is not None:
                     results.append(_identity_check(service, identity))

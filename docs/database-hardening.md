@@ -15,10 +15,10 @@ each supported engine.
 ## What NLQueries already does, and what it does not
 
 The connector opens every query in a read-only transaction (`SET TRANSACTION
-READ ONLY`). That is worth having — PostgreSQL applies it to what a statement
-*does* rather than how it is spelled, so it refuses DML and DDL anywhere in the
-call graph, including inside a function a `SELECT` calls, and it refuses
-sequence functions by name.
+READ ONLY`). PostgreSQL applies this to what a statement *does* rather than to
+how it is written, so it refuses DML and DDL anywhere in the call graph,
+including within a function invoked by a `SELECT`, and refuses sequence
+functions by name.
 
 It is not sufficient, and it is important to know exactly where it stops. A
 read-only transaction still permits:
@@ -179,8 +179,7 @@ visible.
 
 ## Row-level security
 
-If tenants share tables, RLS is the mechanism — with two caveats worth stating
-plainly.
+If tenants share tables, RLS is the mechanism. Two caveats apply.
 
 A table's **owner** bypasses its own policies unless the table is set to `FORCE
 ROW LEVEL SECURITY`, so the NLQueries role must not own the tables it reads.

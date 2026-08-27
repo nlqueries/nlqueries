@@ -4,12 +4,12 @@ Makes ``python -m nlqueries.mcp_server`` start the server.
 This module did not exist, and the Dockerfile's ``CMD`` was exactly that
 command — so the published image could not start at all. The healthcheck then
 curled ``/health``, which is an MCP *tool* rather than an HTTP route and would
-have returned 404 even if the process had been running. Neither defect could
-survive anyone running the image once; both survived because nobody did.
+have returned 404 even if the process had been running. Both defects would
+have been detected by a single run of the image, and neither had been.
 
-Configuration comes from the environment rather than argv because that is what a
-container image can be handed. Defaults match ``main()``: stdio, loopback, 8000
-— so running the module directly behaves like the CLI's ``mcp-server start``,
+Configuration is read from the environment rather than argv, since that is what
+a container image can be supplied with. Defaults match ``main()``: stdio,
+loopback, 8000, so running the module directly matches ``mcp-server start``,
 and only a deployment that sets these gets a network listener.
 """
 

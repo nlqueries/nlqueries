@@ -1,10 +1,10 @@
 """
 Classification of a PostgreSQL login's privileges.
 
-These run without a database. The equivalent checks against a real server are in
-``tests/security/test_postgres_identity_lab.py``; this file covers the
-classification rules themselves, so a change to what counts as over-privileged
-is caught in CI whether or not Docker is available.
+These tests run without a database. The equivalent checks against a real server
+are in ``tests/security/test_postgres_identity_lab.py``. This file covers the
+classification rules, which are therefore verified in CI regardless of whether
+Docker is available.
 """
 
 from __future__ import annotations
@@ -41,11 +41,8 @@ def test_a_least_privilege_identity_has_no_concerns() -> None:
 
 
 def test_an_undetermined_identity_is_not_least_privilege() -> None:
-    """The distinction the whole check exists for.
-
-    A check that could not run must not report the same result as a check that
-    ran and found nothing wrong.
-    """
+    """An incomplete check must be distinguishable from a completed one that
+    found no concerns."""
     unknown = PostgresIdentity.undetermined("connection reset")
 
     assert not unknown.is_least_privilege
@@ -54,8 +51,7 @@ def test_an_undetermined_identity_is_not_least_privilege() -> None:
 
 
 def test_inspect_identity_reports_a_failure_instead_of_raising() -> None:
-    """A connector that refused to open because its own self-check failed would
-    turn a diagnostic into an outage."""
+    """A failure of the check must not prevent the connector from opening."""
 
     class Unusable:
         def cursor(self) -> object:
@@ -68,8 +64,8 @@ def test_inspect_identity_reports_a_failure_instead_of_raising() -> None:
 
 
 def test_inspect_identity_reports_a_missing_role_row() -> None:
-    """`current_user` with no `pg_roles` row is not a normal server state, and
-    is reported rather than treated as an absence of findings."""
+    """A `current_user` with no `pg_roles` row is reported as undetermined
+    rather than as an absence of findings."""
 
     class NoRow:
         def cursor(self) -> object:
@@ -112,14 +108,14 @@ class TestConcerns:
             assert any(role in c for c in found), role
 
     def test_pg_database_owner_is_not_a_concern(self) -> None:
-        """Every owner of a database holds it, and it confers nothing beyond
-        that ownership. Treating it as a finding would make the check noise."""
+        """`pg_database_owner` is held by the owner of any database and
+        confers no additional privilege."""
         assert _identity(predefined_roles=("pg_database_owner",)).is_least_privilege
 
     def test_an_unknown_pg_role_is_not_a_concern(self) -> None:
-        """The query enumerates every `pg_` role the login belongs to, including
-        ones added by later server versions. Only the listed ones are findings,
-        so a new predefined role does not become a false positive."""
+        """The query enumerates every `pg_` role the login belongs to,
+        including those added by later server versions. Only the roles in
+        `DANGEROUS_PREDEFINED_ROLES` are reported as concerns."""
         assert _identity(predefined_roles=("pg_monitor", "pg_signal_backend")).is_least_privilege
 
     def test_concerns_are_ordered_with_superuser_first(self) -> None:

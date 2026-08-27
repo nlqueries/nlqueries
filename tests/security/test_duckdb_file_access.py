@@ -102,7 +102,7 @@ def test_ordinary_queries_against_the_database_still_work(duckdb_lab) -> None:
 def test_attach_cannot_open_another_database(duckdb_lab, tmp_path: Path) -> None:
     """`ATTACH` accepts a path, and is therefore also a file read."""
     connector, _canary = duckdb_lab
-    other = tmp_path / "somebody-elses.duckdb"
+    other = tmp_path / "another.duckdb"
     duckdb.connect(str(other)).close()
 
     result = connector.execute_query(f"ATTACH '{other.as_posix()}' AS other")

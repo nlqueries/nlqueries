@@ -4,20 +4,17 @@ nlqueries.connectors.postgres_identity
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Inspection of the PostgreSQL login a connector is using.
 
-The read-only transaction opened for every query constrains what a statement may
-do. It does not constrain who the statement runs as, and several of the controls
-that matter are privileges rather than transaction state. ``docs/database-
-hardening.md`` records the measured result: ``pg_read_file()`` is refused by
-privilege, not by the read-only transaction, so a role holding
-``pg_read_server_files`` retains access that no application-level control can
-withdraw.
+The read-only transaction opened for every query constrains the operations a
+statement may perform. It does not constrain the role the statement executes as.
+Several relevant restrictions are privileges rather than transaction state:
+``docs/database-hardening.md`` records that ``pg_read_file()`` is refused by
+privilege, so a role holding ``pg_read_server_files`` retains access that the
+application cannot withdraw.
 
-This module reads the connected role's privileges and reports what it finds. It
-does not refuse a connection: the report is surfaced through ``nlqueries
-health``, so that a deployment pointed at an over-privileged role is visible
-rather than assumed correct. Enforcement is a separate decision, and refusing
-here would take it away from the operator at the point where they can least
-afford a surprise.
+This module reads the connected role's privileges and returns them as a report.
+It does not refuse a connection. The report is surfaced through ``nlqueries
+health``, where an over-privileged role is visible to the operator. Enforcement
+is out of scope for this module.
 """
 
 from __future__ import annotations
@@ -29,8 +26,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 #: Predefined roles whose membership grants access the application cannot
-#: withdraw. ``pg_database_owner`` is deliberately absent: every owner of a
-#: database holds it, and it confers nothing beyond that ownership.
+#: withdraw. ``pg_database_owner`` is excluded: it is held by the owner of any
+#: database and confers no additional privilege.
 DANGEROUS_PREDEFINED_ROLES = frozenset(
     {
         "pg_read_server_files",
@@ -42,8 +39,8 @@ DANGEROUS_PREDEFINED_ROLES = frozenset(
 )
 
 #: Read in a single round trip. Predefined roles are enumerated from
-#: ``pg_roles`` rather than named individually, so a server version that lacks
-#: one -- or adds one -- does not cause an error or a silent gap.
+#: ``pg_roles`` rather than named individually, so that a server version which
+#: lacks or adds one produces neither an error nor an unreported membership.
 IDENTITY_SQL = """
 SELECT
     current_user                                          AS user_name,
@@ -81,17 +78,17 @@ class PostgresIdentity:
     bypasses_row_level_security: bool
     may_replicate: bool
     predefined_roles: tuple[str, ...] = ()
-    #: Set when the identity could not be read. Distinct from an identity that
-    #: was read and found acceptable, and reported as its own state so that a
-    #: failed check is not mistaken for a passed one.
+    #: Set when the identity could not be read. Held separately from
+    #: :attr:`concerns` so that a check which did not complete is distinguishable
+    #: from one that completed and found nothing.
     undetermined_reason: str | None = None
 
     @property
     def concerns(self) -> tuple[str, ...]:
         """One entry per privilege the application cannot withdraw.
 
-        Derived rather than stored, so that an identity cannot exist in a state
-        where the flags say one thing and the findings say another.
+        Derived from the flags rather than stored alongside them, so the two
+        cannot disagree.
         """
         found: list[str] = []
         if self.is_superuser:
@@ -101,9 +98,9 @@ class PostgresIdentity:
         if self.may_create_database:
             found.append("holds CREATEDB")
         if self.may_create_role:
-            found.append("holds CREATEROLE, and can therefore grant itself more")
+            found.append("holds CREATEROLE, and can grant itself further privileges")
         if self.may_replicate:
-            found.append("holds REPLICATION, which can stream the whole cluster")
+            found.append("holds REPLICATION, which permits streaming the cluster")
 
         dangerous = sorted(set(self.predefined_roles) & DANGEROUS_PREDEFINED_ROLES)
         if dangerous:
@@ -112,7 +109,7 @@ class PostgresIdentity:
 
     @property
     def is_least_privilege(self) -> bool:
-        """True only when the identity was read and nothing of concern found."""
+        """True when the identity was read and no concerns were found."""
         return self.undetermined_reason is None and not self.concerns
 
     def summary(self) -> str:
@@ -143,10 +140,10 @@ class PostgresIdentity:
 def inspect_identity(connection: Any) -> PostgresIdentity:
     """Read the connected role's privileges.
 
-    *connection* is anything exposing DBAPI ``cursor()``. Never raises: a check
-    that cannot run is reported as undetermined, because a connector that
-    refused to open because its self-check failed would convert a diagnostic
-    into an outage.
+    *connection* is any object exposing the DBAPI ``cursor()`` method. This
+    function does not raise. A check that cannot complete returns an
+    undetermined report, so that a failure of the check does not prevent the
+    connector from opening.
     """
     try:
         cursor = connection.cursor()
@@ -160,8 +157,8 @@ def inspect_identity(connection: Any) -> PostgresIdentity:
         return PostgresIdentity.undetermined(str(exc))
 
     if row is None:
-        # current_user has no pg_roles row. Not reachable on a normal server,
-        # and reported rather than assumed benign.
+        # current_user has no pg_roles row. Not expected on a conforming
+        # server; reported rather than treated as an absence of findings.
         return PostgresIdentity.undetermined("no pg_roles row for current_user")
 
     (

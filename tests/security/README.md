@@ -34,10 +34,10 @@ register row and the wave that closes it:
 @pytest.mark.xfail(strict=True, reason="SEC-16 — needs the SQL policy (W4)")
 ```
 
-Not a skip. `strict=True` means the suite **fails when the test starts passing**,
-which is what forces somebody to delete the marker and update
-`internal-docs/security-findings-register.md`. An open finding cannot quietly
-become closed, and a closed one cannot quietly reopen.
+Not a skip. `strict=True` means the suite **fails when the test starts
+passing**, which requires the marker to be removed and
+`internal-docs/security-findings-register.md` to be updated. Neither the opening
+nor the closing of a finding can therefore go unrecorded.
 
 So when your change makes one of these pass:
 
@@ -59,16 +59,16 @@ replay, retry, promotion, the direct connector API — as those routes gain gate
 instead of being rewritten once per route.
 
 Each carries what it does (`effect`), the register row (`finding`), and the
-layers expected to stop it (`stopped_by`). More than one layer is the point: a
-payload with a single line of defence is a payload waiting for that line to have
-a bug in it.
+layers expected to stop it (`stopped_by`). More than one layer is recorded
+deliberately: a payload with a single defence depends entirely on that defence
+being correct.
 
 ## Adding a safe query
 
-`SAFE_POSTGRES` is the other half, and the more important one to keep growing.
-Every control here can be made to pass by refusing more, and the failure mode of
-a policy that refuses a `GROUP BY` is that somebody turns the policy off. If you
-add a rule, add the analytics it must not break.
+`SAFE_POSTGRES` is the other half of the corpus and should grow with it. Every
+control here can be made to pass by refusing more, and a policy that refuses a
+`GROUP BY` is one a deployment will disable. When adding a rule, add the
+analytics it must not break.
 
 ## Everything is synthetic
 

@@ -104,10 +104,10 @@ def lab_postgres() -> Iterator[PostgresContainer]:
 
 @pytest.fixture()
 def privileged_credentials(lab_postgres: PostgresContainer) -> dict[str, Any]:
-    """The database owner — what a deployment gets when nobody hardens anything.
+    """The database owner, as used by an unhardened deployment.
 
-    Present so the corpus can show which payloads the *application* stops on its
-    own, with no help from the database.
+    Present so the corpus can establish which payloads the application refuses
+    on its own, without assistance from database privileges.
     """
     return {
         "host": lab_postgres.get_container_host_ip(),

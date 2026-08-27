@@ -31,9 +31,8 @@ when someone is diagnosing an out-of-memory kill:
   whole result into the client's own buffer during ``execute``, so the raw bytes
   arrive regardless. That buffer is a fraction of the cost: the 3.5 GB in the
   example above is Python list and object overhead, not wire format. Bounding it
-  is the difference between a worker that survives and one that does not, but it
-  is not the same as true streaming, and this comment exists so nobody assumes
-  otherwise.
+  determines whether the worker survives, but it is not equivalent to true
+  streaming, and should not be read as such.
 """
 
 from __future__ import annotations
