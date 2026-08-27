@@ -21,14 +21,13 @@ from pathlib import Path
 
 from nlqueries import config
 from nlqueries.feedback.models import QueryFeedback
+from nlqueries.state_files import private_dir, restrict
 
 
 def _agent_path(agent_id: str) -> Path:
     """Return the JSONL path for *agent_id*, creating parent dirs if needed."""
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
-    path = config.FEEDBACK_DIR / f"{safe_id}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return private_dir(config.FEEDBACK_DIR) / f"{safe_id}.jsonl"
 
 
 def record_feedback(fb: QueryFeedback) -> None:
@@ -44,6 +43,8 @@ def record_feedback(fb: QueryFeedback) -> None:
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+    # Applied after writing: a file created by `open` takes the process umask.
+    restrict(path)
 
 
 def load_feedback(agent_id: str) -> list[QueryFeedback]:

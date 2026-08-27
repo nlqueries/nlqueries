@@ -39,6 +39,7 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL
 from nlqueries.connectors import CONNECTOR_REGISTRY
+from nlqueries.state_files import private_dir, restrict
 
 console = Console()
 err_console = Console(stderr=True)
@@ -137,9 +138,7 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
 
 def _session_path(agent_id: str) -> Path:
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
-    path = Path.home() / ".nlqueries" / "sessions" / f"{safe_id}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return private_dir(Path.home() / ".nlqueries" / "sessions") / f"{safe_id}.jsonl"
 
 
 def _load_session(agent_id: str) -> list[Any]:
@@ -181,8 +180,10 @@ def _save_turn(agent_id: str, role: str, content: str, **kwargs: Any) -> None:
         "sql": kwargs.get("sql"),
         "timestamp": datetime.now(UTC).isoformat(),
     }
-    with _session_path(agent_id).open("a", encoding="utf-8") as fh:
+    session_file = _session_path(agent_id)
+    with session_file.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+    restrict(session_file)
 
 
 def _resolve_alias(value: str) -> str:
@@ -791,8 +792,9 @@ def connect(
         )
     else:
         console.print(
-            "  [yellow]Note:[/yellow] keyring unavailable — password stored in config file. "
-            "Ensure it is not world-readable."
+            "  [yellow]Note:[/yellow] keyring unavailable — password stored in the config "
+            "file. It is restricted to your account; on a shared host, prefer a "
+            "keyring backend or an environment variable."
         )
 
 
