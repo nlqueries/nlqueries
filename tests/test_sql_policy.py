@@ -260,3 +260,61 @@ def test_a_refused_root_is_not_also_reported_as_contained() -> None:
     summary = evaluate("DROP TABLE t", "postgres").summary()
 
     assert summary == "statement is a Drop, not a query"
+
+
+class TestTheDecisionIsBound:
+    """A decision records the statement it was made about.
+
+    Without this a caller can obtain a decision for one statement and run a
+    different one, which is the difference between a check and a capability.
+    """
+
+    def test_a_decision_authorises_the_statement_it_was_made_about(self) -> None:
+        sql = "SELECT count(*) FROM orders"
+        decision = evaluate(sql, "postgres")
+
+        assert decision.authorises(sql, "postgres")
+
+    def test_it_does_not_authorise_a_different_statement(self) -> None:
+        decision = evaluate("SELECT count(*) FROM orders", "postgres")
+
+        assert not decision.authorises("DELETE FROM orders", "postgres")
+
+    def test_whitespace_is_significant(self) -> None:
+        """The digest covers the bytes sent to the driver, so a rewritten
+        statement does not inherit the original's decision."""
+        decision = evaluate("SELECT 1 FROM t", "postgres")
+
+        assert not decision.authorises("SELECT  1 FROM t", "postgres")
+
+    def test_a_prepended_comment_is_significant(self) -> None:
+        """Enterprise prepends a tag comment after validation. The bytes differ,
+        so the decision does not carry over."""
+        decision = evaluate("SELECT 1 FROM t", "postgres")
+
+        assert not decision.authorises("/* tag */ SELECT 1 FROM t", "postgres")
+
+    def test_it_does_not_authorise_a_different_dialect(self) -> None:
+        sql = "SELECT count(*) FROM orders"
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.authorises(sql, "snowflake")
+
+    def test_the_dialect_comparison_ignores_case(self) -> None:
+        sql = "SELECT count(*) FROM orders"
+
+        assert evaluate(sql, "postgres").authorises(sql, "POSTGRES")
+
+    def test_a_refusal_authorises_nothing(self) -> None:
+        sql = "DROP TABLE orders"
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.authorises(sql, "postgres")
+
+    def test_a_statement_with_an_unpaired_surrogate_still_digests(self) -> None:
+        """`str.encode` raises on unpaired surrogates, so the digest uses
+        surrogatepass. Such a statement is refused before reaching a driver."""
+        decision = evaluate(chr(0xD83D), "postgres")
+
+        assert not decision.allowed
+        assert len(decision.sql_digest) == 64
