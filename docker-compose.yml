@@ -36,6 +36,18 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant-data:/qdrant/storage
+    # No capabilities are needed to listen and read a volume, and a process that
+    # cannot acquire new privileges cannot escalate through a setuid binary.
+    #
+    # `read_only` is deliberately absent. Measured against qdrant/qdrant:v1.9.3:
+    # the process panics at startup on a read-only root filesystem. The
+    # container image is the vendor's, so the paths it writes are theirs to
+    # change; applying the setting would trade a running service for a hardening
+    # claim.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - nlqueries
     healthcheck:
@@ -66,6 +78,26 @@ services:
       # deployment's decision, not every `docker run`'s.
       NLQ_ALLOW_INSECURE_BIND: "1"
       QDRANT_API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
+      # The model cache is written at first use. With a read-only root
+      # filesystem the default location under $HOME is not writable, so it is
+      # placed on the data volume, where it also survives a restart: measured,
+      # a second start needs no network.
+      XDG_CACHE_HOME: /data/nlqueries/cache
+      HF_HOME: /data/nlqueries/cache/huggingface
+    # Nothing here writes outside the data volume and /tmp. Measured: the MCP
+    # server starts, listens, and embeds text under all of the following.
+    read_only: true
+    tmpfs:
+      # noexec and nosuid: scratch space is not a place to run anything from.
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # A bound on what a runaway query or a fork bomb can consume. Raise
+    # mem_limit if the embedding model is changed for a larger one.
+    pids_limit: 256
+    mem_limit: 4g
     volumes:
       - nlqueries-data:/data/nlqueries
     ports:
