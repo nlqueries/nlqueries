@@ -6,21 +6,18 @@ the claim without evidence. The chain was: an anonymous writer put an entry into
 the semantic cache, the cache returned it for a matching question, and the SQL
 inside it executed against the customer's database.
 
-Two of the three links have since been cut. Qdrant now requires authentication
-off loopback (#124), so the first link needs a credential or network position
-that the original did not. The SQL policy is applied on the cache-replay path
-(#143), so a forged entry calling ``pg_read_file`` is refused.
+All three links are now cut. Qdrant requires authentication off loopback (#124).
+Cache entries are signed for the context they were produced in and verified
+before use (#148), so an entry this deployment did not write does not verify.
+The SQL policy is applied on the cache-replay path (#143), so a statement that
+did verify but calls a dangerous function is still refused.
 
-The third link is open. ``SemanticCache._payload_to_entry`` reconstructs an
-entry from the Qdrant payload with no check of where it came from, so a forged
-entry whose SQL the policy permits is returned and executed. The policy
-establishes that a statement is safe to run, not that NLQueries produced it or
-that it answers the question asked.
+The signature is what closes the finding. The policy establishes that a
+statement is safe to run; it does not establish that NLQueries produced it, and
+``SELECT * FROM salaries`` returned for a question about order counts is safe by
+the policy's measure and wrong by any other.
 
-Closing that is W5-1: a signed envelope binding tenant, agent, connector,
-dialect, schema fingerprint and policy version, verified before use.
-
-These tests use a stand-in Qdrant client. What is being tested is what the cache
+These tests use a stand-in Qdrant client. What is under test is what the cache
 does with a payload, not how the payload arrived.
 """
 
@@ -32,25 +29,38 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from nlqueries.cache.envelope import CacheBinding, sign
 from nlqueries.cache.semantic_cache import SIMILARITY_THRESHOLD, SemanticCache
 from nlqueries.sql_policy import evaluate
 
 pytestmark = pytest.mark.security
 
+QUESTION = "how many orders did we take last month?"
+
 #: A statement the policy refuses. Reads a file from the database host.
 FORGED_DANGEROUS_SQL = "SELECT pg_read_file('/etc/hostname')"
 
 #: A statement the policy permits, reading a table the question did not mention.
-#: A cache is not asked whether an answer is the right one, only whether it is
-#: similar enough to a previous question.
 FORGED_PLAUSIBLE_SQL = "SELECT * FROM salaries"
 
+BINDING = CacheBinding(
+    agent_id="agent1",
+    connector_fingerprint="conn-fp",
+    dialect="postgres",
+    schema_fingerprint="schema-fp",
+    policy_version="1",
+)
 
-def _forged_payload(sql: str) -> dict[str, Any]:
+#: The key this deployment holds. An attacker with write access to Qdrant does
+#: not have it, which is what the signature depends on.
+KEY = b"the-deployment-key"
+
+
+def _payload(sql: str) -> dict[str, Any]:
     """A cache payload as something with write access to Qdrant would store it."""
     return {
-        "question": "how many orders did we take last month?",
-        "resolved_question": "how many orders did we take last month?",
+        "question": QUESTION,
+        "resolved_question": QUESTION,
         "agent_type": "sql",
         "answer": "There were 42 orders last month.",
         "sql": sql,
@@ -60,8 +70,8 @@ def _forged_payload(sql: str) -> dict[str, Any]:
     }
 
 
-def _cache_returning(payload: dict[str, Any]) -> Any:
-    """A stand-in client whose nearest-neighbour search returns *payload*."""
+def _read_back(payload: dict[str, Any], binding: CacheBinding | None = BINDING) -> Any:
+    """What the cache returns for QUESTION, given *payload* stored against it."""
     collection = MagicMock()
     collection.name = "cache_agent1"
     client = MagicMock()
@@ -70,35 +80,61 @@ def _cache_returning(payload: dict[str, Any]) -> Any:
         points=[SimpleNamespace(id=1, score=SIMILARITY_THRESHOLD, payload=payload)]
     )
     client.set_payload.return_value = None
-    return client
 
-
-def _read_back(sql: str) -> Any:
-    """What the cache returns for a question, given a forged entry storing *sql*."""
-    client = _cache_returning(_forged_payload(sql))
     with (
         patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
         patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch("nlqueries.cache.envelope.signing_key", return_value=KEY),
     ):
-        return SemanticCache("agent1").get("how many orders did we take last month?")
+        return SemanticCache("agent1", binding=binding).get(QUESTION)
 
 
-def test_the_cache_returns_a_forged_entry_unchanged() -> None:
-    """The instrument check: the stand-in reaches the code under test.
-
-    Also the finding itself. Nothing about the payload records where it came
-    from, so nothing distinguishes this from an entry NLQueries wrote.
-    """
-    entry = _read_back(FORGED_PLAUSIBLE_SQL)
+def test_an_entry_this_deployment_signed_is_returned() -> None:
+    """The control. Whatever refuses forged entries must not refuse genuine
+    ones, or the cache stops working and is turned off."""
+    entry = _read_back(sign(_payload("SELECT count(*) FROM orders"), BINDING, KEY))
 
     assert entry is not None
-    assert entry.sql == FORGED_PLAUSIBLE_SQL
+    assert entry.sql == "SELECT count(*) FROM orders"
 
 
-def test_a_forged_entry_calling_a_dangerous_function_is_refused_before_execution() -> None:
-    """The link the SQL policy cut. The entry is still returned by the cache;
-    the policy refuses it on the replay path."""
-    entry = _read_back(FORGED_DANGEROUS_SQL)
+def test_an_unsigned_forged_entry_is_a_miss() -> None:
+    """SEC-09. The statement is an ordinary read that the policy permits, so
+    before signing existed it was returned and executed."""
+    assert evaluate(FORGED_PLAUSIBLE_SQL, "postgres").allowed
+
+    assert _read_back(_payload(FORGED_PLAUSIBLE_SQL)) is None
+
+
+def test_an_entry_signed_with_another_key_is_a_miss() -> None:
+    """An attacker who can write to Qdrant but does not hold the key cannot
+    produce a tag that verifies."""
+    forged = sign(_payload(FORGED_PLAUSIBLE_SQL), BINDING, b"an-attacker-key")
+
+    assert _read_back(forged) is None
+
+
+def test_an_entry_signed_for_another_agent_is_a_miss() -> None:
+    """A genuine entry cannot be moved between agents to answer a question the
+    reader is not entitled to ask."""
+    other = CacheBinding(**{**BINDING.__dict__, "agent_id": "agent2"})
+    elsewhere = sign(_payload("SELECT count(*) FROM orders"), other, KEY)
+
+    assert _read_back(elsewhere) is None
+
+
+def test_an_entry_signed_against_another_schema_is_a_miss() -> None:
+    """SQL generated against one schema is not valid evidence about another."""
+    other = CacheBinding(**{**BINDING.__dict__, "schema_fingerprint": "changed"})
+    stale = sign(_payload("SELECT count(*) FROM orders"), other, KEY)
+
+    assert _read_back(stale) is None
+
+
+def test_a_dangerous_statement_is_refused_even_if_it_verifies() -> None:
+    """Defence in depth. Signing establishes origin; the policy establishes that
+    the statement is safe to run, and both apply on the replay path."""
+    entry = _read_back(sign(_payload(FORGED_DANGEROUS_SQL), BINDING, KEY))
 
     assert entry is not None
     assert entry.sql == FORGED_DANGEROUS_SQL
@@ -109,31 +145,7 @@ def test_a_forged_entry_calling_a_dangerous_function_is_refused_before_execution
     assert "pg_read_file" in decision.summary()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SEC-09 — needs the signed cache envelope (W5-1); the policy checks safety, not origin",
-)
-def test_a_forged_entry_the_policy_permits_does_not_reach_the_database() -> None:
-    """The open link.
-
-    The statement is a valid read, so the policy permits it. Reaching the
-    database requires only that the entry be similar enough to the question
-    asked, and nothing establishes that NLQueries wrote it.
-    """
-    entry = _read_back(FORGED_PLAUSIBLE_SQL)
-    assert entry is not None
-
-    decision = evaluate(entry.sql or "", "postgres")
-
-    assert not decision.allowed, (
-        "a forged cache entry containing an ordinary SELECT would be executed: "
-        "the payload carries no evidence of its origin"
-    )
-
-
-def test_the_policy_still_permits_the_statement_a_genuine_entry_would_hold() -> None:
-    """The control. Whatever closes this must not refuse the cache's own
-    entries, or the cache stops working."""
-    decision = evaluate("SELECT count(*) FROM orders WHERE created_at >= '2026-07-01'", "postgres")
-
-    assert decision.allowed, decision.summary()
+def test_a_cache_without_a_binding_reads_nothing() -> None:
+    """There is nothing to verify against, so every read is a miss rather than
+    an unverified hit."""
+    assert _read_back(sign(_payload("SELECT 1"), BINDING, KEY), binding=None) is None

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import re
 import string
 import time
@@ -46,8 +47,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from nlqueries import config
+from nlqueries.cache.envelope import CacheBinding, sign, verify
 from nlqueries.embeddings.embedder import embed_text
 from nlqueries.embeddings.qdrant_store import ensure_collection
+
+logger = logging.getLogger(__name__)
 
 CACHE_COLLECTION_PREFIX = "cache_"
 CACHE_VECTOR_SIZE = 384
@@ -366,20 +370,42 @@ class SemanticCache:
         cache.put("How many orders last month?", result)
     """
 
-    def __init__(self, agent_id: str, ttl_hours: int = 24) -> None:
+    def __init__(
+        self,
+        agent_id: str,
+        ttl_hours: int = 24,
+        *,
+        binding: CacheBinding | None = None,
+    ) -> None:
+        """*binding* is required to read or write entries, not to manage them.
+
+        An entry carries SQL that is executed on a hit with no model in front of
+        it, so it is signed for the context it was produced in and verified
+        before use (SEC-09). Without a binding there is nothing to verify
+        against: :meth:`get` reports a miss and :meth:`put` stores nothing.
+
+        :meth:`stats`, :meth:`invalidate` and :meth:`list_entries` do not read
+        entry contents and work without one.
+        """
         safe_id = _SAFE_ID_RE.sub("_", agent_id)
         self._collection = f"{CACHE_COLLECTION_PREFIX}{safe_id}"
         self._ttl_hours = ttl_hours
+        self._binding = binding
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     def _payload_to_entry(self, payload: dict[str, Any]) -> CacheEntry | None:
-        """Deserialize a ``CacheEntry`` from *payload*, checking TTL.
+        """Deserialize a ``CacheEntry`` from *payload*, checking signature and TTL.
 
-        Returns ``None`` when the entry has expired or the timestamp is missing
-        / unparseable.
+        Returns ``None`` when the entry does not verify, has expired, or the
+        timestamp is missing or unparseable.
+
+        Does not verify the signature. Verification belongs to the read path
+        that feeds execution -- see :meth:`_verified_entry` -- so that
+        :meth:`list_entries` can show an operator what is actually stored,
+        including entries that do not verify.
         """
         created_at_raw = payload.get("created_at")
         if not created_at_raw:
@@ -400,6 +426,17 @@ class SemanticCache:
             hit_count=int(payload.get("hit_count", 0)),
             kind=str(payload.get("kind", "answer")),
         )
+
+    def _verified_entry(self, payload: dict[str, Any]) -> CacheEntry | None:
+        """Deserialize *payload* only if it was signed for this cache's binding.
+
+        An entry that does not verify is a miss rather than an error: entries
+        written before signing existed are unsigned, and a question that misses
+        is answered by generating SQL again.
+        """
+        if self._binding is None or not verify(payload, self._binding):
+            return None
+        return self._payload_to_entry(payload)
 
     def _increment_hit_count(self, client: Any, point_id: Any, payload: dict[str, Any]) -> int:
         """Increment ``hit_count`` in the Qdrant payload and return the new value."""
@@ -489,7 +526,7 @@ class SemanticCache:
                 # push it into the Qdrant query filter). A mismatch falls through
                 # to the cosine tiers rather than returning a foreign-context hit.
                 if _payload_matches(payload, payload_filter):
-                    entry = self._payload_to_entry(payload)
+                    entry = self._verified_entry(payload)
                     if entry is not None:
                         entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
                         record_cache(hit=True, tier="exact")  # provenance (SYL-1.1)
@@ -511,7 +548,7 @@ class SemanticCache:
             hit = response.points[0]
             if hit.score >= config.CACHE_ANSWER_THRESHOLD:
                 payload = hit.payload or {}
-                entry = self._payload_to_entry(payload)
+                entry = self._verified_entry(payload)
                 if entry is not None:
                     entry.hit_count = self._increment_hit_count(client, hit.id, payload)
                     record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
@@ -556,7 +593,7 @@ class SemanticCache:
 
             sqlglot.parse_one(bound_sql)
 
-        entry = self._payload_to_entry(tmpl_payload)
+        entry = self._verified_entry(tmpl_payload)
         if entry is None:
             return None
 
@@ -609,6 +646,12 @@ class SemanticCache:
         answer_id = _point_id_for_question(normalized)
         answer_vector = embed_text(question)
 
+        if self._binding is None:
+            # Nothing to sign for, so nothing is stored. An unsigned entry would
+            # not verify on read and would occupy the collection for its TTL.
+            logger.debug("Cache write skipped: no binding was supplied.")
+            return
+
         answer_payload: dict[str, Any] = {
             **(payload_extra or {}),
             "question": question,
@@ -620,6 +663,8 @@ class SemanticCache:
             "hit_count": 0,
             "kind": "answer",
         }
+
+        answer_payload = sign(answer_payload, self._binding)
 
         points: list[PointStruct] = [
             PointStruct(id=answer_id, vector=answer_vector, payload=answer_payload)
@@ -652,7 +697,11 @@ class SemanticCache:
                             "kind": "template",
                         }
                         points.append(
-                            PointStruct(id=tmpl_id, vector=masked_vector, payload=tmpl_payload)
+                            PointStruct(
+                                id=tmpl_id,
+                                vector=masked_vector,
+                                payload=sign(tmpl_payload, self._binding),
+                            )
                         )
                 except Exception:  # noqa: BLE001
                     pass  # template storage is best-effort

@@ -31,6 +31,7 @@ import os
 import secrets
 import stat
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -159,3 +160,68 @@ def verify(payload: dict[str, Any], binding: CacheBinding, key: bytes | None = N
     material = key if key is not None else signing_key()
     expected = hmac.new(material, _message(payload, binding), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, tag)
+
+
+@lru_cache(maxsize=32)
+def _hash_file(path: str, mtime_ns: int, size: int) -> str:
+    """SHA-256 of a file, memoised on its identity and last modification.
+
+    The binding is computed once per query, so the knowledge base would
+    otherwise be re-hashed on every one. Arguments beyond *path* exist to key
+    the cache; they are not read.
+    """
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _file_fingerprint(path: Path) -> str:
+    """SHA-256 of *path*, or an empty string when it cannot be read.
+
+    An empty value is consistent between signing and verification on the same
+    host, so a missing file weakens the binding rather than breaking the cache.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return ""
+    return _hash_file(str(path), info.st_mtime_ns, info.st_size)
+
+
+def binding_for_agent(agent_id: str, dialect: str) -> CacheBinding:
+    """The binding for entries produced by *agent_id* against *dialect*.
+
+    The schema fingerprint comes from the agent's knowledge-base file, so an
+    entry stops verifying once the schema it was generated against changes. The
+    connector fingerprint covers the connector configuration file and the
+    connector this agent resolves to, so a repointed connector does the same.
+
+    The connector fingerprint deliberately excludes the stored password. The
+    loader's own fingerprint includes it, which requires a keyring lookup; this
+    is computed once per query and a keyring call on that path is not worth the
+    additional binding.
+    """
+    from nlqueries import config  # noqa: PLC0415
+    from nlqueries.sql_policy import POLICY_VERSION  # noqa: PLC0415
+
+    safe_id = "".join(c for c in agent_id if c.isalnum() or c in "-_")
+    schema_fp = _file_fingerprint(config.KB_PATH / f"{safe_id}.yaml")
+
+    connector_fp = ""
+    try:
+        from nlqueries.connectors.loader import _find_connector_id  # noqa: PLC0415
+
+        connector_id = _find_connector_id(agent_id) or ""
+        connectors_fp = _file_fingerprint(config.CONNECTORS_FILE)
+        connector_fp = hashlib.sha256(f"{connector_id}|{connectors_fp}".encode()).hexdigest()
+    except Exception:  # noqa: BLE001 - an unreadable configuration weakens the binding only
+        connector_fp = ""
+
+    return CacheBinding(
+        agent_id=agent_id,
+        connector_fingerprint=connector_fp,
+        dialect=dialect,
+        schema_fingerprint=schema_fp,
+        policy_version=POLICY_VERSION,
+    )
