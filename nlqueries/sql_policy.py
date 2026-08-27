@@ -174,7 +174,20 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
     """
     reasons: list[str] = []
 
-    if len(sql.encode("utf-8")) > MAX_BYTES:
+    try:
+        size = len(sql.encode("utf-8"))
+    except UnicodeEncodeError:
+        # A Python string can hold unpaired surrogates -- `json.loads('"\ud83d"')`
+        # produces one -- and encoding raises rather than returning bytes. Such a
+        # string is not valid text and is refused rather than allowed to raise.
+        return PolicyDecision(
+            allowed=False,
+            dialect=dialect,
+            policy_version=POLICY_VERSION,
+            reasons=("contains characters that are not valid text",),
+        )
+
+    if size > MAX_BYTES:
         return PolicyDecision(
             allowed=False,
             dialect=dialect,
