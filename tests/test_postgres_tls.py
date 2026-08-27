@@ -75,8 +75,8 @@ class TestPosture:
         assert any("names this host" in c for c in posture.concerns)
 
     def test_the_unencrypted_modes_report_that_first(self) -> None:
-        """When the connection may be unencrypted, that is the only finding
-        worth reporting: certificate verification does not apply."""
+        """Certificate verification does not apply when the connection may be
+        unencrypted, so that is reported alone."""
         for mode in ("disable", "allow", "prefer"):
             posture = TlsPosture(ssl_mode=mode, has_root_certificate=True)
 

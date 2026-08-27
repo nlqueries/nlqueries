@@ -140,8 +140,8 @@ class TestDialectNames:
         assert "no grammar available" in decision.summary()
 
     def test_the_generic_connector_must_supply_a_real_dialect(self) -> None:
-        """`sqlalchemy` reaches many engines, so it names no grammar of its
-        own. Refused rather than guessed."""
+        """`sqlalchemy` reaches many engines and identifies no single grammar,
+        so a statement for it is refused until the caller supplies one."""
         assert not evaluate("SELECT 1", "sqlalchemy").allowed
 
     def test_anonymous_functions_are_reported_even_when_allowed(self) -> None:
@@ -203,10 +203,10 @@ class TestTheGatesUseThePolicy:
 
 
 class TestDialectFromUrl:
-    """The generic SQLAlchemy connector names no grammar of its own.
+    """Dialect resolution for the generic SQLAlchemy connector.
 
-    Its `db_type` is `sqlalchemy` whatever engine it reaches, so the dialect is
-    taken from the URL. Backend names were measured against SQLAlchemy 2.0 and
+    Its `db_type` is `sqlalchemy` for every engine it reaches, so the dialect is
+    taken from the URL. Backend names measured against SQLAlchemy 2.0 and
     checked against sqlglot 30.9.
     """
 
@@ -231,9 +231,8 @@ class TestDialectFromUrl:
 
     @pytest.mark.parametrize("url", ["not a url at all", "", "://"])
     def test_an_unreadable_url_resolves_to_nothing(self, url: str) -> None:
-        """None rather than a guess: the caller decides what to do about a
-        dialect it cannot name, and a statement checked against the wrong
-        grammar has not been checked."""
+        """Returns None so the caller decides. A statement checked against a
+        different grammar is not checked."""
         from nlqueries.sql_policy import dialect_from_url
 
         assert dialect_from_url(url) is None

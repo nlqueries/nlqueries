@@ -59,10 +59,10 @@ def test_connect_requires_tls_by_default() -> None:
 
 
 def test_plaintext_is_still_possible_but_has_to_be_asked_for() -> None:
-    """The old behaviour is still available — it just has to be written down.
+    """The previous behaviour remains available but must be stated.
 
-    `ssl_mode: disable` in a connector's config says the same thing the old
-    default did, where somebody can read it.
+    `ssl_mode: disable` records in the connector's configuration what the old
+    default did implicitly.
     """
     args = _connect_and_capture({"ssl_mode": "disable"})
     assert args["sslmode"] == "disable"

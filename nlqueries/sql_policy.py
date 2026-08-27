@@ -4,28 +4,21 @@ nlqueries.sql_policy
 ~~~~~~~~~~~~~~~~~~~~
 Whether a generated statement is one this product is willing to run.
 
-The gates this replaces asked whether the root node was a ``Select``. Every
-payload in ``tests/security/payloads`` satisfies that condition and still does
-something a read query should not, so the question has to be asked of the whole
-tree rather than of its root.
+Rules are applied to the whole parsed tree. The checks this replaced examined
+only the root node, and every payload in ``tests/security/payloads`` has a
+``Select`` at its root.
 
-The function set is taken from sqlglot rather than restated here. sqlglot models
-standard SQL functions as typed classes and falls back to :class:`exp.Anonymous`
-for anything it does not recognise, which is the vendor, extension and
-user-defined set -- ``pg_read_file``, ``pg_sleep``, ``nextval``, and a
-user-defined ``lab.mark``. Measured against the audit corpus, that single signal
-isolates every function-based payload, and against 62 common analytics functions
-it misclassifies 4 (``age``, ``jsonb_agg``, ``regexp_matches``, ``every``), each
-of which needs one allowlist entry.
+Permitted functions are determined by sqlglot rather than listed here. sqlglot
+models standard SQL functions as typed classes and falls back to
+:class:`exp.Anonymous` for the vendor, extension and user-defined set.
+Measured: that signal refuses all five function-based payloads in the audit
+corpus, and misclassifies 4 of 62 common analytics functions (``age``,
+``jsonb_agg``, ``regexp_matches``, ``every``), each requiring one allowlist
+entry.
 
-Root statement types are allowed rather than denied. ``VACUUM``, ``CALL`` and
-``DO`` parse to :class:`exp.Command`, and ``COPY``, ``SET``, ``GRANT`` and
-``TRUNCATE`` each parse to their own class. A denylist would have to enumerate
-them and would not cover whichever class sqlglot introduces next.
-
-This module decides; it does not enforce. Nothing calls it on the query path
-yet, so that the inventory in :mod:`nlqueries.sql_policy_report` can establish
-what an allowlist would cost before anything is refused.
+Root statement types are allow-listed. ``VACUUM``, ``CALL`` and ``DO`` parse to
+:class:`exp.Command`; ``COPY``, ``SET``, ``GRANT`` and ``TRUNCATE`` each parse
+to a distinct class. A deny-list would require every such class to be named.
 """
 
 from __future__ import annotations
@@ -65,9 +58,9 @@ _FORBIDDEN_NODES: tuple[type[exp.Expression], ...] = (
     exp.Lock,
 )
 
-#: Functions sqlglot does not model that are nonetheless safe to run, per
-#: dialect. Kept small and specific: each entry is a decision that a named
-#: function reads data and does nothing else.
+#: Functions sqlglot does not model that are safe to run, per dialect. Each
+#: entry records that the named function reads data and performs no other
+#: action.
 ALLOWED_ANONYMOUS: dict[str, frozenset[str]] = {
     "postgres": frozenset({"age", "jsonb_agg", "regexp_matches", "every", "date_part"}),
     "redshift": frozenset({"age", "regexp_matches", "every", "date_part"}),
@@ -100,11 +93,11 @@ def dialect_from_url(url: str) -> str | None:
     """The sqlglot dialect for a SQLAlchemy *url*, or None if unreadable.
 
     The generic SQLAlchemy connector reaches any engine SQLAlchemy supports, so
-    its ``db_type`` names no grammar. The engine is named by the URL instead:
-    ``mysql+pymysql://...`` is MySQL whatever the connector is called.
+    its ``db_type`` does not identify a grammar. The URL identifies the engine:
+    ``mysql+pymysql://...`` is MySQL regardless of the connector's name.
 
-    Returning None rather than a guess keeps the caller's decision explicit: a
-    statement checked against the wrong grammar has not been checked.
+    Returns None when the URL cannot be read, leaving the decision to the
+    caller. A statement checked against a different grammar is not checked.
     """
     try:
         from sqlalchemy.engine import make_url  # noqa: PLC0415
@@ -115,8 +108,7 @@ def dialect_from_url(url: str) -> str | None:
     return _sqlglot_dialect(backend) if backend else None
 
 
-#: A statement longer than this is refused before parsing. Generated SQL is
-#: bounded by the model's output; anything at this size is not a question.
+#: Statements longer than this are refused before parsing.
 MAX_BYTES = 100_000
 
 #: Bracket nesting deeper than this is refused, and refused *before* parsing.

@@ -3,18 +3,15 @@ Attempts to get something past the SQL policy (W4-5).
 
 ``tests/test_sql_policy.py`` asserts the rules. This file attempts to defeat
 them: obfuscations of a payload, functions that might be modelled rather than
-anonymous, and inputs designed to make the evaluator raise rather than decide.
+anonymous, and inputs intended to make the evaluator raise rather than decide.
 
-Two results here are worth stating rather than only asserting.
-
-The obfuscations do not work, and the reason is structural: the policy inspects
-the parsed tree, so case, comments, whitespace, quoting and nesting are all
-normalised away before any rule is applied. A check performed on the text would
-have to defeat each of them separately.
+None of the obfuscations succeed. The policy inspects the parsed tree, so case,
+comments, whitespace, quoting and nesting are normalised before any rule is
+applied.
 
 Of 25 functions that read files, sleep, take locks, mutate state or reach the
-network, 23 fall back to ``exp.Anonymous`` and are refused. The two that do not
-are recorded in :data:`TYPED_AND_ALLOWED` with the reason each is acceptable.
+network, 23 fall back to ``exp.Anonymous`` and are refused. The remaining two
+are listed in :data:`TYPED_AND_ALLOWED` with the reason each is permitted.
 """
 
 from __future__ import annotations
@@ -26,7 +23,7 @@ from sqlglot import exp
 
 _READ_FILE = "pg_read_file('/etc/hostname')"
 
-#: The same payload, written sixteen ways.
+#: One payload, written sixteen ways.
 OBFUSCATIONS: tuple[tuple[str, str], ...] = (
     ("baseline", f"SELECT {_READ_FILE}"),
     ("upper case", "SELECT PG_READ_FILE('/etc/hostname')"),
@@ -75,8 +72,7 @@ DANGEROUS_CALLS: tuple[str, ...] = (
 )
 
 #: Functions sqlglot models as typed classes, so the Anonymous signal does not
-#: fire, and which are permitted. Recorded rather than left implicit: each is a
-#: decision, and a reader should be able to see that it was made.
+#: fire, and which are permitted. Each entry records why.
 TYPED_AND_ALLOWED: dict[str, str] = {
     "random()": "non-deterministic, but reads nothing and changes nothing",
     "version()": (
@@ -119,7 +115,7 @@ MALFORMED: tuple[str, ...] = (
 
 @pytest.mark.parametrize(("label", "sql"), OBFUSCATIONS, ids=[o[0] for o in OBFUSCATIONS])
 def test_no_obfuscation_of_a_payload_is_allowed(label: str, sql: str) -> None:
-    """The policy reads the parsed tree, so these normalise to the same thing."""
+    """These normalise to the same parsed tree."""
     assert not evaluate(sql, "postgres").allowed, label
 
 
@@ -133,9 +129,9 @@ def test_dangerous_functions_are_refused(call: str) -> None:
 
 @pytest.mark.parametrize("call", sorted(TYPED_AND_ALLOWED), ids=lambda c: c.split("(")[0])
 def test_the_recorded_typed_functions_are_still_typed(call: str) -> None:
-    """If sqlglot stops modelling one of these, it becomes anonymous and is
-    refused. That is a safe direction, but the note here would be wrong, so
-    this fails and asks for the note to be removed."""
+    """If sqlglot stops modelling one of these it becomes anonymous and is
+    refused, which is safe, but the entry in TYPED_AND_ALLOWED would then be
+    incorrect. This fails so that it is corrected."""
     tree = sqlglot.parse_one(f"SELECT {call}", read="postgres")
 
     assert not list(tree.find_all(exp.Anonymous)), call
@@ -144,14 +140,14 @@ def test_the_recorded_typed_functions_are_still_typed(call: str) -> None:
 
 @pytest.mark.parametrize("sql", MALFORMED, ids=lambda s: repr(s[:24]))
 def test_malformed_input_produces_a_decision_rather_than_an_exception(sql: str) -> None:
-    """Every caller treats a refusal as an answer. An exception here reaches
-    the user as a 500, which is the outcome these gates exist to prevent.
+    """Callers treat a refusal as an answer; an exception reaches the user as a
+    500.
 
-    Three of these have found real defects: prose raises TokenError, which is a
+    Three inputs of this kind have found defects: prose raises TokenError, a
     sibling of ParseError rather than a subclass; deep nesting exhausts the
-    parser's stack with RecursionError, which is not a SqlglotError at all; and
-    an unpaired surrogate raises UnicodeEncodeError from the byte-length check
-    before any parsing happens.
+    parser's stack with RecursionError, which is not a SqlglotError; and an
+    unpaired surrogate raises UnicodeEncodeError from the byte-length check
+    before parsing.
     """
     decision = evaluate(sql, "postgres")
 
@@ -159,12 +155,11 @@ def test_malformed_input_produces_a_decision_rather_than_an_exception(sql: str) 
 
 
 def test_an_unpaired_surrogate_is_refused() -> None:
-    """A Python string can hold one -- decoding JSON produces one from a lone
-    ``\\ud83d`` escape -- and encoding it raises rather than returning bytes.
+    """A Python string can hold an unpaired surrogate -- decoding JSON produces
+    one from a lone ``\\ud83d`` escape -- and encoding it raises.
 
-    A properly paired emoji is the other case, and a different one: it encodes
-    without complaint and is refused by the parser instead. Writing this test
-    with a source-file emoji asserted the wrong thing.
+    A properly paired emoji is a separate case: it encodes without error and is
+    refused by the parser. Both are asserted here.
     """
     decision = evaluate(LONE_SURROGATE + " SELECT 1", "postgres")
 
@@ -179,11 +174,11 @@ def test_an_unpaired_surrogate_is_refused() -> None:
 
 @pytest.mark.parametrize("sql", MALFORMED, ids=lambda s: repr(s[:24]))
 def test_anything_allowed_satisfies_the_policy_s_own_invariant(sql: str) -> None:
-    """Self-consistency: a statement the policy allows must parse to exactly one
-    query containing none of the forbidden nodes.
+    """A statement the policy allows must parse to exactly one query containing
+    none of the forbidden nodes.
 
-    This catches a rule that is checked but not enforced -- the shape the depth
-    cap had before it was moved ahead of parsing.
+    Detects a rule that is evaluated but not applied, which was the state of the
+    depth cap before it was moved ahead of parsing.
     """
     decision = evaluate(sql, "postgres")
     if not decision.allowed:
