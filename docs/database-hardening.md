@@ -33,6 +33,10 @@ read-only transaction still permits:
 Every row of that table is a privilege question, and privileges are granted by
 you. The rest of this page is how.
 
+DuckDB is the exception to "the rest is yours to configure": its file access is
+reachable from any `SELECT` rather than granted by a DBA, so the connector
+closes it in code. See [DuckDB](#duckdb) below.
+
 ---
 
 ## PostgreSQL
@@ -176,14 +180,41 @@ questions about nothing, and looks like it is working.
 ## DuckDB
 
 DuckDB reads the local filesystem through ordinary-looking table functions —
-`read_csv_auto()`, `read_parquet()`, `glob()` — so the database file is not the
-boundary. An audit read a file outside the database this way.
+`read_csv_auto()`, `read_text()`, `glob()` — so a file read arrives inside a
+perfectly well-formed `SELECT`, and the database file is not the boundary.
+Opening the database read-only does nothing about any of them.
 
-Open the database `read_only`, disable external access and extension
-autoloading, and run it somewhere with nothing else to read: a separate
-container with only the database file mounted, no host secrets, and no egress.
-If you cannot arrange that, do not point NLQueries at DuckDB with untrusted
-questions.
+**The connector now closes this, and there is no setting to reopen it.** Every
+DuckDB connection is made with external access off, extension autoinstall and
+autoload off, and the configuration locked so no later `SET` can undo it. A
+database on disk is opened read-only; `:memory:` cannot be (DuckDB refuses) and
+does not need to be.
+
+Measured against DuckDB 1.5.5, before and after:
+
+| | before | after |
+|---|---|---|
+| `read_csv_auto()`, `read_text()`, `read_blob()` | read any file | refused |
+| `glob()` | listed any directory | refused |
+| `ATTACH '/some/other.duckdb'` | opened it | refused |
+| `COPY (...) TO '/path'` | **wrote a file** | refused |
+| `INSTALL httpfs` | reached the network | refused |
+| `CREATE TABLE ...` | wrote to the database | refused (read-only) |
+| ordinary `SELECT` against your tables | worked | works |
+
+Two consequences worth knowing before you upgrade:
+
+- **A database whose tables are views over external parquet or CSV will stop
+  working**, because reading those files is precisely what is being refused.
+  Materialise that data into the DuckDB file. This is a deliberate trade, not
+  an oversight.
+- **A path that does not exist is now refused rather than created.** DuckDB
+  would otherwise make an empty database and answer every question with "no
+  tables", which is a misconfiguration reported as a success.
+
+Running it somewhere with nothing else to read — a container with only the
+database file mounted, no host secrets, no egress — is still worth doing. The
+sandbox above is defence in depth, not a reason to skip the boring one.
 
 ---
 
