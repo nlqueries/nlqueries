@@ -29,6 +29,7 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import get_llm_client
+from nlqueries.sql_policy import evaluate
 
 if TYPE_CHECKING:
     from nlqueries.llm.client import LLMClient
@@ -470,34 +471,32 @@ def _validate_sql(
 
     Checks performed:
     - Non-empty
-    - Parseable by sqlglot for *dialect*
-    - Top-level statement is ``SELECT``
+    - :func:`nlqueries.sql_policy.evaluate` permits the statement
     - All referenced table names exist in ``knowledge_base["schema"]["tables"]``
       (CTE aliases are excluded from this check)
+
+    The policy replaces the parse-and-check-the-root-node sequence this used to
+    perform. That sequence used ``parse_one``, which returns the first statement
+    and discards the rest, so a second statement after a comment satisfied it.
+    It also asked only about the root, so DML inside a CTE, ``SELECT ... INTO``,
+    a row lock and a call to ``pg_read_file`` all passed.
     """
     if not sql.strip():
         return "Generated SQL is empty"
 
-    # Parse -----------------------------------------------------------------
-    # SqlglotError, not ParseError. TokenError is a SIBLING of ParseError under
-    # SqlglotError, not a subclass — so `except ParseError` misses it entirely.
-    # The tokenizer, not the parser, is what fails when the model answers in
-    # prose containing an apostrophe ("I'll", "can't"): the quote opens a string
-    # literal that never closes. That escaped this handler and surfaced to the
-    # user as a 500 from the chat socket, which is the one outcome this function
-    # exists to prevent. Found by the W-0 load baseline, not by a test.
+    decision = evaluate(sql, dialect)
+    if not decision.allowed:
+        return f"Refused by SQL policy {decision.policy_version}: {decision.summary()}"
+
+    # Re-parsed for the schema check below. The policy has already established
+    # that this parses, is a single statement, and is a query.
     try:
         statement = sqlglot.parse_one(sql, dialect=dialect)
-    except sqlglot.errors.SqlglotError as exc:
+    except sqlglot.errors.SqlglotError as exc:  # pragma: no cover - policy caught it
         return f"SQL parse error: {exc}"
 
-    if statement is None:
+    if not isinstance(statement, exp.Expression):  # pragma: no cover - policy caught it
         return "Generated SQL could not be parsed"
-
-    # Must be SELECT --------------------------------------------------------
-    if not isinstance(statement, exp.Select):
-        stmt_type = type(statement).__name__
-        return f"Only SELECT statements are allowed; got {stmt_type}"
 
     # All referenced tables must be in the schema ---------------------------
     schema_tables = {
