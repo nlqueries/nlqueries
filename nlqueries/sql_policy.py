@@ -23,6 +23,7 @@ to a distinct class. A deny-list would require every such class to be named.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import sqlglot
@@ -89,6 +90,16 @@ def _sqlglot_dialect(dialect: str) -> str:
     return _DIALECT_ALIASES.get(dialect.lower(), dialect.lower())
 
 
+def digest_of(sql: str) -> str:
+    """SHA-256 of the UTF-8 bytes of *sql*.
+
+    Uses ``surrogatepass`` so a string containing an unpaired surrogate can be
+    digested rather than raising. Such a statement is refused by
+    :func:`evaluate` before reaching a driver.
+    """
+    return hashlib.sha256(sql.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
 def dialect_from_url(url: str) -> str | None:
     """The sqlglot dialect for a SQLAlchemy *url*, or None if unreadable.
 
@@ -120,11 +131,19 @@ MAX_DEPTH = 100
 
 @dataclass(frozen=True)
 class PolicyDecision:
-    """Whether *sql* may run, and why not if it may not."""
+    """Whether a statement may run, and why not if it may not.
+
+    Bound to the statement it was made about. ``sql_digest`` is the SHA-256 of
+    the exact bytes evaluated, so :meth:`authorises` can establish that a
+    decision applies to the statement a caller is about to run rather than to
+    some earlier one.
+    """
 
     allowed: bool
     dialect: str
     policy_version: str
+    #: SHA-256 of the UTF-8 bytes evaluated.
+    sql_digest: str
     #: One entry per rule the statement failed. Empty when allowed.
     reasons: tuple[str, ...] = ()
     #: Every unrecognised function seen, whether or not it was allowed.
@@ -133,6 +152,19 @@ class PolicyDecision:
 
     def __bool__(self) -> bool:
         return self.allowed
+
+    def authorises(self, sql: str, dialect: str) -> bool:
+        """Whether this decision permits *sql* to run against *dialect*.
+
+        False when the decision refused, when it was made about different bytes,
+        or when it was made for a different dialect. Whitespace and comments are
+        significant: the digest covers what will be sent to the driver.
+        """
+        return (
+            self.allowed
+            and self.sql_digest == digest_of(sql)
+            and self.dialect.lower() == dialect.lower()
+        )
 
     def summary(self) -> str:
         if self.allowed:
@@ -176,6 +208,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=("contains characters that are not valid text",),
         )
 
@@ -184,6 +217,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=(f"statement exceeds {MAX_BYTES} bytes",),
         )
 
@@ -192,6 +226,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=(f"nested deeper than {MAX_DEPTH}",),
         )
 
@@ -208,6 +243,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=("exhausted the parser's stack",),
         )
     except ValueError as exc:
@@ -219,6 +255,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=(f"no grammar available for dialect '{dialect}': {exc}",),
         )
     except SqlglotError as exc:
@@ -229,6 +266,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=(f"could not be parsed as {dialect}: {type(exc).__name__}",),
         )
 
@@ -238,6 +276,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             allowed=False,
             dialect=dialect,
             policy_version=POLICY_VERSION,
+            sql_digest=digest_of(sql),
             reasons=(f"expected exactly one statement, found {len(parsed)}",),
         )
 
@@ -263,6 +302,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         allowed=not reasons,
         dialect=dialect,
         policy_version=POLICY_VERSION,
+        sql_digest=digest_of(sql),
         reasons=tuple(reasons),
         anonymous_functions=anonymous,
     )
