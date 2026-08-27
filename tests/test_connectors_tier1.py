@@ -337,14 +337,22 @@ class TestDuckDBConnector:
                 connector.connect({"database": ":memory:"})
 
     def test_connect_defaults_to_in_memory(self) -> None:
-        """connect() uses ':memory:' when 'database' key is absent."""
+        """connect() uses ':memory:' when 'database' key is absent -- and the
+        sandbox goes on regardless of which database it is."""
         mock_duckdb = MagicMock()
         with patch.dict(sys.modules, {"duckdb": mock_duckdb}):
-            from nlqueries.connectors.duckdb import DuckDBConnector
+            from nlqueries.connectors.duckdb import _SANDBOX, DuckDBConnector
 
             connector = granted(DuckDBConnector())
             connector.connect({})
-            mock_duckdb.connect.assert_called_once_with(database=":memory:")
+            mock_duckdb.connect.assert_called_once_with(
+                database=":memory:",
+                # DuckDB refuses to open an in-memory database read-only, and
+                # it is private to this process and gone when it exits, so
+                # there is nothing in it to protect.
+                read_only=False,
+                config=_SANDBOX,
+            )
             assert connector._database == ":memory:"
 
     def test_test_connection_true(self) -> None:
