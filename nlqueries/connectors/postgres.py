@@ -31,6 +31,7 @@ from nlqueries.connectors.base import (
     TableSpec,
 )
 from nlqueries.connectors.postgres_identity import PostgresIdentity, inspect_identity
+from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 from nlqueries.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class PostgresConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._engine: Engine | None = None
         self._identity: PostgresIdentity | None = None
+        self._tls: TlsPosture | None = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -110,8 +112,9 @@ class PostgresConnector(DatabaseConnector):
         # A database with no TLS now fails to connect rather than
         # downgrading silently. `ssl_mode: disable` expresses the previous
         # default explicitly in the connector's configuration.
-        ssl_mode = credentials.get("ssl_mode", "require")
+        ssl_mode = resolve_ssl_mode(credentials)
         connect_args["sslmode"] = ssl_mode
+        self._tls = describe(credentials)
         if ssl_ca_cert := credentials.get("ssl_ca_cert"):
             connect_args["sslrootcert"] = ssl_ca_cert
         if ssl_client_cert := credentials.get("ssl_client_cert"):
@@ -163,6 +166,11 @@ class PostgresConnector(DatabaseConnector):
                 )
             else:
                 logger.debug("PostgreSQL identity check: %s", identity.summary())
+
+    @property
+    def tls(self) -> TlsPosture | None:
+        """The TLS posture of this connection, or None before ``connect``."""
+        return self._tls
 
     @property
     def identity(self) -> PostgresIdentity | None:

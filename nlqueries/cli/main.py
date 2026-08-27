@@ -288,6 +288,18 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
         return _CheckResult("Qdrant", "fail", f"unexpected error: {exc}", str(exc))
 
 
+def _tls_check(service: str, tls: Any) -> _CheckResult:
+    """Report what the connection's TLS settings verify.
+
+    A warning rather than a failure: an encrypted but unverified connection is
+    functional, and the certificate configuration is the operator's to supply.
+    """
+    label = f"{service} transport"
+    if tls.is_fully_verified:
+        return _CheckResult(label, "ok", tls.summary())
+    return _CheckResult(label, "warn", f"{tls.summary()} — see docs/database-hardening.md")
+
+
 def _identity_check(service: str, identity: Any) -> _CheckResult:
     """Report the database login's privileges.
 
@@ -364,6 +376,9 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
                 identity = getattr(connector, "identity", None)
                 if identity is not None:
                     results.append(_identity_check(service, identity))
+                tls = getattr(connector, "tls", None)
+                if tls is not None:
+                    results.append(_tls_check(service, tls))
         except Exception as exc:  # noqa: BLE001
             results.append(
                 _CheckResult(
