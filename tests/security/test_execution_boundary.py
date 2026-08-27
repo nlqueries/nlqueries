@@ -138,11 +138,11 @@ def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
 
 
 class TestTheConnectorRefusesOnItsOwn:
-    """The layer that does not depend on the orchestrator being right.
+    """Enforcement independent of the orchestration layer.
 
-    Orchestration already refuses to reach a connector without permission. This
-    is the independent check underneath it: a connector nobody granted anything
-    to will not run a statement, whoever asks.
+    Orchestration refuses to reach a connector without permission. This class
+    verifies the check beneath it: a connector with no granted policy will not
+    execute a statement, regardless of the caller.
     """
 
     def _connector(self):

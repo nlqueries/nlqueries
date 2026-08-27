@@ -8,9 +8,9 @@ means every route (fresh generation, cache replay, retry, promotion, the direct
 connector API) can be driven from one list, and adding a payload covers all of
 them at once.
 
-Every one of these is a syntactically valid `SELECT`. That is the point: each
-satisfies the only question the current gates ask — "is the root node a Select"
-— and each does something a read query should not.
+Every payload is a syntactically valid `SELECT`. Each therefore satisfies the
+only condition the current gates test, that the root node is a Select, while
+performing an operation a read query should not.
 """
 
 from __future__ import annotations
@@ -144,9 +144,9 @@ DUCKDB: tuple[Payload, ...] = (
 ALL: tuple[Payload, ...] = POSTGRES + DUCKDB
 
 
-#: Queries that must keep working. A corpus without these measures how much a
-#: policy refuses, not whether it is any good — and the failure mode of every
-#: control here is refusing analytics somebody depends on.
+#: Queries that must continue to work. Without them the corpus measures only
+#: how much a policy refuses, not whether it remains usable. The failure mode of
+#: every control here is the refusal of legitimate analytics.
 SAFE_POSTGRES: tuple[str, ...] = (
     "SELECT count(*) FROM lab.orders",
     "SELECT customer_id, sum(total) AS revenue FROM lab.orders GROUP BY customer_id",

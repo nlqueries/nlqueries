@@ -107,9 +107,9 @@ class PostgresConnector(DatabaseConnector):
         # man-in-the-middle. `verify-full` is the production setting, and
         # making it mandatory is its own piece of work.
         #
-        # A database with no TLS at all now fails to connect rather than
-        # quietly downgrading. That is the point: `ssl_mode: disable` says the
-        # same thing as the old default, out loud, in the connector's config.
+        # A database with no TLS now fails to connect rather than
+        # downgrading silently. `ssl_mode: disable` expresses the previous
+        # default explicitly in the connector's configuration.
         ssl_mode = credentials.get("ssl_mode", "require")
         connect_args["sslmode"] = ssl_mode
         if ssl_ca_cert := credentials.get("ssl_ca_cert"):
@@ -121,8 +121,8 @@ class PostgresConnector(DatabaseConnector):
         # Pooling only pays off now that connectors are reused across
         # requests (see loader's cache). Each cached connector holds up to
         # pool_size + max_overflow connections, so the ceiling per API worker is
-        # connectors_in_cache * (CONNECTOR_POOL_SIZE + CONNECTOR_MAX_OVERFLOW) —
-        # worth knowing before raising either against a customer's database.
+        # connectors_in_cache * (CONNECTOR_POOL_SIZE + CONNECTOR_MAX_OVERFLOW).
+        # Consider that ceiling before raising either value.
         # pool_recycle keeps a connection from outliving a firewall or proxy idle
         # timeout, which otherwise surfaces as a random dead connection.
         self._engine = create_engine(
@@ -138,15 +138,15 @@ class PostgresConnector(DatabaseConnector):
     def _watch_identity(self, engine: Engine) -> None:
         """Read the connected role's privileges once per physical connection.
 
-        Attached to the pool's ``connect`` event rather than run per query: it
-        fires when a new backend connection is opened, which is where the answer
-        can change, and costs one round trip measured at 2 ms cold and 0.3 ms
-        warm against PostgreSQL 16.
+        Attached to the pool's ``connect`` event rather than executed per query.
+        The event fires when a backend connection is opened, which is when the
+        result can change. Cost measured against PostgreSQL 16: 2 ms on a cold
+        connection, 0.3 ms warm.
 
-        The result is recorded and reported, never enforced here. A read-only
-        transaction constrains what a statement does; it does not constrain who
-        runs it, and `pg_read_file()` is refused by privilege rather than by the
-        transaction. Surfacing that is the point.
+        The result is recorded and reported. It is not enforced here: a
+        read-only transaction restricts the operations a statement performs but
+        not the role it executes as, and ``pg_read_file()`` is refused by
+        privilege rather than by the transaction.
         """
 
         @event.listens_for(engine, "connect")
@@ -166,10 +166,10 @@ class PostgresConnector(DatabaseConnector):
 
     @property
     def identity(self) -> PostgresIdentity | None:
-        """The last identity read, or None before the first connection opens.
+        """The most recent identity read, or None if no connection has opened.
 
-        None is not "acceptable": the pool opens connections lazily, so a
-        connector that has answered no queries has nothing to report yet.
+        The pool opens connections lazily, so None indicates that no check has
+        run rather than that a check found no concerns.
         """
         return self._identity
 

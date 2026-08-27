@@ -197,11 +197,11 @@ def open_connector_for_agent(
     Returns ``None`` when the connector cannot be found, the required driver is
     not installed, or the connection attempt fails.
 
-    The connector may be **shared with other in-flight requests**. It used to be
-    built fresh per query and the docstring said not to cache it; that is no
-    longer true, and callers must not close it or store per-request state on it.
-    Reuse is what makes pooling work at all — a pool discarded after one query
-    has pooled nothing.
+    The connector may be **shared with other in-flight requests**. It was
+    previously built per query, and this docstring previously instructed callers
+    not to cache it. That is no longer the case: callers must not close it or
+    store per-request state on it, since reuse is required for pooling to have
+    any effect.
 
     Set ``CONNECTOR_CACHE_ENABLED=false`` to restore the previous behaviour.
 

@@ -6,12 +6,12 @@ One place that builds a Qdrant client, and one rule about authentication.
 A security audit reproduced this chain end to end: an anonymous writer put a
 forged entry into the semantic cache, the cache returned it on a matching
 question, and the SQL inside it ran against the customer's database. Qdrant is
-therefore not a cache in the security sense — it is an input, and an input
-nobody had to authenticate to write.
+therefore not a cache in the security sense. It is an input, and one that
+required no authentication to write.
 
 The rule is that anything not on the loopback interface must present an API key.
-A Qdrant on `localhost` is a developer's own process and needs no ceremony; a
-Qdrant anywhere else is reachable by something other than this process, and
+A Qdrant on `localhost` belongs to the running process; a Qdrant on any other
+address is reachable by other parties, and
 "reachable by something else" is exactly the condition the audit exploited. A
 private Docker network is not an exception: the chain needs one compromised
 neighbour, not an internet route.

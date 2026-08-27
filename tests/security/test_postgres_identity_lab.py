@@ -2,13 +2,13 @@
 The PostgreSQL identity check, against a real server (W3-1).
 
 ``tests/test_postgres_identity.py`` covers the classification rules without a
-database. This file covers the part that cannot be asserted from a unit test:
-that the query runs on a real PostgreSQL, that it distinguishes the
-least-privilege role the hardening guide describes from the privileged one the
-container ships with, and that the connector populates the report by itself.
+database. This file covers what a unit test cannot assert: that the query
+executes on a real PostgreSQL, that it distinguishes the least-privilege role
+described in the hardening guide from the privileged role the container
+provides, and that the connector populates the report without an explicit call.
 
-The lab's ``sec_reader`` is built from ``docs/database-hardening.md``, so a
-change to the guide that leaves the role over-privileged is visible here.
+The lab's ``sec_reader`` role is built from ``docs/database-hardening.md``, so a
+change to the guide that leaves the role over-privileged is detected here.
 """
 
 from __future__ import annotations
@@ -41,11 +41,8 @@ def _raw_connection(credentials: dict[str, Any]) -> Any:
 def test_the_least_privilege_role_reports_least_privilege(
     least_privilege_credentials: dict[str, Any],
 ) -> None:
-    """The control for this whole check.
-
-    If the role the guide tells operators to create were still reported as
-    over-privileged, the check would be noise and would be turned off.
-    """
+    """The control for the check: the role the guide instructs operators to
+    create must be reported as least privilege."""
     connection = _raw_connection(least_privilege_credentials)
     try:
         identity = inspect_identity(connection)
@@ -60,8 +57,8 @@ def test_the_least_privilege_role_reports_least_privilege(
 def test_the_privileged_role_is_reported_as_privileged(
     privileged_credentials: dict[str, Any],
 ) -> None:
-    """The container's own login, which is what an unconfigured deployment
-    would use."""
+    """The container's default login, as used by an unconfigured
+    deployment."""
     connection = _raw_connection(privileged_credentials)
     try:
         identity = inspect_identity(connection)
@@ -77,7 +74,7 @@ def test_the_search_path_the_guide_sets_is_reported(
     least_privilege_credentials: dict[str, Any],
 ) -> None:
     """The lab sets `search_path = pg_catalog, lab` on the role, following the
-    guide. Reporting it is how an operator sees a path they did not intend."""
+    guide. The report includes it so an unintended path is visible."""
     connection = _raw_connection(least_privilege_credentials)
     try:
         identity = inspect_identity(connection)
@@ -91,13 +88,13 @@ def test_the_search_path_the_guide_sets_is_reported(
 def test_the_connector_reports_its_identity_without_being_asked(
     least_privilege_credentials: dict[str, Any],
 ) -> None:
-    """The report is produced by the pool's connect event, so an operator does
-    not have to know the check exists to benefit from it."""
+    """The report is produced by the pool's connect event and requires no
+    explicit call."""
     connector = granted(PostgresConnector())
     connector.connect({**least_privilege_credentials, "ssl_mode": "disable"})
     try:
-        # None before the first connection: the pool opens them lazily, and
-        # "nothing reported yet" is not the same as "nothing to report".
+        # None before the first connection: the pool opens connections
+        # lazily, so no check has run at this point.
         assert connector.identity is None
 
         result = connector.execute_query("SELECT 1")

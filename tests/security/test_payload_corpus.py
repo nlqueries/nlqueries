@@ -6,12 +6,11 @@ sequence is compared before and after. A denial that returns a tidy error while
 the row still lands is not a fix, and only the second half of that sentence is
 visible from an error string.
 
-Where a payload still succeeds, the test is `xfail(strict=True)` naming the
-register row. That does two things a skip would not: it keeps the failure
-recorded rather than hidden, and it turns green the moment the finding is fixed
-— at which point strict xfail fails the build and makes somebody delete the
-marker and update the register. An open finding cannot quietly become a closed
-one, and a closed one cannot quietly reopen.
+Where a payload still succeeds, the test is marked `xfail(strict=True)` and
+names the register row. Unlike a skip, this keeps the failure recorded, and when
+the finding is fixed the strict marker fails the build, requiring the marker to
+be removed and the register updated. Neither the opening nor the closing of a
+finding can therefore go unrecorded.
 """
 
 from __future__ import annotations
@@ -42,9 +41,9 @@ STILL_OPEN = {
     "sleep": "SEC-02 — needs the SQL policy (W4); bounded only by statement_timeout",
     "server_file_read": "SEC-02 — needs the SQL policy (W4) or a role without pg_read_server_files",
     # `row_lock` was listed here and the lab refused it on the first run:
-    # PostgreSQL declines `SELECT ... FOR UPDATE` in a read-only transaction,
-    # which was assumed rather than measured. Strict xfail turned that into a
-    # build failure instead of a note nobody would have written down.
+    # PostgreSQL declines `SELECT ... FOR UPDATE` in a read-only transaction.
+    # The entry had been assumed rather than measured, and the strict xfail
+    # marker reported it as a build failure.
 }
 
 
@@ -69,11 +68,11 @@ def test_payload_has_no_effect(payload: Payload, privileged_credentials, marker,
 
 @pytest.mark.parametrize("sql", SAFE_POSTGRES, ids=lambda s: s[:38])
 def test_ordinary_analytics_still_run(sql: str, privileged_credentials):
-    """The control every one of these layers has to pass.
+    """The control that every layer must also satisfy.
 
-    A policy that refuses the payloads and also refuses a GROUP BY has not made
-    the product safer, it has made it useless — and that is the failure mode
-    somebody fixes by turning the control off.
+    A policy that refuses the payloads and also refuses a GROUP BY has made the
+    product unusable rather than safer, and a deployment will respond by
+    disabling the control.
     """
     result = _run(privileged_credentials, sql)
 
