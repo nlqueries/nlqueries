@@ -1,18 +1,18 @@
 """
 Can DuckDB read files that are not its database? (SEC-16)
 
-The register carries this as *Unverified*: the audit reported reproducing it and
-then destroyed the lab, so what survived was a claim. This settles it.
+The register recorded this as *Unverified*: the audit reported reproducing it
+and then destroyed its environment, leaving only the claim. These tests
+establish the result.
 
-DuckDB is different from the other engines in a way that matters here. Its
-file-reading facilities are ordinary-looking *table functions* — `read_csv_auto`,
-`glob`, `read_parquet` — so they arrive inside a perfectly well-formed `SELECT`,
-and the database file is not the boundary. Opening the database read-only does
-nothing about them.
+DuckDB differs from the other engines in a relevant respect. Its file-reading
+facilities are table functions -- `read_csv_auto`, `glob`, `read_parquet` -- so
+they appear within an ordinary `SELECT`, and the database file does not bound
+what a query may reach. Opening the database read-only does not restrict them.
 
-The canary is written by the test rather than borrowed from the host, so a pass
-means "the engine read a file it should not have", not "the engine found
-something interesting on this machine".
+Canary data is written by the test rather than taken from the host, so a failure
+indicates that the engine read a file it should not have, rather than that it
+found existing data on the machine.
 """
 
 from __future__ import annotations
@@ -53,8 +53,9 @@ def duckdb_lab(tmp_path: Path) -> tuple[DuckDBConnector, Path]:
 
 
 def test_the_canary_is_actually_readable_on_disk(duckdb_lab) -> None:
-    """The instrument check: if the file were unreadable for an unrelated
-    reason, every assertion below would pass for the wrong reason."""
+    """Verifies the test's own instrument: if the file were unreadable for an
+    unrelated reason, the assertions below would pass regardless of the
+    connector's behaviour."""
     _connector, canary = duckdb_lab
 
     assert _CANARY in canary.read_text(encoding="utf-8")
@@ -73,8 +74,8 @@ def test_read_csv_auto_cannot_reach_a_file_outside_the_database(duckdb_lab) -> N
 
 
 def test_glob_cannot_enumerate_the_filesystem(duckdb_lab) -> None:
-    """Enumeration is the cheaper half: it needs no read permission on contents,
-    and it is how an attacker finds what is worth reading."""
+    """Enumeration requires no read permission on file contents and is the
+    means by which a caller would locate files worth reading."""
     connector, canary = duckdb_lab
 
     result = connector.execute_query(f"SELECT * FROM glob('{canary.parent.as_posix()}/*')")
@@ -84,7 +85,7 @@ def test_glob_cannot_enumerate_the_filesystem(duckdb_lab) -> None:
 
 
 def test_ordinary_queries_against_the_database_still_work(duckdb_lab) -> None:
-    """The control. Whatever stops the two above must not stop this."""
+    """The control: the restrictions above must not block normal use."""
     connector, _canary = duckdb_lab
 
     result = connector.execute_query("SELECT count(*) FROM orders")
@@ -93,13 +94,13 @@ def test_ordinary_queries_against_the_database_still_work(duckdb_lab) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The rest of the ways out, measured on 1.5.5 before anything was changed:
-# every one of these succeeded.
+# The remaining routes out of the database. Measured on DuckDB 1.5.5 before
+# this was addressed: each of the following succeeded.
 # ---------------------------------------------------------------------------
 
 
 def test_attach_cannot_open_another_database(duckdb_lab, tmp_path: Path) -> None:
-    """`ATTACH` takes a path, so it is a file read wearing different clothes."""
+    """`ATTACH` accepts a path, and is therefore also a file read."""
     connector, _canary = duckdb_lab
     other = tmp_path / "somebody-elses.duckdb"
     duckdb.connect(str(other)).close()
@@ -110,10 +111,10 @@ def test_attach_cannot_open_another_database(duckdb_lab, tmp_path: Path) -> None
 
 
 def test_copy_to_cannot_write_a_file(duckdb_lab, tmp_path: Path) -> None:
-    """The one that is not exfiltration but deposit.
+    """The only payload here that writes rather than reads.
 
-    Every other payload here reads. `COPY TO` writes, which makes the database
-    a way to put a file of the caller's choosing at a path of their choosing.
+    `COPY TO` allows a file with caller-supplied contents to be created at a
+    caller-supplied path.
     """
     connector, _canary = duckdb_lab
     target = tmp_path / "written-by-a-query.csv"
@@ -125,7 +126,7 @@ def test_copy_to_cannot_write_a_file(duckdb_lab, tmp_path: Path) -> None:
 
 
 def test_extensions_cannot_be_installed(duckdb_lab) -> None:
-    """`INSTALL httpfs` is how a filesystem sandbox becomes a network one."""
+    """`INSTALL httpfs` would extend the reachable surface to the network."""
     connector, _canary = duckdb_lab
 
     result = connector.execute_query("INSTALL httpfs")
@@ -134,8 +135,8 @@ def test_extensions_cannot_be_installed(duckdb_lab) -> None:
 
 
 def test_the_database_is_opened_read_only(duckdb_lab) -> None:
-    """Read-only does not stop the file functions -- that is why the sandbox
-    config exists -- but it is still the thing that stops a write."""
+    """Read-only does not restrict the file functions, which is why the sandbox
+    configuration exists, but it does prevent writes."""
     connector, _canary = duckdb_lab
 
     result = connector.execute_query("CREATE TABLE written AS SELECT 1 AS x")
@@ -144,8 +145,8 @@ def test_the_database_is_opened_read_only(duckdb_lab) -> None:
 
 
 def test_a_missing_database_is_refused_rather_than_created(tmp_path: Path) -> None:
-    """DuckDB would create an empty database and answer every question with
-    "no tables", which is a misconfiguration reported as a success."""
+    """DuckDB would otherwise create an empty database at this path, so a
+    misconfiguration would present as success."""
     connector = granted(DuckDBConnector())
     missing = tmp_path / "nothing-here.duckdb"
 
@@ -156,11 +157,11 @@ def test_a_missing_database_is_refused_rather_than_created(tmp_path: Path) -> No
 
 
 def test_no_credential_reopens_external_access(tmp_path: Path) -> None:
-    """There is deliberately no way to switch this off.
+    """The sandbox cannot be disabled by configuration.
 
-    A setting that can be disabled by configuration is one that will be found
-    disabled in the deployment that most needed it, and the credential blob is
-    the least trustworthy place to take that instruction from.
+    A control that configuration can disable will eventually be found disabled
+    in a deployment that required it, and the credential record is not a
+    trustworthy source for that instruction.
     """
     database = tmp_path / "lab.duckdb"
     seed = duckdb.connect(str(database))

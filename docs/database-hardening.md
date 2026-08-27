@@ -166,11 +166,11 @@ the query cannot reach, and reset pooled connections on return.
 
 ## SQLite
 
-**The connector opens the database read-only and installs an authorizer, and
-neither can be switched off from configuration.** Read-only alone is not enough,
-and it is worth saying why: measured on SQLite 3.50.4, a connection opened
-`mode=ro` will still `ATTACH` another database file and read every row in it.
-Read-only describes what may be *written*, not which files may be *opened*.
+**The connector opens the database read-only and installs an authorizer.
+Neither can be disabled through configuration.** Read-only alone is not
+sufficient: measured on SQLite 3.50.4, a connection opened `mode=ro` will still
+`ATTACH` another database file and read its contents. Read-only restricts what
+may be written, not which files may be opened.
 
 | | before | after |
 |---|---|---|
@@ -181,14 +181,14 @@ Read-only describes what may be *written*, not which files may be *opened*.
 | `load_extension()` | already refused by Python's `sqlite3` | refused |
 | ordinary `SELECT` | worked | works |
 
-Pragmas are allow-listed rather than deny-listed, because the dangerous ones are
-the ones nobody thinks to name.
+Pragmas are allow-listed rather than deny-listed, because those requiring
+restriction are not confined to an obvious set.
 
-The `mode=ro` flag travels as a URI parameter, which makes the database path
-worth care: a `database` credential ending `?mode=rwc&` would turn a URI built
-by string concatenation into one carrying two `mode` parameters, and SQLite
-honours the first. The path is percent-encoded so a value that looks like a
-query string stays part of the filename.
+`mode=ro` is supplied as a URI parameter, so the database path requires care: a
+`database` credential ending `?mode=rwc&` would turn a URI built by string
+concatenation into one carrying two `mode` parameters, of which SQLite applies
+the first. The path is percent-encoded, so such a value remains part of the
+filename.
 
 A path that does not exist is refused rather than created, for the same reason
 as DuckDB: an empty database answers every question with "no tables", which is a
@@ -199,25 +199,25 @@ Still worth doing yourself:
 - make the file and its directory read-only at the filesystem level, because a
   read-only handle is an application-level promise and file permissions are not.
 
-`:memory:` is not a substitute for a missing file. It succeeds, answers
-questions about nothing, and looks like it is working. It is also the one case
-that is not opened read-only — SQLite cannot — but the authorizer still applies,
-because `ATTACH` reaches the filesystem from there too.
+`:memory:` is not a substitute for a missing file: it succeeds, returns answers
+about no data, and presents as working. It is also the one case not opened
+read-only, since SQLite does not permit it, but the authorizer still applies
+because `ATTACH` reaches the filesystem from an in-memory database.
 
 ---
 
 ## DuckDB
 
-DuckDB reads the local filesystem through ordinary-looking table functions —
-`read_csv_auto()`, `read_text()`, `glob()` — so a file read arrives inside a
-perfectly well-formed `SELECT`, and the database file is not the boundary.
-Opening the database read-only does nothing about any of them.
+DuckDB reads the local filesystem through table functions — `read_csv_auto()`,
+`read_text()`, `glob()` — so a file read appears within an ordinary `SELECT`,
+and the database file does not bound what a query may reach. Opening the
+database read-only does not restrict them.
 
-**The connector now closes this, and there is no setting to reopen it.** Every
-DuckDB connection is made with external access off, extension autoinstall and
-autoload off, and the configuration locked so no later `SET` can undo it. A
-database on disk is opened read-only; `:memory:` cannot be (DuckDB refuses) and
-does not need to be.
+**The connector closes this, and no setting reopens it.** Every DuckDB
+connection is made with external access disabled, extension autoinstall and
+autoload disabled, and the configuration locked so that no subsequent `SET` can
+alter it. A database on disk is opened read-only; `:memory:` cannot be, as
+DuckDB does not permit it, and does not require it.
 
 Measured against DuckDB 1.5.5, before and after:
 
@@ -231,19 +231,18 @@ Measured against DuckDB 1.5.5, before and after:
 | `CREATE TABLE ...` | wrote to the database | refused (read-only) |
 | ordinary `SELECT` against your tables | worked | works |
 
-Two consequences worth knowing before you upgrade:
+Two consequences to note before upgrading:
 
-- **A database whose tables are views over external parquet or CSV will stop
-  working**, because reading those files is precisely what is being refused.
-  Materialise that data into the DuckDB file. This is a deliberate trade, not
-  an oversight.
-- **A path that does not exist is now refused rather than created.** DuckDB
-  would otherwise make an empty database and answer every question with "no
-  tables", which is a misconfiguration reported as a success.
+- **A database whose tables are views over external parquet or CSV files will
+  no longer function**, since reading those files is what is being refused.
+  Materialise that data into the DuckDB file. This is a deliberate trade-off.
+- **A path that does not exist is refused rather than created.** DuckDB would
+  otherwise create an empty database, so a misconfiguration would present as
+  success.
 
-Running it somewhere with nothing else to read — a container with only the
-database file mounted, no host secrets, no egress — is still worth doing. The
-sandbox above is defence in depth, not a reason to skip the boring one.
+Running DuckDB in an environment with nothing else to read — a container with
+only the database file mounted, no host secrets and no egress — remains
+worthwhile. The sandbox above is defence in depth and does not replace it.
 
 ---
 
