@@ -65,6 +65,7 @@ from nlqueries.orchestrator.provenance import (
     record_route,
 )
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
+from nlqueries.sql_policy import evaluate
 
 _log = logging.getLogger(__name__)
 
@@ -312,54 +313,36 @@ def _merge_hybrid(
 
 
 def _is_executable_select(sql: str, dialect: str) -> bool:
-    """Return ``True`` when *sql* parses as a single ``SELECT`` for *dialect*.
+    """Return ``True`` when the SQL policy permits *sql* for *dialect*.
 
-    Schema-free: this is a last gate in front of someone else's database, not a
-    substitute for ``_validate_sql``.
+    A last gate in front of someone else's database, and the only one on the
+    cache-replay path: a hit reaches this with a stored statement and no model
+    in front of it.
 
-    *dialect* is required rather than defaulted. Parsing with sqlglot's generic
-    dialect rejects BigQuery backtick identifiers, Snowflake's ``:`` JSON
-    accessor and T-SQL's ``TOP`` — so a generic check would refuse to run
-    perfectly good cached SQL for three supported connectors, which is a worse
-    failure than the one being fixed.
+    Delegates to :func:`nlqueries.sql_policy.evaluate`, which replaced the
+    root-node check performed here. That check asked only whether the statement
+    parsed as a ``Select``, which every payload in ``tests/security/payloads``
+    satisfies. It also used ``parse_one``, which returns the first statement and
+    discards the rest.
 
-    Catches ``SqlglotError``, not ``ParseError``: ``TokenError`` is a sibling of
-    ``ParseError``, not a subclass, and prose with an apostrophe fails in the
-    tokenizer.
-
-    An unrecognised dialect *name* raises ``ValueError``, and this used to fall
-    back to sqlglot's generic dialect so that "a dialect we cannot name never
-    blocks execution of otherwise good SQL". That reasoning is right about
-    availability and wrong about this function, which is a security gate: parsing
-    with the wrong grammar and then executing against the real database means the
-    thing that was checked is not the thing that runs. ``mssql`` is a registered
-    ``db_type`` and is not a sqlglot dialect name, so the fallback was reachable
-    through a supported connector rather than only through a typo.
-
-    So it fails closed, and says why at ERROR level — an unknown dialect is a
-    configuration problem an operator can fix, not a property of the SQL, and it
-    should not be diagnosed by noticing that cached queries quietly stopped
-    running.
+    The policy fails closed on an unrecognised dialect name for the reason this
+    function already recorded: ``mssql`` is a registered ``db_type`` and is not
+    a sqlglot dialect name, so parsing with a fallback grammar was reachable
+    through a supported connector. It is logged at ERROR because an unknown
+    dialect is a configuration problem an operator can fix, and should not be
+    diagnosed by noticing that cached queries quietly stopped running.
     """
-    import sqlglot  # noqa: PLC0415
-    import sqlglot.errors  # noqa: PLC0415
-    import sqlglot.expressions as sqlglot_exp  # noqa: PLC0415
-
     if not sql or not sql.strip():
         return False
-    try:
-        statement = sqlglot.parse_one(sql, dialect=dialect)
-    except ValueError:
+
+    decision = evaluate(sql, dialect)
+    if not decision.allowed:
         _log.error(
-            "Cached SQL was not executed: %r is not a sqlglot dialect, so the "
-            "statement could not be checked against the grammar it will run "
-            "under. Map this connector's db_type to a sqlglot dialect name.",
-            dialect,
+            "Cached SQL was not executed. Policy %s refused it: %s",
+            decision.policy_version,
+            decision.summary(),
         )
-        return False
-    except sqlglot.errors.SqlglotError:
-        return False
-    return isinstance(statement, sqlglot_exp.Select)
+    return decision.allowed
 
 
 async def _execute_cached_sql(

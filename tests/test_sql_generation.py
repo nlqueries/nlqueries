@@ -695,7 +695,9 @@ def test_validate_sql_catches_tokenizer_errors_not_just_parse_errors() -> None:
     error = _validate_sql(PROSE_APOSTROPHE, _make_kb(), "postgres")
 
     assert error is not None
-    assert "parse error" in error.lower()
+    # Wording moved when the SQL policy took over this check; the property
+    # asserted is that the tokenizer failure is reported rather than raised.
+    assert "parsed" in error.lower()
 
 
 def test_validate_sql_reports_rather_than_raises_on_arbitrary_prose() -> None:

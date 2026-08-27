@@ -157,3 +157,46 @@ def test_every_decision_records_the_policy_version() -> None:
     """A stored verdict has to be distinguishable from a current one."""
     for sql in ("SELECT 1", "DROP TABLE t"):
         assert evaluate(sql, "postgres").policy_version == POLICY_VERSION
+
+
+class TestTheGatesUseThePolicy:
+    """The policy is only useful where the query path consults it."""
+
+    def test_the_cache_replay_gate_refuses_every_payload(self, caplog) -> None:
+        """A cache hit reaches the database with a stored statement and no
+        model in front of it, so this is the only check on that path."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
+
+        allowed = [p.id for p in POSTGRES if _is_executable_select(p.sql, "postgres")]
+
+        assert not allowed, f"cache replay would run: {', '.join(allowed)}"
+
+    def test_the_cache_replay_gate_allows_ordinary_analytics(self) -> None:
+        from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
+
+        refused = [sql for sql in SAFE_POSTGRES if not _is_executable_select(sql, "postgres")]
+
+        assert not refused, f"cache replay would refuse: {refused}"
+
+    def test_the_validator_refuses_a_second_statement(self) -> None:
+        """`_validate_sql` used `parse_one`, which returns the first statement
+        and discards the rest, so this passed validation before."""
+        from nlqueries.orchestrator.sql_generation import _validate_sql
+
+        kb = {"schema": {"tables": [{"name": "orders"}]}}
+        error = _validate_sql("SELECT 1 /* c */ ; DROP TABLE orders", kb, "postgres")
+
+        assert error is not None
+        assert "one statement" in error
+
+    def test_the_validator_refuses_dml_in_a_cte(self) -> None:
+        """The root is a Select, which is all the previous check asked."""
+        from nlqueries.orchestrator.sql_generation import _validate_sql
+
+        kb = {"schema": {"tables": [{"name": "orders"}]}}
+        sql = "WITH w AS (INSERT INTO orders VALUES (1) RETURNING *) SELECT * FROM w"
+
+        error = _validate_sql(sql, kb, "postgres")
+
+        assert error is not None
+        assert "Insert" in error
