@@ -288,6 +288,24 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
         return _CheckResult("Qdrant", "fail", f"unexpected error: {exc}", str(exc))
 
 
+def _capability_check(service: str, db_type: str) -> _CheckResult:
+    """Report what this connector enforces for its dialect.
+
+    A dialect with no entry is reported as a failure: the table records what
+    was established about each connector, and an absent entry means nothing
+    was established.
+    """
+    from nlqueries.connectors.capabilities import for_dialect  # noqa: PLC0415
+
+    label = f"{service} controls"
+    caps = for_dialect(db_type)
+    if caps is None:
+        return _CheckResult(label, "fail", f"no capabilities recorded for dialect '{db_type}'")
+    if not caps.concerns:
+        return _CheckResult(label, "ok", caps.summary())
+    return _CheckResult(label, "warn", f"{caps.summary()} — see docs/database-hardening.md")
+
+
 def _tls_check(service: str, tls: Any) -> _CheckResult:
     """Report what the connection's TLS settings verify.
 
@@ -379,6 +397,7 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
                 tls = getattr(connector, "tls", None)
                 if tls is not None:
                     results.append(_tls_check(service, tls))
+                results.append(_capability_check(service, db_type))
         except Exception as exc:  # noqa: BLE001
             results.append(
                 _CheckResult(
