@@ -312,7 +312,46 @@ worthwhile. The sandbox above is defence in depth and does not replace it.
 
 ---
 
-## Snowflake, BigQuery, Redshift, SQL Server
+## What each connector enforces
+
+The read-only transaction described above is a PostgreSQL mechanism. It is not
+available on every engine, and several connectors apply nothing equivalent. The
+table records what the connector does, not what the engine could support.
+
+| dialect | read-only mechanism | statement timeout | verified in this repository |
+|---|---|---|---|
+| `postgres` | `SET TRANSACTION READ ONLY` | `SET LOCAL statement_timeout` | yes |
+| `sqlite` | `mode=ro` + authorizer | watchdog `interrupt()` | yes |
+| `duckdb` | `read_only=True` + locked sandbox | watchdog | yes |
+| `mssql` | **none** | **none per query** | no |
+| `redshift` | **none** | **none** | no |
+| `snowflake` | **none** | `cursor.execute(timeout=…)` | no |
+| `bigquery` | **none** | `job_timeout_ms` | no |
+| `sqlalchemy` | **none** | best-effort per dialect | no |
+
+`nlqueries health` reports this per connector, so the row that applies to a
+deployment does not have to be looked up here.
+
+**Where the mechanism is "none", the only thing preventing a write is the
+privilege granted to the login.** For those dialects the sections above are not
+defence in depth — they are the whole defence.
+
+Two entries deserve particular attention.
+
+**Redshift enforces neither control.** `timeout_seconds` is accepted for
+interface parity and ignored. Redshift supports `SET TRANSACTION READ ONLY` and
+`statement_timeout`, so both are implementable; until they are, a read-only user
+and a WLM query-monitoring rule are the only limits in force.
+
+**The generic `sqlalchemy` connector reaches any engine SQLAlchemy supports**,
+so no single statement about its behaviour holds. Nothing read-only is applied.
+
+"Verified in this repository" means the mechanism is exercised by a test against
+a real engine. Snowflake, BigQuery and Redshift require accounts that a test run
+cannot provision, so they are recorded as unverified whatever their
+documentation says.
+
+### What to grant, per vendor
 
 The same shape, in each vendor's vocabulary:
 
