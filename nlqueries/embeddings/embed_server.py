@@ -37,6 +37,7 @@ Managed:  nlqueries embed-server start / stop / status
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -261,20 +262,114 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length))
+    #: Requests larger than this are refused without being read.
+    MAX_BODY_BYTES = 10 * 1024 * 1024
 
-        if self.path == "/embed":
-            texts = [body["text"]]
-            vectors = self._encode(texts)
-            result: dict[str, Any] = {"vector": vectors[0]}
-        elif self.path == "/embed-batch":
-            vectors = self._encode(body["texts"])
-            result = {"vectors": vectors}
-        else:
-            self.send_response(404)
-            self.end_headers()
+    #: Applied to the connection socket. A client that declares a body and does
+    #: not send it would otherwise hold a worker thread until it disconnects,
+    #: and this server is threaded, so enough such connections stop it serving.
+    timeout = 30
+
+    def _fail(self, status: int, reason: str) -> None:
+        """Answer with *status* and a short JSON reason.
+
+        Answering matters: an unhandled exception closes the connection without
+        a response, which a caller sees as the server having gone away.
+        """
+        body = json.dumps({"error": reason}).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    #: Whether the request body has been taken off the socket.
+    _body_consumed = False
+
+    def _drain(self) -> None:
+        """Read and discard the declared body, up to the size limit.
+
+        Replying without consuming the body leaves unread bytes in the receive
+        buffer, and closing the connection then sends a reset instead of the
+        response. The client sees a dropped connection rather than the status.
+        """
+        original = self.connection.gettimeout()
+        try:
+            # Briefly, and by what arrives rather than by what was declared:
+            # the declared length is either unknown here or known to be a lie,
+            # and reading it would block until the connection times out.
+            self.connection.settimeout(0.25)
+            self.rfile.read(65536)
+        except Exception:  # noqa: BLE001 - draining is best effort
+            pass
+        finally:
+            with contextlib.suppress(Exception):
+                self.connection.settimeout(original)
+
+    def _read_body(self) -> Any:
+        """Parse the request body, or raise ValueError with a reason."""
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError):
+            raise ValueError("Content-Length is not a number") from None
+        if length < 0:
+            raise ValueError("Content-Length is negative")
+        if length > self.MAX_BODY_BYTES:
+            raise ValueError(f"body exceeds {self.MAX_BODY_BYTES} bytes")
+
+        raw = self.rfile.read(length)
+        self._body_consumed = True
+        if len(raw) != length:
+            raise ValueError("body is shorter than Content-Length")
+        try:
+            parsed = json.loads(raw or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ValueError("body is not valid JSON") from None
+        if not isinstance(parsed, dict):
+            raise ValueError("body is not a JSON object")
+        return parsed
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path not in ("/embed", "/embed-batch"):
+            self._drain()
+            self._fail(404, "no such endpoint")
+            return
+
+        try:
+            body = self._read_body()
+        except ValueError as exc:
+            if not self._body_consumed:
+                # Replying with bytes still unread closes the connection with a
+                # reset on some platforms, and the client sees a dropped
+                # connection rather than the status.
+                self._drain()
+            self._fail(400, str(exc))
+            return
+        except (TimeoutError, OSError):
+            # The client stopped sending. Nothing to answer to.
+            return
+
+        try:
+            if self.path == "/embed":
+                text = body["text"]
+                if not isinstance(text, str):
+                    raise TypeError("'text' must be a string")
+                result: dict[str, Any] = {"vector": self._encode([text])[0]}
+            else:
+                texts = body["texts"]
+                if not isinstance(texts, list) or not all(isinstance(x, str) for x in texts):
+                    raise TypeError("'texts' must be a list of strings")
+                result = {"vectors": self._encode(texts)}
+        except KeyError as exc:
+            self._fail(400, f"missing field: {exc.args[0]}")
+            return
+        except TypeError as exc:
+            self._fail(400, str(exc))
+            return
+        except Exception:
+            logger.exception("Embedding request failed")
+            self._fail(500, "embedding failed")
             return
 
         self._respond(result)
