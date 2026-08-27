@@ -39,7 +39,13 @@ services:
     networks:
       - nlqueries
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      # The qdrant/qdrant image ships neither wget, curl nor nc, so an
+      # HTTP-client probe can never pass: the service stays unhealthy and
+      # nlqueries-core, which waits on `condition: service_healthy`, never
+      # starts. bash is present, so the REST port is probed with its /dev/tcp
+      # pseudo-device. Same probe as the enterprise compose file, where this was
+      # found and fixed first.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 10s
       timeout: 5s
       retries: 5
