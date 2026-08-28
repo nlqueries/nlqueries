@@ -90,6 +90,11 @@ class Source(StrEnum):
     #: The process owner, over stdio. There is no token: the caller launched
     #: this process and already has whatever it has.
     LOCAL = "local"
+    #: A caller on a networked transport that is running without
+    #: authentication, which an operator has to ask for. Nothing is known about
+    #: them, and the audit record says so rather than naming the account the
+    #: server happens to run as.
+    ANONYMOUS = "anonymous"
 
 
 @dataclass(frozen=True)
