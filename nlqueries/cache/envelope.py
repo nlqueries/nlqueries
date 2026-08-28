@@ -62,6 +62,14 @@ SIGNED_FIELDS = (
 
 _KEY_ENV = "NLQ_CACHE_SIGNING_KEY"
 
+#: A file holding the key, for deployments that mount secrets rather than pass
+#: them in the environment.
+_KEY_FILE_ENV = "NLQ_CACHE_SIGNING_KEY_FILE"
+
+#: Used when the key cannot be persisted. Held for the life of the process so
+#: that a payload signed by this process still verifies in it.
+_ephemeral_key: bytes | None = None
+
 
 @dataclass(frozen=True)
 class CacheBinding:
@@ -97,34 +105,72 @@ def _key_path() -> Path:
 
 
 def signing_key() -> bytes:
-    """The HMAC key, from the environment or a file in the state directory.
+    """The HMAC key: from the environment, a mounted file, or the state directory.
 
-    Generated on first use when neither is present. Generating rather than
+    Generated on first use when none is present. Generating rather than
     requiring configuration keeps caching working on upgrade; the key is still
     outside Qdrant, which is what the signature depends on.
 
-    A deployment running more than one host must set :data:`_KEY_ENV` so the
-    hosts agree. Where they do not, entries written by one host fail to verify
-    on another and are treated as misses.
+    Every process that shares a cache must arrive at the same key. A generated
+    one is written under the state directory, which a second container does not
+    share, so a deployment running more than one process must set
+    :data:`_KEY_ENV` or :data:`_KEY_FILE_ENV`. Where it does not, entries
+    written by one process do not verify in another and are treated as misses.
     """
     configured = os.getenv(_KEY_ENV, "").strip()
     if configured:
         return configured.encode("utf-8")
 
+    key_file = os.getenv(_KEY_FILE_ENV, "").strip()
+    if key_file:
+        # Configured but unreadable is a deployment error. Falling back would
+        # produce a key this process alone holds, and the cache would go quiet
+        # rather than report the misconfiguration.
+        try:
+            material = Path(key_file).read_bytes().strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"{_KEY_FILE_ENV} is set to {key_file}, which cannot be read"
+            ) from exc
+        if not material:
+            raise RuntimeError(f"{_KEY_FILE_ENV} is set to {key_file}, which is empty")
+        return material
+
     path = _key_path()
     if path.exists():
         return path.read_bytes().strip()
 
+    global _ephemeral_key  # noqa: PLW0603 - one key per process, by design
+    if _ephemeral_key is not None:
+        return _ephemeral_key
+
     key = secrets.token_hex(32).encode("ascii")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(key)
-    # Readable only by the owner. The key is the whole of the protection.
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(key)
+        # Readable only by the owner. The key is the whole of the protection.
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as exc:
+        # A read-only root filesystem reaches here. Signing still works, but
+        # only within this process and only until it restarts.
+        _ephemeral_key = key
+        logger.warning(
+            "Could not write a semantic-cache signing key to %s (%s). Using a "
+            "key held in memory: cache entries will not be shared with other "
+            "processes and will not survive a restart. Set %s or %s to fix this.",
+            path,
+            exc,
+            _KEY_ENV,
+            _KEY_FILE_ENV,
+        )
+        return key
+
     logger.info(
-        "Generated a semantic-cache signing key at %s. Set %s to share one key "
-        "across hosts; otherwise each host verifies only its own entries.",
+        "Generated a semantic-cache signing key at %s. Set %s or %s to share one "
+        "key across processes; otherwise each verifies only its own entries.",
         path,
         _KEY_ENV,
+        _KEY_FILE_ENV,
     )
     return key
 
