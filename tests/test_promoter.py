@@ -34,8 +34,16 @@ def _make_feedback_record(
     rating: str = "up",
     corrected_sql: str | None = None,
     agent_id: str = "agent1",
+    source: str | None = None,
 ):
-    from nlqueries.feedback.models import QueryFeedback
+    """A record for the promotion-mechanics tests below.
+
+    Defaults to an attributed source: promotion refuses records whose origin
+    cannot be established (SEC-10), and these tests are about dedup, corrected
+    SQL and dry-run parity rather than provenance. The gate itself is covered in
+    tests/test_feedback_provenance.py.
+    """
+    from nlqueries.feedback.models import SOURCE_CLI, QueryFeedback
 
     return QueryFeedback(
         question=question,
@@ -44,6 +52,7 @@ def _make_feedback_record(
         agent_id=agent_id,
         corrected_sql=corrected_sql,
         timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        source=source if source is not None else SOURCE_CLI,
     )
 
 

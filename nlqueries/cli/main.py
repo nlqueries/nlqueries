@@ -953,7 +953,7 @@ def submit_feedback(
 
     agent_id = _resolve_alias(agent_id)
 
-    from nlqueries.feedback.models import QueryFeedback
+    from nlqueries.feedback.models import SOURCE_CLI, QueryFeedback
     from nlqueries.feedback.store import record_feedback
 
     fb = QueryFeedback(
@@ -962,6 +962,8 @@ def submit_feedback(
         corrected_sql=corrected_sql,
         rating=rating,
         agent_id=agent_id,
+        # Run by an operator on this host, so the record names someone.
+        source=SOURCE_CLI,
     )
     record_feedback(fb)
 
@@ -981,7 +983,13 @@ def submit_feedback(
 
 @cli.command("promote-feedback")
 @click.argument("agent_id")
-def promote_feedback_cmd(agent_id: str) -> None:
+@click.option(
+    "--include-anonymous",
+    is_flag=True,
+    default=False,
+    help="Also promote feedback whose origin cannot be established.",
+)
+def promote_feedback_cmd(agent_id: str, include_anonymous: bool) -> None:
     """Promote positively-rated feedback into the verified Qdrant collection.
 
     \b
@@ -993,6 +1001,13 @@ def promote_feedback_cmd(agent_id: str) -> None:
     ``ask`` commands can blend them into the prompt as verified examples.
 
     \b
+    Feedback submitted over the MCP transport, and feedback recorded before
+    origins were tracked, is skipped: that transport has no authentication, so
+    the rating that qualifies a record is supplied by whoever sent it, and a
+    promoted pair steers generation for everyone using the agent. Review those
+    records and pass --include-anonymous to promote them anyway.
+
+    
     This command is also called automatically at the end of 'export-kb'.
 
     \b
@@ -1005,7 +1020,7 @@ def promote_feedback_cmd(agent_id: str) -> None:
 
     console.print(f"[bold]Promoting feedback[/bold] for [cyan]{agent_id}[/cyan] …")
     try:
-        count = promote_feedback(agent_id)
+        count = promote_feedback(agent_id, include_unattributed=include_anonymous)
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Promotion failed:[/bold red] {exc}")
         sys.exit(1)

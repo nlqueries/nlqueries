@@ -140,7 +140,7 @@ class TestPromoterUsesBatchEmbed:
     def test_uses_embed_batch_not_embed_text(self) -> None:
         from datetime import UTC, datetime
 
-        from nlqueries.feedback.models import QueryFeedback
+        from nlqueries.feedback.models import SOURCE_CLI, QueryFeedback
         from nlqueries.feedback.promoter import promote_feedback
 
         records = [
@@ -150,6 +150,9 @@ class TestPromoterUsesBatchEmbed:
                 rating="up",
                 agent_id="agent1",
                 timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                # Promotion refuses records whose origin cannot be established
+                # (SEC-10); this test is about batching the embed calls.
+                source=SOURCE_CLI,
             )
             for i in range(3)
         ]
