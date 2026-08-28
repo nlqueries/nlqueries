@@ -360,3 +360,98 @@ class TestDiscoveryErrors:
             pytest.raises(OidcVerificationError, match="discovery"),
         ):
             OidcTokenVerifier(DISCOVERY_URL)
+
+
+# ---------------------------------------------------------------------------
+# SEC-15 — the two ways this verifier accepted a token it should not
+# ---------------------------------------------------------------------------
+
+
+class TestSec15:
+    """A discovery document without `issuer`, and a token without `sub`.
+
+    Both were accepted. The first because a missing issuer was passed to PyJWT
+    as `issuer=None`, which does not mean "check against nothing" but "do not
+    check"; the second because the claim was read with a default, so a token
+    that never identified anyone produced an identity of empty string.
+    """
+
+    def test_a_discovery_document_without_an_issuer_is_refused(self) -> None:
+        """Rather than silently dropping the issuer check.
+
+        The provider whose discovery document lacks `issuer` is misconfigured or
+        is not the provider it claims to be. Continuing without the check means
+        a token minted by any provider whose JWKS we can fetch would verify.
+        """
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, issuer="https://attacker.example.com")
+        jwks = _make_jwks(public_key)
+        without_issuer = {"jwks_uri": JWKS_URI}
+
+        side_effect = _make_url_router(without_issuer, [jwks])
+
+        with (
+            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            pytest.raises(OidcVerificationError, match="issuer"),
+        ):
+            OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
+
+    def test_the_issuer_is_still_checked_when_present(self) -> None:
+        """The control: a mismatched issuer was always refused, and still is."""
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, issuer="https://attacker.example.com")
+        jwks = _make_jwks(public_key)
+
+        side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
+
+        with (
+            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            pytest.raises(OidcVerificationError, match="issuer"),
+        ):
+            OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
+
+    def test_a_token_with_no_subject_claim_at_all_is_refused(self) -> None:
+        """`sub` is the identity everything downstream authorises against.
+
+        PyJWT rejects a `sub` that is present and not a string, so that case was
+        never the gap. A token that simply omits the claim is, and it used to
+        produce an identity of empty string — a value that compares equal to the
+        next token that also had none.
+        """
+        private_key, public_key = _generate_rsa_key_pair()
+        now = datetime.now(UTC)
+        token = jwt.encode(
+            {
+                "email": "alice@example.com",
+                "aud": CLIENT_ID,
+                "iss": ISSUER,
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(seconds=3600)).timestamp()),
+            },
+            _private_key_pem(private_key),
+            algorithm="RS256",
+            headers={"kid": "test-kid-1"},
+        )
+        jwks = _make_jwks(public_key)
+
+        side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
+
+        with (
+            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            pytest.raises(OidcVerificationError, match="subject"),
+        ):
+            OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
+
+    def test_a_token_with_a_blank_subject_is_refused(self) -> None:
+        """Present but empty is the same problem wearing a different hat."""
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, sub="   ")
+        jwks = _make_jwks(public_key)
+
+        side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
+
+        with (
+            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            pytest.raises(OidcVerificationError, match="subject"),
+        ):
+            OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
