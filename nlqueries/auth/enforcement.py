@@ -23,6 +23,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from nlqueries.auth.admission import AdmissionControl, TooManyRequests
 from nlqueries.auth.authorizer import AgentAuthorizer
 from nlqueries.auth.principal import (
     AGENTLESS_ACTIONS,
@@ -104,15 +105,39 @@ def _decide(
         raise NotAuthorized(f"Not authorized to perform {action}{target}.")
 
 
+def _admit(admission: AdmissionControl | None, principal: Principal, action: Action) -> None:
+    """Take an admission slot, recording a refusal as its own kind of denial."""
+    if admission is None:
+        return
+    try:
+        admission.acquire(principal.subject)
+    except TooManyRequests as exc:
+        record(
+            AuditEvent(
+                principal=principal.subject,
+                source=principal.source,
+                action=action,
+                decision=AuditEvent.DENY,
+                reason=f"admission: {exc}",
+            )
+        )
+        raise
+
+
 def guard(
     func: Callable[..., Any],
     authorizer: AgentAuthorizer,
     principal_for_call: Callable[[], Principal],
+    admission: AdmissionControl | None = None,
 ) -> Callable[..., Any]:
-    """Wrap *func* so the call is authorised first.
+    """Wrap *func* so the call is authorised, and admitted, first.
 
     *principal_for_call* is resolved per call rather than passed in, because the
     identity belongs to the request and the wrapper is built once at startup.
+
+    Authorisation runs before admission. A caller who may not do this at all
+    should be told so however many times they ask, rather than having their
+    refusals rationed and eventually replaced by a different refusal.
     """
     action = TOOL_ACTIONS.get(func.__name__)
     if action is None:  # pragma: no cover - the registry test prevents this
@@ -124,14 +149,29 @@ def guard(
 
         @functools.wraps(func)
         async def async_guarded(*args: Any, **kwargs: Any) -> Any:
-            _decide(authorizer, principal_for_call(), action, _agent_of(func, args, kwargs))
-            return await func(*args, **kwargs)
+            principal = principal_for_call()
+            _decide(authorizer, principal, action, _agent_of(func, args, kwargs))
+            _admit(admission, principal, action)
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                # In `finally`, so a tool that raises does not leak the slot. A
+                # leaked slot is permanent: the caller's concurrency allowance
+                # shrinks by one for the life of the process.
+                if admission is not None:
+                    admission.release(principal.subject)
 
         return async_guarded
 
     @functools.wraps(func)
     def guarded(*args: Any, **kwargs: Any) -> Any:
-        _decide(authorizer, principal_for_call(), action, _agent_of(func, args, kwargs))
-        return func(*args, **kwargs)
+        principal = principal_for_call()
+        _decide(authorizer, principal, action, _agent_of(func, args, kwargs))
+        _admit(admission, principal, action)
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if admission is not None:
+                admission.release(principal.subject)
 
     return guarded
