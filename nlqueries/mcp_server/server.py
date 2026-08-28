@@ -25,16 +25,19 @@ get_cache_stats     Return cache size and collection info for an agent.
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
 
 import anyio
 from mcp.server.fastmcp import FastMCP
 
 from nlqueries import config
+from nlqueries.auth.principal import Principal, local_principal
 
 _log = logging.getLogger(__name__)
 
@@ -543,9 +546,60 @@ def _build_server(
         auth_args = {"token_verifier": verifier, "auth": settings}
 
     server = FastMCP("nlqueries", instructions=_INSTRUCTIONS, host=host, port=port, **auth_args)
+
+    # One guard, at the one place every tool is registered. Nine call sites
+    # would be nine chances for the tenth tool to be added without one.
+    from nlqueries.auth.enforcement import guard  # noqa: PLC0415
+
+    authorizer = _resolve_authorizer(authenticated)
     for fn in _ALL_TOOLS:
-        server.add_tool(fn)
+        server.add_tool(guard(fn, authorizer, _principal_for_call))
     return server
+
+
+def _principal_for_call() -> Principal:
+    """Who is calling, resolved per request.
+
+    Over a networked transport the SDK has already verified the bearer token and
+    put it on the request context; without one the call is local, and the
+    process owner is the principal. There is no third case: a networked
+    transport with no verifier does not start.
+    """
+    from mcp.server.auth.middleware.auth_context import get_access_token  # noqa: PLC0415
+
+    from nlqueries.auth.mcp_verifier import principal_from  # noqa: PLC0415
+
+    token = get_access_token()
+    if token is not None:
+        return principal_from(token)
+    return local_principal(getpass.getuser())
+
+
+def _resolve_authorizer(authenticated: bool) -> Any:
+    """The authorizer for this server.
+
+    Deny-by-default: with authentication on and no grants file, every call is
+    refused. That combination is a misconfiguration rather than a policy, so it
+    is refused at startup instead — a server that authenticates correctly and
+    then denies everything is a support case, not a control.
+    """
+    from nlqueries.auth.authorizer import (  # noqa: PLC0415
+        ConfigAllowlistAuthorizer,
+        LocalAuthorizer,
+        load_grants,
+    )
+
+    if not authenticated:
+        return LocalAuthorizer()
+
+    path = os.getenv(_GRANTS_FILE_ENV, "").strip()
+    if not path:
+        raise SystemExit(
+            f"MCP authentication is configured but {_GRANTS_FILE_ENV} is not set, "
+            "so every authenticated call would be denied. Write a grants file "
+            "naming which subjects may perform which actions on which agents."
+        )
+    return ConfigAllowlistAuthorizer(load_grants(Path(path)))
 
 
 # Module-level instance — used for tool introspection and tests.
@@ -563,6 +617,11 @@ _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # noqa: S104
 
 #: Set to `1` to bind a network interface anyway. Named for what it does.
 _INSECURE_BIND_ENV = "NLQ_ALLOW_INSECURE_BIND"
+
+#: Which subjects may perform which actions on which agents. Required once
+#: authentication is on: without it every authenticated call would be denied,
+#: which is a misconfiguration rather than a policy.
+_GRANTS_FILE_ENV = "NLQ_MCP_GRANTS_FILE"
 
 
 def _refuse_unauthenticated_exposure(host: str) -> None:

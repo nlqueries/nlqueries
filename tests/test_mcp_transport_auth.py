@@ -24,6 +24,7 @@ ENV_VARS = (
     "NLQ_MCP_STATIC_TOKEN_FILE",
     "NLQ_ALLOW_UNAUTHENTICATED_MCP",
     "NLQ_ALLOW_INSECURE_BIND",
+    "NLQ_MCP_GRANTS_FILE",
 )
 
 GOOD_TOKEN = "a" * 32
@@ -99,3 +100,44 @@ def test_the_refusal_names_what_to_configure(monkeypatch) -> None:
     assert "NLQ_MCP_OIDC_DISCOVERY_URL" in message
     assert "NLQ_MCP_STATIC_TOKEN" in message
     assert "NLQ_ALLOW_UNAUTHENTICATED_MCP" in message
+
+
+def test_authentication_without_grants_refuses_to_start(monkeypatch) -> None:
+    """Deny-by-default is the code path; this combination is a misconfiguration.
+
+    A server that authenticates correctly and then denies every call is a
+    support case, not a control, so it is refused at startup with the thing to
+    fix named.
+    """
+    monkeypatch.setenv("NLQ_MCP_STATIC_TOKEN", GOOD_TOKEN)
+    monkeypatch.setenv("NLQ_MCP_RESOURCE_URL", "https://mcp.example.com")
+    monkeypatch.delenv("NLQ_MCP_GRANTS_FILE", raising=False)
+
+    with pytest.raises(SystemExit, match="NLQ_MCP_GRANTS_FILE"):
+        mcp_server._resolve_authorizer(authenticated=True)
+
+
+def test_an_unauthenticated_server_uses_the_local_profile() -> None:
+    """stdio. The process owner goes through the same interface rather than
+    round the side of it."""
+    from nlqueries.auth.authorizer import LocalAuthorizer
+
+    assert isinstance(mcp_server._resolve_authorizer(authenticated=False), LocalAuthorizer)
+
+
+def test_a_grants_file_produces_an_allowlist(monkeypatch, tmp_path) -> None:
+    from nlqueries.auth.authorizer import ConfigAllowlistAuthorizer
+
+    grants = tmp_path / "grants.yaml"
+    grants.write_text(
+        "grants:\n  - subject: alice\n    agents: ['sales']\n    actions: ['query:execute']\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NLQ_MCP_STATIC_TOKEN", GOOD_TOKEN)
+    monkeypatch.setenv("NLQ_MCP_RESOURCE_URL", "https://mcp.example.com")
+    monkeypatch.setenv("NLQ_MCP_GRANTS_FILE", str(grants))
+
+    authorizer = mcp_server._resolve_authorizer(authenticated=True)
+
+    assert isinstance(authorizer, ConfigAllowlistAuthorizer)
+    assert authorizer.subjects == frozenset({"alice"})
