@@ -128,6 +128,7 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 | [docs/configuration.md](docs/configuration.md) | Environment variables |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common warnings and errors explained |
 | [docs/qdrant-setup.md](docs/qdrant-setup.md) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
+| [docs/mcp-authentication.md](docs/mcp-authentication.md) | Authenticating the MCP server — required to serve it over a network |
 | [docs/architecture.md](docs/architecture.md) | Module layout and request flow |
 
 ---
