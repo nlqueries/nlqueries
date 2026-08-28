@@ -144,14 +144,25 @@ The rate limit is a fixed window, so a burst of up to twice the limit can cross
 a boundary. Both counters live in the process, so a deployment running several
 servers behind a load balancer gets the limit multiplied by that number.
 
-These apply only where callers are told apart, which means an authenticated
-transport. stdio has no limits — the caller owns the process, and rationing them
-against themselves would achieve nothing — and neither does a transport running
-with `NLQ_ALLOW_UNAUTHENTICATED_MCP`, because every request on it is the same
-anonymous caller. Limiting that one subject would not ration anybody; it would
-put a single budget across the whole deployment that one client could exhaust
-and thereby starve the rest. Rationing arrives with authentication, along with
-everything else that depends on knowing who is calling.
+These are per principal, so what they ration depends on how many principals
+there are.
+
+With an identity provider each caller has their own `sub`, and the numbers above
+are per person.
+
+**With a pre-shared token they are not.** Every accepted token resolves to the
+same subject, so one allowance covers the whole install: a small team sharing a
+token shares 60 calls a minute and 8 in flight between them, and one client in a
+loop will exhaust it and see the rest refused. Size both numbers for the
+deployment rather than for one person, or move to an identity provider if you
+need to tell callers apart.
+
+stdio has no limits — the caller owns the process, and rationing them against
+themselves would achieve nothing — and neither does a transport running with
+`NLQ_ALLOW_UNAUTHENTICATED_MCP`, where every request is the same anonymous
+caller. There, a limit would not ration anybody: it would put one budget across
+a deployment that had none before, which is not what a switch asking for the
+previous behaviour should hand you.
 
 ## What gets recorded
 

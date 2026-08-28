@@ -105,8 +105,19 @@ def _decide(
         raise NotAuthorized(f"Not authorized to perform {action}{target}.")
 
 
-def _admit(admission: AdmissionControl | None, principal: Principal, action: Action) -> None:
-    """Take an admission slot, recording a refusal as its own kind of denial."""
+def _admit(
+    admission: AdmissionControl | None,
+    principal: Principal,
+    action: Action,
+    agent_id: str | None,
+) -> None:
+    """Take an admission slot, recording a refusal as its own kind of denial.
+
+    The agent is carried into the record for the same reason an authorisation
+    decision carries it: without it the trail shows that a principal was
+    rationed but not what they were asking for, which is the part an operator
+    reading it afterwards actually needs.
+    """
     if admission is None:
         return
     try:
@@ -117,6 +128,7 @@ def _admit(admission: AdmissionControl | None, principal: Principal, action: Act
                 principal=principal.subject,
                 source=principal.source,
                 action=action,
+                agent_id=agent_id,
                 decision=AuditEvent.DENY,
                 reason=f"admission: {exc}",
             )
@@ -150,8 +162,9 @@ def guard(
         @functools.wraps(func)
         async def async_guarded(*args: Any, **kwargs: Any) -> Any:
             principal = principal_for_call()
-            _decide(authorizer, principal, action, _agent_of(func, args, kwargs))
-            _admit(admission, principal, action)
+            agent_id = _agent_of(func, args, kwargs)
+            _decide(authorizer, principal, action, agent_id)
+            _admit(admission, principal, action, agent_id)
             try:
                 return await func(*args, **kwargs)
             finally:
@@ -166,8 +179,9 @@ def guard(
     @functools.wraps(func)
     def guarded(*args: Any, **kwargs: Any) -> Any:
         principal = principal_for_call()
-        _decide(authorizer, principal, action, _agent_of(func, args, kwargs))
-        _admit(admission, principal, action)
+        agent_id = _agent_of(func, args, kwargs)
+        _decide(authorizer, principal, action, agent_id)
+        _admit(admission, principal, action, agent_id)
         try:
             return func(*args, **kwargs)
         finally:

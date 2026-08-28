@@ -292,6 +292,21 @@ class TestAdmission:
         assert caplog.records[-1].audit["decision"] == "deny"
         assert "admission" in caplog.records[-1].audit["reason"]
 
+    def test_a_refusal_records_what_was_being_asked_for(self, caplog) -> None:
+        """Without the agent, the trail shows that a principal was rationed but
+        not what they wanted, which is the part worth having afterwards."""
+        control = AdmissionControl(rate_limit=1, max_concurrent=0)
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, control)
+        guarded("sales")
+
+        with (
+            caplog.at_level(logging.INFO, logger="nlqueries.audit"),
+            pytest.raises(TooManyRequests),
+        ):
+            guarded("sales")
+
+        assert caplog.records[-1].audit["agent_id"] == "sales"
+
     def test_no_admission_control_means_no_limit(self) -> None:
         """stdio passes None: the caller owns the process and rationing them
         against themselves would achieve nothing."""
