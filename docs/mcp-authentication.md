@@ -144,8 +144,14 @@ The rate limit is a fixed window, so a burst of up to twice the limit can cross
 a boundary. Both counters live in the process, so a deployment running several
 servers behind a load balancer gets the limit multiplied by that number.
 
-stdio has no limits. The caller owns the process, and rationing them against
-themselves would achieve nothing.
+These apply only where callers are told apart, which means an authenticated
+transport. stdio has no limits — the caller owns the process, and rationing them
+against themselves would achieve nothing — and neither does a transport running
+with `NLQ_ALLOW_UNAUTHENTICATED_MCP`, because every request on it is the same
+anonymous caller. Limiting that one subject would not ration anybody; it would
+put a single budget across the whole deployment that one client could exhaust
+and thereby starve the rest. Rationing arrives with authentication, along with
+everything else that depends on knowing who is calling.
 
 ## What gets recorded
 

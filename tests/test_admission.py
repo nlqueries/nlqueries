@@ -171,3 +171,50 @@ class TestConfiguration:
         monkeypatch.setenv("NLQ_MCP_RATE_LIMIT_PER_MINUTE", value)
 
         assert from_config().rate_limit == DEFAULT_RATE_LIMIT
+
+
+class TestWindowsDoNotAccumulate:
+    """`_windows` only ever gained keys: one per distinct subject for the life
+    of the process. Small each, but a server in front of an identity provider
+    accumulates one per user who has ever called."""
+
+    def test_expired_windows_are_dropped_when_one_rolls_over(self, monkeypatch) -> None:
+        control = AdmissionControl(rate_limit=5, max_concurrent=0)
+        clock = [1000.0]
+        monkeypatch.setattr(control, "_now", lambda: clock[0])
+
+        for i in range(50):
+            control.acquire(f"user-{i}")
+        assert control.tracked_subjects() == 50
+
+        clock[0] += 61.0
+        control.acquire("user-0")
+
+        assert control.tracked_subjects() == 1
+
+    def test_a_window_still_inside_its_minute_is_kept(self, monkeypatch) -> None:
+        """The sweep must not discard an allowance someone is still spending."""
+        control = AdmissionControl(rate_limit=2, max_concurrent=0)
+        clock = [1000.0]
+        monkeypatch.setattr(control, "_now", lambda: clock[0])
+
+        control.acquire("alice")
+        control.acquire("alice")
+        clock[0] += 30.0
+        control.acquire("bob")
+
+        with pytest.raises(TooManyRequests):
+            control.acquire("alice")
+
+    def test_the_sweep_does_not_reset_the_caller_who_triggered_it(self, monkeypatch) -> None:
+        """Their new window starts at one call, not zero."""
+        control = AdmissionControl(rate_limit=1, max_concurrent=0)
+        clock = [1000.0]
+        monkeypatch.setattr(control, "_now", lambda: clock[0])
+
+        control.acquire("alice")
+        clock[0] += 61.0
+        control.acquire("alice")
+
+        with pytest.raises(TooManyRequests):
+            control.acquire("alice")

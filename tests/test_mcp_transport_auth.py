@@ -195,3 +195,50 @@ def test_a_server_builds_with_authentication_and_a_grants_file(monkeypatch, tmp_
 
     assert server._token_verifier is not None
     assert len(server._tool_manager.list_tools()) == len(mcp_server._ALL_TOOLS)
+
+
+def test_an_unauthenticated_networked_server_has_no_admission_control(monkeypatch) -> None:
+    """Every request on it resolves to the same anonymous subject, so the limits
+    would stop being per-caller and become one budget for the deployment — a cap
+    the operator never had, which any single client could exhaust and thereby
+    starve the others.
+    """
+    monkeypatch.setenv("NLQ_ALLOW_UNAUTHENTICATED_MCP", "1")
+
+    server = mcp_server._build_server(
+        host="127.0.0.1", port=8124, authenticated=False, networked=True
+    )
+
+    for tool in server._tool_manager.list_tools():
+        assert tool.fn.__closure__ is not None
+        admission = [
+            cell.cell_contents
+            for cell in tool.fn.__closure__
+            if type(cell.cell_contents).__name__ == "AdmissionControl"
+        ]
+        assert admission == [], f"{tool.name} was given admission control"
+
+
+def test_an_authenticated_networked_server_does_have_it(monkeypatch, tmp_path) -> None:
+    """The control: limits apply where callers are told apart."""
+    grants = tmp_path / "grants.yaml"
+    grants.write_text(
+        "grants:\n  - subject: alice\n    agents: ['sales']\n    actions: ['query:execute']\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NLQ_MCP_STATIC_TOKEN", GOOD_TOKEN)
+    monkeypatch.setenv("NLQ_MCP_RESOURCE_URL", "https://mcp.example.com")
+    monkeypatch.setenv("NLQ_MCP_GRANTS_FILE", str(grants))
+
+    server = mcp_server._build_server(
+        host="127.0.0.1", port=8125, authenticated=True, networked=True
+    )
+
+    tool = server._tool_manager.list_tools()[0]
+    admission = [
+        cell.cell_contents
+        for cell in (tool.fn.__closure__ or ())
+        if type(cell.cell_contents).__name__ == "AdmissionControl"
+    ]
+
+    assert len(admission) == 1

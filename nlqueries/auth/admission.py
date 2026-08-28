@@ -92,6 +92,14 @@ class AdmissionControl:
                 window = self._windows.get(subject)
                 now = self._now()
                 if window is None or now - window.started >= _WINDOW_SECONDS:
+                    # A window that has rolled over is the moment to drop the
+                    # ones that rolled over and were never used again. Without
+                    # it the dict only ever grows: one entry per distinct
+                    # subject for the life of the process, which for a server
+                    # in front of an identity provider is one per user who has
+                    # ever called. Sweeping here rather than on every call
+                    # keeps it to once per subject per window.
+                    self._evict_expired(now)
                     window = _Window(started=now)
                     self._windows[subject] = window
                 if window.count >= self.rate_limit:
@@ -111,6 +119,21 @@ class AdmissionControl:
                         f"Limit of {self.max_concurrent} calls in flight reached."
                     )
                 self._in_flight[subject] = in_flight + 1
+
+    def _evict_expired(self, now: float) -> None:
+        """Drop windows that have expired. The caller holds the lock."""
+        expired = [
+            name
+            for name, window in self._windows.items()
+            if now - window.started >= _WINDOW_SECONDS
+        ]
+        for name in expired:
+            del self._windows[name]
+
+    def tracked_subjects(self) -> int:
+        """How many rate-limit windows are held. For the tests."""
+        with self._lock:
+            return len(self._windows)
 
     def release(self, subject: str) -> None:
         """Give back a slot. Safe to call for a caller that never took one."""
