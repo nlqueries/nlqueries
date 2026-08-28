@@ -119,6 +119,51 @@ The three that name no agent are authorised without one; the rest are authorised
 against the agent in the call, and a call whose agent cannot be determined is
 refused.
 
+## Limits
+
+Authorisation says whether a caller may run `query` on an agent. It says nothing
+about how often, and each call is an LLM charge, a query against your database,
+and a slot in a process that will otherwise start as many as it is asked to.
+
+Two limits apply per principal on the networked transports, with defaults:
+
+| Variable | Default | What it bounds |
+| --- | --- | --- |
+| `NLQ_MCP_RATE_LIMIT_PER_MINUTE` | 60 | Calls a principal may make in a minute |
+| `NLQ_MCP_MAX_CONCURRENT` | 8 | Calls a principal may have in flight at once |
+
+Set either to `0` to disable it. A value that is not a number, or is negative,
+falls back to the default with a warning rather than to no limit — a typo in a
+number should not switch a control off.
+
+The concurrency limit is the one that matters for a slow tool: `query` is
+allowed forty-five seconds, so a caller who ignores the rate limit's refusals
+could otherwise hold open as many slow calls as they can start.
+
+The rate limit is a fixed window, so a burst of up to twice the limit can cross
+a boundary. Both counters live in the process, so a deployment running several
+servers behind a load balancer gets the limit multiplied by that number.
+
+These are per principal, so what they ration depends on how many principals
+there are.
+
+With an identity provider each caller has their own `sub`, and the numbers above
+are per person.
+
+**With a pre-shared token they are not.** Every accepted token resolves to the
+same subject, so one allowance covers the whole install: a small team sharing a
+token shares 60 calls a minute and 8 in flight between them, and one client in a
+loop will exhaust it and see the rest refused. Size both numbers for the
+deployment rather than for one person, or move to an identity provider if you
+need to tell callers apart.
+
+stdio has no limits — the caller owns the process, and rationing them against
+themselves would achieve nothing — and neither does a transport running with
+`NLQ_ALLOW_UNAUTHENTICATED_MCP`, where every request is the same anonymous
+caller. There, a limit would not ration anybody: it would put one budget across
+a deployment that had none before, which is not what a switch asking for the
+previous behaviour should hand you.
+
 ## What gets recorded
 
 Every decision, allowed and denied, goes to the `nlqueries.audit` logger:

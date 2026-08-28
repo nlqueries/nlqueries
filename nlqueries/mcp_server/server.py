@@ -559,11 +559,24 @@ def _build_server(
 
     # One guard, at the one place every tool is registered. Nine call sites
     # would be nine chances for the tenth tool to be added without one.
+    from nlqueries.auth.admission import from_config  # noqa: PLC0415
     from nlqueries.auth.enforcement import guard  # noqa: PLC0415
 
     authorizer = _resolve_authorizer(authenticated, networked=networked)
+    # One control for the process, shared by every tool, so a caller cannot get
+    # their allowance again by switching tool.
+    #
+    # Only where callers are told apart. On a transport running without
+    # authentication every request resolves to the same anonymous subject, so
+    # these would stop being per-caller limits and become one budget for the
+    # whole deployment -- a cap the operator never had before, which any single
+    # client could exhaust and thereby starve the others. The switch that turns
+    # authentication off is a request for the previous behaviour, and this is
+    # part of what it gives up.
+    admission = from_config() if (networked and authenticated) else None
+    resolve = _principal_for_call(networked=networked)
     for fn in _ALL_TOOLS:
-        server.add_tool(guard(fn, authorizer, _principal_for_call(networked=networked)))
+        server.add_tool(guard(fn, authorizer, resolve, admission))
     return server
 
 

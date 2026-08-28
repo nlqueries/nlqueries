@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from nlqueries.auth.admission import AdmissionControl, TooManyRequests
 from nlqueries.auth.authorizer import ConfigAllowlistAuthorizer, DenyAll, Grant, LocalAuthorizer
 from nlqueries.auth.enforcement import NotAuthorized, guard
 from nlqueries.auth.principal import Action, AuditEvent, Principal, Source, local_principal
@@ -218,3 +219,98 @@ class TestAnUndeterminedAgentFailsClosed:
         guarded = guard(list_agents, _allowlist(["sales"], ["agents:list"]), lambda: ALICE)
 
         assert guarded() == ["sales"]
+
+
+class TestAdmission:
+    """Rate and concurrency limits, applied at the same choke point (SEC-14)."""
+
+    def test_a_caller_over_the_rate_limit_is_refused(self) -> None:
+        control = AdmissionControl(rate_limit=2, max_concurrent=0)
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, control)
+
+        guarded("sales")
+        guarded("sales")
+
+        with pytest.raises(TooManyRequests):
+            guarded("sales")
+
+    def test_the_slot_is_released_when_the_tool_returns(self) -> None:
+        control = AdmissionControl(rate_limit=0, max_concurrent=1)
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, control)
+
+        guarded("sales")
+        guarded("sales")
+
+        assert control.in_flight("alice") == 0
+
+    def test_the_slot_is_released_when_the_tool_raises(self) -> None:
+        """A leaked slot is permanent: the caller's allowance shrinks by one for
+        the life of the process."""
+
+        def invalidate_cache(agent_id: str) -> str:
+            raise RuntimeError("the tool failed")
+
+        control = AdmissionControl(rate_limit=0, max_concurrent=1)
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, control)
+
+        with pytest.raises(RuntimeError):
+            guarded("sales")
+
+        assert control.in_flight("alice") == 0
+
+    @pytest.mark.anyio
+    async def test_an_async_tool_releases_its_slot_too(self) -> None:
+        control = AdmissionControl(rate_limit=0, max_concurrent=1)
+        guarded = guard(query, _allowlist(["sales"], ["query:execute"]), lambda: ALICE, control)
+
+        await guarded("how many orders?", "sales")
+
+        assert control.in_flight("alice") == 0
+
+    def test_authorisation_is_decided_before_admission(self) -> None:
+        """A caller who may not do this at all is told so however many times they
+        ask, rather than having their refusals rationed and then replaced by a
+        different refusal that suggests the answer might change."""
+        control = AdmissionControl(rate_limit=1, max_concurrent=0)
+        guarded = guard(invalidate_cache, DenyAll(), lambda: ALICE, control)
+
+        for _ in range(3):
+            with pytest.raises(NotAuthorized):
+                guarded("sales")
+
+    def test_a_refusal_is_recorded(self, caplog) -> None:
+        control = AdmissionControl(rate_limit=1, max_concurrent=0)
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, control)
+        guarded("sales")
+
+        with (
+            caplog.at_level(logging.INFO, logger="nlqueries.audit"),
+            pytest.raises(TooManyRequests),
+        ):
+            guarded("sales")
+
+        assert caplog.records[-1].audit["decision"] == "deny"
+        assert "admission" in caplog.records[-1].audit["reason"]
+
+    def test_a_refusal_records_what_was_being_asked_for(self, caplog) -> None:
+        """Without the agent, the trail shows that a principal was rationed but
+        not what they wanted, which is the part worth having afterwards."""
+        control = AdmissionControl(rate_limit=1, max_concurrent=0)
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, control)
+        guarded("sales")
+
+        with (
+            caplog.at_level(logging.INFO, logger="nlqueries.audit"),
+            pytest.raises(TooManyRequests),
+        ):
+            guarded("sales")
+
+        assert caplog.records[-1].audit["agent_id"] == "sales"
+
+    def test_no_admission_control_means_no_limit(self) -> None:
+        """stdio passes None: the caller owns the process and rationing them
+        against themselves would achieve nothing."""
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE, None)
+
+        for _ in range(50):
+            guarded("sales")

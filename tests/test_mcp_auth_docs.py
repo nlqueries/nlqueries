@@ -20,6 +20,13 @@ from nlqueries.auth.principal import AGENTLESS_ACTIONS, TOOL_ACTIONS, Action
 
 DOC = Path(__file__).resolve().parents[1] / "docs" / "mcp-authentication.md"
 
+#: Names an environment variable in the page. Written without a word-boundary
+#: escape on purpose: an earlier version of this file carried two literal
+#: backspace bytes where `\\b` was meant, so the pattern matched nothing, the
+#: set came out empty, and every terminal rendered the line as though it were
+#: fine.
+_ENV_NAME = re.compile("NLQ_[A-Z0-9_]+")
+
 
 @pytest.fixture(scope="module")
 def text() -> str:
@@ -81,21 +88,35 @@ def test_the_example_grants_only_actions_that_exist(text: str) -> None:
 
 def test_the_environment_variables_named_are_the_ones_read(text: str) -> None:
     """A page naming a variable the code does not read is a support case that
-    looks like a bug in the product."""
-    from nlqueries.auth import mcp_verifier
+    looks like a bug in the product; one the code reads and the page omits is a
+    control nobody knows to configure.
+
+    The set is derived from the modules rather than listed here. A hand-written
+    list is the drift this test exists to catch, and the first version had
+    exactly that flaw — adding the admission-control settings did not fail it.
+    """
+    from nlqueries.auth import admission, mcp_verifier
     from nlqueries.mcp_server import server
 
-    real = {
-        mcp_verifier.RESOURCE_URL_ENV,
-        mcp_verifier.OIDC_DISCOVERY_ENV,
-        mcp_verifier.OIDC_CLIENT_ID_ENV,
-        mcp_verifier.STATIC_TOKEN_ENV,
-        mcp_verifier.STATIC_TOKEN_FILE_ENV,
-        mcp_verifier.STATIC_SUBJECT_ENV,
-        server._GRANTS_FILE_ENV,
-        server._ALLOW_UNAUTHENTICATED_ENV,
-    }
-    documented = set(re.findall(r"\bNLQ_[A-Z_]+\b", text))
+    real: set[str] = set()
+    for module in (mcp_verifier, admission, server):
+        for name in dir(module):
+            value = getattr(module, name)
+            if isinstance(value, str) and value.startswith("NLQ_") and name.endswith("_ENV"):
+                real.add(value)
 
-    assert real <= documented, f"undocumented: {real - documented}"
-    assert documented <= real | {"NLQ_ALLOW_INSECURE_BIND"}, f"not read: {documented - real}"
+    documented = set(_ENV_NAME.findall(text))
+
+    assert real <= documented, f"read by the code, absent from the page: {real - documented}"
+    assert documented <= real, f"named on the page, not read: {documented - real}"
+
+
+def test_the_variable_matcher_finds_something() -> None:
+    """The pattern is the load-bearing part of the test above: if it matched
+    nothing, `documented` would be empty and the second assertion would pass
+    vacuously. That is what a stray backspace did to it once.
+    """
+    assert _ENV_NAME.findall("set NLQ_MCP_STATIC_TOKEN and NLQ_MCP_RESOURCE_URL") == [
+        "NLQ_MCP_STATIC_TOKEN",
+        "NLQ_MCP_RESOURCE_URL",
+    ]
