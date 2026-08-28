@@ -522,9 +522,27 @@ _ALL_TOOLS: list[Callable[..., Any]] = [
 ]
 
 
-def _build_server(host: str = "127.0.0.1", port: int = 8000) -> FastMCP:
-    """Create a FastMCP instance with all tools registered."""
-    server = FastMCP("nlqueries", instructions=_INSTRUCTIONS, host=host, port=port)
+def _build_server(
+    host: str = "127.0.0.1", port: int = 8000, *, authenticated: bool = False
+) -> FastMCP:
+    """Create a FastMCP instance with all tools registered.
+
+    With *authenticated*, the configured verifier is attached and the SDK
+    rejects any request whose bearer token it does not accept. Without it the
+    server behaves as before, which is correct for stdio and refused for a
+    networked transport (see :func:`_require_authentication`).
+    """
+    auth_args: dict[str, Any] = {}
+    if authenticated:
+        from nlqueries.auth.mcp_verifier import build_verifier  # noqa: PLC0415
+
+        configured = build_verifier()
+        if configured is None:  # pragma: no cover - guarded by the caller
+            raise SystemExit("MCP authentication was requested but none is configured.")
+        verifier, settings = configured
+        auth_args = {"token_verifier": verifier, "auth": settings}
+
+    server = FastMCP("nlqueries", instructions=_INSTRUCTIONS, host=host, port=port, **auth_args)
     for fn in _ALL_TOOLS:
         server.add_tool(fn)
     return server
@@ -583,18 +601,72 @@ def _refuse_unauthenticated_exposure(host: str) -> None:
     )
 
 
+#: Transports that listen on a socket. `streamable-http` was absent from the
+#: exposure check and from the server construction below, so it neither refused
+#: a wildcard bind nor honoured --host: it silently served on the module-level
+#: instance's defaults.
+_NETWORK_TRANSPORTS = frozenset({"sse", "streamable-http"})
+
+#: Set to `1` to serve a networked transport with no authentication.
+#:
+#: Deliberately not `NLQ_ALLOW_INSECURE_BIND`. That one says "I know this port
+#: is reachable"; this one says "I know anyone who reaches it may run SQL
+#: against my database". They are different admissions and a deployment that
+#: made the first should not be taken to have made the second.
+_ALLOW_UNAUTHENTICATED_ENV = "NLQ_ALLOW_UNAUTHENTICATED_MCP"
+
+
+def _require_authentication(transport: str) -> bool:
+    """Whether to attach a verifier, refusing if one is needed and absent.
+
+    Returns True when the server should be built with authentication.
+    """
+    if transport not in _NETWORK_TRANSPORTS:
+        # stdio: the caller launched this process and already has whatever it
+        # has. The local profile is authorised in step 3 through the same
+        # interface rather than bypassing it.
+        return False
+
+    from nlqueries.auth.mcp_verifier import build_verifier  # noqa: PLC0415
+
+    if build_verifier() is not None:
+        return True
+
+    if os.getenv(_ALLOW_UNAUTHENTICATED_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        _log.warning(
+            "MCP %s transport serving with no authentication: every tool, "
+            "including query, is reachable by anything that can connect.",
+            transport,
+        )
+        return False
+
+    raise SystemExit(
+        f"Refusing to start the MCP {transport} transport with no authentication: "
+        "every tool — including query, which runs SQL against your database — "
+        "would be reachable by anything that can connect. Configure an identity "
+        "provider (NLQ_MCP_OIDC_DISCOVERY_URL and NLQ_MCP_OIDC_CLIENT_ID) or a "
+        "pre-shared token (NLQ_MCP_STATIC_TOKEN), both with NLQ_MCP_RESOURCE_URL. "
+        f"Set {_ALLOW_UNAUTHENTICATED_ENV}=1 to serve anyway."
+    )
+
+
 def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
     """Start the MCP server.
 
     Args:
-        transport: ``"stdio"`` (default, for Claude Desktop) or ``"sse"``
-                   (HTTP server-sent events, for network clients).
-        host:      Bind host for SSE transport (ignored for stdio).
-        port:      Port for SSE transport (ignored for stdio).
+        transport: ``"stdio"`` (default, for Claude Desktop), ``"sse"`` or
+                   ``"streamable-http"`` (both for network clients).
+        host:      Bind host for the networked transports (ignored for stdio).
+        port:      Port for the networked transports (ignored for stdio).
     """
-    if transport == "sse":
+    if transport in _NETWORK_TRANSPORTS:
         # In `main`, not in the CLI: `mcp_entry.py` and `nlqueries-mcp` both
         # reach the server without passing through Click.
         _refuse_unauthenticated_exposure(host)
-    server = _build_server(host=host, port=port) if transport == "sse" else mcp
+    authenticated = _require_authentication(transport)
+    server = (
+        _build_server(host=host, port=port, authenticated=authenticated)
+        if transport in _NETWORK_TRANSPORTS
+        else mcp
+    )
     server.run(transport=transport)
