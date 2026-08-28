@@ -156,3 +156,56 @@ class TestTheKey:
         mode = (tmp_path / ".nlqueries" / "cache_signing_key").stat().st_mode
 
         assert not mode & (stat.S_IRGRP | stat.S_IROTH | stat.S_IWGRP | stat.S_IWOTH)
+
+    def test_a_mounted_file_is_used_when_set(self, monkeypatch, tmp_path) -> None:
+        """Deployments that mount secrets rather than pass them in the
+        environment."""
+        monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
+        key_file = tmp_path / "cache_key"
+        key_file.write_bytes(b"key-from-a-file\n")
+        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY_FILE", str(key_file))
+
+        assert signing_key() == b"key-from-a-file"
+
+    def test_the_environment_wins_over_a_file(self, monkeypatch, tmp_path) -> None:
+        key_file = tmp_path / "cache_key"
+        key_file.write_bytes(b"from-file")
+        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY", "from-env")
+        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY_FILE", str(key_file))
+
+        assert signing_key() == b"from-env"
+
+    @pytest.mark.parametrize("contents", [None, b"", b"   "])
+    def test_a_configured_file_that_cannot_be_used_is_an_error(
+        self, monkeypatch, tmp_path, contents
+    ) -> None:
+        """Falling back would mint a key this process alone holds, and the cache
+        would go quiet instead of reporting the misconfiguration."""
+        monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
+        key_file = tmp_path / "cache_key"
+        if contents is not None:
+            key_file.write_bytes(contents)
+        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY_FILE", str(key_file))
+
+        with pytest.raises(RuntimeError, match="NLQ_CACHE_SIGNING_KEY_FILE"):
+            signing_key()
+
+    def test_an_unwritable_location_does_not_raise(self, monkeypatch, tmp_path) -> None:
+        """A read-only root filesystem reaches here. Signing has to keep working:
+        the alternative is an exception on the cache path of every query."""
+        monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
+        monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY_FILE", raising=False)
+        monkeypatch.setattr("nlqueries.cache.envelope._ephemeral_key", None)
+        monkeypatch.setattr("nlqueries.cache.envelope.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "nlqueries.cache.envelope.Path.mkdir",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("read-only file system")),
+        )
+
+        first = signing_key()
+        second = signing_key()
+
+        # Stable within the process, or a payload would not verify where it was
+        # signed.
+        assert first == second
+        assert len(first) == 64
