@@ -61,6 +61,16 @@ class OidcTokenVerifier:
         self._jwks_uri: str = doc.get("jwks_uri", "")
         if not self._jwks_uri:
             raise OidcVerificationError("Discovery document is missing 'jwks_uri'.")
+        # Refused rather than carried as an empty string. `issuer=None` does not
+        # tell PyJWT to compare against nothing, it tells it not to compare, so
+        # a document without this disabled the issuer check entirely and any
+        # token whose JWKS could be fetched would verify (SEC-15).
+        if not self._issuer:
+            raise OidcVerificationError(
+                "Discovery document is missing 'issuer'. Without it a token's "
+                "issuer cannot be checked, so tokens minted by another provider "
+                "would be accepted."
+            )
 
         # Cache: {"keys": [...], "fetched_at": datetime}
         self._jwks_cache: dict[str, Any] = {}
@@ -163,9 +173,17 @@ class OidcTokenVerifier:
         except jwt.PyJWTError as exc:
             raise OidcVerificationError(f"Token verification failed: {exc}") from exc
 
-        # Step 4 — extract claims
+        # Step 4 — extract claims.
+        # `sub` is the identity the rest of the system authorises against. A
+        # token without one authenticates nobody, and reading it with a default
+        # turned that into an identity of empty string — which compares equal to
+        # the next one (SEC-15).
+        subject = str(claims.get("sub") or "").strip()
+        if not subject:
+            raise OidcVerificationError("Token has no subject ('sub') claim.")
+
         return OidcClaims(
-            sub=str(claims.get("sub", "")),
+            sub=subject,
             email=str(claims.get("email", "")),
             name=claims.get("name"),
             given_name=claims.get("given_name"),
