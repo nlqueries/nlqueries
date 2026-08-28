@@ -141,3 +141,57 @@ def test_a_grants_file_produces_an_allowlist(monkeypatch, tmp_path) -> None:
 
     assert isinstance(authorizer, ConfigAllowlistAuthorizer)
     assert authorizer.subjects == frozenset({"alice"})
+
+
+def test_a_networked_server_without_a_verifier_does_not_get_the_local_profile(
+    monkeypatch,
+) -> None:
+    """With the override set, every caller reaching the port was treated as the
+    process owner and granted everything, and the audit record named the account
+    the server runs as. The profile is chosen by transport now.
+    """
+    from nlqueries.auth.authorizer import AllowAllUnauthenticated, LocalAuthorizer
+
+    authorizer = mcp_server._resolve_authorizer(authenticated=False, networked=True)
+
+    assert isinstance(authorizer, AllowAllUnauthenticated)
+    assert not isinstance(authorizer, LocalAuthorizer)
+
+
+def test_an_unauthenticated_networked_caller_is_anonymous(monkeypatch) -> None:
+    """Not the server's own user. An audit trail naming the wrong party is worse
+    than one that says it does not know."""
+    from nlqueries.auth.principal import Source
+
+    resolve = mcp_server._principal_for_call(networked=True)
+    principal = resolve()
+
+    assert principal.source is Source.ANONYMOUS
+    assert not principal.is_local
+
+
+def test_a_stdio_caller_is_still_the_process_owner() -> None:
+    resolve = mcp_server._principal_for_call(networked=False)
+
+    assert resolve().is_local
+
+
+def test_a_server_builds_with_authentication_and_a_grants_file(monkeypatch, tmp_path) -> None:
+    """The configuration this control exists for, exercised end to end — no test
+    covered it, so nothing would have caught an error on that path.
+    """
+    grants = tmp_path / "grants.yaml"
+    grants.write_text(
+        "grants:\n  - subject: alice\n    agents: ['sales']\n    actions: ['query:execute']\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NLQ_MCP_STATIC_TOKEN", GOOD_TOKEN)
+    monkeypatch.setenv("NLQ_MCP_RESOURCE_URL", "https://mcp.example.com")
+    monkeypatch.setenv("NLQ_MCP_GRANTS_FILE", str(grants))
+
+    server = mcp_server._build_server(
+        host="127.0.0.1", port=8123, authenticated=True, networked=True
+    )
+
+    assert server._token_verifier is not None
+    assert len(server._tool_manager.list_tools()) == len(mcp_server._ALL_TOOLS)

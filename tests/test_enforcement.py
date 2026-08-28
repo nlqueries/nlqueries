@@ -153,9 +153,6 @@ class TestTheToolsAreStillThemselves:
         wrapper taking *args would publish nine tools that accept anything, and
         nothing would fail: they would just describe themselves wrongly.
         """
-        import warnings
-
-        warnings.filterwarnings("ignore")
         from nlqueries.mcp_server.server import mcp
 
         published = {
@@ -174,9 +171,6 @@ class TestTheToolsAreStillThemselves:
         the __wrapped__ attribute functools.wraps leaves behind — the evidence
         that each registered callable is a wrapper around the original.
         """
-        import warnings
-
-        warnings.filterwarnings("ignore")
         from nlqueries.mcp_server.server import _ALL_TOOLS, mcp
 
         registered = mcp._tool_manager.list_tools()
@@ -184,3 +178,43 @@ class TestTheToolsAreStillThemselves:
         assert len(registered) == len(_ALL_TOOLS)
         for tool in registered:
             assert hasattr(tool.fn, "__wrapped__"), f"{tool.name} is not guarded"
+
+
+class TestAnUndeterminedAgentFailsClosed:
+    """An agent-scoped call whose agent cannot be established.
+
+    `Grant.covers` treats a None agent as needing no agent grant, which is right
+    for `health` and wrong for `query`: a subject granted query:execute on sales
+    alone would have been let through a call naming no agent at all.
+    """
+
+    def test_an_agent_scoped_call_without_an_agent_is_refused(self) -> None:
+        def invalidate_cache(agent_id: str | None = None) -> str:
+            calls.append(("invalidate_cache", agent_id))
+            return "cleared"
+
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE)
+
+        with pytest.raises(NotAuthorized):
+            guarded()
+
+        assert calls == []
+
+    def test_the_refusal_is_recorded(self, caplog) -> None:
+        def invalidate_cache(agent_id: str | None = None) -> str:
+            return "cleared"
+
+        guarded = guard(invalidate_cache, _allowlist(["sales"], ["*"]), lambda: ALICE)
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"), pytest.raises(NotAuthorized):
+            guarded()
+
+        assert caplog.records[0].audit["decision"] == "deny"
+        assert "could not be determined" in caplog.records[0].audit["reason"]
+
+    def test_an_agentless_action_is_still_allowed_without_one(self) -> None:
+        """The control: `agents:list` names no agent by design, and must not be
+        caught by the same rule."""
+        guarded = guard(list_agents, _allowlist(["sales"], ["agents:list"]), lambda: ALICE)
+
+        assert guarded() == ["sales"]

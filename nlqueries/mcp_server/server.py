@@ -37,7 +37,7 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 
 from nlqueries import config
-from nlqueries.auth.principal import Principal, local_principal
+from nlqueries.auth.principal import Principal, Source, local_principal
 
 _log = logging.getLogger(__name__)
 
@@ -49,6 +49,12 @@ _INSTRUCTIONS = (
     "Typical workflow: list_agents() → get_agent_schema() → query() → submit_feedback(). "
     "Use health() to diagnose connectivity issues."
 )
+
+
+#: Which subjects may perform which actions on which agents. Required once
+#: authentication is on: without it every authenticated call would be denied,
+#: which is a misconfiguration rather than a policy.
+_GRANTS_FILE_ENV = "NLQ_MCP_GRANTS_FILE"
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +532,11 @@ _ALL_TOOLS: list[Callable[..., Any]] = [
 
 
 def _build_server(
-    host: str = "127.0.0.1", port: int = 8000, *, authenticated: bool = False
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    *,
+    authenticated: bool = False,
+    networked: bool = False,
 ) -> FastMCP:
     """Create a FastMCP instance with all tools registered.
 
@@ -551,46 +561,64 @@ def _build_server(
     # would be nine chances for the tenth tool to be added without one.
     from nlqueries.auth.enforcement import guard  # noqa: PLC0415
 
-    authorizer = _resolve_authorizer(authenticated)
+    authorizer = _resolve_authorizer(authenticated, networked=networked)
     for fn in _ALL_TOOLS:
-        server.add_tool(guard(fn, authorizer, _principal_for_call))
+        server.add_tool(guard(fn, authorizer, _principal_for_call(networked=networked)))
     return server
 
 
-def _principal_for_call() -> Principal:
-    """Who is calling, resolved per request.
+def _principal_for_call(*, networked: bool) -> Callable[[], Principal]:
+    """How to name the caller, decided by transport rather than by request.
 
-    Over a networked transport the SDK has already verified the bearer token and
-    put it on the request context; without one the call is local, and the
-    process owner is the principal. There is no third case: a networked
-    transport with no verifier does not start.
+    Three cases, not two. Over a networked transport with a verifier the SDK has
+    put the verified token on the request context. Over stdio there is no token
+    because the caller launched the process. And a networked transport running
+    without a verifier — which an operator has to ask for — has callers about
+    whom nothing is known.
+
+    That last case used to fall through to the process owner, so every remote
+    call was recorded against the account the server runs as. An audit trail
+    that names the wrong party is worse than one that says it does not know.
     """
-    from mcp.server.auth.middleware.auth_context import get_access_token  # noqa: PLC0415
 
-    from nlqueries.auth.mcp_verifier import principal_from  # noqa: PLC0415
+    def resolve() -> Principal:
+        from mcp.server.auth.middleware.auth_context import get_access_token  # noqa: PLC0415
 
-    token = get_access_token()
-    if token is not None:
-        return principal_from(token)
-    return local_principal(getpass.getuser())
+        from nlqueries.auth.mcp_verifier import principal_from  # noqa: PLC0415
+
+        token = get_access_token()
+        if token is not None:
+            return principal_from(token)
+        if networked:
+            return Principal(subject="anonymous", source=Source.ANONYMOUS)
+        return local_principal(getpass.getuser())
+
+    return resolve
 
 
-def _resolve_authorizer(authenticated: bool) -> Any:
-    """The authorizer for this server.
+def _resolve_authorizer(authenticated: bool, *, networked: bool = False) -> Any:
+    """The authorizer for this server, chosen by transport and configuration.
 
-    Deny-by-default: with authentication on and no grants file, every call is
-    refused. That combination is a misconfiguration rather than a policy, so it
-    is refused at startup instead — a server that authenticates correctly and
-    then denies everything is a support case, not a control.
+    stdio gets the local profile: the caller owns the process and already has
+    what the process has. A networked transport with a verifier gets the
+    allowlist. A networked transport without one gets an authorizer that grants
+    everything and says that is what it is doing — that is the behaviour before
+    SEC-05, and an operator has to set a switch to have it.
+
+    Deny-by-default remains the code path; the case of authentication with no
+    grants file is refused at startup instead, because a server that
+    authenticates correctly and then denies every call is a support case rather
+    than a policy.
     """
     from nlqueries.auth.authorizer import (  # noqa: PLC0415
+        AllowAllUnauthenticated,
         ConfigAllowlistAuthorizer,
         LocalAuthorizer,
         load_grants,
     )
 
     if not authenticated:
-        return LocalAuthorizer()
+        return AllowAllUnauthenticated() if networked else LocalAuthorizer()
 
     path = os.getenv(_GRANTS_FILE_ENV, "").strip()
     if not path:
@@ -617,11 +645,6 @@ _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # noqa: S104
 
 #: Set to `1` to bind a network interface anyway. Named for what it does.
 _INSECURE_BIND_ENV = "NLQ_ALLOW_INSECURE_BIND"
-
-#: Which subjects may perform which actions on which agents. Required once
-#: authentication is on: without it every authenticated call would be denied,
-#: which is a misconfiguration rather than a policy.
-_GRANTS_FILE_ENV = "NLQ_MCP_GRANTS_FILE"
 
 
 def _refuse_unauthenticated_exposure(host: str) -> None:
@@ -724,7 +747,7 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
         _refuse_unauthenticated_exposure(host)
     authenticated = _require_authentication(transport)
     server = (
-        _build_server(host=host, port=port, authenticated=authenticated)
+        _build_server(host=host, port=port, authenticated=authenticated, networked=True)
         if transport in _NETWORK_TRANSPORTS
         else mcp
     )

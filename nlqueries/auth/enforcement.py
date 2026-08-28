@@ -70,6 +70,23 @@ def _decide(
     """Authorise, record, and raise if refused."""
     if action in AGENTLESS_ACTIONS:
         agent_id = None
+    elif agent_id is None:
+        # An agent-scoped action whose agent could not be determined. Passing
+        # None on would authorise it against no agent, and a grant covering any
+        # one agent would then cover this call -- a subject granted
+        # query:execute on sales alone would be let through. Refuse instead: an
+        # agent we cannot name is not an agent we can check.
+        record(
+            AuditEvent(
+                principal=principal.subject,
+                source=principal.source,
+                action=action,
+                agent_id=None,
+                decision=AuditEvent.DENY,
+                reason="the agent for this call could not be determined",
+            )
+        )
+        raise NotAuthorized(f"Not authorized to perform {action}.")
 
     decision = authorizer.authorize(principal, action, agent_id)
     record(

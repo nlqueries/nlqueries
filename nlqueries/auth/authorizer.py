@@ -83,6 +83,22 @@ class LocalAuthorizer:
         return Decision(True, "local process owner")
 
 
+class AllowAllUnauthenticated:
+    """Allows everything, for a networked transport running without a verifier.
+
+    This is what the server did before SEC-05 and an operator has to ask for it
+    explicitly, so it grants what it always granted. It exists as its own class
+    rather than reusing :class:`LocalAuthorizer` because the two are different
+    situations that happen to permit the same things: a caller who owns the
+    process, and a caller nobody has identified. Sharing one would have recorded
+    the second as the first, and the audit trail would have named the account
+    the server runs as for every remote call.
+    """
+
+    def authorize(self, principal: Principal, action: Action, agent_id: str | None) -> Decision:
+        return Decision(True, "authentication is disabled on this transport")
+
+
 @dataclass(frozen=True)
 class Grant:
     """One line of the allowlist."""
@@ -131,6 +147,27 @@ class GrantsConfigError(RuntimeError):
     """Raised for a grants file that cannot be honoured."""
 
 
+def _string_list(value: object, index: int, path: Path, field: str) -> set[str]:
+    """The values of a list field, refusing a scalar written in its place.
+
+    A YAML scalar is iterable. `agents: "prod-*"` read as a sequence yields its
+    characters, one of which is `*`, so the grant it produces covers every agent
+    -- the opposite of what was written, arrived at silently. `agents: "*"`
+    happens to behave correctly, which makes the scalar form look workable.
+    """
+    if value is None:
+        return set()
+    if isinstance(value, str) or not isinstance(value, list):
+        raise GrantsConfigError(
+            f"Grant {index} in {path}: {field} must be a list, not "
+            f"{type(value).__name__}. Write {field}: ['{value}'] rather than "
+            f"{field}: {value!r}."
+            if isinstance(value, str)
+            else f"Grant {index} in {path}: {field} must be a list."
+        )
+    return {str(item).strip() for item in value}
+
+
 def load_grants(path: Path) -> list[Grant]:
     """Read an allowlist.
 
@@ -144,6 +181,9 @@ def load_grants(path: Path) -> list[Grant]:
         raise GrantsConfigError(f"Cannot read the grants file at {path}.") from exc
     except yaml.YAMLError as exc:
         raise GrantsConfigError(f"The grants file at {path} is not valid YAML.") from exc
+
+    if not isinstance(raw, dict):
+        raise GrantsConfigError(f"The grants file at {path} must be a mapping with a 'grants' key.")
 
     entries = raw.get("grants")
     if not isinstance(entries, list) or not entries:
@@ -162,7 +202,7 @@ def load_grants(path: Path) -> list[Grant]:
         if not subject:
             raise GrantsConfigError(f"Grant {index} in {path} names no subject.")
 
-        actions = {str(a).strip() for a in entry.get("actions", []) or []}
+        actions = _string_list(entry.get("actions"), index, path, "actions")
         unknown = actions - known - {WILDCARD}
         if unknown:
             raise GrantsConfigError(
@@ -172,7 +212,7 @@ def load_grants(path: Path) -> list[Grant]:
         if not actions:
             raise GrantsConfigError(f"Grant {index} in {path} lists no actions.")
 
-        agents = {str(a).strip() for a in entry.get("agents", []) or []}
+        agents = _string_list(entry.get("agents"), index, path, "agents")
         if not agents:
             raise GrantsConfigError(
                 f"Grant {index} in {path} lists no agents. Use ['*'] to mean all "

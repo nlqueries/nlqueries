@@ -185,3 +185,35 @@ class TestLoadingTheFile:
         )
 
         assert load_grants(path)[0].actions == {str(a) for a in Action}
+
+    def test_a_scalar_where_a_list_belongs_is_refused(self, tmp_path: Path) -> None:
+        """A YAML scalar is iterable. `agents: "prod-*"` read as a sequence
+        yields its characters, one of which is `*`, so the grant it produced
+        covered every agent — the opposite of what was written, reached in
+        silence. `agents: "*"` happens to behave correctly, which makes the
+        scalar form look workable.
+        """
+        path = self._write(
+            tmp_path,
+            "grants:\n  - subject: alice\n    agents: 'prod-*'\n    actions: ['query:execute']\n",
+        )
+
+        with pytest.raises(GrantsConfigError, match="must be a list"):
+            load_grants(path)
+
+    def test_a_scalar_action_is_refused_too(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            "grants:\n  - subject: alice\n    agents: ['sales']\n    actions: 'query:execute'\n",
+        )
+
+        with pytest.raises(GrantsConfigError, match="must be a list"):
+            load_grants(path)
+
+    def test_a_document_that_is_not_a_mapping_is_refused(self, tmp_path: Path) -> None:
+        """`raw.get` on a list raised AttributeError rather than saying what was
+        wrong with the file."""
+        path = self._write(tmp_path, "- subject: alice\n")
+
+        with pytest.raises(GrantsConfigError, match="must be a mapping"):
+            load_grants(path)
