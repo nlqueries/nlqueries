@@ -97,7 +97,9 @@ def _sql_references_known_tables(sql: str, knowledge_base: dict[str, Any]) -> bo
         return True  # parse error → be permissive
 
 
-def promote_feedback(agent_id: str, *, dry_run: bool = False) -> int | list[dict[str, str]]:
+def promote_feedback(
+    agent_id: str, *, dry_run: bool = False, include_unattributed: bool = False
+) -> int | list[dict[str, str]]:
     """Promote positively-rated feedback pairs to the verified Qdrant collection.
 
     Only ``rating == "up"`` records with a non-empty SQL (``corrected_sql``
@@ -108,8 +110,19 @@ def promote_feedback(agent_id: str, *, dry_run: bool = False) -> int | list[dict
     The upsert is idempotent — repeated calls with the same data produce the
     same collection state.
 
+    Records whose origin cannot be established are not promoted unless
+    *include_unattributed* is set. Promotion makes a (question, SQL) pair an
+    exemplar the model is shown for every later question on this agent, and the
+    rating that qualifies a record is supplied by whoever submitted it. Over an
+    unauthenticated transport that is anyone who can reach the server, so the
+    pair they chose would steer generation for everybody (SEC-10).
+
     Args:
         agent_id: The agent whose feedback file and KB to use.
+        include_unattributed: Promote records from `mcp` and older records with
+                  no recorded origin as well. For an operator who has reviewed
+                  them; the count is reported either way rather than passed over
+                  in silence.
         dry_run:  When True, run only the selection (no embedding, no Qdrant
                   upsert) and return the list of ``{"question", "sql"}`` pairs a
                   real run would promote. It reuses the exact same selection
@@ -120,10 +133,22 @@ def promote_feedback(agent_id: str, *, dry_run: bool = False) -> int | list[dict
         When ``dry_run`` is True, the list of pending ``{"question", "sql"}``
         pairs instead.
     """
+    from nlqueries.feedback.models import ATTRIBUTED_SOURCES  # noqa: PLC0415
     from nlqueries.feedback.store import load_feedback  # noqa: PLC0415
 
     records = load_feedback(agent_id)
     positive = [r for r in records if r.rating == "up"]
+    if not include_unattributed:
+        attributed = [r for r in positive if r.source in ATTRIBUTED_SOURCES]
+        skipped = len(positive) - len(attributed)
+        if skipped:
+            _log.warning(
+                "promote_feedback: skipping %d positively-rated record(s) whose "
+                "origin cannot be established. Re-run with include_unattributed "
+                "to promote them.",
+                skipped,
+            )
+        positive = attributed
     if not positive:
         return [] if dry_run else 0
 

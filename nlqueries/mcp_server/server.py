@@ -273,7 +273,7 @@ def submit_feedback(
     Returns:
         Confirmation string, or an error message.
     """
-    from nlqueries.feedback.models import QueryFeedback  # noqa: PLC0415
+    from nlqueries.feedback.models import SOURCE_MCP, QueryFeedback  # noqa: PLC0415
     from nlqueries.feedback.store import record_feedback  # noqa: PLC0415
 
     if rating not in ("up", "down"):
@@ -286,6 +286,9 @@ def submit_feedback(
             corrected_sql=corrected_sql or None,
             rating=rating,
             agent_id=agent_id,
+            # This transport has no authentication (SEC-05), so the record
+            # identifies nobody and does not qualify for promotion on its own.
+            source=SOURCE_MCP,
         )
         record_feedback(fb)
     except Exception as exc:  # noqa: BLE001

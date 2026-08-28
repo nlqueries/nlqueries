@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nlqueries import config
-from nlqueries.feedback.models import QueryFeedback
+from nlqueries.feedback.models import SOURCE_UNKNOWN, QueryFeedback
 from nlqueries.state_files import private_dir, restrict
 
 
@@ -40,6 +40,7 @@ def record_feedback(fb: QueryFeedback) -> None:
         "rating": fb.rating,
         "agent_id": fb.agent_id,
         "timestamp": fb.timestamp.isoformat(),
+        "source": fb.source,
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -73,6 +74,9 @@ def load_feedback(agent_id: str) -> list[QueryFeedback]:
                     rating=raw["rating"],
                     agent_id=raw["agent_id"],
                     timestamp=datetime.fromisoformat(raw["timestamp"]),
+                    # Absent in files written before provenance was recorded.
+                    # Unknown, not trusted.
+                    source=raw.get("source", SOURCE_UNKNOWN),
                 )
             )
         except (KeyError, ValueError):
