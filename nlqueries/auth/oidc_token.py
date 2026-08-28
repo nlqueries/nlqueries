@@ -75,6 +75,14 @@ class OidcTokenVerifier:
         # Cache: {"keys": [...], "fetched_at": datetime}
         self._jwks_cache: dict[str, Any] = {}
 
+    @property
+    def issuer(self) -> str:
+        """The issuer this verifier checks tokens against.
+
+        Always non-empty: a discovery document without one is refused above.
+        """
+        return self._issuer
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
