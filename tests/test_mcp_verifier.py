@@ -59,7 +59,7 @@ def _claims(sub: str = "user-123") -> OidcClaims:
 
 
 class TestStaticToken:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_the_configured_token_is_accepted(self) -> None:
         verifier = StaticTokenVerifier(GOOD_TOKEN, "operator", RESOURCE)
 
@@ -68,19 +68,19 @@ class TestStaticToken:
         assert result is not None
         assert result.subject == "operator"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_any_other_token_is_declined(self) -> None:
         verifier = StaticTokenVerifier(GOOD_TOKEN, "operator", RESOURCE)
 
         assert await verifier.verify_token("b" * MIN_STATIC_TOKEN_LENGTH) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_a_prefix_of_the_token_is_declined(self) -> None:
         verifier = StaticTokenVerifier(GOOD_TOKEN, "operator", RESOURCE)
 
         assert await verifier.verify_token(GOOD_TOKEN[:-1]) is None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_a_rejected_token_is_not_logged(self, caplog) -> None:
         """It is still a credential, and logs travel into support bundles."""
         verifier = StaticTokenVerifier(GOOD_TOKEN, "operator", RESOURCE)
@@ -108,7 +108,7 @@ class _RefusingOidc:
 
 
 class TestOidc:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_a_verified_token_names_its_subject(self) -> None:
         verifier = OidcAccessTokenVerifier(_AcceptingOidc(), "client-1", RESOURCE)  # type: ignore[arg-type]
 
@@ -117,7 +117,7 @@ class TestOidc:
         assert result is not None
         assert result.subject == "user-123"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_a_token_the_verifier_refuses_is_declined(self, caplog) -> None:
         """The reason reaches the log; the token does not."""
         verifier = OidcAccessTokenVerifier(_RefusingOidc(), "client-1", RESOURCE)  # type: ignore[arg-type]
