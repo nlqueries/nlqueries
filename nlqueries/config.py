@@ -262,20 +262,32 @@ that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast w
 an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
 Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
 
-REDSHIFT_CONNECT_TIMEOUT_SECONDS: int = int(os.getenv("REDSHIFT_CONNECT_TIMEOUT_SECONDS", "30"))
-"""How long to wait for a Redshift connection to be established.
+REDSHIFT_SOCKET_TIMEOUT_SECONDS: int = int(
+    os.getenv(
+        "REDSHIFT_SOCKET_TIMEOUT_SECONDS",
+        str(max(60, int(CONNECTOR_STATEMENT_TIMEOUT_SECONDS) + 30)),
+    )
+)
+"""Socket timeout for a Redshift connection, in seconds.
 
-Redshift-specific, and higher than the ten seconds the Postgres connector allows,
-because a Serverless workgroup that has scaled to zero has to resume before it
-will answer — a wait an always-on cluster never imposes and a provisioned
-Postgres never has. Fifteen seconds was hardcoded here, which is inside the range
-a resume can take, so a first query against an idle workgroup could fail on the
-connection rather than on anything to do with the query.
+Not a connect timeout, although the driver argument is named one.
+``redshift_connector`` calls ``settimeout`` once on the socket before connecting
+and never clears it, so the value bounds every later read as well: a query that
+returns nothing for longer than this dies with a socket timeout no matter what
+the server was told.
 
-Thirty is a judgement rather than a measurement: it covers a resume comfortably
-while still failing in a bounded time when the host is simply unreachable. Raise
-it for a large workgroup that resumes slowly; lower it if a fast failure matters
-more than surviving a cold start."""
+That makes the relationship with CONNECTOR_STATEMENT_TIMEOUT_SECONDS the thing
+that matters. A socket budget below the statement timeout means a long query is
+killed by the client before the server cancels it, which loses the SQLSTATE
+57014 the statement timeout produces and reports a network fault instead. The
+default is therefore derived from it with headroom rather than chosen on its own.
+
+The old hardcoded fifteen was below both, so it capped every query at fifteen
+seconds and could also expire during a Serverless workgroup's resume. Both
+problems have the same cause and the same fix; raising it is what closes them.
+
+Set it above your statement timeout. Lowering it to fail faster on an
+unreachable host shortens the query budget by the same amount."""
 
 # ---------------------------------------------------------------------------
 # Query Capsules

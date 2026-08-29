@@ -56,12 +56,16 @@ Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't reco
 
 Schema descriptions are not available (no equivalent of PostgreSQL's `pg_description`). Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).
 
-A **Serverless** workgroup that has scaled to zero resumes before it answers, so
-the first connection after an idle period waits for that. The connect budget is
-30 seconds (`REDSHIFT_CONNECT_TIMEOUT_SECONDS`), higher than the ten the Postgres
-connector allows, because an always-on cluster never imposes that wait. Raise it
-for a large workgroup that resumes slowly; lower it if failing fast on an
-unreachable host matters more than surviving a cold start.
+`REDSHIFT_SOCKET_TIMEOUT_SECONDS` bounds the whole connection, not just the
+handshake: the driver sets it on the socket before connecting and never clears
+it, so it also limits how long a query may go without sending data. It therefore
+defaults to your statement timeout plus 30 seconds (150 by default) and must stay
+above it — below, a long query is killed by the client and reported as a network
+fault instead of being cancelled by the server. Lowering it to fail faster on an
+unreachable host shortens the query budget by the same amount.
+
+The same value covers a **Serverless** workgroup resuming from zero, which it has
+to do before it answers the first connection after an idle period.
 
 ### SQL Server / Azure SQL
 

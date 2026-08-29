@@ -16,6 +16,7 @@ hand against Redshift Serverless on 2026-08-27:
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 import pytest
@@ -157,13 +158,19 @@ def test_each_query_re_establishes_the_guards(connector) -> None:
     assert conn.rollbacks == 3
 
 
-class TestTheConnectBudget:
-    """How long the driver is given to establish the connection.
+class TestTheSocketBudget:
+    """How long the driver is given, which is not only for the handshake.
 
-    Fifteen seconds was hardcoded. A Serverless workgroup that has scaled to
-    zero has to resume before it answers, and a resume can outlast that — so a
-    first query against an idle workgroup could fail on the connection rather
-    than on anything to do with the query. There was no way to raise it.
+    ``redshift_connector`` calls ``settimeout`` once on the socket before
+    connecting and never clears it, so the value bounds every later read as
+    well: a query returning nothing for longer than this dies with a socket
+    timeout regardless of what the server was told. Verified against the
+    installed driver — one ``settimeout`` call in ``core.py``, no reset — and
+    reproduced on a plain socket, where a read three seconds after a successful
+    connect still expired on a one-second budget.
+
+    The hardcoded fifteen was therefore capping every query at fifteen seconds,
+    well under CONNECTOR_STATEMENT_TIMEOUT_SECONDS.
     """
 
     def _connect(self, monkeypatch, **overrides: Any) -> dict[str, Any]:
@@ -181,14 +188,42 @@ class TestTheConnectBudget:
         return captured
 
     def test_the_configured_budget_is_passed_to_the_driver(self, monkeypatch) -> None:
-        monkeypatch.setattr(config, "REDSHIFT_CONNECT_TIMEOUT_SECONDS", 45)
+        monkeypatch.setattr(config, "REDSHIFT_SOCKET_TIMEOUT_SECONDS", 45)
 
         assert self._connect(monkeypatch)["timeout"] == 45
 
-    def test_the_default_covers_a_serverless_resume(self) -> None:
-        """A judgement rather than a measurement, but one worth failing on if
-        someone lowers it back under a resume."""
-        assert config.REDSHIFT_CONNECT_TIMEOUT_SECONDS >= 30
+    def test_the_default_leaves_room_above_the_statement_timeout(self, monkeypatch) -> None:
+        """Reads the source default rather than whatever this machine is set to.
+
+        The first version asserted on `config.REDSHIFT_SOCKET_TIMEOUT_SECONDS`,
+        which resolves from the environment and from any .env in the working
+        directory at import time — so a developer who set the variable locally
+        would see it fail with the default untouched.
+        """
+        monkeypatch.delenv("REDSHIFT_SOCKET_TIMEOUT_SECONDS", raising=False)
+        module = importlib.reload(config)
+        try:
+            assert (
+                module.REDSHIFT_SOCKET_TIMEOUT_SECONDS > module.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+            )
+        finally:
+            importlib.reload(config)
+
+    @pytest.mark.parametrize("statement_timeout", ["30", "120", "600"])
+    def test_the_default_tracks_the_statement_timeout(
+        self, monkeypatch, statement_timeout: str
+    ) -> None:
+        """The derivation, not one value of it. A deployment that raises its
+        statement timeout should not have to know this exists to keep queries
+        being cancelled by the server rather than killed by the socket."""
+        monkeypatch.delenv("REDSHIFT_SOCKET_TIMEOUT_SECONDS", raising=False)
+        monkeypatch.setenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", statement_timeout)
+        module = importlib.reload(config)
+        try:
+            assert float(statement_timeout) < module.REDSHIFT_SOCKET_TIMEOUT_SECONDS
+        finally:
+            monkeypatch.undo()
+            importlib.reload(config)
 
     def test_tls_is_still_required(self, monkeypatch) -> None:
         """The control: the connect call carries more than the timeout, and this

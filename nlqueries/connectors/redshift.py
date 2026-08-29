@@ -95,11 +95,12 @@ class RedshiftConnector(DatabaseConnector):
             user=credentials.get("user", ""),
             password=credentials.get("password", ""),
             ssl=True,
-            # A Serverless workgroup that has scaled to zero resumes before it
-            # answers, and that can outlast a short connect budget. See
-            # config.REDSHIFT_CONNECT_TIMEOUT_SECONDS for why this is not the
-            # ten seconds Postgres uses.
-            timeout=config.REDSHIFT_CONNECT_TIMEOUT_SECONDS,
+            # Named a connect timeout by the driver, but it calls settimeout
+            # once on the socket and never clears it, so this bounds every
+            # later read too. It therefore has to sit above the statement
+            # timeout, or a long query dies here instead of being cancelled by
+            # the server. See config.REDSHIFT_SOCKET_TIMEOUT_SECONDS.
+            timeout=config.REDSHIFT_SOCKET_TIMEOUT_SECONDS,
         )
 
     def _require_conn(self) -> Any:
