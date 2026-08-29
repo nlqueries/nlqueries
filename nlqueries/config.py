@@ -262,6 +262,21 @@ that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast w
 an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
 Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
 
+REDSHIFT_CONNECT_TIMEOUT_SECONDS: int = int(os.getenv("REDSHIFT_CONNECT_TIMEOUT_SECONDS", "30"))
+"""How long to wait for a Redshift connection to be established.
+
+Redshift-specific, and higher than the ten seconds the Postgres connector allows,
+because a Serverless workgroup that has scaled to zero has to resume before it
+will answer — a wait an always-on cluster never imposes and a provisioned
+Postgres never has. Fifteen seconds was hardcoded here, which is inside the range
+a resume can take, so a first query against an idle workgroup could fail on the
+connection rather than on anything to do with the query.
+
+Thirty is a judgement rather than a measurement: it covers a resume comfortably
+while still failing in a bounded time when the host is simply unreachable. Raise
+it for a large workgroup that resumes slowly; lower it if a fast failure matters
+more than surviving a cold start."""
+
 # ---------------------------------------------------------------------------
 # Query Capsules
 # ---------------------------------------------------------------------------

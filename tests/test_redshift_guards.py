@@ -155,3 +155,42 @@ def test_each_query_re_establishes_the_guards(connector) -> None:
 
     assert conn.statements.count("SET TRANSACTION READ ONLY") == 3
     assert conn.rollbacks == 3
+
+
+class TestTheConnectBudget:
+    """How long the driver is given to establish the connection.
+
+    Fifteen seconds was hardcoded. A Serverless workgroup that has scaled to
+    zero has to resume before it answers, and a resume can outlast that — so a
+    first query against an idle workgroup could fail on the connection rather
+    than on anything to do with the query. There was no way to raise it.
+    """
+
+    def _connect(self, monkeypatch, **overrides: Any) -> dict[str, Any]:
+        captured: dict[str, Any] = {}
+
+        class _Driver:
+            @staticmethod
+            def connect(**kwargs: Any) -> Any:
+                captured.update(kwargs)
+                return _Connection()
+
+        monkeypatch.setitem(__import__("sys").modules, "redshift_connector", _Driver)
+        connector = RedshiftConnector()
+        connector.connect({"database": "dev", "host": "h", "user": "u", "password": "p"})
+        return captured
+
+    def test_the_configured_budget_is_passed_to_the_driver(self, monkeypatch) -> None:
+        monkeypatch.setattr(config, "REDSHIFT_CONNECT_TIMEOUT_SECONDS", 45)
+
+        assert self._connect(monkeypatch)["timeout"] == 45
+
+    def test_the_default_covers_a_serverless_resume(self) -> None:
+        """A judgement rather than a measurement, but one worth failing on if
+        someone lowers it back under a resume."""
+        assert config.REDSHIFT_CONNECT_TIMEOUT_SECONDS >= 30
+
+    def test_tls_is_still_required(self, monkeypatch) -> None:
+        """The control: the connect call carries more than the timeout, and this
+        is the part of it that matters most."""
+        assert self._connect(monkeypatch)["ssl"] is True

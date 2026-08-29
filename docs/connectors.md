@@ -56,6 +56,13 @@ Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't reco
 
 Schema descriptions are not available (no equivalent of PostgreSQL's `pg_description`). Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).
 
+A **Serverless** workgroup that has scaled to zero resumes before it answers, so
+the first connection after an idle period waits for that. The connect budget is
+30 seconds (`REDSHIFT_CONNECT_TIMEOUT_SECONDS`), higher than the ten the Postgres
+connector allows, because an always-on cluster never imposes that wait. Raise it
+for a large workgroup that resumes slowly; lower it if failing fast on an
+unreachable host matters more than surviving a cold start.
+
 ### SQL Server / Azure SQL
 
 Use `alice@my-server` as `--user` for Azure SQL with SQL authentication — the same connector covers on-premises SQL Server and Azure SQL since the T-SQL dialect is identical. If the account lacks `VIEW SERVER STATE`/`VIEW DATABASE STATE`, `process-history` returns empty history and the KB is built from schema introspection only.

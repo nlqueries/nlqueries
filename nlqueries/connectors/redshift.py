@@ -95,7 +95,11 @@ class RedshiftConnector(DatabaseConnector):
             user=credentials.get("user", ""),
             password=credentials.get("password", ""),
             ssl=True,
-            timeout=15,
+            # A Serverless workgroup that has scaled to zero resumes before it
+            # answers, and that can outlast a short connect budget. See
+            # config.REDSHIFT_CONNECT_TIMEOUT_SECONDS for why this is not the
+            # ten seconds Postgres uses.
+            timeout=config.REDSHIFT_CONNECT_TIMEOUT_SECONDS,
         )
 
     def _require_conn(self) -> Any:
