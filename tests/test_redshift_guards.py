@@ -16,6 +16,7 @@ hand against Redshift Serverless on 2026-08-27:
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 import pytest
@@ -155,3 +156,103 @@ def test_each_query_re_establishes_the_guards(connector) -> None:
 
     assert conn.statements.count("SET TRANSACTION READ ONLY") == 3
     assert conn.rollbacks == 3
+
+
+class TestTheSocketBudget:
+    """How long the driver is given, which is not only for the handshake.
+
+    ``redshift_connector`` calls ``settimeout`` once on the socket before
+    connecting and never clears it, so the value bounds every later read as
+    well: a query returning nothing for longer than this dies with a socket
+    timeout regardless of what the server was told. Verified against the
+    installed driver — one ``settimeout`` call in ``core.py``, no reset — and
+    reproduced on a plain socket, where a read three seconds after a successful
+    connect still expired on a one-second budget.
+
+    The hardcoded fifteen was therefore capping every query at fifteen seconds,
+    well under CONNECTOR_STATEMENT_TIMEOUT_SECONDS.
+    """
+
+    def _connect(self, monkeypatch, **overrides: Any) -> dict[str, Any]:
+        captured: dict[str, Any] = {}
+
+        class _Driver:
+            @staticmethod
+            def connect(**kwargs: Any) -> Any:
+                captured.update(kwargs)
+                return _Connection()
+
+        monkeypatch.setitem(__import__("sys").modules, "redshift_connector", _Driver)
+        connector = RedshiftConnector()
+        connector.connect({"database": "dev", "host": "h", "user": "u", "password": "p"})
+        return captured
+
+    def test_the_configured_budget_is_passed_to_the_driver(self, monkeypatch) -> None:
+        monkeypatch.setattr(config, "REDSHIFT_SOCKET_TIMEOUT_SECONDS", 45)
+
+        assert self._connect(monkeypatch)["timeout"] == 45
+
+    @staticmethod
+    def _reload_with(monkeypatch, **environment: str):
+        """Reload config from a known environment, and only that.
+
+        Clearing the variables is not enough: reloading re-runs `load_dotenv` at
+        the top of config.py, which reads a developer's .env straight back in, so
+        the assertion would again reflect the machine rather than the source. The
+        loader is stubbed for the duration, leaving the values named here as the
+        only inputs.
+        """
+        monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: False)
+        for name in ("REDSHIFT_SOCKET_TIMEOUT_SECONDS", "CONNECTOR_STATEMENT_TIMEOUT_SECONDS"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        return importlib.reload(config)
+
+    def test_the_default_leaves_room_above_the_statement_timeout(self, monkeypatch) -> None:
+        """The source default, not whatever this machine is configured with."""
+        module = self._reload_with(monkeypatch)
+        try:
+            assert (
+                module.REDSHIFT_SOCKET_TIMEOUT_SECONDS > module.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+            )
+        finally:
+            importlib.reload(config)
+
+    def test_disabling_the_statement_timeout_disables_the_ceiling(self, monkeypatch) -> None:
+        """Zero means the operator removed the bound deliberately. Deriving a
+        finite socket budget from it would put the bound back at sixty seconds,
+        shorter than most queries anyone disables the timeout for."""
+        module = self._reload_with(monkeypatch, CONNECTOR_STATEMENT_TIMEOUT_SECONDS="0")
+        try:
+            assert module.REDSHIFT_SOCKET_TIMEOUT_SECONDS == 0
+        finally:
+            importlib.reload(config)
+
+    def test_a_zero_budget_leaves_the_socket_unbounded(self, monkeypatch) -> None:
+        """Zero reaches the driver as None. Passing 0 would mean a socket that
+        times out immediately, which is the opposite of what it asks for."""
+        monkeypatch.setattr(config, "REDSHIFT_SOCKET_TIMEOUT_SECONDS", 0)
+
+        assert self._connect(monkeypatch)["timeout"] is None
+
+    @pytest.mark.parametrize("statement_timeout", ["30", "120", "600"])
+    def test_the_default_tracks_the_statement_timeout(
+        self, monkeypatch, statement_timeout: str
+    ) -> None:
+        """The derivation, not one value of it. A deployment that raises its
+        statement timeout should not have to know this exists to keep queries
+        being cancelled by the server rather than killed by the socket."""
+        module = self._reload_with(
+            monkeypatch, CONNECTOR_STATEMENT_TIMEOUT_SECONDS=statement_timeout
+        )
+        try:
+            assert float(statement_timeout) < module.REDSHIFT_SOCKET_TIMEOUT_SECONDS
+        finally:
+            monkeypatch.undo()
+            importlib.reload(config)
+
+    def test_tls_is_still_required(self, monkeypatch) -> None:
+        """The control: the connect call carries more than the timeout, and this
+        is the part of it that matters most."""
+        assert self._connect(monkeypatch)["ssl"] is True
