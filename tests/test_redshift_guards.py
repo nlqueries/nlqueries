@@ -192,22 +192,49 @@ class TestTheSocketBudget:
 
         assert self._connect(monkeypatch)["timeout"] == 45
 
-    def test_the_default_leaves_room_above_the_statement_timeout(self, monkeypatch) -> None:
-        """Reads the source default rather than whatever this machine is set to.
+    @staticmethod
+    def _reload_with(monkeypatch, **environment: str):
+        """Reload config from a known environment, and only that.
 
-        The first version asserted on `config.REDSHIFT_SOCKET_TIMEOUT_SECONDS`,
-        which resolves from the environment and from any .env in the working
-        directory at import time — so a developer who set the variable locally
-        would see it fail with the default untouched.
+        Clearing the variables is not enough: reloading re-runs `load_dotenv` at
+        the top of config.py, which reads a developer's .env straight back in, so
+        the assertion would again reflect the machine rather than the source. The
+        loader is stubbed for the duration, leaving the values named here as the
+        only inputs.
         """
-        monkeypatch.delenv("REDSHIFT_SOCKET_TIMEOUT_SECONDS", raising=False)
-        module = importlib.reload(config)
+        monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: False)
+        for name in ("REDSHIFT_SOCKET_TIMEOUT_SECONDS", "CONNECTOR_STATEMENT_TIMEOUT_SECONDS"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        return importlib.reload(config)
+
+    def test_the_default_leaves_room_above_the_statement_timeout(self, monkeypatch) -> None:
+        """The source default, not whatever this machine is configured with."""
+        module = self._reload_with(monkeypatch)
         try:
             assert (
                 module.REDSHIFT_SOCKET_TIMEOUT_SECONDS > module.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
             )
         finally:
             importlib.reload(config)
+
+    def test_disabling_the_statement_timeout_disables_the_ceiling(self, monkeypatch) -> None:
+        """Zero means the operator removed the bound deliberately. Deriving a
+        finite socket budget from it would put the bound back at sixty seconds,
+        shorter than most queries anyone disables the timeout for."""
+        module = self._reload_with(monkeypatch, CONNECTOR_STATEMENT_TIMEOUT_SECONDS="0")
+        try:
+            assert module.REDSHIFT_SOCKET_TIMEOUT_SECONDS == 0
+        finally:
+            importlib.reload(config)
+
+    def test_a_zero_budget_leaves_the_socket_unbounded(self, monkeypatch) -> None:
+        """Zero reaches the driver as None. Passing 0 would mean a socket that
+        times out immediately, which is the opposite of what it asks for."""
+        monkeypatch.setattr(config, "REDSHIFT_SOCKET_TIMEOUT_SECONDS", 0)
+
+        assert self._connect(monkeypatch)["timeout"] is None
 
     @pytest.mark.parametrize("statement_timeout", ["30", "120", "600"])
     def test_the_default_tracks_the_statement_timeout(
@@ -216,9 +243,9 @@ class TestTheSocketBudget:
         """The derivation, not one value of it. A deployment that raises its
         statement timeout should not have to know this exists to keep queries
         being cancelled by the server rather than killed by the socket."""
-        monkeypatch.delenv("REDSHIFT_SOCKET_TIMEOUT_SECONDS", raising=False)
-        monkeypatch.setenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", statement_timeout)
-        module = importlib.reload(config)
+        module = self._reload_with(
+            monkeypatch, CONNECTOR_STATEMENT_TIMEOUT_SECONDS=statement_timeout
+        )
         try:
             assert float(statement_timeout) < module.REDSHIFT_SOCKET_TIMEOUT_SECONDS
         finally:

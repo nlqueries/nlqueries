@@ -100,7 +100,7 @@ class RedshiftConnector(DatabaseConnector):
             # later read too. It therefore has to sit above the statement
             # timeout, or a long query dies here instead of being cancelled by
             # the server. See config.REDSHIFT_SOCKET_TIMEOUT_SECONDS.
-            timeout=config.REDSHIFT_SOCKET_TIMEOUT_SECONDS,
+            timeout=config.REDSHIFT_SOCKET_TIMEOUT_SECONDS or None,
         )
 
     def _require_conn(self) -> Any:

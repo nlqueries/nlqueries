@@ -61,8 +61,16 @@ handshake: the driver sets it on the socket before connecting and never clears
 it, so it also limits how long a query may go without sending data. It therefore
 defaults to your statement timeout plus 30 seconds (150 by default) and must stay
 above it — below, a long query is killed by the client and reported as a network
-fault instead of being cancelled by the server. Lowering it to fail faster on an
-unreachable host shortens the query budget by the same amount.
+fault instead of being cancelled by the server.
+
+It also caps any per-query budget: a caller passing `timeout_seconds=300` against
+the default 150 still dies on the socket at 150. Raise this above the largest
+per-query budget you intend to allow. Setting `CONNECTOR_STATEMENT_TIMEOUT_SECONDS=0`
+disables the socket ceiling too, so a deliberately unbounded query stays
+unbounded; `REDSHIFT_SOCKET_TIMEOUT_SECONDS=0` does the same on its own.
+
+Lowering it to fail faster on an unreachable host shortens every query budget by
+the same amount.
 
 The same value covers a **Serverless** workgroup resuming from zero, which it has
 to do before it answers the first connection after an idle period.

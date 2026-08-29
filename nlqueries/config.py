@@ -262,11 +262,21 @@ that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast w
 an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
 Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
 
+def _default_redshift_socket_timeout() -> int:
+    """The socket budget to use when none is configured.
+
+    Zero means no ceiling. CONNECTOR_STATEMENT_TIMEOUT_SECONDS uses zero to mean
+    "do not bound the query", and deriving a finite socket budget from that would
+    put back the bound the operator removed -- at 60 seconds, which is shorter
+    than most of the queries anyone disables the timeout for.
+    """
+    if CONNECTOR_STATEMENT_TIMEOUT_SECONDS <= 0:
+        return 0
+    return max(60, int(CONNECTOR_STATEMENT_TIMEOUT_SECONDS) + 30)
+
+
 REDSHIFT_SOCKET_TIMEOUT_SECONDS: int = int(
-    os.getenv(
-        "REDSHIFT_SOCKET_TIMEOUT_SECONDS",
-        str(max(60, int(CONNECTOR_STATEMENT_TIMEOUT_SECONDS) + 30)),
-    )
+    os.getenv("REDSHIFT_SOCKET_TIMEOUT_SECONDS", str(_default_redshift_socket_timeout()))
 )
 """Socket timeout for a Redshift connection, in seconds.
 
@@ -286,8 +296,14 @@ The old hardcoded fifteen was below both, so it capped every query at fifteen
 seconds and could also expire during a Serverless workgroup's resume. Both
 problems have the same cause and the same fix; raising it is what closes them.
 
-Set it above your statement timeout. Lowering it to fail faster on an
-unreachable host shortens the query budget by the same amount."""
+Set it above your statement timeout, and above the largest ``timeout_seconds``
+any caller passes: a per-query budget larger than this is not honoured, because
+the socket gives out first and the query dies as a network fault rather than
+being cancelled. Zero disables the ceiling entirely, which is what a deployment
+that has also disabled the statement timeout wants.
+
+Lowering it to fail faster on an unreachable host shortens every query budget by
+the same amount."""
 
 # ---------------------------------------------------------------------------
 # Query Capsules
