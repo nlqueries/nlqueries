@@ -262,6 +262,7 @@ that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast w
 an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
 Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
 
+
 def _default_redshift_socket_timeout() -> int:
     """The socket budget to use when none is configured.
 
