@@ -301,3 +301,34 @@ def test_a_connection_with_no_mode_anywhere_reports_nothing(engine_args) -> None
 
 def test_the_posture_is_unset_before_connect() -> None:
     assert SQLAlchemyConnector().tls is None
+
+
+def test_a_weaker_mode_in_the_url_is_honoured_over_the_resolvers_default(
+    engine_args,
+) -> None:
+    """The configuration the narrowed clash check made newly connectable.
+
+    A URL saying `?sslmode=require` beside `ssl_ca_cert` in the credentials was
+    refused before, because the check fired on any TLS parameter. It now
+    connects, and it must connect at the URL's `require` — not the `verify-full`
+    the credentials alone would have resolved to — with the certificate simply
+    renamed into `sslrootcert`.
+
+    Nothing held that until now: the neighbouring test uses `ssl_client_cert`,
+    for which the resolved mode is `require` either way, so it cannot tell the
+    two apart. Without this a future edit could report the resolver's
+    `verify-full` for a session actually running at `require` — a stronger
+    posture claimed than the one in force, which is the whole failure this file
+    exists to prevent.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslmode=require", "ssl_ca_cert": "/etc/ssl/ca.pem"})
+
+    assert engine_args["connect_args"] == {"sslrootcert": "/etc/ssl/ca.pem"}
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "require", "the URL's explicit mode is what is in force"
+    assert connector.tls.has_root_certificate
+    # `require` with a certificate verifies the chain but not the hostname, and
+    # the report has to say so rather than claiming the resolver's verify-full.
+    assert connector.tls.concerns
+    assert any("names this host" in c for c in connector.tls.concerns)
