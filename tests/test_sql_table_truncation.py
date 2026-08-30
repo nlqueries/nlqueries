@@ -88,9 +88,17 @@ def test_the_cap_wins_when_both_apply() -> None:
     assert chunk["truncation_reason"] == ORCHESTRATOR_ROW_CAP
 
 
-def test_the_uncapped_caller_still_reports_the_connectors_truncation() -> None:
-    """The hybrid branch passes cap=False because it has never applied the row
-    cap. It must still forward what the connector said."""
+def test_an_uncapped_frame_still_forwards_the_connectors_truncation() -> None:
+    """`cap=False` suppresses this builder's own cap, not the connector's report.
+
+    Stated as a property of the builder, deliberately. The only caller passing
+    `cap=False` today is the hybrid branch, and that branch cannot exercise it:
+    `_merge_hybrid` builds its `sql_table` through `_extract_sql_query_result`,
+    which synthesises a one-cell table holding the generated SQL text and
+    discards the sub-agent's executed result. So a hybrid answer carries no
+    query rows to truncate. This test says what `sql_table_chunk` does, not what
+    that branch reports.
+    """
     qr = _result(500, row_count=99_999, truncated=True, truncation_reason="row_budget")
     chunk = sql_table_chunk(qr, cap=False)
     assert len(chunk["rows"]) == 500, "cap=False must not shorten the rows"
@@ -100,7 +108,7 @@ def test_the_uncapped_caller_still_reports_the_connectors_truncation() -> None:
 
 def test_an_uncapped_frame_never_invents_the_cap_reason() -> None:
     """Canary for the above: with cap=False a long result is complete as far as
-    this frame is concerned, and must not be labelled with the cap it did not
+    this builder is concerned, and must not be labelled with a cap it did not
     apply."""
     chunk = sql_table_chunk(_result(_MAX_RESULT_ROWS + 300), cap=False)
     assert len(chunk["rows"]) == _MAX_RESULT_ROWS + 300

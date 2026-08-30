@@ -691,7 +691,20 @@ class MultiAgentOrchestrator:
             if hybrid_result.sql_table is not None:
                 # cap=False: this branch has never applied the row cap, and
                 # starting to would be a different change from reporting
-                # truncation. The connector's own flags still come through.
+                # truncation.
+                #
+                # Note what this frame actually holds. `_merge_hybrid` builds
+                # `sql_table` through `_extract_sql_query_result`, which
+                # synthesises a one-cell table containing the generated SQL
+                # *text* -- columns ["sql_query"], one row -- and discards the
+                # sub-agent's executed result entirely. So the truncation flags
+                # here describe that synthesised cell, which is never truncated,
+                # and a hybrid answer cannot report truncation of the query it
+                # ran because it does not carry that query's rows in the first
+                # place. Fixing that means threading the sub-agent's real table
+                # through `_merge_hybrid`; it is a change to what a hybrid
+                # answer returns, not to how truncation is reported, and it is
+                # deliberately not made here.
                 sql_table_dict = sql_table_chunk(hybrid_result.sql_table, cap=False)
             citations_list = [
                 {
