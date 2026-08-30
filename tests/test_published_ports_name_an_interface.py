@@ -60,15 +60,26 @@ def _repo_files(*patterns: str) -> list[Path]:
     return sorted(found)
 
 
-def _names_an_interface(mapping: str) -> bool:
-    """Whether *mapping* specifies a host address.
+def _names_an_interface(entry: object) -> bool:
+    """Whether *entry* specifies a host address.
 
     `5433:5432` is host-port to container-port and publishes on every
     interface. `127.0.0.1:5433:5432` and `${BIND_ADDR:-127.0.0.1}:5433:5432`
     name one. Counting separators rather than parsing an address keeps the
     variable form working, which is how the top-level compose file writes it.
+
+    The long syntax is a mapping, and only `host_ip` names an address there --
+    Docker defaults it to `0.0.0.0`. It is handled explicitly because the
+    obvious shortcut is wrong in the worst direction: `str({'target': 5432,
+    'published': 5433})` contains two colons, so stringifying a long-syntax
+    entry passes this check without an address ever having been written. Moving
+    a service to the long form is the natural thing to do when adding `mode` or
+    `protocol`, and it would have republished on every interface with this guard
+    reporting success.
     """
-    return mapping.count(":") >= 2
+    if isinstance(entry, dict):
+        return bool(entry.get("host_ip"))
+    return str(entry).count(":") >= 2
 
 
 DOCS = _repo_files("*.md")
@@ -97,7 +108,7 @@ def test_compose_files_publish_only_on_a_named_interface(path: Path) -> None:
         f"{service}: {entry}"
         for service, spec in (document.get("services") or {}).items()
         for entry in (spec.get("ports") or [])
-        if not _names_an_interface(str(entry))
+        if not _names_an_interface(entry)
     ]
 
     assert not unqualified, (
@@ -124,3 +135,36 @@ def test_documented_commands_publish_only_on_a_named_interface(path: Path) -> No
         f"{unqualified}. Bind to 127.0.0.1, or say plainly why the service "
         "should be reachable from the network and what authenticates it."
     )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"target": 5432, "published": 5433},
+        {"target": 5432, "published": "5433", "protocol": "tcp"},
+        {"target": 6333, "published": 6333, "mode": "host"},
+    ],
+)
+def test_a_long_syntax_entry_without_a_host_ip_is_refused(entry: dict) -> None:
+    """No compose file here uses the long syntax yet, so this pins the rule
+    directly rather than through a file.
+
+    It is the case the first version of this module got wrong: the entry was
+    stringified, and a mapping's repr carries enough colons to satisfy a
+    separator count, so the guard would have reported success on a service
+    published to every interface.
+    """
+    assert not _names_an_interface(entry)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"target": 5432, "published": 5433, "host_ip": "127.0.0.1"},
+        {"target": 5432, "published": 5433, "host_ip": "0.0.0.0"},
+    ],
+)
+def test_a_long_syntax_entry_naming_a_host_ip_is_allowed(entry: dict) -> None:
+    """`0.0.0.0` written out passes here for the same reason it passes in the
+    short form: an address someone typed is a decision a reviewer can see."""
+    assert _names_an_interface(entry)
