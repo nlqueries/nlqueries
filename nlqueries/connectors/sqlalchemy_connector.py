@@ -39,7 +39,7 @@ from nlqueries.connectors.base import (
     SchemaSpec,
     TableSpec,
 )
-from nlqueries.connectors.postgres_tls import resolve_ssl_mode
+from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,50 @@ _LIBPQ_TLS_PARAMS = {
 _LIBPQ_DRIVERS = frozenset({"", "psycopg2", "psycopg"})
 
 
+#: The reverse of :data:`_LIBPQ_TLS_PARAMS`, for reading a URL's own parameters
+#: back into the credential names :func:`describe` understands.
+_LIBPQ_TO_CREDENTIAL = {param: key for key, param in _LIBPQ_TLS_PARAMS.items()}
+
+
+def _merged_tls_view(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
+    """Every TLS setting in force, in credential names, from both sources.
+
+    The clash check refuses any parameter set on both sides, so the two are
+    disjoint and can be merged rather than reconciled.
+
+    This exists so the mode this connector injects and the posture it reports
+    are decided by the same view. They were decided separately, and disagreed:
+    `_effective_posture` read `sslrootcert` from the URL while
+    `resolve_ssl_mode` saw only the credentials, so a root certificate supplied
+    in the URL did not select `verify-full` the way the connector's own rule --
+    and `PostgresConnector` on identical material -- says it should. The
+    operator's only way to clear the resulting concern was to duplicate the CA
+    path into the credentials.
+    """
+    merged: dict[str, Any] = {}
+    for param, value in make_url(url).query.items():
+        if param in _LIBPQ_TO_CREDENTIAL:
+            # A repeated query parameter arrives as a tuple; libpq takes the last.
+            merged[_LIBPQ_TO_CREDENTIAL[param]] = value[-1] if isinstance(value, tuple) else value
+    merged.update({key: credentials[key] for key in _LIBPQ_TLS_PARAMS if credentials.get(key)})
+    return merged
+
+
+def _posture_for(merged: dict[str, Any], injected: dict[str, Any]) -> TlsPosture | None:
+    """The posture in force, or ``None`` when it is not ours to know.
+
+    ``None`` when nothing on either side settles the mode: libpq then applies
+    its own ``prefer`` default, which is not what :func:`resolve_ssl_mode` would
+    have chosen, so describing these settings would name a posture the
+    connection is not running under.
+    """
+    if "sslmode" in injected:
+        return describe({**merged, "ssl_mode": injected["sslmode"]})
+    if "ssl_mode" in merged:
+        return describe(merged)
+    return None
+
+
 def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
     """Translate configured TLS settings into ``create_engine`` connect args.
 
@@ -128,7 +172,13 @@ def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
     # because it expects the connector to choose `verify-full`, which is what
     # `resolve_ssl_mode` does and what PostgresConnector already does with the
     # same credentials.
-    args["sslmode"] = resolve_ssl_mode(credentials)
+    # From the merged view, not the credentials alone: a root certificate given
+    # in the URL must select `verify-full` exactly as one given in the
+    # credentials does. Skipped when the URL already sets the mode -- injecting
+    # the same value would trip the clash check below on a configuration where
+    # nothing is in conflict.
+    if "sslmode" not in parsed.query:
+        args["sslmode"] = resolve_ssl_mode(_merged_tls_view(url, credentials))
 
     # `create_engine` unions the URL's own parameters with `connect_args` and
     # lets `connect_args` win, so a URL that already names one of these would be
@@ -136,13 +186,18 @@ def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
     # driver is to put the posture in the query string, so both being present is
     # a reasonable thing for someone to do. Refusing is the same rule as above:
     # a configured setting is applied or refused, never quietly dropped.
-    clash = sorted(set(parsed.query) & set(_LIBPQ_TLS_PARAMS.values()))
+    # Against `args`, not the whole TLS vocabulary. A URL naming a parameter
+    # this connector would not set is not a conflict: `?sslrootcert=...` beside
+    # a configured `ssl_mode` replaces nothing, and refusing it turned a valid
+    # split configuration into an error whose message named two sets that did
+    # not overlap.
+    clash = sorted(set(parsed.query) & set(args))
     if clash:
         raise ValueError(
-            f"SQLAlchemyConnector will not silently overrule the URL: it already "
-            f"sets {clash}, and this connector's TLS credentials would replace "
-            f"{sorted(args)}. Configure the posture in one place -- either the "
-            f"URL's query string or the connector's ssl_* settings."
+            f"SQLAlchemyConnector will not silently overrule the URL: both it and "
+            f"this connector's TLS credentials set {clash}, and SQLAlchemy would "
+            f"let the credentials win without saying so. Configure each setting in "
+            f"one place -- either the URL's query string or the ssl_* credentials."
         )
     return args
 
@@ -152,6 +207,19 @@ class SQLAlchemyConnector(DatabaseConnector):
 
     def __init__(self) -> None:
         self._engine: Engine | None = None
+        self._tls: TlsPosture | None = None
+
+    @property
+    def tls(self) -> TlsPosture | None:
+        """The TLS posture this connector resolved, or None.
+
+        Built from the URL's own TLS parameters and this connector's, which the
+        clash check keeps disjoint. ``None`` means the posture is not ours to
+        report: ``connect`` has not run, or nothing on either side set a mode,
+        leaving libpq's ``prefer`` default -- and reporting a mode the
+        connection is not running under would be worse than reporting nothing.
+        """
+        return self._tls
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -172,9 +240,20 @@ class SQLAlchemyConnector(DatabaseConnector):
         if not url or not str(url).strip():
             raise ValueError("SQLAlchemyConnector requires a 'url' credential (a SQLAlchemy URL).")
         url = str(url).strip()
-        self._engine = create_engine(
-            url, pool_pre_ping=True, connect_args=_tls_connect_args(url, credentials)
-        )
+        connect_args = _tls_connect_args(url, credentials)
+        merged = _merged_tls_view(url, credentials)
+        # Record what was resolved, the way PostgresConnector does. `nlqueries
+        # health` reads `connector.tls` and stayed silent for this connector
+        # type, so a `sqlalchemy` entry running at `require` with no certificate
+        # -- encrypted, verifying nothing -- reported no concern at all, while
+        # the identical `postgres` entry reported one. The posture is known here
+        # now; discarding it was the last place this connector knew something
+        # about its own TLS and did not say.
+        #
+        # From both sources: a split configuration is now permitted, so neither
+        # half describes the connection on its own.
+        self._tls = _posture_for(merged, connect_args)
+        self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

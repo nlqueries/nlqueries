@@ -162,3 +162,195 @@ def test_a_url_with_tls_and_no_configured_settings_is_left_alone(engine_args) ->
     TLS in the URL. Expressing the posture there is the documented route."""
     SQLAlchemyConnector().connect({"url": _PG + "?sslmode=verify-full"})
     assert engine_args["connect_args"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Follow-up to the review on #169
+# ---------------------------------------------------------------------------
+
+
+def test_a_url_parameter_this_connector_would_not_set_is_not_a_clash(engine_args) -> None:
+    """The refusal exists to stop a silent overrule, so it must fire only where
+    one would happen. `?sslrootcert=` beside a configured `ssl_mode` replaces
+    nothing — the two name different parameters — and refusing it turned a valid
+    split configuration into an error whose message listed two sets that did not
+    overlap."""
+    SQLAlchemyConnector().connect(
+        {"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_mode": "verify-full"}
+    )
+    assert engine_args["connect_args"] == {"sslmode": "verify-full"}
+
+
+def test_the_same_parameter_from_both_sides_is_still_refused(engine_args) -> None:
+    """Canary for the above: narrowing the check must not disarm it."""
+    with pytest.raises(ValueError, match="will not silently overrule the URL"):
+        SQLAlchemyConnector().connect({"url": _PG + "?sslmode=verify-full", "ssl_mode": "require"})
+
+
+def test_a_resolved_posture_is_reported(engine_args) -> None:
+    """`nlqueries health` reads `connector.tls`. This connector resolved a
+    definite mode and then discarded it, so a `sqlalchemy` entry running at
+    `require` with no certificate — encrypted, verifying nothing — reported no
+    concern, while an identical `postgres` entry reported one."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG, "ssl_mode": "require"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "require"
+    assert connector.tls.concerns, "require without a CA verifies nothing and should say so"
+
+
+def test_a_verified_posture_reports_no_concern(engine_args) -> None:
+    """Canary: the posture is reported, not merely a complaint. A connector that
+    always had concerns would satisfy the test above."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG, "ssl_ca_cert": "/etc/ssl/ca.pem"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-full"
+    assert not connector.tls.concerns
+
+
+def test_a_url_only_posture_is_read_from_the_url(engine_args) -> None:
+    """The URL decides here, and it is readable, so it is reported. Silence would
+    be the honest answer only if the posture were unknowable, and it is not."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-full"
+    assert not connector.tls.concerns
+
+
+def test_a_split_configuration_is_described_from_both_halves(engine_args) -> None:
+    """The case the narrowed clash check created.
+
+    `?sslrootcert=` in the URL with `ssl_mode: require` in the credentials
+    connects with libpq verifying the chain against that certificate. Read from
+    the credentials alone the posture is `require` with no root certificate, and
+    `nlqueries health` would report the connection as "encrypted to whichever
+    server answers" — a confident wrong answer about a connection that is in
+    fact verified.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_mode": "require"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "require"
+    assert connector.tls.has_root_certificate, "the URL's certificate is part of the posture"
+    # `require` with a root certificate verifies the chain but not the hostname,
+    # so there is still a concern -- the accurate one. What must not appear is
+    # the report for a connection with no certificate at all, which is what
+    # reading the credentials alone produced.
+    assert connector.tls.verifies_certificate_chain
+    assert not any("no ssl_ca_cert" in c for c in connector.tls.concerns)
+
+
+def test_a_url_root_certificate_selects_verify_full(engine_args) -> None:
+    """The mode must be resolved from the merged view too, or the two halves
+    disagree about the same certificate.
+
+    A root certificate is what selects `verify-full`, and it counts whether it
+    was supplied in the credentials or in the URL — `PostgresConnector` reaches
+    `verify-full` from identical material. Resolving from the credentials alone
+    gave `require` here, so the connection verified the chain but not the
+    hostname, and the only way for the operator to clear the resulting `health`
+    concern was to duplicate the CA path into the credentials.
+
+    This is the assertion my earlier version of this test was missing: it
+    checked `has_root_certificate` and never looked at the mode that was
+    actually injected.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect(
+        {"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_client_cert": "/etc/ssl/c.crt"}
+    )
+    assert engine_args["connect_args"]["sslmode"] == "verify-full"
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-full"
+    assert connector.tls.has_root_certificate
+    assert not connector.tls.concerns
+
+
+def test_a_url_that_sets_the_mode_is_not_given_a_second_one(engine_args) -> None:
+    """Canary for the skip. When the URL already settles the mode, injecting the
+    resolved value would trip the clash check on a configuration where nothing
+    is in conflict — the credentials set a certificate, the URL sets the mode,
+    and the two are disjoint."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslmode=verify-ca", "ssl_client_cert": "/etc/ssl/c.crt"})
+    assert "sslmode" not in engine_args["connect_args"]
+    assert engine_args["connect_args"] == {"sslcert": "/etc/ssl/c.crt"}
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-ca"
+
+
+def test_the_mode_in_the_credentials_still_wins_over_resolution(engine_args) -> None:
+    """Canary: resolving from the merged view must not start overriding a mode
+    the operator stated outright, including a deliberately weaker one."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_mode": "require"})
+    assert engine_args["connect_args"]["sslmode"] == "require"
+
+
+def test_a_connection_with_no_mode_anywhere_reports_nothing(engine_args) -> None:
+    """None, not a guess. With no mode on either side libpq applies its own
+    `prefer` default, which is not what `resolve_ssl_mode` would have chosen, so
+    describing these settings would report a posture the connection is not
+    running under."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG})
+    assert connector.tls is None
+
+
+def test_the_posture_is_unset_before_connect() -> None:
+    assert SQLAlchemyConnector().tls is None
+
+
+def test_a_weaker_mode_in_the_url_is_honoured_over_the_resolvers_default(
+    engine_args,
+) -> None:
+    """The configuration the narrowed clash check made newly connectable.
+
+    A URL saying `?sslmode=require` beside `ssl_ca_cert` in the credentials was
+    refused before, because the check fired on any TLS parameter. It now
+    connects, and it must connect at the URL's `require` — not the `verify-full`
+    the credentials alone would have resolved to — with the certificate simply
+    renamed into `sslrootcert`.
+
+    Nothing held that until now: the neighbouring test uses `ssl_client_cert`,
+    for which the resolved mode is `require` either way, so it cannot tell the
+    two apart. Without this a future edit could report the resolver's
+    `verify-full` for a session actually running at `require` — a stronger
+    posture claimed than the one in force, which is the whole failure this file
+    exists to prevent.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslmode=require", "ssl_ca_cert": "/etc/ssl/ca.pem"})
+
+    assert engine_args["connect_args"] == {"sslrootcert": "/etc/ssl/ca.pem"}
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "require", "the URL's explicit mode is what is in force"
+    assert connector.tls.has_root_certificate
+    # `require` with a certificate verifies the chain but not the hostname, and
+    # the report has to say so rather than claiming the resolver's verify-full.
+    assert connector.tls.concerns
+    assert any("names this host" in c for c in connector.tls.concerns)
+
+
+def test_a_url_certificate_alone_does_not_resolve_a_mode(engine_args) -> None:
+    """The boundary of the resolution, and the sharpest edge in this file.
+
+    Resolution is triggered by the connector's own `ssl_*` settings, so a
+    certificate that appears only in the URL does not select `verify-full`: with
+    no `ssl_*` credentials there is nothing to translate, the connector injects
+    nothing, and libpq applies `prefer` — plaintext fallback, verifying nothing —
+    while the operator has supplied a CA and reasonably believes otherwise.
+
+    `tls` is `None` here rather than a description, because the connector did not
+    choose this posture and guessing at libpq's default would be the confident
+    wrong answer this file exists to prevent. That silence is the reason
+    `docs/database-hardening.md` now states the boundary outright instead of
+    leaving it to be inferred.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslrootcert=/etc/ssl/ca.pem"})
+
+    assert engine_args["connect_args"] == {}, "a URL alone must not trigger resolution"
+    assert connector.tls is None
