@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 _KEYRING_SERVICE = "nlqueries"
 
+#: Keys in a connectors-file entry that describe the entry itself rather than
+#: the connection, and so are not passed to ``DatabaseConnector.connect``.
+#: Everything else in the entry is connector configuration and is passed
+#: through -- see the pass-through in :func:`open_connector_for_agent`.
+_LOADER_ONLY_KEYS = frozenset({"db_type", "url", "password_storage"})
+
 
 # ---------------------------------------------------------------------------
 # Connector reuse
@@ -241,18 +247,35 @@ def open_connector_for_agent(
         url = _get_full_url(connector_id, cfg)
         parsed = make_url(url)
         connector = connector_cls()
-        connector.connect(
+        # Start from the stored configuration rather than an allow-list of keys.
+        # The allow-list silently dropped every key it did not name, and the
+        # dropped keys included `ssl_mode`, `ssl_ca_cert`, `ssl_client_cert` and
+        # `ssl_client_key` -- the whole of a connector's TLS configuration. So a
+        # connector configured for a database with no TLS could not be opened
+        # (the resolved mode fell back to `require`), and one configured to
+        # verify a private CA was opened with `require` instead: encrypted, but
+        # verifying nothing, which is the posture the operator had explicitly
+        # configured against. Neither failure was visible from the connector.
+        #
+        # A pass-through keeps the loader out of the business of knowing which
+        # keys a connector understands. Every connector reads what it wants with
+        # `.get()`, so a key it does not recognise costs nothing -- whereas the
+        # allow-list has to be extended for each one and had already fallen
+        # behind by four.
+        credentials = {k: v for k, v in cfg.items() if k not in _LOADER_ONLY_KEYS}
+        # The URL stays authoritative for the fields it carries: `_get_full_url`
+        # resolves a keychain-stored password into it, so reading these off the
+        # parsed URL rather than off `cfg` is what makes that indirection work.
+        credentials.update(
             {
                 "host": parsed.host or cfg.get("host", "localhost"),
                 "port": parsed.port or cfg.get("port"),
                 "database": parsed.database or cfg.get("database"),
                 "user": parsed.username or cfg.get("user"),
                 "password": parsed.password or _load_password(connector_id, cfg),
-                "account": cfg.get("account"),
-                "warehouse": cfg.get("warehouse"),
-                "schema": cfg.get("schema"),
             }
         )
+        connector.connect(credentials)
         if config.CONNECTOR_CACHE_ENABLED:
             _cache_put(connector_id, connector, fingerprint)
         return PermittedConnector(connector, execution)
