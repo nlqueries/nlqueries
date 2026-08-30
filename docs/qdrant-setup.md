@@ -23,10 +23,16 @@ A `200 OK` with `{"title":"qdrant","version":"..."}` means it's up — skip to [
 
 ```bash
 docker run -d --name qdrant --restart unless-stopped \
-  -p 6333:6333 -p 6334:6334 \
+  -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 \
   -v qdrant_storage:/qdrant/storage \
   qdrant/qdrant
 ```
+
+The ports are bound to `127.0.0.1` so the container is reachable from this machine only. Qdrant starts with no authentication unless you give it a key, and an unauthenticated vector store is a write path into the semantic cache — cached SQL is executed against your database. Publishing it on every interface, which is what `-p 6333:6333` does, offers that write path to anything that can route to the host.
+
+NLQueries will not stop you here, because its own check reads `QDRANT_URL`: `http://localhost:6333` is loopback, so no key is required no matter what the container publishes. The two are independent, and the bind is the half that check cannot see.
+
+To reach Qdrant from another machine, set a key on both sides rather than widening the bind alone — `QDRANT__SERVICE__API_KEY` on the container and `QDRANT_API_KEY` for NLQueries (`openssl rand -hex 32`). NLQueries requires the key for any non-loopback `QDRANT_URL` in any case.
 
 Data persists in the `qdrant_storage` named volume across restarts. Manage it with `docker stop/start qdrant`, `docker rm -f qdrant` (data preserved), or `docker volume rm qdrant_storage` (data deleted).
 
