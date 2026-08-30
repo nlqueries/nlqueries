@@ -12,7 +12,11 @@ services:
       POSTGRES_PASSWORD: nlq
       POSTGRES_DB: nlq_bench
     ports:
-      - "5433:5432"    # 5433 to avoid conflict with a local Postgres on 5432
+      # Loopback by default: this database is seeded with benchmark fixtures and
+      # its credentials are in this file, so publishing it on every interface
+      # offers a trivially reachable Postgres to the whole network. Override
+      # BIND_ADDR only if the benchmark driver runs off-host.
+      - "${BIND_ADDR:-127.0.0.1}:5433:5432"    # 5433 to avoid conflict with a local Postgres on 5432
     volumes:
       - postgres_bench_data:/var/lib/postgresql/data
       - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
@@ -25,7 +29,10 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.9.2
     ports:
-      - "6334:6333"    # 6334 to avoid conflict with a local Qdrant on 6333
+      # Loopback by default, as in the top-level compose file: this Qdrant runs
+      # with no API key, so a wildcard bind publishes an unauthenticated vector
+      # store.
+      - "${BIND_ADDR:-127.0.0.1}:6334:6333"    # 6334 to avoid conflict with a local Qdrant on 6333
     volumes:
       - qdrant_bench_data:/qdrant/storage
     healthcheck:
