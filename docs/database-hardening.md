@@ -246,18 +246,27 @@ Where it does apply them it resolves the mode the same way the per-vendor
 connectors do, so `ssl_ca_cert` with no `ssl_mode` selects `verify-full` rather
 than leaving you on libpq's `prefer`.
 
-**Configure the posture in one place.** SQLAlchemy lets `connect_args` overrule
-the URL's own query parameters, so a URL saying `?sslmode=verify-full` beside a
+**Set each parameter in one place.** SQLAlchemy lets `connect_args` overrule the
+URL's own query parameters, so a URL saying `?sslmode=verify-full` beside a
 connector setting of `ssl_mode: require` would connect as `require` with the
 stricter setting discarded and nothing said. Rather than pick a winner, the
 connector refuses:
 
 ```
-SQLAlchemyConnector will not silently overrule the URL: it already sets
-['sslmode'], and this connector's TLS credentials would replace
-['sslmode', 'sslrootcert']. Configure the posture in one place — either
-the URL's query string or the connector's ssl_* settings.
+SQLAlchemyConnector will not silently overrule the URL: both it and this
+connector's TLS credentials set ['sslmode'], and SQLAlchemy would let the
+credentials win without saying so. Configure each setting in one place —
+either the URL's query string or the ssl_* credentials.
 ```
+
+Splitting them across the two is fine, because nothing is then overruled:
+`?sslrootcert=/etc/ssl/ca.pem` in the URL alongside `ssl_mode: verify-full` in
+the connector's settings connects as you would expect.
+
+`nlqueries health` reports the posture for a `sqlalchemy` connector whenever the
+connector's own `ssl_*` settings decided it, exactly as for the per-vendor ones.
+Where the URL alone decides, it reports nothing rather than guessing — the
+posture is in the URL, and this connector never saw it.
 
 A `sqlalchemy` URL with no TLS settings configured alongside it is untouched:
 the URL alone decides, including its defaults. For PostgreSQL that default is

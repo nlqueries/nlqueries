@@ -162,3 +162,62 @@ def test_a_url_with_tls_and_no_configured_settings_is_left_alone(engine_args) ->
     TLS in the URL. Expressing the posture there is the documented route."""
     SQLAlchemyConnector().connect({"url": _PG + "?sslmode=verify-full"})
     assert engine_args["connect_args"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Follow-up to the review on #169
+# ---------------------------------------------------------------------------
+
+
+def test_a_url_parameter_this_connector_would_not_set_is_not_a_clash(engine_args) -> None:
+    """The refusal exists to stop a silent overrule, so it must fire only where
+    one would happen. `?sslrootcert=` beside a configured `ssl_mode` replaces
+    nothing — the two name different parameters — and refusing it turned a valid
+    split configuration into an error whose message listed two sets that did not
+    overlap."""
+    SQLAlchemyConnector().connect(
+        {"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_mode": "verify-full"}
+    )
+    assert engine_args["connect_args"] == {"sslmode": "verify-full"}
+
+
+def test_the_same_parameter_from_both_sides_is_still_refused(engine_args) -> None:
+    """Canary for the above: narrowing the check must not disarm it."""
+    with pytest.raises(ValueError, match="will not silently overrule the URL"):
+        SQLAlchemyConnector().connect({"url": _PG + "?sslmode=verify-full", "ssl_mode": "require"})
+
+
+def test_a_resolved_posture_is_reported(engine_args) -> None:
+    """`nlqueries health` reads `connector.tls`. This connector resolved a
+    definite mode and then discarded it, so a `sqlalchemy` entry running at
+    `require` with no certificate — encrypted, verifying nothing — reported no
+    concern, while an identical `postgres` entry reported one."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG, "ssl_mode": "require"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "require"
+    assert connector.tls.concerns, "require without a CA verifies nothing and should say so"
+
+
+def test_a_verified_posture_reports_no_concern(engine_args) -> None:
+    """Canary: the posture is reported, not merely a complaint. A connector that
+    always had concerns would satisfy the test above."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG, "ssl_ca_cert": "/etc/ssl/ca.pem"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-full"
+    assert not connector.tls.concerns
+
+
+def test_a_url_only_posture_is_reported_as_unknown(engine_args) -> None:
+    """None, not a guess. When the URL carries its own parameters and the
+    credentials said nothing, this connector did not decide the posture — and
+    describing one from an empty dict would report `require` for a session that
+    may be running under anything at all."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslmode=verify-full"})
+    assert connector.tls is None
+
+
+def test_the_posture_is_unset_before_connect() -> None:
+    assert SQLAlchemyConnector().tls is None

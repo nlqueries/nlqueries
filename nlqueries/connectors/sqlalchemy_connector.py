@@ -39,7 +39,7 @@ from nlqueries.connectors.base import (
     SchemaSpec,
     TableSpec,
 )
-from nlqueries.connectors.postgres_tls import resolve_ssl_mode
+from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +136,18 @@ def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
     # driver is to put the posture in the query string, so both being present is
     # a reasonable thing for someone to do. Refusing is the same rule as above:
     # a configured setting is applied or refused, never quietly dropped.
-    clash = sorted(set(parsed.query) & set(_LIBPQ_TLS_PARAMS.values()))
+    # Against `args`, not the whole TLS vocabulary. A URL naming a parameter
+    # this connector would not set is not a conflict: `?sslrootcert=...` beside
+    # a configured `ssl_mode` replaces nothing, and refusing it turned a valid
+    # split configuration into an error whose message named two sets that did
+    # not overlap.
+    clash = sorted(set(parsed.query) & set(args))
     if clash:
         raise ValueError(
-            f"SQLAlchemyConnector will not silently overrule the URL: it already "
-            f"sets {clash}, and this connector's TLS credentials would replace "
-            f"{sorted(args)}. Configure the posture in one place -- either the "
-            f"URL's query string or the connector's ssl_* settings."
+            f"SQLAlchemyConnector will not silently overrule the URL: both it and "
+            f"this connector's TLS credentials set {clash}, and SQLAlchemy would "
+            f"let the credentials win without saying so. Configure each setting in "
+            f"one place -- either the URL's query string or the ssl_* credentials."
         )
     return args
 
@@ -152,6 +157,19 @@ class SQLAlchemyConnector(DatabaseConnector):
 
     def __init__(self) -> None:
         self._engine: Engine | None = None
+        self._tls: TlsPosture | None = None
+
+    @property
+    def tls(self) -> TlsPosture | None:
+        """The TLS posture this connector resolved, or None.
+
+        None means this connector did not decide the posture -- either
+        ``connect`` has not run, or the URL carries its own parameters and the
+        credentials said nothing. ``nlqueries health`` reports on this, and a
+        posture inferred from credentials that did not shape the connection
+        would be worse than no report.
+        """
+        return self._tls
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -172,9 +190,21 @@ class SQLAlchemyConnector(DatabaseConnector):
         if not url or not str(url).strip():
             raise ValueError("SQLAlchemyConnector requires a 'url' credential (a SQLAlchemy URL).")
         url = str(url).strip()
-        self._engine = create_engine(
-            url, pool_pre_ping=True, connect_args=_tls_connect_args(url, credentials)
-        )
+        connect_args = _tls_connect_args(url, credentials)
+        # Record what was resolved, the way PostgresConnector does. `nlqueries
+        # health` reads `connector.tls` and stayed silent for this connector
+        # type, so a `sqlalchemy` entry running at `require` with no certificate
+        # -- encrypted, verifying nothing -- reported no concern at all, while
+        # the identical `postgres` entry reported one. The posture is known here
+        # now; discarding it was the last place this connector knew something
+        # about its own TLS and did not say.
+        #
+        # Only when this connector resolved it. A URL that carries its own
+        # parameters is not described by `credentials`, and reporting a posture
+        # inferred from an empty dict would be a confident wrong answer rather
+        # than the honest silence of None.
+        self._tls = describe(credentials) if connect_args else None
+        self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:
