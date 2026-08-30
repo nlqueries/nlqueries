@@ -242,18 +242,51 @@ def test_a_split_configuration_is_described_from_both_halves(engine_args) -> Non
     assert not any("no ssl_ca_cert" in c for c in connector.tls.concerns)
 
 
-def test_a_client_certificate_beside_a_url_root_certificate_is_also_joined(
-    engine_args,
-) -> None:
-    """The same shape with the mode arriving by resolution rather than by
-    configuration: a client certificate alone resolves to `require`, and the
-    URL's root certificate is what makes the chain verified."""
+def test_a_url_root_certificate_selects_verify_full(engine_args) -> None:
+    """The mode must be resolved from the merged view too, or the two halves
+    disagree about the same certificate.
+
+    A root certificate is what selects `verify-full`, and it counts whether it
+    was supplied in the credentials or in the URL — `PostgresConnector` reaches
+    `verify-full` from identical material. Resolving from the credentials alone
+    gave `require` here, so the connection verified the chain but not the
+    hostname, and the only way for the operator to clear the resulting `health`
+    concern was to duplicate the CA path into the credentials.
+
+    This is the assertion my earlier version of this test was missing: it
+    checked `has_root_certificate` and never looked at the mode that was
+    actually injected.
+    """
     connector = SQLAlchemyConnector()
     connector.connect(
         {"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_client_cert": "/etc/ssl/c.crt"}
     )
+    assert engine_args["connect_args"]["sslmode"] == "verify-full"
     assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-full"
     assert connector.tls.has_root_certificate
+    assert not connector.tls.concerns
+
+
+def test_a_url_that_sets_the_mode_is_not_given_a_second_one(engine_args) -> None:
+    """Canary for the skip. When the URL already settles the mode, injecting the
+    resolved value would trip the clash check on a configuration where nothing
+    is in conflict — the credentials set a certificate, the URL sets the mode,
+    and the two are disjoint."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslmode=verify-ca", "ssl_client_cert": "/etc/ssl/c.crt"})
+    assert "sslmode" not in engine_args["connect_args"]
+    assert engine_args["connect_args"] == {"sslcert": "/etc/ssl/c.crt"}
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-ca"
+
+
+def test_the_mode_in_the_credentials_still_wins_over_resolution(engine_args) -> None:
+    """Canary: resolving from the merged view must not start overriding a mode
+    the operator stated outright, including a deliberately weaker one."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_mode": "require"})
+    assert engine_args["connect_args"]["sslmode"] == "require"
 
 
 def test_a_connection_with_no_mode_anywhere_reports_nothing(engine_args) -> None:

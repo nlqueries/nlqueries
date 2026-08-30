@@ -243,8 +243,9 @@ the driver's own parameters in the URL query string instead, for example
 `mysql+pymysql://…/shop?ssl_ca=/etc/ssl/ca.pem`.
 
 Where it does apply them it resolves the mode the same way the per-vendor
-connectors do, so `ssl_ca_cert` with no `ssl_mode` selects `verify-full` rather
-than leaving you on libpq's `prefer`.
+connectors do, so a root certificate with no `ssl_mode` selects `verify-full`
+rather than leaving you on libpq's `prefer` — and the certificate counts whether
+you supplied it in the credentials or in the URL's query string.
 
 **Set each parameter in one place.** SQLAlchemy lets `connect_args` overrule the
 URL's own query parameters, so a URL saying `?sslmode=verify-full` beside a
