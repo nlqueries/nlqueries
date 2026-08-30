@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, make_url
 
 from nlqueries import config
 from nlqueries.connectors._budget import collect
@@ -70,6 +70,55 @@ def _apply_statement_timeout(conn: Connection, seconds: float) -> None:
         logger.debug("No statement-timeout mechanism for dialect %r; running unbounded", name)
 
 
+#: Credential keys that configure TLS, mapped to the libpq connection
+#: parameters of the same meaning. Every PostgreSQL driver SQLAlchemy ships a
+#: dialect for -- psycopg2, psycopg 3 -- passes these straight to libpq.
+_LIBPQ_TLS_PARAMS = {
+    "ssl_mode": "sslmode",
+    "ssl_ca_cert": "sslrootcert",
+    "ssl_client_cert": "sslcert",
+    "ssl_client_key": "sslkey",
+}
+
+#: Drivers known to accept the libpq parameter names above. `pg8000` and
+#: `asyncpg` speak to PostgreSQL but configure TLS through an ``ssl_context``
+#: object instead, so they are deliberately absent: guessing wrong here would
+#: silently produce the unverified connection this exists to prevent. An empty
+#: driver name is psycopg2, SQLAlchemy's default for `postgresql://`.
+_LIBPQ_DRIVERS = frozenset({"", "psycopg2", "psycopg"})
+
+
+def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
+    """Translate configured TLS settings into ``create_engine`` connect args.
+
+    This connector takes a whole URL, so it has no per-field TLS handling of its
+    own the way :class:`~nlqueries.connectors.postgres.PostgresConnector` does.
+    That left it accepting ``ssl_mode`` and ``ssl_ca_cert``, storing them,
+    delivering them here, and then connecting as though they had not been set --
+    under libpq's ``prefer`` default, which falls back to plaintext without
+    saying so. A setting that is accepted and then ignored is worse than one
+    that is not supported: the operator has no way to discover the difference.
+
+    So a setting we cannot apply is refused rather than dropped. An operator who
+    wants the generic connector on a driver we do not know can still express any
+    posture they like in the URL's own query string, which is this connector's
+    documented interface.
+    """
+    configured = {key: credentials[key] for key in _LIBPQ_TLS_PARAMS if credentials.get(key)}
+    if not configured:
+        return {}
+
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "postgresql" or parsed.get_driver_name() not in _LIBPQ_DRIVERS:
+        raise ValueError(
+            f"SQLAlchemyConnector cannot apply {sorted(configured)} to a "
+            f"'{parsed.drivername}' URL: the TLS parameter names are driver-specific "
+            f"and only the libpq-based PostgreSQL drivers are mapped. Put the "
+            f"equivalent settings in the URL's query string instead."
+        )
+    return {_LIBPQ_TLS_PARAMS[key]: value for key, value in configured.items()}
+
+
 class SQLAlchemyConnector(DatabaseConnector):
     """Generic connector for any SQLAlchemy-reachable database (URL-driven)."""
 
@@ -86,11 +135,18 @@ class SQLAlchemyConnector(DatabaseConnector):
         The URL is a standard SQLAlchemy URL, e.g.
         ``postgresql+psycopg://user:pass@host/db`` or ``sqlite:////data/db.sqlite``.
         Raises :class:`ValueError` when no URL is supplied.
+
+        TLS settings configured alongside the URL are applied when the driver
+        is one whose parameter names we know; see :func:`_tls_connect_args`. A
+        setting we cannot apply raises rather than being ignored.
         """
         url = credentials.get("url") or credentials.get("connection_string")
         if not url or not str(url).strip():
             raise ValueError("SQLAlchemyConnector requires a 'url' credential (a SQLAlchemy URL).")
-        self._engine = create_engine(str(url).strip(), pool_pre_ping=True)
+        url = str(url).strip()
+        self._engine = create_engine(
+            url, pool_pre_ping=True, connect_args=_tls_connect_args(url, credentials)
+        )
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

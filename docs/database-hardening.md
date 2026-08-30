@@ -216,6 +216,38 @@ A certificate whose subject does not name the host you connect to will be
 refused under `verify-full`. Connecting by IP address to a certificate issued
 for a hostname is the usual cause.
 
+### The generic connector
+
+Everything above describes the per-vendor connectors, which take `ssl_mode` and
+`ssl_ca_cert` as configuration. The generic `sqlalchemy` connector takes a whole
+SQLAlchemy URL instead, and its posture comes from that URL.
+
+It applies `ssl_mode`, `ssl_ca_cert`, `ssl_client_cert` and `ssl_client_key` when
+the URL names a libpq-based PostgreSQL driver — `postgresql://` or
+`postgresql+psycopg://` — because those are the drivers whose parameter names
+map onto these settings directly.
+
+For any other driver it **refuses to connect** rather than ignoring them:
+
+```
+SQLAlchemyConnector cannot apply ['ssl_ca_cert'] to a 'mysql+pymysql' URL:
+the TLS parameter names are driver-specific and only the libpq-based
+PostgreSQL drivers are mapped. Put the equivalent settings in the URL's
+query string instead.
+```
+
+That is deliberate. Accepting a setting and then not applying it leaves you with
+a plaintext session you believe is verified, and no way to tell — which is the
+failure the `require` default elsewhere in this document exists to prevent. Put
+the driver's own parameters in the URL query string instead, for example
+`mysql+pymysql://…/shop?ssl_ca=/etc/ssl/ca.pem`.
+
+A `sqlalchemy` URL with no TLS settings configured alongside it is untouched:
+the URL alone decides, including its defaults. For PostgreSQL that default is
+libpq's `prefer`, which falls back to plaintext silently — so prefer the
+`postgres` connector, which defaults to `require`, unless you have a reason not
+to.
+
 ---
 
 ## Row-level security
