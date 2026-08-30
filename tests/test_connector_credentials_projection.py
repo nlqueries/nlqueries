@@ -133,13 +133,20 @@ def test_a_key_no_connector_reads_today_is_still_passed(write_config, seen) -> N
 
 def test_entry_bookkeeping_is_not_passed_as_credentials(write_config, seen) -> None:
     """The other half of the property: keys that describe the entry rather than
-    the connection stay out. `url` in particular carries the password in
-    cleartext, and a connector that logged its credentials would print it."""
+    the connection stay out."""
     write_config(password_storage="plaintext")
     creds = _open(seen)
     assert "db_type" not in creds
-    assert "url" not in creds
     assert "password_storage" not in creds
+
+
+def test_the_url_is_passed_because_a_connector_connects_with_it(write_config, seen) -> None:
+    """`url` is deliberately not entry bookkeeping. SQLAlchemyConnector, which
+    backs the `sqlalchemy` db_type, reads `credentials["url"]` and raises
+    ValueError without it -- and `open_connector_for_agent` turns that into a
+    silent None. Withholding the URL would leave that connector unopenable."""
+    write_config()
+    assert _open(seen)["url"] == "postgresql://user:secret@localhost:5432/db"
 
 
 def test_the_url_still_wins_for_the_fields_it_carries(write_config, seen) -> None:
@@ -152,3 +159,26 @@ def test_the_url_still_wins_for_the_fields_it_carries(write_config, seen) -> Non
     assert creds["port"] == 5432
     assert creds["database"] == "db"
     assert creds["user"] == "user"
+
+
+def test_the_url_carries_the_keychain_password_not_the_stored_one(
+    write_config, seen, monkeypatch
+) -> None:
+    """Passing the URL through is only safe because it is the *resolved* one.
+
+    When the password lives in the OS keychain the stored URL holds whatever
+    stale value was written with it, and `_get_full_url` injects the real one.
+    Handing over `cfg["url"]` instead would give SQLAlchemyConnector a URL that
+    cannot authenticate, in the one case the keychain exists to serve."""
+    import sys
+    import types
+
+    fake = types.ModuleType("keyring")
+    fake.get_password = lambda service, name: "from-keychain"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+
+    write_config(password_storage="keychain")
+    creds = _open(seen)
+    assert creds["password"] == "from-keychain"
+    assert "from-keychain" in creds["url"]
+    assert "secret" not in creds["url"]
