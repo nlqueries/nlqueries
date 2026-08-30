@@ -67,7 +67,7 @@ class PostgresConnector(DatabaseConnector):
             "port": 5432,
             "database": "mydb",
             "user": "alice",
-            "password": "s3cr3t",
+            "password": "YOUR_PASSWORD",
         })
         if connector.test_connection():
             schema = connector.extract_schema()

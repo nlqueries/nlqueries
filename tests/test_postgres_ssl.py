@@ -21,7 +21,7 @@ _BASE_CREDS: dict[str, Any] = {
     "port": 5432,
     "database": "mydb",
     "user": "alice",
-    "password": "s3cr3t",
+    "password": "test-password",
 }
 
 

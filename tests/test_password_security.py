@@ -17,7 +17,7 @@ def test_save_password_returns_true_on_success():
         patch("nlqueries.cli.main.keyring", mock_kr, create=True),
         patch.dict("sys.modules", {"keyring": mock_kr}),
     ):
-        result = _save_password("my_connector", "s3cr3t")
+        result = _save_password("my_connector", "test-password")
     assert result is True
 
 
@@ -25,13 +25,13 @@ def test_save_password_returns_false_when_keyring_raises():
     mock_kr = MagicMock()
     mock_kr.set_password.side_effect = RuntimeError("No keyring backend")
     with patch.dict("sys.modules", {"keyring": mock_kr}):
-        result = _save_password("my_connector", "s3cr3t")
+        result = _save_password("my_connector", "test-password")
     assert result is False
 
 
 def test_save_password_returns_false_when_keyring_missing():
     with patch.dict("sys.modules", {"keyring": None}):
-        result = _save_password("my_connector", "s3cr3t")
+        result = _save_password("my_connector", "test-password")
     assert result is False
 
 

@@ -32,7 +32,7 @@ SSL for PostgreSQL/MySQL connections is configured via the `SSL_MODE` / `SSL_CA_
 **Snowflake** — install `pip install "nlqueries-core[snowflake]"` first
 
 ```bash
-nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --schema PUBLIC --warehouse COMPUTE_WH --user alice --password s3cr3t
+nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --schema PUBLIC --warehouse COMPUTE_WH --user alice --password YOUR_PASSWORD
 ```
 
 **BigQuery** — install `pip install "nlqueries-core[bigquery]"` first (uses Application Default Credentials if `--service-account-json` is omitted)
@@ -46,13 +46,13 @@ BigQuery has no password — `--project-id` (or `--database`, used as a fallback
 **Amazon Redshift** — install `pip install "nlqueries-core[redshift]"` first
 
 ```bash
-nlqueries connect redshift --host my-cluster.abc123.us-east-1.redshift.amazonaws.com --port 5439 --database dev --user awsuser --password s3cr3t --alias redshift-prod
+nlqueries connect redshift --host my-cluster.abc123.us-east-1.redshift.amazonaws.com --port 5439 --database dev --user awsuser --password YOUR_PASSWORD --alias redshift-prod
 ```
 
 **SQL Server / Azure SQL** — install `pip install "nlqueries-core[mssql]"` first
 
 ```bash
-nlqueries connect mssql --host my-server.database.windows.net --port 1433 --database mydb --user alice --password s3cr3t --alias sql-prod
+nlqueries connect mssql --host my-server.database.windows.net --port 1433 --database mydb --user alice --password YOUR_PASSWORD --alias sql-prod
 ```
 
 **DuckDB** — install `pip install "nlqueries-core[duckdb]"` first; file-based, no host/port

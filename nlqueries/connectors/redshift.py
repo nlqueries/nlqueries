@@ -59,7 +59,7 @@ class RedshiftConnector(DatabaseConnector):
             "port": 5439,
             "database": "dev",
             "user": "awsuser",
-            "password": "s3cr3t",
+            "password": "YOUR_PASSWORD",
         })
         if connector.test_connection():
             schema = connector.extract_schema()
