@@ -242,6 +242,23 @@ failure the `require` default elsewhere in this document exists to prevent. Put
 the driver's own parameters in the URL query string instead, for example
 `mysql+pymysql://…/shop?ssl_ca=/etc/ssl/ca.pem`.
 
+Where it does apply them it resolves the mode the same way the per-vendor
+connectors do, so `ssl_ca_cert` with no `ssl_mode` selects `verify-full` rather
+than leaving you on libpq's `prefer`.
+
+**Configure the posture in one place.** SQLAlchemy lets `connect_args` overrule
+the URL's own query parameters, so a URL saying `?sslmode=verify-full` beside a
+connector setting of `ssl_mode: require` would connect as `require` with the
+stricter setting discarded and nothing said. Rather than pick a winner, the
+connector refuses:
+
+```
+SQLAlchemyConnector will not silently overrule the URL: it already sets
+['sslmode'], and this connector's TLS credentials would replace
+['sslmode', 'sslrootcert']. Configure the posture in one place — either
+the URL's query string or the connector's ssl_* settings.
+```
+
 A `sqlalchemy` URL with no TLS settings configured alongside it is untouched:
 the URL alone decides, including its defaults. For PostgreSQL that default is
 libpq's `prefer`, which falls back to plaintext silently — so prefer the

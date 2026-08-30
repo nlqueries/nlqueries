@@ -109,3 +109,56 @@ def test_those_drivers_still_work_without_tls_settings(engine_args) -> None:
     or SQLite URL with no TLS keys is untouched, as it was before."""
     SQLAlchemyConnector().connect({"url": "mysql+pymysql://user:pw@db.internal/shop"})
     assert engine_args["connect_args"] == {}
+
+
+def test_a_root_certificate_alone_selects_verify_full(engine_args) -> None:
+    """The case a pure key rename gets wrong, and the reason this needs the
+    resolver rather than a mapping.
+
+    `ssl_ca_cert` with no `ssl_mode` is a deliberate combination, not an
+    oversight: the GCP Cloud SQL IAM provider leaves the mode unset when a root
+    certificate is configured precisely because it expects the connector to
+    choose. Renaming keys alone yields `sslrootcert` under libpq's `prefer`, so
+    the operator supplies a CA and gets a session that falls back to plaintext
+    and verifies nothing -- the failure this whole change exists to remove.
+    """
+    SQLAlchemyConnector().connect({"url": _PG, "ssl_ca_cert": "/etc/ssl/ca.pem"})
+    assert engine_args["connect_args"] == {
+        "sslmode": "verify-full",
+        "sslrootcert": "/etc/ssl/ca.pem",
+    }
+
+
+def test_no_certificate_and_no_mode_still_insists_on_encryption(engine_args) -> None:
+    """The resolver's other default, held here so a future edit cannot quietly
+    reintroduce `prefer` for a connector that configured a client certificate
+    but no mode."""
+    SQLAlchemyConnector().connect({"url": _PG, "ssl_client_cert": "/etc/ssl/client.crt"})
+    assert engine_args["connect_args"]["sslmode"] == "require"
+
+
+def test_an_explicit_mode_is_still_honoured(engine_args) -> None:
+    """Canary for the two above: the resolver must not override what the
+    operator actually asked for, including a deliberately weaker mode."""
+    SQLAlchemyConnector().connect(
+        {"url": _PG, "ssl_mode": "disable", "ssl_ca_cert": "/etc/ssl/ca.pem"}
+    )
+    assert engine_args["connect_args"]["sslmode"] == "disable"
+
+
+def test_a_url_that_already_sets_tls_is_not_silently_overruled(engine_args) -> None:
+    """`create_engine` unions the URL's parameters with `connect_args` and lets
+    `connect_args` win, so a stricter URL setting would be discarded with no
+    indication. The documented advice for an unmapped driver is to put the
+    posture in the query string, which makes both being present something an
+    operator may reasonably do."""
+    with pytest.raises(ValueError, match="will not silently overrule the URL"):
+        SQLAlchemyConnector().connect({"url": _PG + "?sslmode=verify-full", "ssl_mode": "require"})
+    assert "connect_args" not in engine_args, "the engine must not be built after a refusal"
+
+
+def test_a_url_with_tls_and_no_configured_settings_is_left_alone(engine_args) -> None:
+    """Canary for the refusal: it fires on a clash, not on the mere presence of
+    TLS in the URL. Expressing the posture there is the documented route."""
+    SQLAlchemyConnector().connect({"url": _PG + "?sslmode=verify-full"})
+    assert engine_args["connect_args"] == {}

@@ -39,6 +39,7 @@ from nlqueries.connectors.base import (
     SchemaSpec,
     TableSpec,
 )
+from nlqueries.connectors.postgres_tls import resolve_ssl_mode
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,34 @@ def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
             f"and only the libpq-based PostgreSQL drivers are mapped. Put the "
             f"equivalent settings in the URL's query string instead."
         )
-    return {_LIBPQ_TLS_PARAMS[key]: value for key, value in configured.items()}
+
+    args = {_LIBPQ_TLS_PARAMS[key]: value for key, value in configured.items()}
+    # Resolve the mode rather than only renaming keys. `ssl_ca_cert` with no
+    # `ssl_mode` is the case that matters: renaming alone yields `sslrootcert`
+    # under libpq's `prefer` default, so the operator supplies a CA and gets a
+    # session that falls back to plaintext and verifies nothing. That
+    # combination is deliberate elsewhere -- the GCP Cloud SQL IAM provider
+    # leaves `ssl_mode` unset when a root certificate is configured precisely
+    # because it expects the connector to choose `verify-full`, which is what
+    # `resolve_ssl_mode` does and what PostgresConnector already does with the
+    # same credentials.
+    args["sslmode"] = resolve_ssl_mode(credentials)
+
+    # `create_engine` unions the URL's own parameters with `connect_args` and
+    # lets `connect_args` win, so a URL that already names one of these would be
+    # overruled with no indication -- and the documented advice for an unmapped
+    # driver is to put the posture in the query string, so both being present is
+    # a reasonable thing for someone to do. Refusing is the same rule as above:
+    # a configured setting is applied or refused, never quietly dropped.
+    clash = sorted(set(parsed.query) & set(_LIBPQ_TLS_PARAMS.values()))
+    if clash:
+        raise ValueError(
+            f"SQLAlchemyConnector will not silently overrule the URL: it already "
+            f"sets {clash}, and this connector's TLS credentials would replace "
+            f"{sorted(args)}. Configure the posture in one place -- either the "
+            f"URL's query string or the connector's ssl_* settings."
+        )
+    return args
 
 
 class SQLAlchemyConnector(DatabaseConnector):
