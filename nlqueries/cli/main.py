@@ -489,7 +489,7 @@ def cli() -> None:
 
     \b
     Typical workflow:
-      1. nlqueries connect postgres --database mydb --user me --password s3cr3t
+      1. nlqueries connect postgres --database mydb --user me --password YOUR_PASSWORD
       2. nlqueries extract-schema postgres:localhost:mydb
       3. nlqueries process-history postgres:localhost:mydb --days 90
       4. nlqueries export-kb postgres:localhost:mydb --output kb.yaml
@@ -584,7 +584,7 @@ def connect(
       nlqueries connect duckdb --database /data/warehouse.db
       nlqueries connect sqlite --database /data/app.db
       nlqueries connect snowflake --account acme-prod --database PROD --user bob \\
-          --password s3cr3t --warehouse COMPUTE_WH --schema PUBLIC
+          --password YOUR_PASSWORD --warehouse COMPUTE_WH --schema PUBLIC
       nlqueries connect bigquery --project-id acme-prod --dataset-id analytics \\
           --service-account-json /path/to/key.json
     """
@@ -635,7 +635,7 @@ def connect(
             raise click.ClickException(
                 f"snowflake requires {', '.join(missing)}.\n"
                 f"  Example: nlqueries connect snowflake --account acme-prod "
-                f"--database PROD --user bob --password s3cr3t --warehouse COMPUTE_WH"
+                f"--database PROD --user bob --password YOUR_PASSWORD --warehouse COMPUTE_WH"
             )
     elif db_type_l in ("duckdb", "sqlite"):
         # File-based: only a database path is needed (or :memory:, the default).

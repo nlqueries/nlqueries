@@ -46,7 +46,7 @@ class SnowflakeConnector(DatabaseConnector):
         connector.connect({
             "account": "acme-prod",
             "user": "alice",
-            "password": "s3cr3t",
+            "password": "YOUR_PASSWORD",
             "warehouse": "COMPUTE_WH",
             "database": "ANALYTICS",
             "schema": "PUBLIC",       # optional

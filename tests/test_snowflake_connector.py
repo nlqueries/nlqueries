@@ -24,7 +24,7 @@ from tests.conftest import granted
 CREDENTIALS = {
     "account": "acme-prod",
     "user": "alice",
-    "password": "s3cr3t",
+    "password": "test-password",
     "warehouse": "COMPUTE_WH",
     "database": "ANALYTICS",
 }
@@ -54,7 +54,7 @@ def test_connect_builds_connection_with_expected_kwargs(mock_connect):
     mock_connect.assert_called_once_with(
         account="acme-prod",
         user="alice",
-        password="s3cr3t",
+        password="test-password",
         warehouse="COMPUTE_WH",
         database="ANALYTICS",
     )

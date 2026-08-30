@@ -9,7 +9,7 @@
 #
 #   Once running:
 #   docker exec -it nlqueries-core nlqueries connect postgres \
-#       --host host.docker.internal --database mydb --user me --password s3cr3t
+#       --host host.docker.internal --database mydb --user me --password YOUR_PASSWORD
 #   docker exec -it nlqueries-core nlqueries ask postgres:localhost:mydb \
 #       "How many orders this week?"
 #
