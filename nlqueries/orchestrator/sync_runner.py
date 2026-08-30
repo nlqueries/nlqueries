@@ -130,6 +130,13 @@ def _parse_final_chunk(
                 row_count=int(sql_table.get("row_count", 0)),
                 execution_time_ms=float(sql_table.get("execution_time_ms", 0.0)),
                 error=sql_table.get("error"),
+                # Carried, not defaulted. These were dropped here, so every
+                # caller saw `truncated=False` regardless -- including for the
+                # results the orchestrator itself had shortened at
+                # _MAX_RESULT_ROWS. A default that reads as a positive claim of
+                # completeness is worse than no field at all.
+                truncated=bool(sql_table.get("truncated", False)),
+                truncation_reason=sql_table.get("truncation_reason"),
             )
 
     elif agent_type == "document":
@@ -167,6 +174,13 @@ def _parse_final_chunk(
                 row_count=int(sql_table.get("row_count", 0)),
                 execution_time_ms=float(sql_table.get("execution_time_ms", 0.0)),
                 error=sql_table.get("error"),
+                # Carried, not defaulted. These were dropped here, so every
+                # caller saw `truncated=False` regardless -- including for the
+                # results the orchestrator itself had shortened at
+                # _MAX_RESULT_ROWS. A default that reads as a positive claim of
+                # completeness is worse than no field at all.
+                truncated=bool(sql_table.get("truncated", False)),
+                truncation_reason=sql_table.get("truncation_reason"),
             )
 
     return (

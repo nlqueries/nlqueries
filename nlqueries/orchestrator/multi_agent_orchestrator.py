@@ -59,7 +59,7 @@ from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 from nlqueries.orchestrator.followup_resolver import aresolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, aclassify_intent, coerce_intent
-from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, Orchestrator, _json_default
+from nlqueries.orchestrator.orchestrator import Orchestrator, _json_default, sql_table_chunk
 from nlqueries.orchestrator.provenance import (
     record_cache,
     record_intent_confidence,
@@ -386,13 +386,7 @@ async def _execute_cached_sql(
         if connector is None:
             return None
         qr = await asyncio.to_thread(connector.execute_query, sql, timeout_seconds)
-        return {
-            "columns": qr.columns,
-            "rows": qr.rows[:_MAX_RESULT_ROWS],
-            "row_count": qr.row_count,
-            "execution_time_ms": qr.execution_time_ms,
-            "error": qr.error,
-        }
+        return sql_table_chunk(qr)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -695,14 +689,23 @@ class MultiAgentOrchestrator:
         if intent == IntentType.hybrid and hybrid_result is not None:
             sql_table_dict = None
             if hybrid_result.sql_table is not None:
-                qt = hybrid_result.sql_table
-                sql_table_dict = {
-                    "columns": qt.columns,
-                    "rows": qt.rows,
-                    "row_count": qt.row_count,
-                    "execution_time_ms": qt.execution_time_ms,
-                    "error": qt.error,
-                }
+                # cap=False: this branch has never applied the row cap, and
+                # starting to would be a different change from reporting
+                # truncation.
+                #
+                # Note what this frame actually holds. `_merge_hybrid` builds
+                # `sql_table` through `_extract_sql_query_result`, which
+                # synthesises a one-cell table containing the generated SQL
+                # *text* -- columns ["sql_query"], one row -- and discards the
+                # sub-agent's executed result entirely. So the truncation flags
+                # here describe that synthesised cell, which is never truncated,
+                # and a hybrid answer cannot report truncation of the query it
+                # ran because it does not carry that query's rows in the first
+                # place. Fixing that means threading the sub-agent's real table
+                # through `_merge_hybrid`; it is a change to what a hybrid
+                # answer returns, not to how truncation is reported, and it is
+                # deliberately not made here.
+                sql_table_dict = sql_table_chunk(hybrid_result.sql_table, cap=False)
             citations_list = [
                 {
                     "source_name": c.source_name,

@@ -26,12 +26,15 @@ import json
 import re
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from nlqueries import config
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
+
+if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
+    from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
@@ -50,6 +53,49 @@ _CLOSE_TAG = "</sql>"
 # split across token boundaries (len("<sql>") - 1 == 4).
 _HOLD = len(_OPEN_TAG) - 1
 _MAX_RESULT_ROWS = 200  # cap rows returned to MCP / CLI callers
+
+#: The reason recorded when :data:`_MAX_RESULT_ROWS` is what shortened a result,
+#: as distinct from the connector's own ``row_budget`` / ``byte_budget``.
+ORCHESTRATOR_ROW_CAP = "orchestrator_row_cap"
+
+
+def sql_table_chunk(qr: QueryResult, *, cap: bool = True) -> dict[str, Any]:
+    """Build the ``sql_table`` frame for an executed query.
+
+    One builder, because there were three copies of this dict -- here, in the
+    cached-SQL path and in the hybrid branch -- and all three listed the same
+    five keys and dropped ``truncated`` and ``truncation_reason``. The
+    connector sets both; nothing carried them, so every caller downstream saw a
+    dataclass default and could not tell a complete result from a shortened one.
+
+    Worse than inert: this frame also *causes* truncation. It returns at most
+    ``_MAX_RESULT_ROWS`` rows while reporting the full ``row_count``, so a
+    caller reading the two together sees a short list beside a large number and
+    nothing saying which is the answer. `QueryResult.truncated` exists for
+    exactly this -- "silently returning the first N rows of a larger answer is
+    a wrong answer, not a partial one" -- and this frame was the one place
+    ignoring it.
+
+    ``truncation_reason`` names the constraint that actually shortened what the
+    caller is holding, so the cap wins when it bit: a caller told ``row_budget``
+    would narrow the query and still receive 200 rows. ``truncated`` stays true
+    for either cause.
+
+    ``cap=False`` is the hybrid branch, which has never applied the row cap.
+    Preserved deliberately: this change is about reporting truncation, and
+    starting to truncate a path that did not would be a different one.
+    """
+    rows = qr.rows[:_MAX_RESULT_ROWS] if cap else qr.rows
+    capped = cap and len(qr.rows) > _MAX_RESULT_ROWS
+    return {
+        "columns": qr.columns,
+        "rows": rows,
+        "row_count": qr.row_count,
+        "execution_time_ms": qr.execution_time_ms,
+        "error": qr.error,
+        "truncated": capped or qr.truncated,
+        "truncation_reason": ORCHESTRATOR_ROW_CAP if capped else qr.truncation_reason,
+    }
 
 
 def _json_default(obj: Any) -> Any:
@@ -248,13 +294,7 @@ class Orchestrator:
                         qr = await asyncio.to_thread(
                             connector.execute_query, result.sql, timeout_seconds
                         )
-                        sql_table = {
-                            "columns": qr.columns,
-                            "rows": qr.rows[:_MAX_RESULT_ROWS],
-                            "row_count": qr.row_count,
-                            "execution_time_ms": qr.execution_time_ms,
-                            "error": qr.error,
-                        }
+                        sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
                     sql_table = {"error": str(exc)}

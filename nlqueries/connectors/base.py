@@ -82,7 +82,17 @@ class QueryResult:
     # stopped early has to say so: silently returning the first N rows of a
     # larger answer is a wrong answer, not a partial one.
     truncated: bool = False
-    truncation_reason: str | None = None  # "row_budget" | "byte_budget" | None
+    #: Why the result stopped short, and the authoritative list of values:
+    #:
+    #: - ``"row_budget"``   -- more rows existed than the connector was asked for
+    #: - ``"byte_budget"``  -- the result was too large to hold in memory
+    #: - ``"orchestrator_row_cap"`` -- set downstream, not by a connector: the
+    #:   orchestrator's ``sql_table`` frame returns at most ``_MAX_RESULT_ROWS``
+    #:   rows to MCP and CLI callers, and says so through this same field
+    #: - ``None``           -- not truncated
+    #:
+    #: A caller may branch on these, so a new value belongs here first.
+    truncation_reason: str | None = None
 
 
 # Policy kinds surfaced by :meth:`DatabaseConnector.list_security_policies`.
