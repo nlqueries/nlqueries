@@ -60,6 +60,13 @@ _FENCED = re.compile(r"```[\w-]*\n(.*?)```", re.S)
 #: nothing at all.
 _FENCED_YAML = re.compile(r"```ya?ml\n(.*?)```", re.S)
 
+#: A `${...}` interpolation, blanked to a colon-free placeholder before the
+#: separators are counted. Without this, `${QDRANT_HTTP_PORT:-6333}:6333` counts
+#: the colon inside its own default and reads as though an address were present,
+#: while Docker binds it to `0.0.0.0`. That form is one deleted segment away
+#: from what the top-level compose file writes today.
+_VARIABLE = re.compile(r"\$\{[^}]*\}")
+
 
 def _repo_files(*patterns: str) -> list[Path]:
     found: list[Path] = []
@@ -76,8 +83,11 @@ def _names_an_interface(entry: object) -> bool:
 
     `5433:5432` is host-port to container-port and publishes on every
     interface. `127.0.0.1:5433:5432` and `${BIND_ADDR:-127.0.0.1}:5433:5432`
-    name one. Counting separators rather than parsing an address keeps the
-    variable form working, which is how the top-level compose file writes it.
+    name one. Separators are counted rather than an address parsed, so that the
+    variable form keeps working -- it is how the top-level compose file writes
+    it -- but every `${...}` is blanked first. A defaulted variable carries a
+    colon of its own, so `${QDRANT_HTTP_PORT:-6333}:6333` would otherwise count
+    two and pass while Docker binds it to `0.0.0.0`.
 
     The long syntax is a mapping, and only `host_ip` names an address there --
     Docker defaults it to `0.0.0.0`. It is handled explicitly because the
@@ -90,7 +100,7 @@ def _names_an_interface(entry: object) -> bool:
     """
     if isinstance(entry, dict):
         return bool(entry.get("host_ip"))
-    return str(entry).count(":") >= 2
+    return _VARIABLE.sub("V", str(entry)).count(":") >= 2
 
 
 def _ports_lists(node: object) -> list[object]:
@@ -249,3 +259,40 @@ def test_flags_that_are_not_port_publishing_are_left_alone(command: str) -> None
     """`mkdir -p` shares the flag letter, and widening the pattern must not turn
     a path into a finding."""
     assert not [a for a in _PUBLISH_FLAG.findall(command) if _PORT_PAIR.search(a)]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "${PORT:-6333}:6333",
+        "${MCP_PORT:-8080}:8080",
+        "${QDRANT_HTTP_PORT:-6333}:6333",
+        "5433:5432",
+        "6333",
+    ],
+)
+def test_a_defaulted_variable_is_not_mistaken_for_an_address(entry: str) -> None:
+    """`${PORT:-6333}` supplies a colon of its own.
+
+    Counting separators on the raw string therefore read two and passed, while
+    Docker binds the mapping to `0.0.0.0`. The form is not exotic: the top-level
+    compose file writes `${BIND_ADDR:-127.0.0.1}:${QDRANT_HTTP_PORT:-6333}:6333`
+    today, and deleting the address segment leaves exactly this.
+    """
+    assert not _names_an_interface(entry)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "${BIND_ADDR:-127.0.0.1}:${QDRANT_HTTP_PORT:-6333}:6333",
+        "${BIND_ADDR:-127.0.0.1}:5433:5432",
+        "127.0.0.1:5433:5432",
+        "0.0.0.0:80:80",
+        "[::1]:6333:6333",
+    ],
+)
+def test_an_address_is_still_recognised_through_the_variable_form(entry: str) -> None:
+    """Blanking the interpolations must not cost the forms that are correct --
+    the top-level compose file depends on the first of these."""
+    assert _names_an_interface(entry)
