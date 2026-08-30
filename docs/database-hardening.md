@@ -247,6 +247,15 @@ connectors do, so a root certificate with no `ssl_mode` selects `verify-full`
 rather than leaving you on libpq's `prefer` — and the certificate counts whether
 you supplied it in the credentials or in the URL's query string.
 
+**It only resolves a mode when you configure at least one `ssl_*` setting on the
+connector.** A URL alone does not trigger it. So
+`postgresql://…/shop?sslrootcert=/etc/ssl/ca.pem` with no `ssl_*` settings beside
+it connects under libpq's `prefer` — which falls back to plaintext and verifies
+nothing — even though you supplied a CA, and `nlqueries health` reports nothing,
+because the connector did not choose that posture and will not guess at it. Put
+`sslmode=verify-full` in the same query string, or set `ssl_ca_cert` on the
+connector instead of in the URL.
+
 **Set each parameter in one place.** SQLAlchemy lets `connect_args` overrule the
 URL's own query parameters, so a URL saying `?sslmode=verify-full` beside a
 connector setting of `ssl_mode: require` would connect as `require` with the

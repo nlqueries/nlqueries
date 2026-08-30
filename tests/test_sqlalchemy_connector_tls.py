@@ -332,3 +332,25 @@ def test_a_weaker_mode_in_the_url_is_honoured_over_the_resolvers_default(
     # the report has to say so rather than claiming the resolver's verify-full.
     assert connector.tls.concerns
     assert any("names this host" in c for c in connector.tls.concerns)
+
+
+def test_a_url_certificate_alone_does_not_resolve_a_mode(engine_args) -> None:
+    """The boundary of the resolution, and the sharpest edge in this file.
+
+    Resolution is triggered by the connector's own `ssl_*` settings, so a
+    certificate that appears only in the URL does not select `verify-full`: with
+    no `ssl_*` credentials there is nothing to translate, the connector injects
+    nothing, and libpq applies `prefer` — plaintext fallback, verifying nothing —
+    while the operator has supplied a CA and reasonably believes otherwise.
+
+    `tls` is `None` here rather than a description, because the connector did not
+    choose this posture and guessing at libpq's default would be the confident
+    wrong answer this file exists to prevent. That silence is the reason
+    `docs/database-hardening.md` now states the boundary outright instead of
+    leaving it to be inferred.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslrootcert=/etc/ssl/ca.pem"})
+
+    assert engine_args["connect_args"] == {}, "a URL alone must not trigger resolution"
+    assert connector.tls is None
