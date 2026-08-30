@@ -243,3 +243,75 @@ class TestExtraDynamicContext:
         ):
             result = asyncio.run(run_query("q?", "agent1"))
         assert result.nexus_warnings == []
+
+
+class TestTruncationSurvivesTheChunk:
+    """The `sql_table` frame is JSON on the way out and a QueryResult on the way
+    back in, and `truncated`/`truncation_reason` were dropped at both ends. Every
+    caller therefore saw the dataclass defaults — `False` and `None` — including
+    for results the orchestrator had itself shortened at `_MAX_RESULT_ROWS`.
+
+    Testing the builder alone would not have caught that: a frame can carry both
+    keys perfectly and still lose them here. This is the seam.
+    """
+
+    @staticmethod
+    def _run(sql_table: dict[str, object]) -> AgentQueryResult:
+        chunk = json.dumps(
+            {
+                "type": "sql",
+                "sql": "SELECT n FROM t",
+                "is_valid": True,
+                "validation_error": None,
+                "dialect": "postgres",
+                "agent_type": "sql",
+                "sql_table": sql_table,
+            }
+        )
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory(["Reasoning. ", chunk])
+        resolved = ResolvedQuestion(original="q", resolved="q", is_followup=False, reasoning="")
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch("nlqueries.orchestrator.sync_runner.resolve_followup", return_value=resolved),
+        ):
+            return asyncio.run(run_query("q", "agent1"))
+
+    _COMPLETE: dict[str, object] = {
+        "columns": ["n"],
+        "rows": [[1]],
+        "row_count": 1,
+        "execution_time_ms": 1.0,
+        "error": None,
+        "truncated": False,
+        "truncation_reason": None,
+    }
+
+    def test_a_complete_result_arrives_complete(self) -> None:
+        """Canary: without it, a parser hardcoding `truncated=True` would satisfy
+        the test below."""
+        result = self._run(dict(self._COMPLETE))
+        assert result.sql_result is not None
+        assert result.sql_result.truncated is False
+        assert result.sql_result.truncation_reason is None
+
+    def test_truncation_arrives_with_its_reason(self) -> None:
+        result = self._run(
+            {**self._COMPLETE, "truncated": True, "truncation_reason": "orchestrator_row_cap"}
+        )
+        assert result.sql_result is not None
+        assert result.sql_result.truncated is True
+        assert result.sql_result.truncation_reason == "orchestrator_row_cap"
+
+    def test_an_older_frame_without_the_keys_is_read_as_complete(self) -> None:
+        """A frame written before this change carries neither key. Reading them
+        with `.get` keeps that working rather than raising — the values are
+        wrong, but they were wrong before too, and a cached entry must not break
+        a live query."""
+        older = {k: v for k, v in self._COMPLETE.items() if not k.startswith("trunc")}
+        result = self._run(older)
+        assert result.sql_result is not None
+        assert result.sql_result.truncated is False

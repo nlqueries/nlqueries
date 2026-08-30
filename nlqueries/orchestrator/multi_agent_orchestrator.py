@@ -59,7 +59,7 @@ from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 from nlqueries.orchestrator.followup_resolver import aresolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, aclassify_intent, coerce_intent
-from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, Orchestrator, _json_default
+from nlqueries.orchestrator.orchestrator import Orchestrator, _json_default, sql_table_chunk
 from nlqueries.orchestrator.provenance import (
     record_cache,
     record_intent_confidence,
@@ -386,13 +386,7 @@ async def _execute_cached_sql(
         if connector is None:
             return None
         qr = await asyncio.to_thread(connector.execute_query, sql, timeout_seconds)
-        return {
-            "columns": qr.columns,
-            "rows": qr.rows[:_MAX_RESULT_ROWS],
-            "row_count": qr.row_count,
-            "execution_time_ms": qr.execution_time_ms,
-            "error": qr.error,
-        }
+        return sql_table_chunk(qr)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -695,14 +689,10 @@ class MultiAgentOrchestrator:
         if intent == IntentType.hybrid and hybrid_result is not None:
             sql_table_dict = None
             if hybrid_result.sql_table is not None:
-                qt = hybrid_result.sql_table
-                sql_table_dict = {
-                    "columns": qt.columns,
-                    "rows": qt.rows,
-                    "row_count": qt.row_count,
-                    "execution_time_ms": qt.execution_time_ms,
-                    "error": qt.error,
-                }
+                # cap=False: this branch has never applied the row cap, and
+                # starting to would be a different change from reporting
+                # truncation. The connector's own flags still come through.
+                sql_table_dict = sql_table_chunk(hybrid_result.sql_table, cap=False)
             citations_list = [
                 {
                     "source_name": c.source_name,
