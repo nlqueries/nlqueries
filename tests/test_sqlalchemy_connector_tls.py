@@ -209,13 +209,60 @@ def test_a_verified_posture_reports_no_concern(engine_args) -> None:
     assert not connector.tls.concerns
 
 
-def test_a_url_only_posture_is_reported_as_unknown(engine_args) -> None:
-    """None, not a guess. When the URL carries its own parameters and the
-    credentials said nothing, this connector did not decide the posture — and
-    describing one from an empty dict would report `require` for a session that
-    may be running under anything at all."""
+def test_a_url_only_posture_is_read_from_the_url(engine_args) -> None:
+    """The URL decides here, and it is readable, so it is reported. Silence would
+    be the honest answer only if the posture were unknowable, and it is not."""
     connector = SQLAlchemyConnector()
-    connector.connect({"url": _PG + "?sslmode=verify-full"})
+    connector.connect({"url": _PG + "?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "verify-full"
+    assert not connector.tls.concerns
+
+
+def test_a_split_configuration_is_described_from_both_halves(engine_args) -> None:
+    """The case the narrowed clash check created.
+
+    `?sslrootcert=` in the URL with `ssl_mode: require` in the credentials
+    connects with libpq verifying the chain against that certificate. Read from
+    the credentials alone the posture is `require` with no root certificate, and
+    `nlqueries health` would report the connection as "encrypted to whichever
+    server answers" — a confident wrong answer about a connection that is in
+    fact verified.
+    """
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_mode": "require"})
+    assert connector.tls is not None
+    assert connector.tls.ssl_mode == "require"
+    assert connector.tls.has_root_certificate, "the URL's certificate is part of the posture"
+    # `require` with a root certificate verifies the chain but not the hostname,
+    # so there is still a concern -- the accurate one. What must not appear is
+    # the report for a connection with no certificate at all, which is what
+    # reading the credentials alone produced.
+    assert connector.tls.verifies_certificate_chain
+    assert not any("no ssl_ca_cert" in c for c in connector.tls.concerns)
+
+
+def test_a_client_certificate_beside_a_url_root_certificate_is_also_joined(
+    engine_args,
+) -> None:
+    """The same shape with the mode arriving by resolution rather than by
+    configuration: a client certificate alone resolves to `require`, and the
+    URL's root certificate is what makes the chain verified."""
+    connector = SQLAlchemyConnector()
+    connector.connect(
+        {"url": _PG + "?sslrootcert=/etc/ssl/ca.pem", "ssl_client_cert": "/etc/ssl/c.crt"}
+    )
+    assert connector.tls is not None
+    assert connector.tls.has_root_certificate
+
+
+def test_a_connection_with_no_mode_anywhere_reports_nothing(engine_args) -> None:
+    """None, not a guess. With no mode on either side libpq applies its own
+    `prefer` default, which is not what `resolve_ssl_mode` would have chosen, so
+    describing these settings would report a posture the connection is not
+    running under."""
+    connector = SQLAlchemyConnector()
+    connector.connect({"url": _PG})
     assert connector.tls is None
 
 

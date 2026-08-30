@@ -89,6 +89,43 @@ _LIBPQ_TLS_PARAMS = {
 _LIBPQ_DRIVERS = frozenset({"", "psycopg2", "psycopg"})
 
 
+#: The reverse of :data:`_LIBPQ_TLS_PARAMS`, for reading a URL's own parameters
+#: back into the credential names :func:`describe` understands.
+_LIBPQ_TO_CREDENTIAL = {param: key for key, param in _LIBPQ_TLS_PARAMS.items()}
+
+
+def _effective_posture(url: str, connect_args: dict[str, Any]) -> TlsPosture | None:
+    """The TLS posture actually in force, or ``None`` when it is not ours to know.
+
+    Built from both sources, because since the clash check narrowed to the
+    parameters this connector actually sets, the two can jointly decide the
+    posture and neither half describes it alone. A URL carrying
+    ``?sslrootcert=/etc/ssl/ca.pem`` beside a configured ``ssl_mode: require``
+    connects with libpq verifying the chain against that certificate -- while
+    the credentials on their own say ``require`` with no root certificate, which
+    ``nlqueries health`` would report as "encrypted to whichever server
+    answers". Exactly the confident wrong answer the ``None`` case exists to
+    avoid, one layer further in.
+
+    They can be merged rather than reconciled because the clash check has
+    already refused any parameter set from both sides, so the two are disjoint.
+
+    ``None`` when nothing sets ``sslmode``: the mode is then libpq's own
+    ``prefer`` default, which is not what :func:`resolve_ssl_mode` would have
+    chosen, so describing these settings would report a posture the connection
+    is not running under.
+    """
+    effective: dict[str, Any] = {}
+    for param, value in make_url(url).query.items():
+        if param in _LIBPQ_TO_CREDENTIAL:
+            # A repeated query parameter arrives as a tuple; libpq takes the last.
+            effective[param] = value[-1] if isinstance(value, tuple) else value
+    effective.update(connect_args)
+    if "sslmode" not in effective:
+        return None
+    return describe({_LIBPQ_TO_CREDENTIAL[k]: v for k, v in effective.items()})
+
+
 def _tls_connect_args(url: str, credentials: dict[str, Any]) -> dict[str, Any]:
     """Translate configured TLS settings into ``create_engine`` connect args.
 
@@ -163,11 +200,11 @@ class SQLAlchemyConnector(DatabaseConnector):
     def tls(self) -> TlsPosture | None:
         """The TLS posture this connector resolved, or None.
 
-        None means this connector did not decide the posture -- either
-        ``connect`` has not run, or the URL carries its own parameters and the
-        credentials said nothing. ``nlqueries health`` reports on this, and a
-        posture inferred from credentials that did not shape the connection
-        would be worse than no report.
+        Built from the URL's own TLS parameters and this connector's, which the
+        clash check keeps disjoint. ``None`` means the posture is not ours to
+        report: ``connect`` has not run, or nothing on either side set a mode,
+        leaving libpq's ``prefer`` default -- and reporting a mode the
+        connection is not running under would be worse than reporting nothing.
         """
         return self._tls
 
@@ -199,11 +236,9 @@ class SQLAlchemyConnector(DatabaseConnector):
         # now; discarding it was the last place this connector knew something
         # about its own TLS and did not say.
         #
-        # Only when this connector resolved it. A URL that carries its own
-        # parameters is not described by `credentials`, and reporting a posture
-        # inferred from an empty dict would be a confident wrong answer rather
-        # than the honest silence of None.
-        self._tls = describe(credentials) if connect_args else None
+        # From both sources: a split configuration is now permitted, so neither
+        # half describes the connection on its own.
+        self._tls = _effective_posture(url, connect_args)
         self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:

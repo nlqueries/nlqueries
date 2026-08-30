@@ -263,10 +263,15 @@ Splitting them across the two is fine, because nothing is then overruled:
 `?sslrootcert=/etc/ssl/ca.pem` in the URL alongside `ssl_mode: verify-full` in
 the connector's settings connects as you would expect.
 
-`nlqueries health` reports the posture for a `sqlalchemy` connector whenever the
-connector's own `ssl_*` settings decided it, exactly as for the per-vendor ones.
-Where the URL alone decides, it reports nothing rather than guessing — the
-posture is in the URL, and this connector never saw it.
+`nlqueries health` reports the posture for a `sqlalchemy` connector exactly as
+for the per-vendor ones, reading the URL's TLS parameters and the connector's
+`ssl_*` settings together — so a split configuration is described by what is
+actually in force rather than by half of it.
+
+It reports nothing only when nothing on either side sets a mode. libpq then
+applies its own `prefer` default, which is not the default the connector would
+have chosen, and naming a mode the connection is not running under would be
+worse than saying nothing.
 
 A `sqlalchemy` URL with no TLS settings configured alongside it is untouched:
 the URL alone decides, including its defaults. For PostgreSQL that default is
