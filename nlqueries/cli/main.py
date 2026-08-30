@@ -39,6 +39,7 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL
 from nlqueries.connectors import CONNECTOR_REGISTRY
+from nlqueries.connectors.loader import credentials_for
 from nlqueries.state_files import private_dir, restrict
 
 console = Console()
@@ -365,22 +366,8 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
             continue
 
         try:
-            from sqlalchemy.engine import make_url  # noqa: PLC0415
-
-            parsed = make_url(cfg["url"])
             connector = connector_cls()
-            connector.connect(
-                {
-                    "host": parsed.host or cfg.get("host", "localhost"),
-                    "port": parsed.port or cfg.get("port"),
-                    "database": parsed.database or cfg.get("database"),
-                    "user": parsed.username or cfg.get("user"),
-                    "password": _load_password(cid, cfg),
-                    "account": cfg.get("account"),
-                    "warehouse": cfg.get("warehouse"),
-                    "schema": cfg.get("schema"),
-                }
-            )
+            connector.connect(credentials_for(cid, cfg))
             t0 = time.monotonic()
             qr = connector.execute_query("SELECT 1")
             ms = int((time.monotonic() - t0) * 1000)
@@ -1097,24 +1084,8 @@ def extract_schema(connector_id: str) -> None:
     if connector_cls is not None:
         # Use the registered DatabaseConnector implementation (e.g. PostgresConnector).
         try:
-            from sqlalchemy.engine import make_url
-
-            parsed = make_url(cfg["url"])
             connector = connector_cls()
-            connector.connect(
-                {
-                    "host": parsed.host or cfg.get("host", "localhost"),
-                    "port": parsed.port or cfg.get("port"),
-                    "database": parsed.database or cfg.get("database"),
-                    "user": parsed.username or cfg.get("user"),
-                    "password": _load_password(connector_id, cfg),
-                    # Snowflake-specific fields — absent from the URL, read from
-                    # the persisted connector config (see `connect`).
-                    "account": cfg.get("account"),
-                    "warehouse": cfg.get("warehouse"),
-                    "schema": cfg.get("schema"),
-                }
-            )
+            connector.connect(credentials_for(connector_id, cfg))
             schema = connector.extract_schema()
         except Exception as exc:  # noqa: BLE001
             err_console.print(f"[bold red]✗ Schema extraction failed:[/bold red] {exc}")
@@ -1397,27 +1368,10 @@ def process_history(
         sys.exit(1)
 
     try:
-        from sqlalchemy.engine import make_url
-
         from nlqueries.processing.pipeline import save_capsules
 
-        parsed = make_url(cfg["url"])
         connector = connector_cls()
-        connector.connect(
-            {
-                "host": parsed.host or cfg.get("host", "localhost"),
-                "port": parsed.port or cfg.get("port"),
-                "database": parsed.database or cfg.get("database"),
-                "user": parsed.username or cfg.get("user"),
-                "password": _load_password(connector_id, cfg),
-                "account": cfg.get("account"),
-                "warehouse": cfg.get("warehouse"),
-                "schema": cfg.get("schema"),
-                "project_id": cfg.get("project_id"),
-                "dataset_id": cfg.get("dataset_id"),
-                "service_account_json": cfg.get("service_account_json"),
-            }
-        )
+        connector.connect(credentials_for(connector_id, cfg))
 
         # Schema extraction is best-effort; the pipeline works without it
         # but uses SchemaSpec column types to sharpen placeholder typing.
@@ -1627,8 +1581,6 @@ def export_kb(
     if connector_cls is not None:
         # Registered connector path — use SchemaSpec + kb_generator
         try:
-            from sqlalchemy.engine import make_url
-
             from nlqueries.knowledge.kb_generator import (
                 describe_columns as _describe_columns,
             )
@@ -1638,23 +1590,8 @@ def export_kb(
             )
             from nlqueries.processing.pipeline import load_capsules
 
-            parsed = make_url(cfg["url"])
             connector = connector_cls()
-            connector.connect(
-                {
-                    "host": parsed.host or cfg.get("host", "localhost"),
-                    "port": parsed.port or cfg.get("port"),
-                    "database": parsed.database or cfg.get("database"),
-                    "user": parsed.username or cfg.get("user"),
-                    "password": _load_password(connector_id, cfg),
-                    "account": cfg.get("account"),
-                    "warehouse": cfg.get("warehouse"),
-                    "schema": cfg.get("schema"),
-                    "project_id": cfg.get("project_id"),
-                    "dataset_id": cfg.get("dataset_id"),
-                    "service_account_json": cfg.get("service_account_json"),
-                }
-            )
+            connector.connect(credentials_for(connector_id, cfg))
             schema = connector.extract_schema()
 
             # Preserve manual annotations from a previously generated KB
@@ -2474,8 +2411,6 @@ def query(
         and sql_result is None
     ):
         try:
-            from sqlalchemy.engine import make_url
-
             cfg = _require_connector(agent_id)
             connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
             if connector_cls is None:
@@ -2484,19 +2419,8 @@ def query(
                     f"'{cfg.get('db_type')}' — skipping execution.[/yellow]"
                 )
             else:
-                parsed = make_url(cfg["url"])
                 connector = connector_cls()
-                connector.connect(
-                    {
-                        "host": parsed.host or cfg.get("host", "localhost"),
-                        "port": parsed.port or cfg.get("port"),
-                        "database": parsed.database or cfg.get("database"),
-                        "user": parsed.username or cfg.get("user"),
-                        "password": _load_password(agent_id, cfg),
-                        "account": cfg.get("account"),
-                        "project": cfg.get("project"),
-                    }
-                )
+                connector.connect(credentials_for(agent_id, cfg))
                 sql_result = connector.execute_query(result.sql)
         except Exception as exc:  # noqa: BLE001
             err_console.print(f"[bold red]✗ SQL execution failed:[/bold red] {exc}")
@@ -3133,22 +3057,8 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
         connector_cls = CONNECTOR_REGISTRY.get((cfg.get("db_type") or "").lower())
         if connector_cls is not None:
             try:
-                from sqlalchemy.engine import make_url  # noqa: PLC0415
-
-                parsed = make_url(cfg["url"])
                 connector = connector_cls()
-                connector.connect(
-                    {
-                        "host": parsed.host or cfg.get("host", "localhost"),
-                        "port": parsed.port or cfg.get("port"),
-                        "database": parsed.database or cfg.get("database"),
-                        "user": parsed.username or cfg.get("user"),
-                        "password": _load_password(agent_id, cfg),
-                        "account": cfg.get("account"),
-                        "warehouse": cfg.get("warehouse"),
-                        "schema": cfg.get("schema"),
-                    }
-                )
+                connector.connect(credentials_for(agent_id, cfg))
             except Exception:  # noqa: BLE001
                 connector = None
 
