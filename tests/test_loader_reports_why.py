@@ -251,3 +251,48 @@ def test_a_short_listing_is_not_marked_truncated(connectors_file, caplog) -> Non
         assert _open("no-such-agent") is None
     assert "more)" not in caplog.text
     assert "agent-2" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("content", "shape"),
+    [("- one\n- two\n", "a sequence"), ("just a string\n", "a scalar"), ("null\n", "null")],
+)
+def test_a_file_that_is_not_a_mapping_is_reported_not_raised(
+    connectors_file, caplog, content: str, shape: str
+) -> None:
+    """`.items()` assumes the root is a mapping, and a hand-edited file need not be.
+
+    Left unguarded this raises `AttributeError` out of `open_connector_for_agent`,
+    which the multi-agent path surfaces as
+    `{"error": "'list' object has no attribute 'items'"}` and `binding_for_agent`
+    swallows into an empty fingerprint. The documented contract is that a
+    connector which cannot be found returns `None`, so this must land on the
+    existing warning rather than escaping as an exception.
+    """
+    connectors_file.write_text(content)
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None  # must not raise, whatever the file holds
+    assert "is missing or empty" in caplog.text, shape
+
+
+def test_a_malformed_url_does_not_put_the_password_in_the_log(connectors_file, caplog) -> None:
+    """`credentials_for` calls `make_url` on the password-resolved URL, so an
+    entry that does not parse decides whether a credential reaches the log.
+
+    SQLAlchemy 1.4 embedded the offending string in that `ArgumentError`; 2.0
+    removed it, and this project floors at `sqlalchemy>=2.0`. So the leak cannot
+    happen today — but the floor has no ceiling, and a note saying "I checked
+    once" rots. This holds the property instead of asserting the version.
+    """
+    connectors_file.write_text(
+        yaml.safe_dump(
+            {_CONNECTOR_ID: {"db_type": "postgres", "url": "postgresql:/u:hunter2@h/db"}}
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None
+    assert "No connector could be opened" in caplog.text
+    assert "ArgumentError" in caplog.text, "the traceback should still name the cause"
+    assert "hunter2" not in caplog.text

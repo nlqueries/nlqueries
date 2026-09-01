@@ -189,7 +189,16 @@ def _load_connectors() -> dict[str, Any]:
     """
     if not config.CONNECTORS_FILE.exists():
         return {}
-    loaded: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
+    loaded: Any = yaml.safe_load(config.CONNECTORS_FILE.read_text())
+    if not isinstance(loaded, dict):
+        # A hand-edited file whose root is a sequence or a scalar parses to a
+        # list or a str, and `.items()` on that is an AttributeError thrown out
+        # of open_connector_for_agent -- which the multi-agent path reports as
+        # `{"error": "'list' object has no attribute 'items'"}`, and which
+        # binding_for_agent swallows into an empty fingerprint. Returning {}
+        # keeps the documented contract, and the caller's "missing or empty"
+        # warning is already the right thing to say about it.
+        return {}
     return {str(key): value for key, value in loaded.items()}
 
 
