@@ -139,7 +139,10 @@ class TestTheKey:
 
     def test_a_key_is_generated_and_reused(self, monkeypatch, tmp_path) -> None:
         monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
-        monkeypatch.setattr("nlqueries.cache.envelope.Path.home", lambda: tmp_path)
+        # `_key_path()` resolves through `config.STATE_DIR` rather than
+        # `Path.home()`, so patching the latter isolates nothing and these
+        # tests would write a signing key into the real home directory.
+        monkeypatch.setattr("nlqueries.config.STATE_DIR", tmp_path / ".nlqueries")
 
         first = signing_key()
         second = signing_key()
@@ -150,7 +153,10 @@ class TestTheKey:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
     def test_the_generated_key_is_readable_only_by_its_owner(self, monkeypatch, tmp_path) -> None:
         monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
-        monkeypatch.setattr("nlqueries.cache.envelope.Path.home", lambda: tmp_path)
+        # `_key_path()` resolves through `config.STATE_DIR` rather than
+        # `Path.home()`, so patching the latter isolates nothing and these
+        # tests would write a signing key into the real home directory.
+        monkeypatch.setattr("nlqueries.config.STATE_DIR", tmp_path / ".nlqueries")
 
         signing_key()
         mode = (tmp_path / ".nlqueries" / "cache_signing_key").stat().st_mode
@@ -196,7 +202,10 @@ class TestTheKey:
         monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
         monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY_FILE", raising=False)
         monkeypatch.setattr("nlqueries.cache.envelope._ephemeral_key", None)
-        monkeypatch.setattr("nlqueries.cache.envelope.Path.home", lambda: tmp_path)
+        # `_key_path()` resolves through `config.STATE_DIR` rather than
+        # `Path.home()`, so patching the latter isolates nothing and these
+        # tests would write a signing key into the real home directory.
+        monkeypatch.setattr("nlqueries.config.STATE_DIR", tmp_path / ".nlqueries")
         monkeypatch.setattr(
             "nlqueries.cache.envelope.Path.mkdir",
             lambda *a, **k: (_ for _ in ()).throw(OSError("read-only file system")),

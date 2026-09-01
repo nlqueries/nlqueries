@@ -41,7 +41,6 @@ import contextlib
 import json
 import logging
 import os
-import pathlib
 import signal
 import subprocess
 import sys
@@ -55,7 +54,11 @@ from nlqueries import config
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _DEFAULT_PORT = 8765
-_PID_FILE = pathlib.Path.home() / ".nlqueries" / "embed-server.pid"
+#: Under `config.STATE_DIR` rather than a hardcoded home directory. A read-only
+#: root filesystem left this with nowhere to go, so the server died at startup
+#: with `[Errno 30]` and every natural-language query with it -- and nothing
+#: could be configured to move it.
+_PID_FILE = config.STATE_DIR / "embed-server.pid"
 
 logger = logging.getLogger(__name__)
 
