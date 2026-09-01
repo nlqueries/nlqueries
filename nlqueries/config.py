@@ -21,6 +21,27 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 # ---------------------------------------------------------------------------
+# State directory
+# ---------------------------------------------------------------------------
+STATE_DIR: Path = Path(os.getenv("NLQ_STATE_DIR", str(Path.home() / ".nlqueries")))
+"""Where NLQueries writes everything it keeps between runs.
+
+``~/.nlqueries`` was written out in seven places across four modules, three of
+them with no override at all: the embed server's pid file, the cache signing
+key, and the CLI's session transcripts. A deployment that cannot write to a home
+directory therefore could not be configured out of it -- and that is not
+hypothetical. Running the containers with a read-only root filesystem killed the
+embed server at startup with ``[Errno 30]``, and with it every natural-language
+query, because the pid file had nowhere to go. The workaround was a writable
+tmpfs mounted at the home directory, which only worked because it happened to
+cover the other two as well.
+
+One setting moves all of it. The per-path variables below still win where they
+are set, so an existing deployment that overrides ``KB_PATH`` alone is
+unaffected, and the default is the same path it always was.
+"""
+
+# ---------------------------------------------------------------------------
 # Vector store
 # ---------------------------------------------------------------------------
 QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -172,7 +193,7 @@ Set to 0 to leave torch's own default alone.
 # ---------------------------------------------------------------------------
 # Knowledge base
 # ---------------------------------------------------------------------------
-KB_PATH: Path = Path(os.getenv("KB_PATH", str(Path.home() / ".nlqueries" / "knowledge_base")))
+KB_PATH: Path = Path(os.getenv("KB_PATH", str(STATE_DIR / "knowledge_base")))
 """Directory where generated YAML knowledge-base files are stored."""
 
 KB_REFRESH_INTERVAL: int = int(os.getenv("KB_REFRESH_INTERVAL", "3600"))
@@ -192,9 +213,7 @@ Business rules are always injected in full regardless of this flag."""
 # ---------------------------------------------------------------------------
 # Connectors registry
 # ---------------------------------------------------------------------------
-CONNECTORS_FILE: Path = Path(
-    os.getenv("CONNECTORS_FILE", str(Path.home() / ".nlqueries" / "connectors.yaml"))
-)
+CONNECTORS_FILE: Path = Path(os.getenv("CONNECTORS_FILE", str(STATE_DIR / "connectors.yaml")))
 """YAML file that stores registered connector configurations."""
 
 # ---------------------------------------------------------------------------
@@ -309,7 +328,7 @@ the same amount."""
 # ---------------------------------------------------------------------------
 # Query Capsules
 # ---------------------------------------------------------------------------
-CAPSULES_DIR: Path = Path(os.getenv("CAPSULES_DIR", str(Path.home() / ".nlqueries" / "capsules")))
+CAPSULES_DIR: Path = Path(os.getenv("CAPSULES_DIR", str(STATE_DIR / "capsules")))
 
 # ---------------------------------------------------------------------------
 # Query history
@@ -321,7 +340,7 @@ QUERY_HISTORY_LIMIT: int = int(os.getenv("QUERY_HISTORY_LIMIT", "500"))
 # ---------------------------------------------------------------------------
 # Feedback
 # ---------------------------------------------------------------------------
-FEEDBACK_DIR: Path = Path(os.getenv("FEEDBACK_DIR", str(Path.home() / ".nlqueries" / "feedback")))
+FEEDBACK_DIR: Path = Path(os.getenv("FEEDBACK_DIR", str(STATE_DIR / "feedback")))
 """Directory where per-agent feedback JSONL files are stored."""
 
 CACHE_COLLECTION_NEGATIVE_TTL_SECONDS: float = float(

@@ -37,7 +37,7 @@ from rich.table import Table
 # setdefault means a user-supplied value is never overridden.
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
-from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL
+from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
 from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.loader import credentials_for
 from nlqueries.state_files import private_dir, restrict
@@ -158,7 +158,7 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
 
 def _session_path(agent_id: str) -> Path:
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
-    return private_dir(Path.home() / ".nlqueries" / "sessions") / f"{safe_id}.jsonl"
+    return private_dir(STATE_DIR / "sessions") / f"{safe_id}.jsonl"
 
 
 def _load_session(agent_id: str) -> list[Any]:

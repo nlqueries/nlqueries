@@ -101,7 +101,16 @@ class CacheBinding:
 
 
 def _key_path() -> Path:
-    return Path.home() / ".nlqueries" / "cache_signing_key"
+    """Where the signing key lives when it is not supplied by env or a mount.
+
+    Under `config.STATE_DIR`, which is what this function's own docstring above
+    already called "the state directory" -- it just had no name in code, so a
+    deployment that relocated everything else still had this one pinned to a
+    home directory it might not be able to write.
+    """
+    from nlqueries import config  # noqa: PLC0415
+
+    return config.STATE_DIR / "cache_signing_key"
 
 
 def signing_key() -> bytes:
