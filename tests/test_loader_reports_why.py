@@ -377,3 +377,61 @@ def test_the_cli_reads_through_the_same_hardened_reader(connectors_file) -> None
         yaml.safe_dump({2024: {"db_type": "postgres", "url": "postgresql://u:p@h/db"}})
     )
     assert list(cli_load()) == ["2024"], "the CLI must see normalised keys too"
+
+
+@pytest.fixture
+def cli_connectors_file(connectors_file, monkeypatch):
+    """`connectors_file` for the CLI too.
+
+    `cli/main.py` binds `CONNECTORS_FILE` at import, so patching
+    `config.CONNECTORS_FILE` — which the loader reads dynamically — does not
+    reach the CLI's writer. In production they are the same object; only a test
+    that rebinds one can tell them apart.
+    """
+    import nlqueries.cli.main as cli_main
+
+    monkeypatch.setattr(cli_main, "CONNECTORS_FILE", connectors_file)
+    return connectors_file
+
+
+def test_saving_refuses_a_file_it_could_not_read(cli_connectors_file) -> None:
+    """A writer must never be handed `{}` for a file that holds something.
+
+    `_save_connector` is a read-modify-write. Pointing it at the reader that
+    degrades to "nothing is configured" turned a crash that left the file intact
+    into a silent overwrite that replaced it with a single entry — strictly
+    worse, because the operator loses content and is not told.
+    """
+    import click
+    from nlqueries.cli.main import _save_connector
+
+    original = "- entry-one\n- entry-two\n"
+    cli_connectors_file.write_text(original)
+
+    with pytest.raises(click.ClickException, match="Refusing to overwrite"):
+        _save_connector("agent-a", {"db_type": "postgres"})
+
+    assert cli_connectors_file.read_text() == original, "the file must be left exactly as it was"
+
+
+def test_saving_still_works_on_a_readable_file(cli_connectors_file) -> None:
+    """Canary: refusing must be about the shape, not about writing at all."""
+    from nlqueries.cli.main import _save_connector
+
+    cli_connectors_file.write_text(yaml.safe_dump({"existing": {"db_type": "postgres"}}))
+
+    _save_connector("agent-a", {"db_type": "postgres", "url": "postgresql://u:p@h/db"})
+
+    written = yaml.safe_load(cli_connectors_file.read_text())
+    assert set(written) == {"existing", "agent-a"}, "the existing entry must survive"
+
+
+def test_saving_into_an_absent_file_is_allowed(cli_connectors_file) -> None:
+    """The other canary: an absent file is not an unreadable one, and the first
+    `nlqueries connect` on a fresh machine has to work."""
+    from nlqueries.cli.main import _save_connector
+
+    assert not cli_connectors_file.exists()
+    _save_connector("agent-a", {"db_type": "postgres"})
+
+    assert set(yaml.safe_load(cli_connectors_file.read_text())) == {"agent-a"}

@@ -92,8 +92,18 @@ def _load_connectors() -> dict[str, dict[str, Any]]:
 
 
 def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
+    from nlqueries.connectors.loader import load_connectors_for_update  # noqa: PLC0415
+
     CONNECTORS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    connectors = _load_connectors()
+    # Not `_load_connectors`. This is a read-modify-write, and that reader
+    # answers "nothing is configured" for a file it could not parse -- which
+    # here would merge one entry into nothing and write it over whatever the
+    # operator had. Refusing is the only safe answer when the previous content
+    # could not be read.
+    try:
+        connectors = load_connectors_for_update()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     connectors[connector_id] = config
     CONNECTORS_FILE.write_text(yaml.dump(connectors, default_flow_style=False, sort_keys=False))
     CONNECTORS_FILE.chmod(0o600)

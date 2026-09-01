@@ -174,29 +174,42 @@ def _listed(connectors: dict[str, Any]) -> str:
     return shown
 
 
-def _load_connectors() -> dict[str, Any]:
-    """The connectors file as a mapping, or ``{}`` when it does not exist.
-
-    Keys are coerced to ``str`` here, once, so nothing downstream has to.
-    YAML does not guarantee string keys -- an unquoted ``2024:`` parses to an
-    int -- and every consumer of this mapping assumes otherwise. Coercing at
-    each use instead of at the boundary was worse than untidy: with
-    ``str(key)`` compared in :func:`_find_connector_id` but the raw key
-    returned, an agent id of ``"2024"`` matched and the int came back from a
-    function annotated ``str | None``. That int then keyed the connector cache,
-    so ``invalidate_connector_cache("2024")`` would miss the entry and leave a
-    rotated credential live until the TTL expired.
-    """
+def _read_connectors_root() -> Any:
+    """The connectors file parsed, with no shape policy applied."""
     if not config.CONNECTORS_FILE.exists():
+        return None
+    return yaml.safe_load(config.CONNECTORS_FILE.read_text())
+
+
+def _normalised(root: dict[Any, Any]) -> dict[str, Any]:
+    """Keys as strings, once, so nothing downstream has to.
+
+    YAML does not guarantee string keys -- an unquoted ``2024:`` parses to an
+    int -- and every consumer assumes otherwise. Coercing at each use instead of
+    at the boundary was worse than untidy: with ``str(key)`` compared in
+    :func:`_find_connector_id` but the raw key returned, an agent id of ``"2024"``
+    matched and the int came back from a function annotated ``str | None``. That
+    int then keyed the connector cache, so ``invalidate_connector_cache("2024")``
+    would miss the entry and leave a rotated credential live until the TTL.
+    """
+    return {str(key): value for key, value in root.items()}
+
+
+def _load_connectors() -> dict[str, Any]:
+    """The connectors file as a mapping, or ``{}`` when it is unusable.
+
+    For readers. A read path can degrade to "nothing is configured" and say so;
+    see :func:`load_connectors_for_update` for why a writer must not.
+    """
+    root = _read_connectors_root()
+    if root is None:
         return {}
-    loaded: Any = yaml.safe_load(config.CONNECTORS_FILE.read_text())
-    if not isinstance(loaded, dict):
+    if not isinstance(root, dict):
         # A hand-edited file whose root is a sequence or a scalar parses to a
         # list or a str, and `.items()` on that is an AttributeError thrown out
         # of open_connector_for_agent -- which the multi-agent path reports as
         # `{"error": "'list' object has no attribute 'items'"}`, and which
-        # binding_for_agent swallows into an empty fingerprint. Returning {}
-        # keeps the documented contract.
+        # binding_for_agent swallows into an empty fingerprint.
         #
         # Said here, because only here is the shape known. The caller sees an
         # empty mapping and cannot tell this from a file that is genuinely
@@ -207,10 +220,33 @@ def _load_connectors() -> dict[str, Any]:
             "%s does not contain a mapping of connector ids: its root is a %s. "
             "No connector can be opened until that is corrected.",
             config.CONNECTORS_FILE,
-            type(loaded).__name__,
+            type(root).__name__,
         )
         return {}
-    return {str(key): value for key, value in loaded.items()}
+    return _normalised(root)
+
+
+def load_connectors_for_update() -> dict[str, Any]:
+    """The connectors file as a mapping, raising if it cannot be read.
+
+    For callers that will write the mapping back. Handing a writer ``{}`` for a
+    file that exists and holds something is data loss: it merges its one entry
+    into nothing and writes that over the operator's file. Degrading to "nothing
+    is configured" is a reasonable answer to "what can I open"; it is the wrong
+    answer to "what should I preserve".
+
+    The distinction is the whole reason this exists beside
+    :func:`_load_connectors` rather than being folded into it.
+    """
+    root = _read_connectors_root()
+    if root is None:
+        return {}
+    if not isinstance(root, dict):
+        raise ValueError(
+            f"{config.CONNECTORS_FILE} does not contain a mapping of connector ids: "
+            f"its root is a {type(root).__name__}. Refusing to overwrite it."
+        )
+    return _normalised(root)
 
 
 def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) -> str | None:
