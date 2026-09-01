@@ -151,12 +151,46 @@ def _cache_put(connector_id: str, connector: DatabaseConnector, fingerprint: str
         _dispose(entry)
 
 
+#: How many connector ids a "no entry matches" warning names before it stops.
+#: The reader is scanning for a near-match, and the count beside the list already
+#: says how much was not shown.
+_MAX_LISTED_IDS = 20
+
+
+def _listed(connectors: dict[str, Any]) -> str:
+    """Connector ids for a warning, capped at :data:`_MAX_LISTED_IDS`.
+
+    The enumeration exists so a reader can spot a near-match to the id that did
+    not resolve. That needs a sample, not the file: in an enterprise deployment
+    this mapping is the whole instance's agent set, and a mismatched id is the
+    recurring misconfiguration this message targets -- so an unbounded list
+    would write every agent to the log on every such request, growing with the
+    deployment rather than with the fault.
+    """
+    ids = sorted(connectors)
+    shown = ", ".join(ids[:_MAX_LISTED_IDS])
+    if len(ids) > _MAX_LISTED_IDS:
+        shown += f", ... ({len(ids) - _MAX_LISTED_IDS} more)"
+    return shown
+
+
 def _load_connectors() -> dict[str, Any]:
-    """The connectors file as a mapping, or ``{}`` when it does not exist."""
+    """The connectors file as a mapping, or ``{}`` when it does not exist.
+
+    Keys are coerced to ``str`` here, once, so nothing downstream has to.
+    YAML does not guarantee string keys -- an unquoted ``2024:`` parses to an
+    int -- and every consumer of this mapping assumes otherwise. Coercing at
+    each use instead of at the boundary was worse than untidy: with
+    ``str(key)`` compared in :func:`_find_connector_id` but the raw key
+    returned, an agent id of ``"2024"`` matched and the int came back from a
+    function annotated ``str | None``. That int then keyed the connector cache,
+    so ``invalidate_connector_cache("2024")`` would miss the entry and leave a
+    rotated credential live until the TTL expired.
+    """
     if not config.CONNECTORS_FILE.exists():
         return {}
     loaded: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
-    return loaded
+    return {str(key): value for key, value in loaded.items()}
 
 
 def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) -> str | None:
@@ -178,11 +212,7 @@ def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) 
     if agent_id in connectors:
         return agent_id
     for key in connectors:
-        # `str(key)`: YAML keys are not necessarily strings. An unquoted `2024:`
-        # in a hand-edited file parses to an int, and `re.sub` raises TypeError
-        # on it -- turning a lookup that should return None into an exception
-        # thrown at whatever called us.
-        if re.sub(r"[^\w.-]", "_", str(key)) == agent_id:
+        if re.sub(r"[^\w.-]", "_", key) == agent_id:
             return key
     return None
 
@@ -316,13 +346,7 @@ def open_connector_for_agent(
             agent_id,
             config.CONNECTORS_FILE,
             len(connectors),
-            # `str(k)` for the same reason as in `_find_connector_id`: a
-            # non-string key makes `sorted` raise, and raising from inside the
-            # branch that exists to explain a failure would replace a clean None
-            # with an opaque error. A diagnostic must not be the thing that
-            # breaks. `CONNECTOR_REGISTRY` needs no such care -- its keys are
-            # module constants, not file contents.
-            ", ".join(sorted(str(k) for k in connectors)),
+            _listed(connectors),
         )
         return None
 

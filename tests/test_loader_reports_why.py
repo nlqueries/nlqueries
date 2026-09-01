@@ -200,3 +200,54 @@ def test_a_non_string_key_does_not_break_the_diagnostic(connectors_file, caplog)
         assert _open("no-such-agent") is None  # must not raise
     assert "no entry" in caplog.text
     assert "2024" in caplog.text, "the key should still be listed, as a string"
+
+
+def test_a_non_string_key_resolves_to_a_string_id(connectors_file) -> None:
+    """`_find_connector_id` is annotated `str | None` and must honour it.
+
+    Comparing `str(key)` while returning the raw key made an agent id of "2024"
+    match an unquoted `2024:` and come back as an int. That value keys the
+    connector cache, so `invalidate_connector_cache("2024")` — the enterprise
+    credential-rotation hook — would miss the entry and leave the old
+    credential live until the TTL expired. Normalising in `_load_connectors`
+    is what keeps the annotation true, so this asserts the type, not the match.
+    """
+    connectors_file.write_text(
+        yaml.safe_dump({2024: {"db_type": "postgres", "url": "postgresql://u:p@h/db"}})
+    )
+
+    found = loader._find_connector_id("2024")
+    assert found == "2024"
+    assert isinstance(found, str), "an int here silently becomes an unclearable cache key"
+
+
+def test_the_id_listing_is_capped(connectors_file, caplog) -> None:
+    """The enumeration is a sample for spotting a near-match, not an inventory.
+
+    In an enterprise deployment this file is the whole instance's agent set, and
+    a mismatched id is the misconfiguration this message targets — so an
+    unbounded list writes every agent to the log on every such request, growing
+    with the deployment rather than with the fault.
+    """
+    many = {
+        f"agent-{i:03d}": {"db_type": "postgres", "url": "postgresql://u:p@h/db"} for i in range(50)
+    }
+    connectors_file.write_text(yaml.safe_dump(many))
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open("no-such-agent") is None
+    assert "The file holds 50" in caplog.text, "the count must still be exact"
+    assert "(30 more)" in caplog.text
+    assert "agent-019" in caplog.text
+    assert "agent-020" not in caplog.text, "the listing must stop at the cap"
+
+
+def test_a_short_listing_is_not_marked_truncated(connectors_file, caplog) -> None:
+    """Canary: the cap must not announce itself when it did not bite."""
+    few = {f"agent-{i}": {"db_type": "postgres", "url": "postgresql://u:p@h/db"} for i in range(3)}
+    connectors_file.write_text(yaml.safe_dump(few))
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open("no-such-agent") is None
+    assert "more)" not in caplog.text
+    assert "agent-2" in caplog.text
