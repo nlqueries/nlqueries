@@ -116,26 +116,56 @@ def _extract_citations_from_tokens(tokens: list[str]) -> list[Citation] | None:
 
 
 def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
-    """Parse the SQL final chunk from a token list and return a minimal QueryResult.
+    """Return the SQL sub-agent's executed result, or the statement if none ran.
 
-    Creates a single-column, single-row table so that ``merge_results`` can
-    include the generated SQL in its synthesis prompt.
+    This used to read only the ``sql`` key and build a one-column, one-row table
+    from the statement text, discarding the rows the sub-agent had already
+    executed and reported in ``sql_table``. A hybrid answer therefore asserted
+    things about data it never showed, and could not report truncation at all,
+    because ``truncated`` and ``truncation_reason`` live on the frame it threw
+    away.
+
+    The SQL-only table is kept for the cases where nothing ran -- generate-only
+    mode, an execution the policy refused, or a statement that failed validation
+    -- because the synthesis prompt is still better with the statement in it
+    than with nothing. An execution error is carried into that fallback rather
+    than dropped: ``sql_table`` is ``{"error": ...}`` with no columns when the
+    connector raised, and reporting that as "nothing ran" would be a lie.
     """
     if not tokens:
         return None
     try:
         last = json.loads(tokens[-1])
-        if last.get("type") == "sql" and last.get("sql"):
-            return QueryResult(
-                columns=["sql_query"],
-                rows=[[last["sql"]]],
-                row_count=1,
-                execution_time_ms=0.0,
-                error=(None if last.get("is_valid") else str(last.get("validation_error", ""))),
-            )
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
-    return None
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(last, dict) or last.get("type") != "sql" or not last.get("sql"):
+        return None
+
+    table = last.get("sql_table")
+    if isinstance(table, dict) and table.get("columns"):
+        return QueryResult(
+            columns=list(table["columns"]),
+            rows=[list(row) for row in table.get("rows") or []],
+            row_count=int(table.get("row_count") or 0),
+            execution_time_ms=float(table.get("execution_time_ms") or 0.0),
+            error=table.get("error"),
+            truncated=bool(table.get("truncated")),
+            truncation_reason=table.get("truncation_reason"),
+        )
+
+    if isinstance(table, dict) and table.get("error"):
+        error = str(table["error"])
+    elif not last.get("is_valid"):
+        error = str(last.get("validation_error", ""))
+    else:
+        error = None
+    return QueryResult(
+        columns=["sql_query"],
+        rows=[[last["sql"]]],
+        row_count=1,
+        execution_time_ms=0.0,
+        error=error,
+    )
 
 
 # ---------------------------------------------------------------------------
