@@ -369,6 +369,23 @@ def open_connector_for_agent(
         )
         return None
 
+    if not isinstance(cfg, dict):
+        # The root guard in _load_connectors covers the file; this covers one
+        # entry. `agent-a: postgresql://host/db` -- an id whose value is the URL
+        # rather than a mapping containing it -- is a plausible hand-edit, and it
+        # passes the emptiness check above before `cfg.get` raises AttributeError
+        # out of this function. That is the same opaque error the root guard was
+        # added to remove, one level down.
+        logger.warning(
+            "No connector could be opened for agent %s: entry %s in %s is a %s, "
+            "not a mapping of connection settings.",
+            agent_id,
+            connector_id,
+            config.CONNECTORS_FILE,
+            type(cfg).__name__,
+        )
+        return None
+
     fingerprint = ""
     if config.CONNECTOR_CACHE_ENABLED:
         fingerprint = _fingerprint(connector_id, cfg)
@@ -376,7 +393,11 @@ def open_connector_for_agent(
         if cached is not None:
             return PermittedConnector(cached, execution)
 
-    db_type = cfg.get("db_type", "").lower()
+    # `or ""` rather than a default: a `db_type:` key with no value under it
+    # parses to None, which `.get("db_type", "")` returns happily and `.lower()`
+    # then raises on. The default only covers an absent key, not a present one
+    # holding nothing.
+    db_type = str(cfg.get("db_type") or "").lower()
     connector_cls = CONNECTOR_REGISTRY.get(db_type)
     if connector_cls is None:
         logger.warning(

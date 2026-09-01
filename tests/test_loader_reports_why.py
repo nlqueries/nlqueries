@@ -296,3 +296,38 @@ def test_a_malformed_url_does_not_put_the_password_in_the_log(connectors_file, c
     assert "No connector could be opened" in caplog.text
     assert "ArgumentError" in caplog.text, "the traceback should still name the cause"
     assert "hunter2" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("entry", "described"),
+    [("postgresql://host/db", "str"), ([1, 2], "list")],
+)
+def test_an_entry_that_is_not_a_mapping_is_reported_not_raised(
+    connectors_file, caplog, entry, described: str
+) -> None:
+    """The root guard covers the file; this covers one entry.
+
+    `agent-a: postgresql://host/db` — an id whose value is the URL rather than a
+    mapping containing it — is a plausible hand-edit. It passes the emptiness
+    check and then `cfg.get` raises `AttributeError` out of the function: the
+    same opaque error the root guard was added to remove, one level down.
+    """
+    connectors_file.write_text(yaml.safe_dump({_CONNECTOR_ID: entry}))
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None  # must not raise
+    assert "not a mapping" in caplog.text
+    assert described in caplog.text, "the message should name what was found instead"
+
+
+def test_a_db_type_key_with_no_value_is_reported_not_raised(connectors_file, caplog) -> None:
+    """`db_type:` with nothing under it parses to None. `.get("db_type", "")`
+    returns that None happily — the default covers an absent key, not a present
+    one holding nothing — and `.lower()` then raises."""
+    connectors_file.write_text(
+        yaml.safe_dump({_CONNECTOR_ID: {"db_type": None, "url": "postgresql://u:p@h/db"}})
+    )
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None  # must not raise
+    assert "not registered" in caplog.text
