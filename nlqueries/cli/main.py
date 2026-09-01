@@ -77,14 +77,33 @@ _DEFAULT_PORTS: dict[str, int] = {
 
 
 def _load_connectors() -> dict[str, dict[str, Any]]:
-    if CONNECTORS_FILE.exists():
-        return yaml.safe_load(CONNECTORS_FILE.read_text()) or {}
-    return {}
+    """The connectors file, read through the loader's hardened reader.
+
+    This used to be a second implementation of the same read, with the same
+    `yaml.safe_load(...) or {}` idiom, and the two drifted the moment the loader
+    grew a root-shape guard and key normalisation: `nlqueries connectors` still
+    raised AttributeError on a file whose root is a sequence, and still compared
+    raw YAML keys, while the agent path handled both.
+    """
+    from nlqueries.connectors.loader import _load_connectors as _load  # noqa: PLC0415
+
+    loaded: dict[str, dict[str, Any]] = _load()
+    return loaded
 
 
 def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
+    from nlqueries.connectors.loader import load_connectors_for_update  # noqa: PLC0415
+
     CONNECTORS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    connectors = _load_connectors()
+    # Not `_load_connectors`. This is a read-modify-write, and that reader
+    # answers "nothing is configured" for a file it could not parse -- which
+    # here would merge one entry into nothing and write it over whatever the
+    # operator had. Refusing is the only safe answer when the previous content
+    # could not be read.
+    try:
+        connectors = load_connectors_for_update()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     connectors[connector_id] = config
     CONNECTORS_FILE.write_text(yaml.dump(connectors, default_flow_style=False, sort_keys=False))
     CONNECTORS_FILE.chmod(0o600)

@@ -151,15 +151,120 @@ def _cache_put(connector_id: str, connector: DatabaseConnector, fingerprint: str
         _dispose(entry)
 
 
-def _find_connector_id(agent_id: str) -> str | None:
+#: How many connector ids a "no entry matches" warning names before it stops.
+#: The reader is scanning for a near-match, and the count beside the list already
+#: says how much was not shown.
+_MAX_LISTED_IDS = 20
+
+
+def _listed(connectors: dict[str, Any]) -> str:
+    """Connector ids for a warning, capped at :data:`_MAX_LISTED_IDS`.
+
+    The enumeration exists so a reader can spot a near-match to the id that did
+    not resolve. That needs a sample, not the file: in an enterprise deployment
+    this mapping is the whole instance's agent set, and a mismatched id is the
+    recurring misconfiguration this message targets -- so an unbounded list
+    would write every agent to the log on every such request, growing with the
+    deployment rather than with the fault.
+    """
+    ids = sorted(connectors)
+    shown = ", ".join(ids[:_MAX_LISTED_IDS])
+    if len(ids) > _MAX_LISTED_IDS:
+        shown += f", ... ({len(ids) - _MAX_LISTED_IDS} more)"
+    return shown
+
+
+def _read_connectors_root() -> Any:
+    """The connectors file parsed, with no shape policy applied."""
+    if not config.CONNECTORS_FILE.exists():
+        return None
+    return yaml.safe_load(config.CONNECTORS_FILE.read_text())
+
+
+def _normalised(root: dict[Any, Any]) -> dict[str, Any]:
+    """Keys as strings, once, so nothing downstream has to.
+
+    YAML does not guarantee string keys -- an unquoted ``2024:`` parses to an
+    int -- and every consumer assumes otherwise. Coercing at each use instead of
+    at the boundary was worse than untidy: with ``str(key)`` compared in
+    :func:`_find_connector_id` but the raw key returned, an agent id of ``"2024"``
+    matched and the int came back from a function annotated ``str | None``. That
+    int then keyed the connector cache, so ``invalidate_connector_cache("2024")``
+    would miss the entry and leave a rotated credential live until the TTL.
+    """
+    return {str(key): value for key, value in root.items()}
+
+
+def _load_connectors() -> dict[str, Any]:
+    """The connectors file as a mapping, or ``{}`` when it is unusable.
+
+    For readers. A read path can degrade to "nothing is configured" and say so;
+    see :func:`load_connectors_for_update` for why a writer must not.
+    """
+    root = _read_connectors_root()
+    if root is None:
+        return {}
+    if not isinstance(root, dict):
+        # A hand-edited file whose root is a sequence or a scalar parses to a
+        # list or a str, and `.items()` on that is an AttributeError thrown out
+        # of open_connector_for_agent -- which the multi-agent path reports as
+        # `{"error": "'list' object has no attribute 'items'"}`, and which
+        # binding_for_agent swallows into an empty fingerprint.
+        #
+        # Said here, because only here is the shape known. The caller sees an
+        # empty mapping and cannot tell this from a file that is genuinely
+        # absent -- and telling an operator their file is missing while it sits
+        # there full of content is the kind of misdirection this module is being
+        # changed to remove.
+        logger.warning(
+            "%s does not contain a mapping of connector ids: its root is a %s. "
+            "No connector can be opened until that is corrected.",
+            config.CONNECTORS_FILE,
+            type(root).__name__,
+        )
+        return {}
+    return _normalised(root)
+
+
+def load_connectors_for_update() -> dict[str, Any]:
+    """The connectors file as a mapping, raising if it cannot be read.
+
+    For callers that will write the mapping back. Handing a writer ``{}`` for a
+    file that exists and holds something is data loss: it merges its one entry
+    into nothing and writes that over the operator's file. Degrading to "nothing
+    is configured" is a reasonable answer to "what can I open"; it is the wrong
+    answer to "what should I preserve".
+
+    The distinction is the whole reason this exists beside
+    :func:`_load_connectors` rather than being folded into it.
+    """
+    root = _read_connectors_root()
+    if root is None:
+        return {}
+    if not isinstance(root, dict):
+        raise ValueError(
+            f"{config.CONNECTORS_FILE} does not contain a mapping of connector ids: "
+            f"its root is a {type(root).__name__}. Refusing to overwrite it."
+        )
+    return _normalised(root)
+
+
+def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) -> str | None:
     """Return the connector_id in connectors.yaml that matches *agent_id*.
 
     Tries a direct lookup first (CLI usage where agent_id == connector_id),
     then a sanitized lookup (MCP usage where colons were replaced by ``_``).
+
+    *connectors* lets a caller that has already read the file resolve against
+    that same copy. ``open_connector_for_agent`` does, because reading it twice
+    left a window in which the file could be rewritten between the two reads,
+    and the branch guarding that window was indistinguishable from a genuinely
+    missing entry.
     """
-    if not config.CONNECTORS_FILE.exists():
+    if connectors is None:
+        connectors = _load_connectors()
+    if not connectors:
         return None
-    connectors: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
     if agent_id in connectors:
         return agent_id
     for key in connectors:
@@ -253,7 +358,14 @@ def open_connector_for_agent(
     """Return a connected DatabaseConnector for *agent_id*.
 
     Returns ``None`` when the connector cannot be found, the required driver is
-    not installed, or the connection attempt fails.
+    not installed, or the connection attempt fails. Every one of those is logged
+    at warning with the cause, because they are five different faults with five
+    different fixes and the caller sees one ``None``.
+
+    They used to be silent. Downstream that becomes an answer with no rows and
+    no error -- the SQL path treats a ``None`` connector as "nothing to execute"
+    -- so a misconfigured agent looked exactly like a query that matched
+    nothing, and the reason existed nowhere at all.
 
     The connector may be **shared with other in-flight requests**. It was
     previously built per query, and this docstring previously instructed callers
@@ -269,16 +381,58 @@ def open_connector_for_agent(
     inherited by the next caller to receive it. Defaults to generate-only, so a
     caller that does not request execution is not granted it.
     """
-    connector_id = _find_connector_id(agent_id)
+    # Read once, and resolve everything from that copy. `_find_connector_id`
+    # used to read the file itself, so this function read it twice and the two
+    # reads could disagree.
+    connectors = _load_connectors()
+    if not connectors:
+        # Deliberately not "missing or empty": a malformed root reaches here as
+        # an empty mapping too, and that case has already said what it is.
+        logger.warning(
+            "No connector could be opened for agent %s: %s holds no usable "
+            "connector configuration. The generated SQL will not run.",
+            agent_id,
+            config.CONNECTORS_FILE,
+        )
+        return None
+
+    connector_id = _find_connector_id(agent_id, connectors)
     if connector_id is None:
+        logger.warning(
+            "No connector could be opened for agent %s: no entry in %s matches it, "
+            "directly or after sanitising. The file holds %d: %s.",
+            agent_id,
+            config.CONNECTORS_FILE,
+            len(connectors),
+            _listed(connectors),
+        )
         return None
 
-    if not config.CONNECTORS_FILE.exists():
-        return None
-
-    connectors: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
     cfg = connectors.get(connector_id)
     if not cfg:
+        logger.warning(
+            "No connector could be opened for agent %s: entry %s in %s is empty.",
+            agent_id,
+            connector_id,
+            config.CONNECTORS_FILE,
+        )
+        return None
+
+    if not isinstance(cfg, dict):
+        # The root guard in _load_connectors covers the file; this covers one
+        # entry. `agent-a: postgresql://host/db` -- an id whose value is the URL
+        # rather than a mapping containing it -- is a plausible hand-edit, and it
+        # passes the emptiness check above before `cfg.get` raises AttributeError
+        # out of this function. That is the same opaque error the root guard was
+        # added to remove, one level down.
+        logger.warning(
+            "No connector could be opened for agent %s: entry %s in %s is a %s, "
+            "not a mapping of connection settings.",
+            agent_id,
+            connector_id,
+            config.CONNECTORS_FILE,
+            type(cfg).__name__,
+        )
         return None
 
     fingerprint = ""
@@ -288,9 +442,20 @@ def open_connector_for_agent(
         if cached is not None:
             return PermittedConnector(cached, execution)
 
-    db_type = cfg.get("db_type", "").lower()
+    # `or ""` rather than a default: a `db_type:` key with no value under it
+    # parses to None, which `.get("db_type", "")` returns happily and `.lower()`
+    # then raises on. The default only covers an absent key, not a present one
+    # holding nothing.
+    db_type = str(cfg.get("db_type") or "").lower()
     connector_cls = CONNECTOR_REGISTRY.get(db_type)
     if connector_cls is None:
+        logger.warning(
+            "No connector could be opened for agent %s: db_type %r is not registered. "
+            "Its driver extra is probably not installed. Registered types: %s.",
+            agent_id,
+            db_type,
+            ", ".join(sorted(CONNECTOR_REGISTRY)) or "(none)",
+        )
         return None
 
     try:
@@ -300,4 +465,27 @@ def open_connector_for_agent(
             _cache_put(connector_id, connector, fingerprint)
         return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
+        # Deliberately not "the connection attempt failed". This block covers
+        # `credentials_for` as well as `connect`, and `connect` on the
+        # SQLAlchemy-backed connectors only builds an engine -- `create_engine`
+        # opens no socket, so a server refusing us surfaces later, in
+        # `execute_query`. What actually lands here is configuration:
+        # `KeyError: 'url'` for an entry with no URL, `ImportError` for a driver
+        # package that is not installed, the TLS clash `ValueError` from
+        # `_tls_connect_args`. Naming the network would send the reader past all
+        # three.
+        #
+        # With a traceback, because the exception's own words are the diagnosis
+        # and any summary written here would be a worse one. The same reasoning
+        # PostgresConnector.execute_query already follows -- and its log line is
+        # the only reason a TLS default silently refusing every query was ever
+        # found, though that one is raised on the execute path, not this one.
+        logger.warning(
+            "No connector could be opened for agent %s (connector %s, db_type %r). "
+            "Usually its configuration rather than the server: see the traceback.",
+            agent_id,
+            connector_id,
+            db_type,
+            exc_info=True,
+        )
         return None
