@@ -143,8 +143,40 @@ def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
 # Local model fallback (lazy singleton)
 # ---------------------------------------------------------------------------
 
-_MODEL_NAME = "all-MiniLM-L6-v2"
+#: Kept as a module attribute because callers and tests refer to it, but the
+#: value now comes from one place -- see :data:`nlqueries.config.EMBED_MODEL`.
+_MODEL_NAME = config.EMBED_MODEL
 _model: SentenceTransformer | None = None
+
+
+def check_model_width(model: SentenceTransformer, name: str) -> None:
+    """Refuse a model whose vectors would not fit the stores.
+
+    ``NLQ_EMBED_MODEL`` exists so an operator can replace the weights without
+    waiting for a release. The failure that invites is a model of a different
+    width: the caches and the Qdrant collection are created at
+    :data:`~nlqueries.config.EMBED_DIMENSIONS`, and a mismatch does not raise on
+    its own. It writes vectors that simply do not mean what the collection
+    thinks they mean, and the symptom is bad neighbours, months later, with
+    nothing in a log to connect them to a swapped model.
+
+    Checked at load, where the name of the offending model is still in hand.
+    """
+    # `get_sentence_embedding_dimension` was renamed to `get_embedding_dimension`
+    # and now emits a FutureWarning. Both are read rather than one chosen: the
+    # declared floor is `sentence-transformers>=3.0`, which has only the old
+    # name, while the new one is what survives its removal.
+    measure = getattr(model, "get_embedding_dimension", None)
+    if measure is None:
+        measure = model.get_sentence_embedding_dimension
+    width = measure()
+    if width is not None and width != config.EMBED_DIMENSIONS:
+        raise RuntimeError(
+            f"embedding model {name!r} produces {width}-dimension vectors, but this "
+            f"deployment's caches and collections are built for {config.EMBED_DIMENSIONS}. "
+            "Point NLQ_EMBED_MODEL at a model of the same width, or rebuild the "
+            "vector stores for the new one."
+        )
 
 
 def _get_model() -> SentenceTransformer:
@@ -153,7 +185,9 @@ def _get_model() -> SentenceTransformer:
     if _model is None:
         from sentence_transformers import SentenceTransformer  # deferred — heavy import
 
-        _model = SentenceTransformer(_MODEL_NAME)
+        loaded = SentenceTransformer(_MODEL_NAME)
+        check_model_width(loaded, _MODEL_NAME)
+        _model = loaded
     return _model
 
 

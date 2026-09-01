@@ -54,7 +54,11 @@ from nlqueries.embeddings.qdrant_store import ensure_collection
 logger = logging.getLogger(__name__)
 
 CACHE_COLLECTION_PREFIX = "cache_"
-CACHE_VECTOR_SIZE = 384
+#: The embedding model's width, not a number of its own. Declared once in
+#: config so this collection cannot be built for one width while the model
+#: produces another -- a mismatch writes vectors that do not mean what the
+#: collection thinks they mean, and nothing raises.
+CACHE_VECTOR_SIZE = config.EMBED_DIMENSIONS
 SIMILARITY_THRESHOLD = 0.97  # kept for backward-compat; Tier 1 uses config value
 
 # Qdrant collection names must not contain ":" or other special chars.

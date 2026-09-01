@@ -372,6 +372,16 @@ class TestLoadOnnxEncoder:
 
         mock_st_model = MagicMock()
         mock_st_model.encode.return_value = MagicMock(tolist=lambda: [[0.1] * 384])
+        # The loader checks the model's width before handing back an encoder, so
+        # the mock has to state one. Left unset it returns a MagicMock, which is
+        # neither None nor the expected width, and the check rightly rejects it.
+        #
+        # Both accessors, because `check_model_width` prefers the renamed one and
+        # a bare MagicMock answers to any name: setting only the old one leaves
+        # the check reading an auto-created mock rather than falling back to it.
+        # A real SentenceTransformer of the version this pins against has both.
+        mock_st_model.get_embedding_dimension.return_value = 384
+        mock_st_model.get_sentence_embedding_dimension.return_value = 384
         mock_st = MagicMock()
         mock_st.SentenceTransformer.return_value = mock_st_model
 
