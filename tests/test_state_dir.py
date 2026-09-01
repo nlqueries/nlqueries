@@ -35,11 +35,21 @@ def _config_with(monkeypatch: pytest.MonkeyPatch, **env: str):
 
 @pytest.fixture(autouse=True)
 def _restore_config():
-    """Leave the real configuration in place for every other test in the run."""
+    """Leave the real configuration in place for every other test in the run.
+
+    Every module reloaded here has to be reloaded back, not just `config`:
+    `embed_server` binds `_PID_FILE` at import, so a test that reloads it under
+    a `tmp_path` leaves that module pointed at a directory pytest then deletes.
+    Nothing fails today only because the default collection order happens to run
+    the embed-server tests first.
+    """
     yield
     import nlqueries.config as config_module
 
     importlib.reload(config_module)
+    import nlqueries.embeddings.embed_server as embed_server_module
+
+    importlib.reload(embed_server_module)
 
 
 def test_state_dir_defaults_to_the_home_directory(monkeypatch, tmp_path: Path) -> None:

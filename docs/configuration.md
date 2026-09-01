@@ -14,6 +14,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `QDRANT_URL` | No | `http://localhost:6333` | Qdrant URL. Required for `--embed`, the semantic cache, and document connectors. |
 | `QDRANT_API_KEY` | No | — | Required if using Qdrant Cloud |
 | `QDRANT_COLLECTION` | No | `nlqueries` | Qdrant collection name |
+| `NLQ_STATE_DIR` | No | `~/.nlqueries` | Root for everything NLQueries keeps between runs. The paths below default under it; set them individually to override. Set this when the home directory is not writable — a read-only root filesystem otherwise stops the embedding server starting, and with it every natural-language query |
 | `KB_PATH` | No | `~/.nlqueries/knowledge_base` | Local path for exported knowledge base files |
 | `KB_REFRESH_INTERVAL` | No | `3600` | Seconds between auto-refresh of the KB (`0` disables) |
 | `CONNECTORS_FILE` | No | `~/.nlqueries/connectors.yaml` | Path to the connector registry |
