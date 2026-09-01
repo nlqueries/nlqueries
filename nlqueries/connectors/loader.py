@@ -352,15 +352,24 @@ def open_connector_for_agent(
             _cache_put(connector_id, connector, fingerprint)
         return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
-        # With a traceback, as PostgresConnector.execute_query already does for
-        # the same class of failure -- and that log line is the only reason a TLS
-        # default silently refusing every query was ever diagnosed. The message
-        # is what carries the diagnosis: "server does not support SSL, but SSL
-        # was required" is the whole answer, and no summary of mine would have
-        # said it.
+        # Deliberately not "the connection attempt failed". This block covers
+        # `credentials_for` as well as `connect`, and `connect` on the
+        # SQLAlchemy-backed connectors only builds an engine -- `create_engine`
+        # opens no socket, so a server refusing us surfaces later, in
+        # `execute_query`. What actually lands here is configuration:
+        # `KeyError: 'url'` for an entry with no URL, `ImportError` for a driver
+        # package that is not installed, the TLS clash `ValueError` from
+        # `_tls_connect_args`. Naming the network would send the reader past all
+        # three.
+        #
+        # With a traceback, because the exception's own words are the diagnosis
+        # and any summary written here would be a worse one. The same reasoning
+        # PostgresConnector.execute_query already follows -- and its log line is
+        # the only reason a TLS default silently refusing every query was ever
+        # found, though that one is raised on the execute path, not this one.
         logger.warning(
-            "No connector could be opened for agent %s (connector %s, db_type %r): "
-            "the connection attempt failed.",
+            "No connector could be opened for agent %s (connector %s, db_type %r). "
+            "Usually its configuration rather than the server: see the traceback.",
             agent_id,
             connector_id,
             db_type,

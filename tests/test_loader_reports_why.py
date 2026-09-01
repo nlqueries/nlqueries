@@ -114,9 +114,15 @@ def test_an_unregistered_db_type_names_what_is_registered(connectors_file, caplo
 def test_a_refused_connection_reports_the_drivers_own_words(
     connectors_file, caplog, monkeypatch
 ) -> None:
-    """The message is the diagnosis. "server does not support SSL, but SSL was
-    required" is the whole answer to the defect this area has been fixing, and
-    no summary written here would have said it."""
+    """When a connector does refuse at `connect` time, its own words survive.
+
+    The exception's message is the diagnosis and any summary written here would
+    be a worse one — "server does not support SSL, but SSL was required" is the
+    whole answer to the defect this area has been fixing. Note that the real
+    instance of it was raised on the execute path rather than this one, since
+    `create_engine` opens no socket; this holds the reporting, not the claim
+    that refusals usually land here.
+    """
 
     class _Refusing:
         def connect(self, credentials: dict[str, Any]) -> None:
@@ -127,8 +133,28 @@ def test_a_refused_connection_reports_the_drivers_own_words(
 
     with caplog.at_level(logging.WARNING, logger=loader.logger.name):
         assert _open() is None
-    assert "the connection attempt failed" in caplog.text
+    assert "No connector could be opened" in caplog.text
     assert "server does not support SSL" in caplog.text, "the driver's message must survive"
+
+
+def test_a_configuration_fault_is_reported_here_too(connectors_file, caplog) -> None:
+    """What actually reaches this branch, most of the time.
+
+    `connect` on the SQLAlchemy-backed connectors only builds an engine —
+    `create_engine` opens no socket — so a server refusing us surfaces later in
+    `execute_query`, not here. This block covers `credentials_for` as well, and
+    an entry with no URL raises `KeyError: 'url'` inside it. The message must not
+    send the reader looking at the network for a fault in the file.
+    """
+    connectors_file.write_text(yaml.safe_dump({_CONNECTOR_ID: {"db_type": "postgres"}}))
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None
+    assert "No connector could be opened" in caplog.text
+    assert "connection attempt failed" not in caplog.text, (
+        "this branch is mostly configuration; naming the network misdirects"
+    )
+    assert "KeyError" in caplog.text, "the traceback carries the actual cause"
 
 
 def test_the_password_is_not_logged(connectors_file, caplog, monkeypatch) -> None:
