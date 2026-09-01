@@ -151,15 +151,30 @@ def _cache_put(connector_id: str, connector: DatabaseConnector, fingerprint: str
         _dispose(entry)
 
 
-def _find_connector_id(agent_id: str) -> str | None:
+def _load_connectors() -> dict[str, Any]:
+    """The connectors file as a mapping, or ``{}`` when it does not exist."""
+    if not config.CONNECTORS_FILE.exists():
+        return {}
+    loaded: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
+    return loaded
+
+
+def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) -> str | None:
     """Return the connector_id in connectors.yaml that matches *agent_id*.
 
     Tries a direct lookup first (CLI usage where agent_id == connector_id),
     then a sanitized lookup (MCP usage where colons were replaced by ``_``).
+
+    *connectors* lets a caller that has already read the file resolve against
+    that same copy. ``open_connector_for_agent`` does, because reading it twice
+    left a window in which the file could be rewritten between the two reads,
+    and the branch guarding that window was indistinguishable from a genuinely
+    missing entry.
     """
-    if not config.CONNECTORS_FILE.exists():
+    if connectors is None:
+        connectors = _load_connectors()
+    if not connectors:
         return None
-    connectors: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
     if agent_id in connectors:
         return agent_id
     for key in connectors:
@@ -253,7 +268,14 @@ def open_connector_for_agent(
     """Return a connected DatabaseConnector for *agent_id*.
 
     Returns ``None`` when the connector cannot be found, the required driver is
-    not installed, or the connection attempt fails.
+    not installed, or the connection attempt fails. Every one of those is logged
+    at warning with the cause, because they are five different faults with five
+    different fixes and the caller sees one ``None``.
+
+    They used to be silent. Downstream that becomes an answer with no rows and
+    no error -- the SQL path treats a ``None`` connector as "nothing to execute"
+    -- so a misconfigured agent looked exactly like a query that matched
+    nothing, and the reason existed nowhere at all.
 
     The connector may be **shared with other in-flight requests**. It was
     previously built per query, and this docstring previously instructed callers
@@ -269,16 +291,39 @@ def open_connector_for_agent(
     inherited by the next caller to receive it. Defaults to generate-only, so a
     caller that does not request execution is not granted it.
     """
-    connector_id = _find_connector_id(agent_id)
+    # Read once, and resolve everything from that copy. `_find_connector_id`
+    # used to read the file itself, so this function read it twice and the two
+    # reads could disagree.
+    connectors = _load_connectors()
+    if not connectors:
+        logger.warning(
+            "No connector could be opened for agent %s: %s is missing or empty, so "
+            "nothing is configured for anything. The generated SQL will not run.",
+            agent_id,
+            config.CONNECTORS_FILE,
+        )
+        return None
+
+    connector_id = _find_connector_id(agent_id, connectors)
     if connector_id is None:
+        logger.warning(
+            "No connector could be opened for agent %s: no entry in %s matches it, "
+            "directly or after sanitising. The file holds %d: %s.",
+            agent_id,
+            config.CONNECTORS_FILE,
+            len(connectors),
+            ", ".join(sorted(connectors)),
+        )
         return None
 
-    if not config.CONNECTORS_FILE.exists():
-        return None
-
-    connectors: dict[str, Any] = yaml.safe_load(config.CONNECTORS_FILE.read_text()) or {}
     cfg = connectors.get(connector_id)
     if not cfg:
+        logger.warning(
+            "No connector could be opened for agent %s: entry %s in %s is empty.",
+            agent_id,
+            connector_id,
+            config.CONNECTORS_FILE,
+        )
         return None
 
     fingerprint = ""
@@ -291,6 +336,13 @@ def open_connector_for_agent(
     db_type = cfg.get("db_type", "").lower()
     connector_cls = CONNECTOR_REGISTRY.get(db_type)
     if connector_cls is None:
+        logger.warning(
+            "No connector could be opened for agent %s: db_type %r is not registered. "
+            "Its driver extra is probably not installed. Registered types: %s.",
+            agent_id,
+            db_type,
+            ", ".join(sorted(CONNECTOR_REGISTRY)) or "(none)",
+        )
         return None
 
     try:
@@ -300,4 +352,18 @@ def open_connector_for_agent(
             _cache_put(connector_id, connector, fingerprint)
         return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
+        # With a traceback, as PostgresConnector.execute_query already does for
+        # the same class of failure -- and that log line is the only reason a TLS
+        # default silently refusing every query was ever diagnosed. The message
+        # is what carries the diagnosis: "server does not support SSL, but SSL
+        # was required" is the whole answer, and no summary of mine would have
+        # said it.
+        logger.warning(
+            "No connector could be opened for agent %s (connector %s, db_type %r): "
+            "the connection attempt failed.",
+            agent_id,
+            connector_id,
+            db_type,
+            exc_info=True,
+        )
         return None
