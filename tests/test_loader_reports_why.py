@@ -102,12 +102,20 @@ def test_an_empty_entry_says_so(connectors_file, caplog) -> None:
 def test_an_unregistered_db_type_names_what_is_registered(connectors_file, caplog) -> None:
     """Almost always a missing driver extra, and the fix is unguessable without
     knowing what *is* available."""
-    _write(connectors_file, db_type="teradata")
+    # The agent id deliberately shares no substring with any registered type.
+    # With the usual `postgres:localhost:db` the assertion below passes whether
+    # or not the message lists anything, because the id itself contains
+    # "postgres" -- right and wrong look identical, which is no test at all.
+    agent = "warehouse-nine"
+    connectors_file.write_text(
+        yaml.safe_dump({agent: {"db_type": "teradata", "url": "teradata://h/db"}})
+    )
 
     with caplog.at_level(logging.WARNING, logger=loader.logger.name):
-        assert _open() is None
+        assert _open(agent) is None
     assert "not registered" in caplog.text
     assert "teradata" in caplog.text
+    assert "Registered types:" in caplog.text
     assert "postgres" in caplog.text, "the message must list what is registered"
 
 
@@ -172,3 +180,23 @@ def test_the_password_is_not_logged(connectors_file, caplog, monkeypatch) -> Non
     with caplog.at_level(logging.WARNING, logger=loader.logger.name):
         assert _open() is None
     assert "hunter2" not in caplog.text
+
+
+def test_a_non_string_key_does_not_break_the_diagnostic(connectors_file, caplog) -> None:
+    """A diagnostic must not be the thing that breaks.
+
+    YAML keys are not necessarily strings: an unquoted `2024:` in a hand-edited
+    file parses to an int. That raises `TypeError` in `_find_connector_id`'s
+    sanitising loop, and again in the branch listing what the file holds — so a
+    lookup that should return `None` cleanly would instead throw into the
+    orchestrator's `except` and reach the caller as an opaque error, caused by
+    the very code added to explain failures.
+    """
+    connectors_file.write_text(
+        yaml.safe_dump({2024: {"db_type": "postgres", "url": "postgresql://u:p@h/db"}})
+    )
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open("no-such-agent") is None  # must not raise
+    assert "no entry" in caplog.text
+    assert "2024" in caplog.text, "the key should still be listed, as a string"

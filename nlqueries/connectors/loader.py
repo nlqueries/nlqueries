@@ -178,7 +178,11 @@ def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) 
     if agent_id in connectors:
         return agent_id
     for key in connectors:
-        if re.sub(r"[^\w.-]", "_", key) == agent_id:
+        # `str(key)`: YAML keys are not necessarily strings. An unquoted `2024:`
+        # in a hand-edited file parses to an int, and `re.sub` raises TypeError
+        # on it -- turning a lookup that should return None into an exception
+        # thrown at whatever called us.
+        if re.sub(r"[^\w.-]", "_", str(key)) == agent_id:
             return key
     return None
 
@@ -312,7 +316,13 @@ def open_connector_for_agent(
             agent_id,
             config.CONNECTORS_FILE,
             len(connectors),
-            ", ".join(sorted(connectors)),
+            # `str(k)` for the same reason as in `_find_connector_id`: a
+            # non-string key makes `sorted` raise, and raising from inside the
+            # branch that exists to explain a failure would replace a clean None
+            # with an opaque error. A diagnostic must not be the thing that
+            # breaks. `CONNECTOR_REGISTRY` needs no such care -- its keys are
+            # module constants, not file contents.
+            ", ".join(sorted(str(k) for k in connectors)),
         )
         return None
 
