@@ -73,7 +73,7 @@ def test_no_connectors_file_says_so(connectors_file, caplog) -> None:
     """The file is absent entirely — nothing has ever been projected."""
     with caplog.at_level(logging.WARNING, logger=loader.logger.name):
         assert _open() is None
-    assert "is missing or empty" in caplog.text
+    assert "holds no usable connector configuration" in caplog.text
 
 
 def test_an_agent_with_no_entry_is_told_what_is_there(connectors_file, caplog) -> None:
@@ -273,7 +273,7 @@ def test_a_file_that_is_not_a_mapping_is_reported_not_raised(
 
     with caplog.at_level(logging.WARNING, logger=loader.logger.name):
         assert _open() is None  # must not raise, whatever the file holds
-    assert "is missing or empty" in caplog.text, shape
+    assert "holds no usable connector configuration" in caplog.text, shape
 
 
 def test_a_malformed_url_does_not_put_the_password_in_the_log(connectors_file, caplog) -> None:
@@ -331,3 +331,49 @@ def test_a_db_type_key_with_no_value_is_reported_not_raised(connectors_file, cap
     with caplog.at_level(logging.WARNING, logger=loader.logger.name):
         assert _open() is None  # must not raise
     assert "not registered" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("content", "found"), [("- one\n- two\n", "list"), ("just a string\n", "str")]
+)
+def test_a_malformed_root_says_what_it_found(connectors_file, caplog, content, found) -> None:
+    """A file that is present and full must not be reported as missing.
+
+    Both cases reach the caller as an empty mapping, so only `_load_connectors`
+    can tell them apart — and telling an operator their file is missing while it
+    sits there with content in it is the misdirection this module is being
+    changed to remove, reintroduced by the guard that fixed the crash.
+    """
+    connectors_file.write_text(content)
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None
+    assert "does not contain a mapping of connector ids" in caplog.text
+    assert f"root is a {found}" in caplog.text
+
+
+def test_a_genuinely_absent_file_is_not_called_malformed(connectors_file, caplog) -> None:
+    """Canary for the above: the shape complaint must fire on shape, not on
+    every empty result, or it becomes the misdirection in the other direction."""
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        assert _open() is None
+    assert "does not contain a mapping" not in caplog.text
+    assert "holds no usable connector configuration" in caplog.text
+
+
+def test_the_cli_reads_through_the_same_hardened_reader(connectors_file) -> None:
+    """One reader, because two drifted the moment this one was hardened.
+
+    The CLI had its own `_load_connectors` with the same `yaml.safe_load(...) or
+    {}` idiom, so `nlqueries connectors` still raised AttributeError on the very
+    file this change was written to handle, and still compared raw YAML keys.
+    """
+    from nlqueries.cli.main import _load_connectors as cli_load
+
+    connectors_file.write_text("- not\n- a mapping\n")
+    assert cli_load() == {}  # must not raise
+
+    connectors_file.write_text(
+        yaml.safe_dump({2024: {"db_type": "postgres", "url": "postgresql://u:p@h/db"}})
+    )
+    assert list(cli_load()) == ["2024"], "the CLI must see normalised keys too"

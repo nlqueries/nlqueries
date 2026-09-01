@@ -77,9 +77,18 @@ _DEFAULT_PORTS: dict[str, int] = {
 
 
 def _load_connectors() -> dict[str, dict[str, Any]]:
-    if CONNECTORS_FILE.exists():
-        return yaml.safe_load(CONNECTORS_FILE.read_text()) or {}
-    return {}
+    """The connectors file, read through the loader's hardened reader.
+
+    This used to be a second implementation of the same read, with the same
+    `yaml.safe_load(...) or {}` idiom, and the two drifted the moment the loader
+    grew a root-shape guard and key normalisation: `nlqueries connectors` still
+    raised AttributeError on a file whose root is a sequence, and still compared
+    raw YAML keys, while the agent path handled both.
+    """
+    from nlqueries.connectors.loader import _load_connectors as _load  # noqa: PLC0415
+
+    loaded: dict[str, dict[str, Any]] = _load()
+    return loaded
 
 
 def _save_connector(connector_id: str, config: dict[str, Any]) -> None:

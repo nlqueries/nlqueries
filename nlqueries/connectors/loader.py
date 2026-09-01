@@ -196,8 +196,19 @@ def _load_connectors() -> dict[str, Any]:
         # of open_connector_for_agent -- which the multi-agent path reports as
         # `{"error": "'list' object has no attribute 'items'"}`, and which
         # binding_for_agent swallows into an empty fingerprint. Returning {}
-        # keeps the documented contract, and the caller's "missing or empty"
-        # warning is already the right thing to say about it.
+        # keeps the documented contract.
+        #
+        # Said here, because only here is the shape known. The caller sees an
+        # empty mapping and cannot tell this from a file that is genuinely
+        # absent -- and telling an operator their file is missing while it sits
+        # there full of content is the kind of misdirection this module is being
+        # changed to remove.
+        logger.warning(
+            "%s does not contain a mapping of connector ids: its root is a %s. "
+            "No connector can be opened until that is corrected.",
+            config.CONNECTORS_FILE,
+            type(loaded).__name__,
+        )
         return {}
     return {str(key): value for key, value in loaded.items()}
 
@@ -339,9 +350,11 @@ def open_connector_for_agent(
     # reads could disagree.
     connectors = _load_connectors()
     if not connectors:
+        # Deliberately not "missing or empty": a malformed root reaches here as
+        # an empty mapping too, and that case has already said what it is.
         logger.warning(
-            "No connector could be opened for agent %s: %s is missing or empty, so "
-            "nothing is configured for anything. The generated SQL will not run.",
+            "No connector could be opened for agent %s: %s holds no usable "
+            "connector configuration. The generated SQL will not run.",
             agent_id,
             config.CONNECTORS_FILE,
         )
