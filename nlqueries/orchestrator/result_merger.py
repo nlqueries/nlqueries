@@ -42,15 +42,37 @@ class HybridQueryResult:
 
 
 def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
-    """Render a :class:`QueryResult` as a GitHub-style markdown table."""
+    """Render a :class:`QueryResult` as a GitHub-style markdown table.
+
+    A note is appended whenever this shows fewer rows than the result holds.
+    The synthesis model is asked to describe this table and has no other way to
+    tell a complete answer from a fragment, so without it a total or a maximum
+    taken over the first twenty rows is presented as the answer.
+    :class:`QueryResult` puts the principle plainly: silently returning the
+    first N rows of a larger answer is a wrong answer, not a partial one.
+
+    The cap never bit before the hybrid path carried executed rows -- the table
+    it rendered was one cell holding the statement text.
+    """
     if not sql_result.columns:
         return "(no data)"
     header = "| " + " | ".join(sql_result.columns) + " |"
     separator = "| " + " | ".join(["---"] * len(sql_result.columns)) + " |"
-    body_lines = [
-        "| " + " | ".join(str(v) for v in row) + " |" for row in sql_result.rows[:max_rows]
-    ]
-    return "\n".join([header, separator] + body_lines)
+    shown = sql_result.rows[:max_rows]
+    body_lines = ["| " + " | ".join(str(v) for v in row) + " |" for row in shown]
+    lines = [header, separator, *body_lines]
+
+    # `row_count` is the true total and stays so when `rows` was capped
+    # upstream, which is exactly the case worth reporting: quoting len(rows)
+    # would describe the size of the fragment as the size of the answer.
+    total = max(sql_result.row_count, len(sql_result.rows))
+    if len(shown) < total:
+        lines.append(f"\n(showing the first {len(shown)} of {total} rows)")
+    elif sql_result.truncated:
+        # Truncated upstream without `row_count` being adjusted, so the total is
+        # unknown; saying it stopped short still beats implying completeness.
+        lines.append("\n(this result stopped short of the full answer)")
+    return "\n".join(lines)
 
 
 def _format_citations_text(citations: list[Citation], top_n: int = 3) -> str:
@@ -76,7 +98,8 @@ def merge_results(
 
     When both *sql_result* and *document_result* are provided the LLM is
     invoked once to synthesise a single answer that references both sources.
-    SQL data is formatted as a markdown table (up to 20 rows); the top 3
+    SQL data is formatted as a markdown table (up to 20 rows, and it says so
+    when there are more); the top 3
     document citations are included as labelled excerpts.
 
     When only one result is provided the function passes it through without

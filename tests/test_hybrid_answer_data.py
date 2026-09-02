@@ -13,15 +13,21 @@ tests pin both directions rather than only the new one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 from nlqueries.connectors.base import QueryResult
+from nlqueries.orchestrator.intent_classifier import (
+    IntentClassificationResult,
+    IntentType,
+)
 from nlqueries.orchestrator.multi_agent_orchestrator import _extract_sql_query_result
 from nlqueries.orchestrator.orchestrator import _MAX_RESULT_ROWS, sql_table_chunk
 
 
-def _chunk(**overrides: Any) -> list[str]:
+def _payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "type": "sql",
         "sql": "SELECT region, revenue FROM sales",
@@ -33,7 +39,11 @@ def _chunk(**overrides: Any) -> list[str]:
         "sql_table": None,
     }
     payload.update(overrides)
-    return [json.dumps(payload)]
+    return payload
+
+
+def _chunk(**overrides: Any) -> list[str]:
+    return [json.dumps(_payload(**overrides))]
 
 
 def _table(**overrides: Any) -> dict[str, Any]:
@@ -156,3 +166,126 @@ def _chunk_payload(sql_table: dict[str, Any]) -> dict[str, Any]:
         "execution_mode": "execute",
         "sql_table": sql_table,
     }
+
+
+# ---------------------------------------------------------------------------
+# The consequence downstream of the extraction: what may be cached.
+# ---------------------------------------------------------------------------
+
+
+def _drive_hybrid(sql_tokens: list[str]) -> MagicMock:
+    """Run one hybrid turn with *sql_tokens* and return the cache mock.
+
+    The hybrid entry stores the merged answer alone, and a hit replays it for
+    the whole TTL with no re-execution -- unlike the SQL branch, which re-runs
+    its stored statement precisely because stored prose cannot carry fresh rows.
+    """
+    from nlqueries.orchestrator.multi_agent_orchestrator import (
+        MultiAgentOrchestrator,
+        drain_background_tasks,
+    )
+    from nlqueries.orchestrator.result_merger import HybridQueryResult
+
+    doc_tokens = [
+        "The policy states...",
+        json.dumps({"type": "citations", "citations": []}),
+    ]
+
+    def _gen_factory(tokens: list[str]):  # type: ignore[no-untyped-def]
+        async def _gen(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            for t in tokens:
+                yield t
+
+        return _gen
+
+    sql_instance = MagicMock()
+    sql_instance.handle_question = _gen_factory(sql_tokens)
+    doc_instance = MagicMock()
+    doc_instance.handle_question = _gen_factory(doc_tokens)
+
+    cache = MagicMock()
+    cache.get.return_value = None  # force a miss so the write path is reached
+
+    merged = HybridQueryResult(
+        sql_answer="rows",
+        sql_table=None,
+        document_answer="excerpts",
+        citations=[],
+        merged_answer="EMEA billed 120 and APAC 80.",
+    )
+
+    async def _run() -> None:
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                return_value=cache,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
+                return_value=IntentClassificationResult(
+                    intent=IntentType.hybrid, confidence=0.95, reasoning="Mock."
+                ),
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.aresolve_followup",
+                return_value=MagicMock(resolved="Who bought what?"),
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                return_value=sql_instance,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator",
+                return_value=doc_instance,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.merge_results",
+                return_value=merged,
+            ),
+        ):
+            orch = MultiAgentOrchestrator()
+            async for _ in orch.handle_question(
+                "Who bought what?", "agent1", available_types=["sql", "document", "hybrid"]
+            ):
+                pass
+            await drain_background_tasks()
+
+    asyncio.run(_run())
+    return cache
+
+
+def test_a_hybrid_answer_built_from_live_rows_is_not_cached() -> None:
+    """The regression this change would otherwise introduce.
+
+    A hybrid entry holds the merged prose and nothing else, and a hit replays it
+    verbatim for the whole TTL with no re-execution. That was harmless while the
+    prose was synthesised from the statement text; now that it is synthesised
+    from executed rows, a semantically similar question hours later would be
+    answered with figures from the first run, stated as current.
+    """
+    cache = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=_table()))])
+    cache.put.assert_not_called()
+
+
+def test_a_hybrid_answer_that_executed_nothing_is_still_cached() -> None:
+    """The other half, or the fix would be "stop caching hybrid answers".
+
+    Generate-only mode, a refused execution and a failed validation all produce
+    prose synthesised from the statement text alone. It carries no figures, so
+    it cannot go stale, and those are the answers the cache was helping.
+    """
+    cache = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=None))])
+    cache.put.assert_called_once()
+
+
+def test_an_execution_error_does_not_count_as_live_data() -> None:
+    """`sql_table` is `{"error": ...}` with no columns when the connector raised.
+
+    No figures reached the prose, so the entry is cacheable by the same
+    reasoning -- and this is the branch that is easiest to get wrong, since the
+    table is present but holds nothing.
+    """
+    cache = _drive_hybrid(
+        ["Answering.", json.dumps(_payload(sql_table={"error": "connection refused"}))]
+    )
+    cache.put.assert_called_once()

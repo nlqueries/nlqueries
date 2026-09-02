@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 from nlqueries.connectors.base import QueryResult
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
-from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
+from nlqueries.orchestrator.result_merger import HybridQueryResult, _format_sql_table, merge_results
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -365,3 +366,58 @@ class TestResultMergerExtra:
         """merge_results always returns a HybridQueryResult."""
         result = merge_results(question="Q", sql_result=None, document_result=None)
         assert isinstance(result, HybridQueryResult)
+
+
+# ---------------------------------------------------------------------------
+# The 20-row cap has to announce itself (#174 review)
+# ---------------------------------------------------------------------------
+
+
+def _result(n_rows: int, *, row_count: int | None = None, truncated: bool = False) -> QueryResult:
+    return QueryResult(
+        columns=["region", "revenue"],
+        rows=[[f"r{i}", i] for i in range(n_rows)],
+        row_count=row_count if row_count is not None else n_rows,
+        execution_time_ms=1.0,
+        error=None,
+        truncated=truncated,
+    )
+
+
+def test_a_capped_table_says_how_much_it_is_showing() -> None:
+    """The synthesis model is asked to describe this table and has no other way
+    to tell a complete answer from a fragment, so it would take a total over the
+    first twenty rows and present it as the answer.
+
+    This cap never bit until the hybrid path began carrying executed rows: the
+    table it rendered was one cell holding the statement text.
+    """
+    rendered = _format_sql_table(_result(50))
+    assert "showing the first 20 of 50 rows" in rendered
+    # Matched on the row shape, not on a prefix: "| region | revenue |" also
+    # starts with "| r", so a substring count reports 22 and reads as a pass
+    # that happens to be off by the width of the header.
+    body = [ln for ln in rendered.splitlines() if re.match(r"^\| r\d+ \|", ln)]
+    assert len(body) == 20
+
+
+def test_a_whole_table_is_not_labelled_a_fragment() -> None:
+    """Canary. A note on a complete answer would train the reader to ignore it."""
+    rendered = _format_sql_table(_result(3))
+    assert "showing the first" not in rendered
+    assert "stopped short" not in rendered
+
+
+def test_a_result_truncated_upstream_is_reported_as_a_fragment() -> None:
+    """`row_count` is the true total and stays so when `rows` was capped by the
+    connector, so the note quotes it -- len(rows) would report the size of the
+    fragment as the size of the answer."""
+    rendered = _format_sql_table(_result(20, row_count=8000, truncated=True))
+    assert "showing the first 20 of 8000 rows" in rendered
+
+
+def test_a_truncated_result_that_cannot_say_its_total_still_says_it_stopped() -> None:
+    """A connector that truncated without adjusting `row_count` leaves the total
+    unknown. Saying it stopped short still beats implying completeness."""
+    rendered = _format_sql_table(_result(20, row_count=20, truncated=True))
+    assert "stopped short" in rendered
