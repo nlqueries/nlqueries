@@ -173,12 +173,16 @@ def _chunk_payload(sql_table: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _drive_hybrid(sql_tokens: list[str]) -> MagicMock:
-    """Run one hybrid turn with *sql_tokens* and return the cache mock.
+def _drive_hybrid(sql_tokens: list[str]) -> tuple[MagicMock, list[str]]:
+    """Run one hybrid turn with *sql_tokens*; return the cache mock and tokens.
 
     The hybrid entry stores the merged answer alone, and a hit replays it for
     the whole TTL with no re-execution -- unlike the SQL branch, which re-runs
     its stored statement precisely because stored prose cannot carry fresh rows.
+
+    The emitted tokens come back too, so the tests about what the frame carries
+    and the tests about what may be cached read the same run rather than two
+    slightly different ones.
     """
     from nlqueries.orchestrator.multi_agent_orchestrator import (
         MultiAgentOrchestrator,
@@ -205,10 +209,15 @@ def _drive_hybrid(sql_tokens: list[str]) -> MagicMock:
 
     cache = MagicMock()
     cache.get.return_value = None  # force a miss so the write path is reached
+    emitted: list[str] = []
 
     merged = HybridQueryResult(
         sql_answer="rows",
-        sql_table=None,
+        # The real extraction rather than None, so the frame this driver
+        # produces carries the table the live path would put on it. A mock that
+        # returns nothing here makes every assertion about `sql_table` an
+        # assertion about the mock.
+        sql_table=_extract_sql_query_result(sql_tokens),
         document_answer="excerpts",
         citations=[],
         merged_answer="EMEA billed 120 and APAC 80.",
@@ -244,14 +253,14 @@ def _drive_hybrid(sql_tokens: list[str]) -> MagicMock:
             ),
         ):
             orch = MultiAgentOrchestrator()
-            async for _ in orch.handle_question(
+            async for token in orch.handle_question(
                 "Who bought what?", "agent1", available_types=["sql", "document", "hybrid"]
             ):
-                pass
+                emitted.append(token)
             await drain_background_tasks()
 
     asyncio.run(_run())
-    return cache
+    return cache, emitted
 
 
 def test_a_hybrid_answer_built_from_live_rows_is_not_cached() -> None:
@@ -263,7 +272,7 @@ def test_a_hybrid_answer_built_from_live_rows_is_not_cached() -> None:
     from executed rows, a semantically similar question hours later would be
     answered with figures from the first run, stated as current.
     """
-    cache = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=_table()))])
+    cache, _ = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=_table()))])
     cache.put.assert_not_called()
 
 
@@ -274,7 +283,7 @@ def test_a_hybrid_answer_that_executed_nothing_is_still_cached() -> None:
     prose synthesised from the statement text alone. It carries no figures, so
     it cannot go stale, and those are the answers the cache was helping.
     """
-    cache = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=None))])
+    cache, _ = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=None))])
     cache.put.assert_called_once()
 
 
@@ -285,7 +294,57 @@ def test_an_execution_error_does_not_count_as_live_data() -> None:
     reasoning -- and this is the branch that is easiest to get wrong, since the
     table is present but holds nothing.
     """
-    cache = _drive_hybrid(
+    cache, _ = _drive_hybrid(
         ["Answering.", json.dumps(_payload(sql_table={"error": "connection refused"}))]
     )
     cache.put.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# The statement has to stay reachable on the frame
+# ---------------------------------------------------------------------------
+
+
+def _hybrid_chunk(emitted: list[str]) -> dict[str, Any]:
+    for token in reversed(emitted):
+        try:
+            parsed = json.loads(token)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == "hybrid":
+            return parsed
+    raise AssertionError("no hybrid chunk was emitted")
+
+
+def test_the_hybrid_frame_carries_the_statement_it_answered_from() -> None:
+    """Returning the executed table took the statement off the frame.
+
+    It used to be recoverable from `sql_table`, whose single cell held the
+    statement text. Showing the executed rows instead is the right answer for
+    what a hybrid answer displays, and it removed the only route to the
+    statement at the same time -- so a consumer that scope-checks or audits the
+    query has nothing to read, while the frame now carries real rows.
+    """
+    _, emitted = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=_table()))])
+    chunk = _hybrid_chunk(emitted)
+
+    assert chunk["sql"] == "SELECT region, revenue FROM sales"
+    # And the table is still the executed one, not the statement again.
+    assert chunk["sql_table"]["columns"] == ["region", "revenue"]
+
+
+def test_the_statement_is_on_the_frame_even_when_nothing_executed() -> None:
+    """Generate-only, a refused execution and a failed validation all reach
+    here, and the statement is exactly what those answers are about."""
+    _, emitted = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=None))])
+    assert _hybrid_chunk(emitted)["sql"] == "SELECT region, revenue FROM sales"
+
+
+def test_a_hybrid_frame_with_no_statement_says_so_rather_than_omitting_the_key() -> None:
+    """`None`, not a missing key: a consumer reading `frame.get("sql")` cannot
+    tell an absent key from an older core that never sent one, and the two call
+    for different handling -- one is "no statement", the other "unknown"."""
+    _, emitted = _drive_hybrid(["Answering.", json.dumps({"type": "citations", "citations": []})])
+    chunk = _hybrid_chunk(emitted)
+    assert "sql" in chunk
+    assert chunk["sql"] is None
