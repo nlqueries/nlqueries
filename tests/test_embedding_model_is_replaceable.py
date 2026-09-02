@@ -216,17 +216,73 @@ def test_a_daemon_running_another_model_is_not_trusted() -> None:
     from nlqueries.embeddings import embedder
 
     _reset_daemon_check(embedder)
-    with patch.object(embedder, "_daemon_get", return_value={"model": "other-model"}):
-        with pytest.raises(embedder.EmbeddingServiceUnavailable) as raised:
-            embedder._require_daemon_model_agreement()
-        assert raised.value.reason == embedder.MISMATCHED
+    with patch.object(embedder, "_daemon_get", return_value={"model": "other-model"}) as probe:
+        for _ in range(3):
+            with pytest.raises(embedder.EmbeddingServiceUnavailable) as raised:
+                embedder._require_daemon_model_agreement()
+            assert raised.value.reason == embedder.MISMATCHED
         assert "other-model" in str(raised.value)
+        # Re-asked every time rather than remembered, which is what makes the
+        # recovery below possible. This is the degraded path already, so the
+        # extra request costs nothing that matters.
+        assert probe.call_count == 3
+    _reset_daemon_check(embedder)
 
-        # Sticky, and without asking again: the daemon cannot change model
-        # without restarting, and a mismatch that was checked once must not let
-        # the next call through to use it.
+
+def test_a_daemon_restarted_with_the_right_model_is_trusted_again() -> None:
+    """The remedy this reason names is restarting the daemon.
+
+    Remembering the mismatch meant an operator who did exactly that found
+    nothing had changed: with EMBED_SERVER_REQUIRED set every embed kept
+    raising, still telling them to restart the daemon they had just restarted,
+    until the API process was restarted too. The absent case never had that
+    problem, but only because its exception leaves the checked flag false --
+    accidentally right, where this is now deliberate.
+    """
+    from nlqueries.embeddings import embedder
+
+    reported = {"model": "other-model"}
+    _reset_daemon_check(embedder)
+    with patch.object(embedder, "_daemon_get", side_effect=lambda _path: dict(reported)):
         with pytest.raises(embedder.EmbeddingServiceUnavailable):
             embedder._require_daemon_model_agreement()
+
+        reported["model"] = embedder._MODEL_NAME  # the operator restarts the daemon
+        embedder._require_daemon_model_agreement()  # must not raise
+
+        # And having agreed, it goes back to being remembered.
+        embedder._require_daemon_model_agreement()
+    _reset_daemon_check(embedder)
+
+
+def test_a_reply_that_is_not_an_object_falls_back_instead_of_raising() -> None:
+    """Something other than the daemon bound to this port.
+
+    `_daemon_send` exists to turn every failure into the one exception the
+    callers catch. Returning the body unexamined for a keyless read left
+    `.get(...)` outside that protection, so valid JSON that is not an object
+    raised AttributeError straight past `except EmbeddingServiceUnavailable` --
+    where the same process already translated a malformed POST reply and
+    carried on.
+    """
+    from nlqueries.embeddings import embedder
+
+    class _Reply:
+        def read(self) -> bytes:
+            return b"[1, 2, 3]"
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_exc: Any) -> bool:
+            return False
+
+    _reset_daemon_check(embedder)
+    with (
+        patch.object(embedder.urllib.request, "urlopen", return_value=_Reply()),
+        pytest.raises(embedder.EmbeddingServiceUnavailable),
+    ):
+        embedder._require_daemon_model_agreement()
     _reset_daemon_check(embedder)
 
 
@@ -289,3 +345,46 @@ def test_a_refused_model_is_not_loaded_again_on_every_call() -> None:
         assert loads == 1, f"the model was constructed {loads} times to be refused each time"
     finally:
         embedder._model, embedder._model_refusal = saved_model, saved_refusal
+
+
+def test_the_remembered_refusal_is_a_fresh_exception_each_time() -> None:
+    """Re-raising one object appends a frame to its ``__traceback__`` per raise.
+
+    The refusal is a module global and callers such as ``promote_feedback``
+    catch and carry on, so that chain would grow -- and keep every frame it
+    references alive -- for the life of a misconfigured process. A slow leak, on
+    the one request path this caching was added to protect.
+    """
+    import traceback
+
+    from nlqueries.embeddings import embedder
+
+    class _WrongWidth:
+        def get_embedding_dimension(self) -> int:
+            return config.EMBED_DIMENSIONS + 128
+
+    fake_st = MagicMock()
+    fake_st.SentenceTransformer = lambda _name: _WrongWidth()
+
+    saved_model, saved_refusal = embedder._model, embedder._model_refusal
+    embedder._model, embedder._model_refusal = None, None
+    raised: list[BaseException] = []
+    try:
+        with patch.dict(sys.modules, {"sentence_transformers": fake_st}):
+            for _ in range(4):
+                try:
+                    embedder._get_model()
+                except RuntimeError as exc:
+                    raised.append(exc)
+    finally:
+        embedder._model, embedder._model_refusal = saved_model, saved_refusal
+
+    assert len(raised) == 4
+    assert len({id(exc) for exc in raised}) == 4, "the same exception object was re-raised"
+    depths = [len(traceback.extract_tb(exc.__traceback__)) for exc in raised]
+    # The first raise travels through `check_model_width` and is naturally the
+    # deeper one. The property is that the repeats do not *accumulate*: with a
+    # single object re-raised, every raise appended a frame and these climbed.
+    repeats = depths[1:]
+    assert len(set(repeats)) == 1, f"traceback depth grew across raises: {depths}"
+    assert max(repeats) <= depths[0], f"a repeat was deeper than the original: {depths}"

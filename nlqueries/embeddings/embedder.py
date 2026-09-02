@@ -49,7 +49,14 @@ _daemon_model_mismatch: str | None = None
 
 #: The width refusal, once raised, so it costs one model load rather than one
 #: per call. See `_get_model`.
-_model_refusal: Exception | None = None
+#:
+#: The message rather than the exception: re-raising one object appends a frame
+#: to its ``__traceback__`` on every raise, and callers such as
+#: ``promote_feedback`` catch and carry on, so a module global would grow that
+#: chain -- and keep every frame it references alive -- for the life of a
+#: misconfigured process. A slow leak, on the one request path this caching
+#: exists to protect.
+_model_refusal: str | None = None
 
 # Why the daemon did not answer. The two have different remedies — start it
 # versus give it more room — so the difference is worth carrying rather than
@@ -113,10 +120,18 @@ def _daemon_send(request: urllib.request.Request, key: str | None = None) -> Any
             request, timeout=config.EMBED_CLIENT_TIMEOUT_SECONDS
         ) as response:
             body = _json.loads(response.read())
-            # Indexed inside the try deliberately: a reply missing the key is a
-            # malformed reply, and the clauses below turn it into a failure
-            # rather than letting a KeyError escape the client.
-            return body if key is None else body[key]
+            # Both checks inside the try deliberately, so a malformed reply
+            # becomes an EmbeddingServiceUnavailable like any other failure.
+            # Returning the body unexamined left `.get(...)` at the call site
+            # outside that protection: something other than the daemon bound to
+            # this port, answering with valid JSON that is not an object, raised
+            # AttributeError straight past the caller's `except` instead of
+            # falling back the way a bad POST reply already did.
+            if key is not None:
+                return body[key]
+            if not isinstance(body, dict):
+                raise TypeError(f"expected a JSON object, got {type(body).__name__}")
+            return body
     except urllib.error.HTTPError as exc:
         # It answered, so it exists — it is just not healthy.
         raise EmbeddingServiceUnavailable(FAILING, f"HTTP {exc.code}") from exc
@@ -180,16 +195,31 @@ def _require_daemon_model_agreement() -> None:
     """
     global _daemon_model_checked, _daemon_model_mismatch  # noqa: PLW0603
 
-    if not _daemon_model_checked:
+    # Agreement is remembered; a mismatch is re-asked.
+    #
+    # The remedy this reason names is restarting the daemon, and remembering a
+    # mismatch meant an operator who did exactly that found nothing had changed
+    # -- with EMBED_SERVER_REQUIRED set, every embed kept raising, still telling
+    # them to restart the daemon they had just restarted, until the API process
+    # was restarted too. The absent case never had that problem, but only
+    # because its exception leaves the flag false; this makes the mismatch
+    # deliberate rather than accidental in the same way.
+    #
+    # The extra GET lands only on the degraded path, where every embed is either
+    # being done in-process or refused outright, so it costs nothing that
+    # matters. Agreement stays cached because that is the hot path, and a daemon
+    # cannot change its model without a restart -- which this would then see.
+    if not _daemon_model_checked or _daemon_model_mismatch:
         reported = _daemon_get("/healthz").get("model")
         _daemon_model_checked = True
         # An older daemon reports no model at all. Treated as agreement: it
         # cannot be compared, and refusing every such daemon would break a
         # rolling upgrade to gain nothing this process is able to verify.
-        if reported and reported != _MODEL_NAME:
-            _daemon_model_mismatch = (
-                f"loaded {reported!r} while this process expects {_MODEL_NAME!r}"
-            )
+        _daemon_model_mismatch = (
+            f"loaded {reported!r} while this process expects {_MODEL_NAME!r}"
+            if reported and reported != _MODEL_NAME
+            else None
+        )
 
     if _daemon_model_mismatch:
         raise EmbeddingServiceUnavailable(MISMATCHED, _daemon_model_mismatch)
@@ -266,7 +296,9 @@ def _get_model() -> SentenceTransformer:
         # Callers such as `promote_feedback` and the semantic cache catch and
         # carry on, which turned a misconfiguration into a full model load per
         # request rather than one visible failure.
-        raise _model_refusal
+        #
+        # A fresh exception from the stored message, not the original object.
+        raise RuntimeError(_model_refusal)
     if _model is None:
         from sentence_transformers import SentenceTransformer  # deferred — heavy import
 
@@ -274,7 +306,7 @@ def _get_model() -> SentenceTransformer:
         try:
             check_model_width(loaded, _MODEL_NAME)
         except RuntimeError as exc:
-            _model_refusal = exc
+            _model_refusal = str(exc)
             raise
         _model = loaded
     return _model
