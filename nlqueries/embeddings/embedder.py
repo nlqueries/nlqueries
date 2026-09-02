@@ -158,7 +158,21 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
     The fallback used to be silent, which is how a deployment could spend weeks
     loading torch models into its request path without anyone knowing. It is a
     warning now whether or not it is fatal.
+
+    Also invalidates the model check, because any failure may be a daemon that
+    is going away and will come back on a different model. See
+    `_require_daemon_model_agreement`.
     """
+    global _daemon_model_checked  # noqa: PLW0603
+
+    # A daemon that failed may be restarting, and it may come back on another
+    # model. The embeds during its downtime raise ABSENT from `_daemon_post`
+    # without ever reaching /healthz, so without this the first call afterwards
+    # is trusted on an answer given before the restart -- the same silent
+    # corruption the check exists to prevent, with the restarts in the other
+    # order. One extra /healthz after a failure; the hot path is untouched.
+    _daemon_model_checked = False
+
     if config.EMBED_SERVER_REQUIRED:
         raise exc
     logger.warning(
@@ -207,8 +221,21 @@ def _require_daemon_model_agreement() -> None:
     #
     # The extra GET lands only on the degraded path, where every embed is either
     # being done in-process or refused outright, so it costs nothing that
-    # matters. Agreement stays cached because that is the hot path, and a daemon
-    # cannot change its model without a restart -- which this would then see.
+    # matters. Agreement stays cached, because that is the hot path.
+    #
+    # Not cached for the life of the process, though: `_fall_back_or_raise`
+    # clears the flag on any daemon failure, so a daemon that goes away and
+    # returns on a different model is re-checked. An earlier version of this
+    # comment claimed a restart would be seen without that, which was wrong --
+    # the embeds during the downtime raise ABSENT from `_daemon_post` and never
+    # reach here at all.
+    #
+    # One window is left, and stating it is better than implying it is closed: a
+    # daemon that restarts onto another model without a single embed being
+    # attempted while it is down keeps its agreement. Nothing embedded through
+    # the old model in that interval either, so the exposure begins at the next
+    # call rather than earlier; closing it entirely needs a periodic re-check
+    # rather than an event-driven one.
     if not _daemon_model_checked or _daemon_model_mismatch:
         reported = _daemon_get("/healthz").get("model")
         _daemon_model_checked = True

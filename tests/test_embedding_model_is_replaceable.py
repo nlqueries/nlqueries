@@ -96,18 +96,24 @@ def test_the_default_is_unchanged_and_the_override_is_honoured(
 ) -> None:
     """Default must not move: an existing deployment's collections were built
     with it, so a changed default would silently invalidate them."""
-    monkeypatch.delenv("NLQ_EMBED_MODEL", raising=False)
-    reloaded: Any = importlib.reload(config)
-    assert reloaded.EMBED_MODEL == "all-MiniLM-L6-v2"
+    # try/finally, because this reloads a module every other test reads. The
+    # restoring reload used to sit at the end of the happy path, so a failed
+    # assertion left `config.EMBED_MODEL` at "/models/pinned-copy" for the rest
+    # of the session and turned one real failure into a cascade of unrelated
+    # ones -- the kind that hides which assertion actually broke.
+    try:
+        monkeypatch.delenv("NLQ_EMBED_MODEL", raising=False)
+        reloaded: Any = importlib.reload(config)
+        assert reloaded.EMBED_MODEL == "all-MiniLM-L6-v2"
 
-    monkeypatch.setenv("NLQ_EMBED_MODEL", "/models/pinned-copy")
-    reloaded = importlib.reload(config)
-    assert reloaded.EMBED_MODEL == "/models/pinned-copy", (
-        "a filesystem path is the point: it is how a baked image's weights get replaced"
-    )
-
-    monkeypatch.delenv("NLQ_EMBED_MODEL", raising=False)
-    importlib.reload(config)
+        monkeypatch.setenv("NLQ_EMBED_MODEL", "/models/pinned-copy")
+        reloaded = importlib.reload(config)
+        assert reloaded.EMBED_MODEL == "/models/pinned-copy", (
+            "a filesystem path is the point: it is how a baked image's weights get replaced"
+        )
+    finally:
+        monkeypatch.delenv("NLQ_EMBED_MODEL", raising=False)
+        importlib.reload(config)
 
 
 def test_every_store_is_built_for_the_width_the_model_produces() -> None:
@@ -251,6 +257,43 @@ def test_a_daemon_restarted_with_the_right_model_is_trusted_again() -> None:
         embedder._require_daemon_model_agreement()  # must not raise
 
         # And having agreed, it goes back to being remembered.
+        embedder._require_daemon_model_agreement()
+    _reset_daemon_check(embedder)
+
+
+def test_a_daemon_failure_makes_the_model_check_happen_again() -> None:
+    """The mirror of the scenario the check exists for.
+
+    Agreement was cached for the life of the process, so a daemon restarted onto
+    a different model *after* the first successful check was trusted forever: an
+    operator who changes NLQ_EMBED_MODEL and restarts the daemon before the API
+    workers gets vectors from the new model written into collections built for
+    the old one, with nothing raised.
+
+    The restart is not visible here on its own -- the embeds during the downtime
+    raise ABSENT out of `_daemon_post` without ever reaching /healthz -- so the
+    failure path is what has to invalidate it.
+    """
+    from nlqueries.embeddings import embedder
+
+    _reset_daemon_check(embedder)
+    with patch.object(embedder, "_daemon_get", return_value={"model": embedder._MODEL_NAME}):
+        embedder._require_daemon_model_agreement()
+    assert embedder._daemon_model_checked is True
+
+    # The daemon goes away. Any embed in that window lands here.
+    with patch.object(embedder.config, "EMBED_SERVER_REQUIRED", False):
+        embedder._fall_back_or_raise(embedder.EmbeddingServiceUnavailable(embedder.ABSENT, "gone"))
+    assert embedder._daemon_model_checked is False, (
+        "a daemon failure left the previous agreement standing, so a restart onto "
+        "another model would be trusted"
+    )
+
+    # It comes back on a different model, and is refused rather than trusted.
+    with (
+        patch.object(embedder, "_daemon_get", return_value={"model": "a-different-model"}),
+        pytest.raises(embedder.EmbeddingServiceUnavailable),
+    ):
         embedder._require_daemon_model_agreement()
     _reset_daemon_check(embedder)
 
