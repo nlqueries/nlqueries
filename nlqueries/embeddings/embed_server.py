@@ -261,6 +261,13 @@ class _EmbedHandler(BaseHTTPRequestHandler):
     # caller constructs the handler itself — the legacy path.
     gate: _Gate | None = None
     backend: str = "unknown"
+    #: The model this daemon loaded, reported by ``/healthz``.
+    #:
+    #: Distinct from ``model`` above, which is a model *object* on the
+    #: legacy path. Single-sourcing ``EMBED_MODEL`` makes the name agree
+    #: within a process; this is how a *different* process can find out,
+    #: and the client compares it once before trusting any vector.
+    model_name: str | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         """Report liveness and how busy the daemon is.
@@ -281,6 +288,10 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             {
                 "status": "ok",
                 "backend": self.__class__.backend,
+                # So a client can refuse vectors from a model other than the
+                # one its collections were built with. A per-process constant
+                # cannot reach across the socket; this can.
+                "model": self.__class__.model_name,
                 "inflight": gate.inflight if gate else 0,
                 "max_concurrency": gate.limit if gate else None,
             }
@@ -454,6 +465,7 @@ def build_server(
     *,
     encoder: Callable[[list[str]], list[list[float]]] | None = None,
     model: Any = None,
+    model_name: str | None = None,
     max_concurrency: int | None = None,
     backend: str = "unknown",
 ) -> _ThreadingEmbedServer:
@@ -470,6 +482,7 @@ def build_server(
         {
             "encoder": staticmethod(encoder) if encoder is not None else None,
             "model": model,
+            "model_name": model_name,
             "gate": _Gate(limit),
             "backend": backend,
         },
@@ -524,9 +537,11 @@ def serve(port: int = _DEFAULT_PORT, backend: str | None = None) -> None:
             _apply_torch_thread_limit()
         encoder = _load_encoder(backend)
 
-        server = build_server(port, encoder=encoder, backend=backend)
+        server = build_server(port, encoder=encoder, model_name=_MODEL_NAME, backend=backend)
         logger.info(
-            "Embedding backend ready. Listening on localhost:%d, up to %d concurrent encodes",
+            "Embedding backend ready with model %s. Listening on localhost:%d, "
+            "up to %d concurrent encodes",
+            _MODEL_NAME,
             port,
             config.EMBED_SERVER_MAX_CONCURRENCY,
         )

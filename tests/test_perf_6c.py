@@ -350,6 +350,41 @@ class TestLoadOnnxEncoder:
         norm = np.linalg.norm(result[0])
         assert abs(norm - 1.0) < 1e-5
 
+    def test_a_wrong_width_model_is_refused_through_the_onnx_backend(self) -> None:
+        """The ONNX guard is a second, independently written copy of the rule.
+
+        The two backends share no code here -- the torch path asks the model its
+        width, and an ORT model does not expose one, so this measures a probe
+        vector -- so the torch tests give this branch no cover at all. Every
+        other test in this class takes the passing branch, because
+        `_make_ort_mocks` defaults to 384.
+        """
+        import pytest
+        from nlqueries import config
+        from nlqueries.embeddings.embed_server import _load_onnx_encoder
+
+        _, _, mock_optimum_onnxruntime, mock_transformers = _make_ort_mocks(hidden=768)
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "optimum": MagicMock(onnxruntime=mock_optimum_onnxruntime),
+                    "optimum.onnxruntime": mock_optimum_onnxruntime,
+                    "transformers": mock_transformers,
+                },
+            ),
+            pytest.raises(RuntimeError) as raised,
+        ):
+            _load_onnx_encoder()
+
+        message = str(raised.value)
+        # Both widths and the model name: at this point the name is the only
+        # thing that tells an operator which knob they turned.
+        assert "768" in message
+        assert str(config.EMBED_DIMENSIONS) in message
+        assert "ONNX" in message
+
     def test_load_encoder_dispatches_onnx_backend(self) -> None:
         from nlqueries.embeddings.embed_server import _load_encoder
 

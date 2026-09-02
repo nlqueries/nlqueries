@@ -15,7 +15,9 @@ of the offending model is still in hand.
 from __future__ import annotations
 
 import importlib
+import sys
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from nlqueries import config
@@ -149,3 +151,141 @@ def test_no_module_states_the_vector_width_for_itself() -> None:
     assert not stray, (
         "the embedding width is stated outside config.EMBED_DIMENSIONS:\n  " + "\n  ".join(stray)
     )
+
+
+# ---------------------------------------------------------------------------
+# The cross-process half of the property (#175 review)
+# ---------------------------------------------------------------------------
+
+
+def _reset_daemon_check(embedder: Any) -> None:
+    embedder._daemon_model_checked = False
+    embedder._daemon_model_mismatch = None
+
+
+def test_the_daemon_reports_its_model_over_healthz() -> None:
+    """Asserted on the HTTP response, not on the handler attribute.
+
+    The first version of this test checked that `build_server` stored the name,
+    which is not the property that matters: deleting the line that puts it in
+    the `/healthz` body left the attribute set and the test green, so the guard
+    passed over the exact thing it was written for. `/healthz` is the only
+    channel by which another process can learn this, so the response is what
+    has to carry it.
+    """
+    import json as _json
+    import socket
+    import threading
+    import time
+    import urllib.request
+
+    from nlqueries.embeddings.embed_server import build_server
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    server = build_server(
+        port,
+        encoder=lambda texts: [[0.0] * config.EMBED_DIMENSIONS for _ in texts],
+        model_name="some-pinned-model",
+        backend="torch",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as response:
+            body = _json.loads(response.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert body["model"] == "some-pinned-model"
+
+
+def test_a_daemon_running_another_model_is_not_trusted() -> None:
+    """The failure a per-process constant cannot reach.
+
+    Single-sourcing the name makes the embedder and the daemon agree inside one
+    process. The daemon is a separate one, and an operator who changes
+    NLQ_EMBED_MODEL and restarts only the API gets vectors from one model read
+    back against a collection built by another -- with nothing raised, and
+    invisible to `check_model_width`, because both models may be 384 wide.
+    """
+    from nlqueries.embeddings import embedder
+
+    _reset_daemon_check(embedder)
+    with patch.object(embedder, "_daemon_get", return_value={"model": "other-model"}):
+        with pytest.raises(embedder.EmbeddingServiceUnavailable) as raised:
+            embedder._require_daemon_model_agreement()
+        assert raised.value.reason == embedder.MISMATCHED
+        assert "other-model" in str(raised.value)
+
+        # Sticky, and without asking again: the daemon cannot change model
+        # without restarting, and a mismatch that was checked once must not let
+        # the next call through to use it.
+        with pytest.raises(embedder.EmbeddingServiceUnavailable):
+            embedder._require_daemon_model_agreement()
+    _reset_daemon_check(embedder)
+
+
+def test_a_matching_daemon_is_asked_once_and_then_trusted() -> None:
+    """The cost of the check has to be one request, not one per embed."""
+    from nlqueries.embeddings import embedder
+
+    _reset_daemon_check(embedder)
+    with patch.object(
+        embedder, "_daemon_get", return_value={"model": embedder._MODEL_NAME}
+    ) as probe:
+        for _ in range(5):
+            embedder._require_daemon_model_agreement()  # must not raise
+        assert probe.call_count == 1
+    _reset_daemon_check(embedder)
+
+
+def test_a_daemon_that_does_not_say_is_treated_as_agreeing() -> None:
+    """An older daemon reports no model at all. Refusing every one of those
+    would break a rolling upgrade to gain nothing this process can verify."""
+    from nlqueries.embeddings import embedder
+
+    _reset_daemon_check(embedder)
+    with patch.object(embedder, "_daemon_get", return_value={"status": "ok"}):
+        embedder._require_daemon_model_agreement()  # must not raise
+    _reset_daemon_check(embedder)
+
+
+def test_a_refused_model_is_not_loaded_again_on_every_call() -> None:
+    """`_model` is assigned only after the width check passes, so a mis-sized
+    model meant a fresh SentenceTransformer -- seconds, and about a gigabyte --
+    constructed per call in order to reject it again. Callers such as
+    `promote_feedback` and the semantic cache catch and carry on, so a
+    misconfiguration degraded into repeated loads on the request path instead of
+    one visible failure.
+    """
+    from nlqueries.embeddings import embedder
+
+    class _WrongWidth:
+        def get_embedding_dimension(self) -> int:
+            return config.EMBED_DIMENSIONS + 128
+
+    loads = 0
+
+    def _construct(_name: str) -> _WrongWidth:
+        nonlocal loads
+        loads += 1
+        return _WrongWidth()
+
+    fake_st = MagicMock()
+    fake_st.SentenceTransformer = _construct
+
+    saved_model, saved_refusal = embedder._model, embedder._model_refusal
+    embedder._model, embedder._model_refusal = None, None
+    try:
+        with patch.dict(sys.modules, {"sentence_transformers": fake_st}):
+            for _ in range(4):
+                with pytest.raises(RuntimeError):
+                    embedder._get_model()
+        assert loads == 1, f"the model was constructed {loads} times to be refused each time"
+    finally:
+        embedder._model, embedder._model_refusal = saved_model, saved_refusal
