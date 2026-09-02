@@ -52,7 +52,10 @@ from typing import Any, cast
 
 from nlqueries import config
 
-_MODEL_NAME = "all-MiniLM-L6-v2"
+#: One declaration, in config. The daemon and the in-process embedder must
+#: agree: vectors written through one are read back through the other, and a
+#: divergence returns wrong neighbours rather than raising anything.
+_MODEL_NAME = config.EMBED_MODEL
 _DEFAULT_PORT = 8765
 #: Under `config.STATE_DIR` rather than a hardcoded home directory. A read-only
 #: root filesystem left this with nowhere to go, so the server died at startup
@@ -137,6 +140,11 @@ def _load_torch_encoder() -> Callable[[list[str]], list[list[float]]]:
     from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
     model = SentenceTransformer(_MODEL_NAME)
+    # The daemon is the path that populates the caches, so a mis-sized model
+    # must not get past this point -- see embedder.check_model_width.
+    from nlqueries.embeddings.embedder import check_model_width  # noqa: PLC0415
+
+    check_model_width(model, _MODEL_NAME)
 
     def _encode(texts: list[str]) -> list[list[float]]:
         return cast(list[list[float]], model.encode(texts, normalize_embeddings=True).tolist())
@@ -160,6 +168,19 @@ def _load_onnx_encoder() -> Callable[[list[str]], list[list[float]]]:
         inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="np")
         outputs = ort_model(**inputs)
         return _mean_pool_normalize(outputs.last_hidden_state, inputs["attention_mask"])
+
+    # The torch path asks the model its width; an ORT model does not expose one,
+    # so this measures a vector instead. Same purpose, once, at load: a mis-sized
+    # model must not reach the caches, and this is the last point where the name
+    # that caused it is still to hand.
+    probe = _encode(["width probe"])
+    if probe and len(probe[0]) != config.EMBED_DIMENSIONS:
+        raise RuntimeError(
+            f"embedding model {_MODEL_NAME!r} produces {len(probe[0])}-dimension vectors "
+            f"through the ONNX backend, but this deployment's caches and collections "
+            f"are built for {config.EMBED_DIMENSIONS}. Point NLQ_EMBED_MODEL at a model "
+            "of the same width, or rebuild the vector stores for the new one."
+        )
 
     return _encode
 
@@ -240,6 +261,13 @@ class _EmbedHandler(BaseHTTPRequestHandler):
     # caller constructs the handler itself — the legacy path.
     gate: _Gate | None = None
     backend: str = "unknown"
+    #: The model this daemon loaded, reported by ``/healthz``.
+    #:
+    #: Distinct from ``model`` above, which is a model *object* on the
+    #: legacy path. Single-sourcing ``EMBED_MODEL`` makes the name agree
+    #: within a process; this is how a *different* process can find out,
+    #: and the client compares it once before trusting any vector.
+    model_name: str | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         """Report liveness and how busy the daemon is.
@@ -260,6 +288,10 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             {
                 "status": "ok",
                 "backend": self.__class__.backend,
+                # So a client can refuse vectors from a model other than the
+                # one its collections were built with. A per-process constant
+                # cannot reach across the socket; this can.
+                "model": self.__class__.model_name,
                 "inflight": gate.inflight if gate else 0,
                 "max_concurrency": gate.limit if gate else None,
             }
@@ -433,6 +465,7 @@ def build_server(
     *,
     encoder: Callable[[list[str]], list[list[float]]] | None = None,
     model: Any = None,
+    model_name: str | None = None,
     max_concurrency: int | None = None,
     backend: str = "unknown",
 ) -> _ThreadingEmbedServer:
@@ -449,6 +482,7 @@ def build_server(
         {
             "encoder": staticmethod(encoder) if encoder is not None else None,
             "model": model,
+            "model_name": model_name,
             "gate": _Gate(limit),
             "backend": backend,
         },
@@ -503,9 +537,11 @@ def serve(port: int = _DEFAULT_PORT, backend: str | None = None) -> None:
             _apply_torch_thread_limit()
         encoder = _load_encoder(backend)
 
-        server = build_server(port, encoder=encoder, backend=backend)
+        server = build_server(port, encoder=encoder, model_name=_MODEL_NAME, backend=backend)
         logger.info(
-            "Embedding backend ready. Listening on localhost:%d, up to %d concurrent encodes",
+            "Embedding backend ready with model %s. Listening on localhost:%d, "
+            "up to %d concurrent encodes",
+            _MODEL_NAME,
             port,
             config.EMBED_SERVER_MAX_CONCURRENCY,
         )

@@ -23,13 +23,15 @@ import logging
 import re
 from typing import Any
 
+from nlqueries import config
+
 _log = logging.getLogger(__name__)
 
 _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_\-]")
 
 VERIFIED_COLLECTION_PREFIX = "agent_"
 VERIFIED_COLLECTION_SUFFIX = "_verified"
-VERIFIED_VECTOR_SIZE = 384
+VERIFIED_VECTOR_SIZE = config.EMBED_DIMENSIONS  # the embedding model's width
 
 
 def _safe_agent_id(agent_id: str) -> str:

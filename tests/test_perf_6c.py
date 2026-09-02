@@ -350,6 +350,41 @@ class TestLoadOnnxEncoder:
         norm = np.linalg.norm(result[0])
         assert abs(norm - 1.0) < 1e-5
 
+    def test_a_wrong_width_model_is_refused_through_the_onnx_backend(self) -> None:
+        """The ONNX guard is a second, independently written copy of the rule.
+
+        The two backends share no code here -- the torch path asks the model its
+        width, and an ORT model does not expose one, so this measures a probe
+        vector -- so the torch tests give this branch no cover at all. Every
+        other test in this class takes the passing branch, because
+        `_make_ort_mocks` defaults to 384.
+        """
+        import pytest
+        from nlqueries import config
+        from nlqueries.embeddings.embed_server import _load_onnx_encoder
+
+        _, _, mock_optimum_onnxruntime, mock_transformers = _make_ort_mocks(hidden=768)
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "optimum": MagicMock(onnxruntime=mock_optimum_onnxruntime),
+                    "optimum.onnxruntime": mock_optimum_onnxruntime,
+                    "transformers": mock_transformers,
+                },
+            ),
+            pytest.raises(RuntimeError) as raised,
+        ):
+            _load_onnx_encoder()
+
+        message = str(raised.value)
+        # Both widths and the model name: at this point the name is the only
+        # thing that tells an operator which knob they turned.
+        assert "768" in message
+        assert str(config.EMBED_DIMENSIONS) in message
+        assert "ONNX" in message
+
     def test_load_encoder_dispatches_onnx_backend(self) -> None:
         from nlqueries.embeddings.embed_server import _load_encoder
 
@@ -372,6 +407,16 @@ class TestLoadOnnxEncoder:
 
         mock_st_model = MagicMock()
         mock_st_model.encode.return_value = MagicMock(tolist=lambda: [[0.1] * 384])
+        # The loader checks the model's width before handing back an encoder, so
+        # the mock has to state one. Left unset it returns a MagicMock, which is
+        # neither None nor the expected width, and the check rightly rejects it.
+        #
+        # Both accessors, because `check_model_width` prefers the renamed one and
+        # a bare MagicMock answers to any name: setting only the old one leaves
+        # the check reading an auto-created mock rather than falling back to it.
+        # A real SentenceTransformer of the version this pins against has both.
+        mock_st_model.get_embedding_dimension.return_value = 384
+        mock_st_model.get_sentence_embedding_dimension.return_value = 384
         mock_st = MagicMock()
         mock_st.SentenceTransformer.return_value = mock_st_model
 

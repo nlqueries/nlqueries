@@ -41,6 +41,33 @@ are set, so an existing deployment that overrides ``KB_PATH`` alone is
 unaffected, and the default is the same path it always was.
 """
 
+
+# ---------------------------------------------------------------------------
+# Embedding model
+# ---------------------------------------------------------------------------
+EMBED_MODEL: str = os.getenv("NLQ_EMBED_MODEL", "all-MiniLM-L6-v2")
+"""The sentence-transformers model, by hub name or by local path.
+
+One declaration, because the name was written out twice -- in the in-process
+embedder and in the daemon -- and those two must agree: vectors written by one
+are read back by the other, and a divergence would not raise anything, it would
+just return wrong neighbours.
+
+Overridable so an operator can replace the model without waiting for a release.
+``SentenceTransformer`` accepts a filesystem path, so pointing this at a mounted
+directory swaps the weights in an image that ships them baked. That matters when
+the reason to replace them is a published vulnerability rather than an upgrade.
+"""
+
+EMBED_DIMENSIONS: int = 384
+"""Vector width the stores are built for, and a contract rather than a note.
+
+``CACHE_VECTOR_SIZE`` and the Qdrant collection are created at this width. A
+model of a different width does not fail on its own -- it produces vectors that
+mismatch the collection -- so :mod:`nlqueries.embeddings.embedder` checks the
+loaded model against this and refuses rather than writing them.
+"""
+
 # ---------------------------------------------------------------------------
 # Vector store
 # ---------------------------------------------------------------------------

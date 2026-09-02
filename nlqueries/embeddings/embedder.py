@@ -42,11 +42,31 @@ logger = logging.getLogger(__name__)
 _DAEMON_PORT = int(_os.environ.get("EMBED_SERVER_PORT", "8765"))
 _DAEMON_BASE = f"http://127.0.0.1:{_DAEMON_PORT}"
 
+#: Whether the daemon's model has been compared with this process's, and the
+#: mismatch if there was one. See `_require_daemon_model_agreement`.
+_daemon_model_checked = False
+_daemon_model_mismatch: str | None = None
+
+#: The width refusal, once raised, so it costs one model load rather than one
+#: per call. See `_get_model`.
+#:
+#: The message rather than the exception: re-raising one object appends a frame
+#: to its ``__traceback__`` on every raise, and callers such as
+#: ``promote_feedback`` catch and carry on, so a module global would grow that
+#: chain -- and keep every frame it references alive -- for the life of a
+#: misconfigured process. A slow leak, on the one request path this caching
+#: exists to protect.
+_model_refusal: str | None = None
+
 # Why the daemon did not answer. The two have different remedies — start it
 # versus give it more room — so the difference is worth carrying rather than
 # flattening into "unavailable".
 ABSENT = "absent"  # nothing listening: no daemon on this host
 FAILING = "failing"  # something listening, but it timed out or errored
+#: Answering, and answering with the wrong model. Distinct from both above
+#: because the remedy differs: restart the daemon so it picks up
+#: NLQ_EMBED_MODEL.
+MISMATCHED = "running a different model"
 
 
 class EmbeddingServiceUnavailable(RuntimeError):
@@ -73,16 +93,45 @@ def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:
         EmbeddingServiceUnavailable: always, on failure. Callers decide whether
             to propagate it or fall back, based on EMBED_SERVER_REQUIRED.
     """
-    request = urllib.request.Request(
-        f"{_DAEMON_BASE}{path}",
-        data=_json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+    return _daemon_send(
+        urllib.request.Request(
+            f"{_DAEMON_BASE}{path}",
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        ),
+        key,
     )
+
+
+def _daemon_get(path: str) -> Any:
+    """GET from the daemon, with the same failure translation as a POST."""
+    return _daemon_send(urllib.request.Request(f"{_DAEMON_BASE}{path}"))
+
+
+def _daemon_send(request: urllib.request.Request, key: str | None = None) -> Any:
+    """Send *request* and return its JSON body, or *key* within it.
+
+    Factored out of ``_daemon_post`` so a GET is translated identically: the
+    chain below is what tells a daemon that is absent from one that is failing,
+    and a second copy of it would drift from this one.
+    """
     try:
         with urllib.request.urlopen(
             request, timeout=config.EMBED_CLIENT_TIMEOUT_SECONDS
         ) as response:
-            return _json.loads(response.read())[key]
+            body = _json.loads(response.read())
+            # Both checks inside the try deliberately, so a malformed reply
+            # becomes an EmbeddingServiceUnavailable like any other failure.
+            # Returning the body unexamined left `.get(...)` at the call site
+            # outside that protection: something other than the daemon bound to
+            # this port, answering with valid JSON that is not an object, raised
+            # AttributeError straight past the caller's `except` instead of
+            # falling back the way a bad POST reply already did.
+            if key is not None:
+                return body[key]
+            if not isinstance(body, dict):
+                raise TypeError(f"expected a JSON object, got {type(body).__name__}")
+            return body
     except urllib.error.HTTPError as exc:
         # It answered, so it exists — it is just not healthy.
         raise EmbeddingServiceUnavailable(FAILING, f"HTTP {exc.code}") from exc
@@ -109,7 +158,21 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
     The fallback used to be silent, which is how a deployment could spend weeks
     loading torch models into its request path without anyone knowing. It is a
     warning now whether or not it is fatal.
+
+    Also invalidates the model check, because any failure may be a daemon that
+    is going away and will come back on a different model. See
+    `_require_daemon_model_agreement`.
     """
+    global _daemon_model_checked  # noqa: PLW0603
+
+    # A daemon that failed may be restarting, and it may come back on another
+    # model. The embeds during its downtime raise ABSENT from `_daemon_post`
+    # without ever reaching /healthz, so without this the first call afterwards
+    # is trusted on an answer given before the restart -- the same silent
+    # corruption the check exists to prevent, with the restarts in the other
+    # order. One extra /healthz after a failure; the hot path is untouched.
+    _daemon_model_checked = False
+
     if config.EMBED_SERVER_REQUIRED:
         raise exc
     logger.warning(
@@ -121,9 +184,78 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
     )
 
 
+def _require_daemon_model_agreement() -> None:
+    """Check once that the daemon loaded the model this process expects.
+
+    ``EMBED_MODEL`` is single-sourced, which makes the embedder and the daemon
+    agree *within* one process. The daemon is a separate process and says
+    nothing about which model produced the vectors it returns, so an operator
+    who changes ``NLQ_EMBED_MODEL`` and restarts the API while the daemon keeps
+    running -- or who starts the daemon from an environment where the variable
+    is unset -- gets vectors from one model read back against a collection built
+    by another. Nothing raises, and ``check_model_width`` cannot see it, because
+    both models may well be 384 wide. That is the failure this module was
+    changed to prevent, on the one axis a per-process constant cannot reach.
+
+    Raised as the daemon being unavailable rather than as a fatal error, so the
+    existing policy decides: ``EMBED_SERVER_REQUIRED`` makes it a failure, and
+    otherwise this process embeds in-process with the model it was actually
+    configured with -- slower, and correct.
+
+    Checked once and remembered in both directions: a daemon does not change
+    model without restarting, and a ``/healthz`` per embed would double the
+    request count to learn a fact that cannot have changed. A daemon that is
+    absent leaves this unchecked, so it is checked again when one appears.
+    """
+    global _daemon_model_checked, _daemon_model_mismatch  # noqa: PLW0603
+
+    # Agreement is remembered; a mismatch is re-asked.
+    #
+    # The remedy this reason names is restarting the daemon, and remembering a
+    # mismatch meant an operator who did exactly that found nothing had changed
+    # -- with EMBED_SERVER_REQUIRED set, every embed kept raising, still telling
+    # them to restart the daemon they had just restarted, until the API process
+    # was restarted too. The absent case never had that problem, but only
+    # because its exception leaves the flag false; this makes the mismatch
+    # deliberate rather than accidental in the same way.
+    #
+    # The extra GET lands only on the degraded path, where every embed is either
+    # being done in-process or refused outright, so it costs nothing that
+    # matters. Agreement stays cached, because that is the hot path.
+    #
+    # Not cached for the life of the process, though: `_fall_back_or_raise`
+    # clears the flag on any daemon failure, so a daemon that goes away and
+    # returns on a different model is re-checked. An earlier version of this
+    # comment claimed a restart would be seen without that, which was wrong --
+    # the embeds during the downtime raise ABSENT from `_daemon_post` and never
+    # reach here at all.
+    #
+    # One window is left, and stating it is better than implying it is closed: a
+    # daemon that restarts onto another model without a single embed being
+    # attempted while it is down keeps its agreement. Nothing embedded through
+    # the old model in that interval either, so the exposure begins at the next
+    # call rather than earlier; closing it entirely needs a periodic re-check
+    # rather than an event-driven one.
+    if not _daemon_model_checked or _daemon_model_mismatch:
+        reported = _daemon_get("/healthz").get("model")
+        _daemon_model_checked = True
+        # An older daemon reports no model at all. Treated as agreement: it
+        # cannot be compared, and refusing every such daemon would break a
+        # rolling upgrade to gain nothing this process is able to verify.
+        _daemon_model_mismatch = (
+            f"loaded {reported!r} while this process expects {_MODEL_NAME!r}"
+            if reported and reported != _MODEL_NAME
+            else None
+        )
+
+    if _daemon_model_mismatch:
+        raise EmbeddingServiceUnavailable(MISMATCHED, _daemon_model_mismatch)
+
+
 def _try_daemon_single(text: str) -> list[float] | None:
     """Return the embedding vector from the daemon, or None to fall back."""
     try:
+        _require_daemon_model_agreement()
         return cast(list[float], _daemon_post("/embed", {"text": text}, "vector"))
     except EmbeddingServiceUnavailable as exc:
         _fall_back_or_raise(exc)
@@ -133,6 +265,7 @@ def _try_daemon_single(text: str) -> list[float] | None:
 def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
     """Return batch vectors from the daemon, or None to fall back."""
     try:
+        _require_daemon_model_agreement()
         return cast(list[list[float]], _daemon_post("/embed-batch", {"texts": texts}, "vectors"))
     except EmbeddingServiceUnavailable as exc:
         _fall_back_or_raise(exc)
@@ -143,17 +276,66 @@ def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
 # Local model fallback (lazy singleton)
 # ---------------------------------------------------------------------------
 
-_MODEL_NAME = "all-MiniLM-L6-v2"
+#: Kept as a module attribute because callers and tests refer to it, but the
+#: value now comes from one place -- see :data:`nlqueries.config.EMBED_MODEL`.
+_MODEL_NAME = config.EMBED_MODEL
 _model: SentenceTransformer | None = None
+
+
+def check_model_width(model: SentenceTransformer, name: str) -> None:
+    """Refuse a model whose vectors would not fit the stores.
+
+    ``NLQ_EMBED_MODEL`` exists so an operator can replace the weights without
+    waiting for a release. The failure that invites is a model of a different
+    width: the caches and the Qdrant collection are created at
+    :data:`~nlqueries.config.EMBED_DIMENSIONS`, and a mismatch does not raise on
+    its own. It writes vectors that simply do not mean what the collection
+    thinks they mean, and the symptom is bad neighbours, months later, with
+    nothing in a log to connect them to a swapped model.
+
+    Checked at load, where the name of the offending model is still in hand.
+    """
+    # `get_sentence_embedding_dimension` was renamed to `get_embedding_dimension`
+    # and now emits a FutureWarning. Both are read rather than one chosen: the
+    # declared floor is `sentence-transformers>=3.0`, which has only the old
+    # name, while the new one is what survives its removal.
+    measure = getattr(model, "get_embedding_dimension", None)
+    if measure is None:
+        measure = model.get_sentence_embedding_dimension
+    width = measure()
+    if width is not None and width != config.EMBED_DIMENSIONS:
+        raise RuntimeError(
+            f"embedding model {name!r} produces {width}-dimension vectors, but this "
+            f"deployment's caches and collections are built for {config.EMBED_DIMENSIONS}. "
+            "Point NLQ_EMBED_MODEL at a model of the same width, or rebuild the "
+            "vector stores for the new one."
+        )
 
 
 def _get_model() -> SentenceTransformer:
     """Return the shared ``SentenceTransformer`` instance, loading it on first call."""
-    global _model  # noqa: PLW0603
+    global _model, _model_refusal  # noqa: PLW0603
+    if _model_refusal is not None:
+        # Remembered, not re-derived. The refusal is permanent for this process
+        # and the load in front of it costs seconds and about a gigabyte --
+        # `_model` is assigned only once the check passes, so without this every
+        # call built a fresh SentenceTransformer in order to reject it again.
+        # Callers such as `promote_feedback` and the semantic cache catch and
+        # carry on, which turned a misconfiguration into a full model load per
+        # request rather than one visible failure.
+        #
+        # A fresh exception from the stored message, not the original object.
+        raise RuntimeError(_model_refusal)
     if _model is None:
         from sentence_transformers import SentenceTransformer  # deferred — heavy import
 
-        _model = SentenceTransformer(_MODEL_NAME)
+        loaded = SentenceTransformer(_MODEL_NAME)
+        try:
+            check_model_width(loaded, _MODEL_NAME)
+        except RuntimeError as exc:
+            _model_refusal = str(exc)
+            raise
+        _model = loaded
     return _model
 
 

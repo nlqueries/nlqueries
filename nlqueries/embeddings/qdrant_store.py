@@ -44,6 +44,7 @@ import hashlib
 import time
 from typing import TYPE_CHECKING, Any
 
+from nlqueries import config
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
@@ -103,7 +104,7 @@ def _capsule_id(capsule: QueryCapsule, index: int) -> int:
 
 def ensure_collection(
     name: str,
-    vector_size: int = 384,
+    vector_size: int = config.EMBED_DIMENSIONS,
     *,
     payload_indexes: list[str] | None = None,
     quantize: bool = True,
@@ -378,7 +379,7 @@ def search_schema(
 # Collection naming convention: doc_{source_id}_chunks
 # ---------------------------------------------------------------------------
 
-DOCUMENT_VECTOR_SIZE = 384  # same as existing sentence-transformer model
+DOCUMENT_VECTOR_SIZE = config.EMBED_DIMENSIONS  # the embedding model's width
 
 
 def upsert_chunks(
