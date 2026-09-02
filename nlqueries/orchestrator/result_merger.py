@@ -75,6 +75,11 @@ def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
     it rendered was one cell holding the statement text.
     """
     if not sql_result.columns:
+        # The failure still has to be said. A connector that raised produces no
+        # columns, and answering "(no data)" tells the synthesis model that the
+        # query ran and found nothing -- a different statement, and a wrong one.
+        if sql_result.error:
+            return f"(no data; this query failed: {_cell(sql_result.error)})"
         return "(no data)"
     header = "| " + " | ".join(_cell(c) for c in sql_result.columns) + " |"
     separator = "| " + " | ".join(["---"] * len(sql_result.columns)) + " |"
@@ -85,29 +90,43 @@ def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
     retrieved = len(sql_result.rows)
     total = max(sql_result.row_count, retrieved)
 
-    # Whether `total` is the number that matched, or only the number reached.
-    #
-    # Every connector sets `row_count=len(rows)`, so after a `row_budget` or
-    # `byte_budget` stop the count describes what was retrieved and is itself a
-    # fragment -- quoting it as "of N rows" asserts a total that is not one.
-    # `sql_table_chunk` is the opposite: it caps `rows` while reporting the full
-    # `row_count`. So the two being unequal is what says the total is real, and
-    # that holds without this renderer having to interpret
-    # `truncation_reason` -- including for a reason added later.
-    total_is_exact = sql_result.row_count > retrieved or not sql_result.truncated
-
-    if len(shown) < total:
-        if total_is_exact:
-            lines.append(f"\n(showing the first {len(shown)} of {total} rows)")
-        else:
+    if sql_result.truncated:
+        # A lower bound whenever anything truncated, and deliberately not a
+        # heuristic about which thing did.
+        #
+        # The two truncations compose. A query matching more than
+        # CONNECTOR_MAX_FETCH_ROWS stops with `row_count` set to where it
+        # stopped, and `sql_table_chunk` then caps `rows` while still reporting
+        # that count -- so `row_count` exceeding `len(rows)` does not mean the
+        # count is a total, which is what an earlier version of this read it as.
+        # The reason cannot settle it either: `sql_table_chunk` replaces
+        # `truncation_reason` with `orchestrator_row_cap` when the cap wins, so
+        # the connector's own reason is not here to be found.
+        #
+        # Carrying both reasons through the frame would allow an exact total in
+        # the one case where it is knowable. That is a change to a documented
+        # union and to the frame every caller reads, for a parenthesis in a
+        # prompt -- and understating a total is the safe direction for an
+        # annotation that exists to stop the model overstating one.
+        if len(shown) < total:
             lines.append(
                 f"\n(showing the first {len(shown)} of at least {total} rows; "
                 "this result stopped short of the full answer)"
             )
-    elif sql_result.truncated:
-        # Everything retrieved is shown, but the query stopped early, so the
-        # true total is unknown and there is no count worth quoting.
-        lines.append("\n(this result stopped short of the full answer)")
+        else:
+            lines.append("\n(this result stopped short of the full answer)")
+    elif len(shown) < total:
+        # Nothing truncated, so `row_count` is what matched.
+        lines.append(f"\n(showing the first {len(shown)} of {total} rows)")
+
+    if sql_result.error:
+        # `_extract_sql_query_result` carries the connector's error into the
+        # statement-only fallback, and this rendered `columns` and `rows` alone
+        # -- so the prompt received a table whose single cell was the statement
+        # text, with nothing saying that running it had failed. The model then
+        # described the statement as though it were the answer, and the prose
+        # the reader gets said nothing about the failure at all.
+        lines.append(f"\n(this query failed: {_cell(sql_result.error)})")
     return "\n".join(lines)
 
 

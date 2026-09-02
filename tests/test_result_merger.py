@@ -421,7 +421,7 @@ def test_a_truncated_result_that_cannot_say_its_total_still_says_it_stopped() ->
 
 
 def test_a_connector_truncation_is_quoted_as_a_lower_bound() -> None:
-    """`row_count` is not a total once a connector has stopped early.
+    """`row_count` is not a total once anything has stopped early.
 
     Every connector sets `row_count=len(rows)` -- postgres.py:558 and the
     others -- so after a `row_budget` stop the count describes what was
@@ -434,17 +434,69 @@ def test_a_connector_truncation_is_quoted_as_a_lower_bound() -> None:
     assert "stopped short" in rendered
 
 
-def test_an_orchestrator_cap_still_quotes_its_real_total() -> None:
-    """The opposite shape, and it must not be weakened to a lower bound.
+def test_the_two_truncations_compose_and_the_total_stays_a_lower_bound() -> None:
+    """The case an earlier heuristic here got wrong.
 
-    `sql_table_chunk` caps `rows` while reporting the full `row_count`, so the
-    two being unequal is what says the total is real. Read structurally rather
-    than from `truncation_reason`, so a reason added later behaves sensibly
-    without this renderer being taught about it.
+    With the defaults, a query matching more than CONNECTOR_MAX_FETCH_ROWS stops
+    on `row_budget` with `row_count` set to where it stopped, and
+    `sql_table_chunk` then caps `rows` to _MAX_RESULT_ROWS while still reporting
+    that count. `row_count > len(rows)` therefore held while the count was
+    itself only where the fetch stopped, and the note quoted it as a total --
+    the very claim the lower-bound wording was added to avoid, reached by the
+    path that goes through both.
+
+    The reason cannot distinguish them either: `sql_table_chunk` replaces
+    `truncation_reason` with `orchestrator_row_cap` when the cap wins, so the
+    connector's own reason is gone by the time this renders.
     """
-    rendered = _format_sql_table(_result(200, row_count=8000, truncated=True))
-    assert "showing the first 20 of 8000 rows" in rendered
+    rendered = _format_sql_table(_result(200, row_count=10000, truncated=True))
+    assert "showing the first 20 of at least 10000 rows" in rendered
+    assert "stopped short" in rendered
+
+
+def test_an_untruncated_result_still_quotes_an_exact_total() -> None:
+    """Canary for the conservative wording: "at least" on a complete result
+    would understate every ordinary answer, and a reader who sees it everywhere
+    stops reading it."""
+    rendered = _format_sql_table(_result(50))
+    assert "showing the first 20 of 50 rows" in rendered
     assert "at least" not in rendered
+
+
+def test_a_failed_query_says_so_in_the_prompt() -> None:
+    """The extraction carries the connector's error; this had to render it.
+
+    The statement-only fallback is a table whose single cell is the statement
+    text. Rendered alone, the synthesis model describes that statement as though
+    it were the answer, and the prose the reader gets says nothing about the
+    failure -- the same shape as the defect this branch exists to fix, one step
+    further down.
+    """
+    failed = QueryResult(
+        columns=["sql_query"],
+        rows=[["SELECT region FROM sales"]],
+        row_count=1,
+        execution_time_ms=0.0,
+        error='relation "sales" does not exist',
+    )
+    rendered = _format_sql_table(failed)
+    assert "this query failed" in rendered
+    assert "does not exist" in rendered
+
+
+def test_a_failure_with_no_columns_is_not_reported_as_an_empty_answer() -> None:
+    """ "(no data)" tells the model the query ran and found nothing, which is a
+    different statement from the query having failed, and a wrong one."""
+    failed = QueryResult(
+        columns=[],
+        rows=[],
+        row_count=0,
+        execution_time_ms=0.0,
+        error="connection refused",
+    )
+    rendered = _format_sql_table(failed)
+    assert "connection refused" in rendered
+    assert "failed" in rendered
 
 
 def test_a_cell_cannot_break_the_table_or_mimic_the_note() -> None:
