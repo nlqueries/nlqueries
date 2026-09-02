@@ -115,27 +115,90 @@ def _extract_citations_from_tokens(tokens: list[str]) -> list[Citation] | None:
     return None
 
 
-def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
-    """Parse the SQL final chunk from a token list and return a minimal QueryResult.
-
-    Creates a single-column, single-row table so that ``merge_results`` can
-    include the generated SQL in its synthesis prompt.
-    """
+def _final_sql_chunk(tokens: list[str]) -> dict[str, Any] | None:
+    """The SQL sub-agent's final JSON chunk, when its last token is one."""
     if not tokens:
         return None
     try:
         last = json.loads(tokens[-1])
-        if last.get("type") == "sql" and last.get("sql"):
-            return QueryResult(
-                columns=["sql_query"],
-                rows=[[last["sql"]]],
-                row_count=1,
-                execution_time_ms=0.0,
-                error=(None if last.get("is_valid") else str(last.get("validation_error", ""))),
-            )
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(last, dict) or last.get("type") != "sql" or not last.get("sql"):
+        return None
+    return last
+
+
+def _executed_table(chunk: dict[str, Any]) -> dict[str, Any] | None:
+    """The executed result inside *chunk*, or ``None`` when nothing ran.
+
+    One definition of "executed", because two callers depend on it and must not
+    drift: the extraction below, and the cache-write decision in
+    ``handle_question``, which declines to store prose built from live figures.
+    Asked of the chunk rather than of the resulting ``QueryResult``, whose
+    fallback is identified only by its column being named ``sql_query`` -- a
+    query that genuinely selected a column of that name would be misread.
+    """
+    table = chunk.get("sql_table")
+    if isinstance(table, dict) and table.get("columns"):
+        return table
     return None
+
+
+def _carries_executed_data(tokens: list[str]) -> bool:
+    """Whether the SQL sub-agent ran a query and returned columns for it."""
+    chunk = _final_sql_chunk(tokens)
+    return chunk is not None and _executed_table(chunk) is not None
+
+
+def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
+    """Return the SQL sub-agent's executed result, or the statement if none ran.
+
+    This used to read only the ``sql`` key and build a one-column, one-row table
+    from the statement text, discarding the rows the sub-agent had already
+    executed and reported in ``sql_table``. A hybrid answer therefore asserted
+    things about data it never showed, and could not report truncation at all,
+    because ``truncated`` and ``truncation_reason`` live on the frame it threw
+    away.
+
+    The SQL-only table is kept for the cases where nothing ran -- generate-only
+    mode, an execution the policy refused, or a statement that failed validation
+    -- because the synthesis prompt is still better with the statement in it
+    than with nothing. An execution error is carried into that fallback rather
+    than dropped: ``sql_table`` is ``{"error": ...}`` with no columns when the
+    connector raised, and reporting that as "nothing ran" would be a lie.
+    """
+    chunk = _final_sql_chunk(tokens)
+    if chunk is None:
+        return None
+
+    table = _executed_table(chunk)
+    if table is not None:
+        return QueryResult(
+            columns=list(table["columns"]),
+            rows=[list(row) for row in table.get("rows") or []],
+            row_count=int(table.get("row_count") or 0),
+            execution_time_ms=float(table.get("execution_time_ms") or 0.0),
+            error=table.get("error"),
+            truncated=bool(table.get("truncated")),
+            truncation_reason=table.get("truncation_reason"),
+        )
+
+    # The raw value, not `_executed_table`'s: that returns None precisely when
+    # the table carries an error and no columns, which is the case this reads.
+    raw_table = chunk.get("sql_table")
+    if isinstance(raw_table, dict) and raw_table.get("error"):
+        error = str(raw_table["error"])
+    elif not chunk.get("is_valid"):
+        error = str(chunk.get("validation_error", ""))
+    else:
+        error = None
+    return QueryResult(
+        columns=["sql_query"],
+        rows=[[chunk["sql"]]],
+        row_count=1,
+        execution_time_ms=0.0,
+        error=error,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -675,8 +738,27 @@ class MultiAgentOrchestrator:
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 
-            # Cache write for hybrid (background task)
-            if hybrid_result is not None:
+            # Cache write for hybrid (background task), but only when the
+            # prose carries no live figures.
+            #
+            # A hybrid entry stores the merged answer and nothing else -- no
+            # statement, no citations -- and a hit replays it verbatim for the
+            # whole TTL. The SQL branch re-runs its stored statement instead,
+            # for the reason `_execute_cached_sql` records: stored prose cannot
+            # carry fresh rows. That was harmless while a hybrid answer was
+            # synthesised from the statement text alone. Now that it is
+            # synthesised from executed rows, caching it would answer a
+            # semantically similar question hours later with figures from the
+            # first run, stated as current -- the same shape of defect this
+            # change exists to fix, and not worth trading for a cache hit.
+            #
+            # Answers where nothing ran still cache, and they are the ones the
+            # cache was helping: generate-only mode, a refused execution, a
+            # statement that failed validation. Re-synthesising on a hit would
+            # keep the rest, but it needs the statement and the citations stored
+            # too, and a synthesis call on every hit -- a larger change, and one
+            # to make deliberately rather than as a side effect of this one.
+            if hybrid_result is not None and not _carries_executed_data(sql_tokens):
                 _schedule_cache_write(
                     _cache,
                     _cache_lookup_key,
@@ -693,18 +775,17 @@ class MultiAgentOrchestrator:
                 # starting to would be a different change from reporting
                 # truncation.
                 #
-                # Note what this frame actually holds. `_merge_hybrid` builds
-                # `sql_table` through `_extract_sql_query_result`, which
-                # synthesises a one-cell table containing the generated SQL
-                # *text* -- columns ["sql_query"], one row -- and discards the
-                # sub-agent's executed result entirely. So the truncation flags
-                # here describe that synthesised cell, which is never truncated,
-                # and a hybrid answer cannot report truncation of the query it
-                # ran because it does not carry that query's rows in the first
-                # place. Fixing that means threading the sub-agent's real table
-                # through `_merge_hybrid`; it is a change to what a hybrid
-                # answer returns, not to how truncation is reported, and it is
-                # deliberately not made here.
+                # This frame now holds the sub-agent's executed table --
+                # `_extract_sql_query_result` returns it rather than the
+                # one-cell table of statement text it used to synthesise -- so
+                # the truncation flags here describe the query the answer was
+                # built from, which is what they read as. The statement-only
+                # table survives for the cases where nothing ran, and it reports
+                # no truncation because there was none.
+                #
+                # This comment described the opposite until the change that made
+                # it untrue; a reader of this branch reaches it before the
+                # function it describes.
                 sql_table_dict = sql_table_chunk(hybrid_result.sql_table, cap=False)
             citations_list = [
                 {

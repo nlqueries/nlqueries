@@ -92,12 +92,12 @@ def test_an_uncapped_frame_still_forwards_the_connectors_truncation() -> None:
     """`cap=False` suppresses this builder's own cap, not the connector's report.
 
     Stated as a property of the builder, deliberately. The only caller passing
-    `cap=False` today is the hybrid branch, and that branch cannot exercise it:
-    `_merge_hybrid` builds its `sql_table` through `_extract_sql_query_result`,
-    which synthesises a one-cell table holding the generated SQL text and
-    discards the sub-agent's executed result. So a hybrid answer carries no
-    query rows to truncate. This test says what `sql_table_chunk` does, not what
-    that branch reports.
+    `cap=False` is the hybrid branch. That branch could not exercise it while
+    `_extract_sql_query_result` synthesised a one-cell table from the generated
+    SQL text and discarded the sub-agent's executed result, so a hybrid answer
+    carried no query rows to truncate; it now returns the executed result and
+    its truncation flags, covered in tests/test_hybrid_answer_data.py. This test
+    still says what `sql_table_chunk` does, not what that branch reports.
     """
     qr = _result(500, row_count=99_999, truncated=True, truncation_reason="row_budget")
     chunk = sql_table_chunk(qr, cap=False)

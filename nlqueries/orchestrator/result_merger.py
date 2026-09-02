@@ -41,16 +41,93 @@ class HybridQueryResult:
 # ---------------------------------------------------------------------------
 
 
+def _cell(value: object) -> str:
+    """One table cell, safe to sit between pipes.
+
+    Real data reaches this renderer now. A value containing a pipe breaks the
+    column alignment of the table handed to the synthesis model; one containing
+    a newline ends the row early and can produce a line shaped like the
+    renderer's own trailing note, which the model then cannot tell apart from
+    the data. Before the hybrid path carried executed rows the only cell was the
+    generated statement, so none of this was reachable.
+
+    The backslash is escaped first, or a value ending in one would turn the
+    delimiter that follows it into an escaped pipe and merge two cells.
+    """
+    text = str(value).replace("\\", "\\\\").replace("|", "\\|")
+    # Collapses newlines and tabs along with runs of spaces. A prompt table does
+    # not need the original whitespace, and every alternative leaves a way to
+    # end the row early.
+    return " ".join(text.split())
+
+
 def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
-    """Render a :class:`QueryResult` as a GitHub-style markdown table."""
+    """Render a :class:`QueryResult` as a GitHub-style markdown table.
+
+    A note is appended whenever this shows fewer rows than the result holds.
+    The synthesis model is asked to describe this table and has no other way to
+    tell a complete answer from a fragment, so without it a total or a maximum
+    taken over the first twenty rows is presented as the answer.
+    :class:`QueryResult` puts the principle plainly: silently returning the
+    first N rows of a larger answer is a wrong answer, not a partial one.
+
+    The cap never bit before the hybrid path carried executed rows -- the table
+    it rendered was one cell holding the statement text.
+    """
     if not sql_result.columns:
+        # The failure still has to be said. A connector that raised produces no
+        # columns, and answering "(no data)" tells the synthesis model that the
+        # query ran and found nothing -- a different statement, and a wrong one.
+        if sql_result.error:
+            return f"(no data; this query failed: {_cell(sql_result.error)})"
         return "(no data)"
-    header = "| " + " | ".join(sql_result.columns) + " |"
+    header = "| " + " | ".join(_cell(c) for c in sql_result.columns) + " |"
     separator = "| " + " | ".join(["---"] * len(sql_result.columns)) + " |"
-    body_lines = [
-        "| " + " | ".join(str(v) for v in row) + " |" for row in sql_result.rows[:max_rows]
-    ]
-    return "\n".join([header, separator] + body_lines)
+    shown = sql_result.rows[:max_rows]
+    body_lines = ["| " + " | ".join(_cell(v) for v in row) + " |" for row in shown]
+    lines = [header, separator, *body_lines]
+
+    retrieved = len(sql_result.rows)
+    total = max(sql_result.row_count, retrieved)
+
+    if sql_result.truncated:
+        # A lower bound whenever anything truncated, and deliberately not a
+        # heuristic about which thing did.
+        #
+        # The two truncations compose. A query matching more than
+        # CONNECTOR_MAX_FETCH_ROWS stops with `row_count` set to where it
+        # stopped, and `sql_table_chunk` then caps `rows` while still reporting
+        # that count -- so `row_count` exceeding `len(rows)` does not mean the
+        # count is a total, which is what an earlier version of this read it as.
+        # The reason cannot settle it either: `sql_table_chunk` replaces
+        # `truncation_reason` with `orchestrator_row_cap` when the cap wins, so
+        # the connector's own reason is not here to be found.
+        #
+        # Carrying both reasons through the frame would allow an exact total in
+        # the one case where it is knowable. That is a change to a documented
+        # union and to the frame every caller reads, for a parenthesis in a
+        # prompt -- and understating a total is the safe direction for an
+        # annotation that exists to stop the model overstating one.
+        if len(shown) < total:
+            lines.append(
+                f"\n(showing the first {len(shown)} of at least {total} rows; "
+                "this result stopped short of the full answer)"
+            )
+        else:
+            lines.append("\n(this result stopped short of the full answer)")
+    elif len(shown) < total:
+        # Nothing truncated, so `row_count` is what matched.
+        lines.append(f"\n(showing the first {len(shown)} of {total} rows)")
+
+    if sql_result.error:
+        # `_extract_sql_query_result` carries the connector's error into the
+        # statement-only fallback, and this rendered `columns` and `rows` alone
+        # -- so the prompt received a table whose single cell was the statement
+        # text, with nothing saying that running it had failed. The model then
+        # described the statement as though it were the answer, and the prose
+        # the reader gets said nothing about the failure at all.
+        lines.append(f"\n(this query failed: {_cell(sql_result.error)})")
+    return "\n".join(lines)
 
 
 def _format_citations_text(citations: list[Citation], top_n: int = 3) -> str:
@@ -76,7 +153,8 @@ def merge_results(
 
     When both *sql_result* and *document_result* are provided the LLM is
     invoked once to synthesise a single answer that references both sources.
-    SQL data is formatted as a markdown table (up to 20 rows); the top 3
+    SQL data is formatted as a markdown table (up to 20 rows, and it says so
+    when there are more); the top 3
     document citations are included as labelled excerpts.
 
     When only one result is provided the function passes it through without
