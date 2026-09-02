@@ -41,6 +41,26 @@ class HybridQueryResult:
 # ---------------------------------------------------------------------------
 
 
+def _cell(value: object) -> str:
+    """One table cell, safe to sit between pipes.
+
+    Real data reaches this renderer now. A value containing a pipe breaks the
+    column alignment of the table handed to the synthesis model; one containing
+    a newline ends the row early and can produce a line shaped like the
+    renderer's own trailing note, which the model then cannot tell apart from
+    the data. Before the hybrid path carried executed rows the only cell was the
+    generated statement, so none of this was reachable.
+
+    The backslash is escaped first, or a value ending in one would turn the
+    delimiter that follows it into an escaped pipe and merge two cells.
+    """
+    text = str(value).replace("\\", "\\\\").replace("|", "\\|")
+    # Collapses newlines and tabs along with runs of spaces. A prompt table does
+    # not need the original whitespace, and every alternative leaves a way to
+    # end the row early.
+    return " ".join(text.split())
+
+
 def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
     """Render a :class:`QueryResult` as a GitHub-style markdown table.
 
@@ -56,21 +76,37 @@ def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
     """
     if not sql_result.columns:
         return "(no data)"
-    header = "| " + " | ".join(sql_result.columns) + " |"
+    header = "| " + " | ".join(_cell(c) for c in sql_result.columns) + " |"
     separator = "| " + " | ".join(["---"] * len(sql_result.columns)) + " |"
     shown = sql_result.rows[:max_rows]
-    body_lines = ["| " + " | ".join(str(v) for v in row) + " |" for row in shown]
+    body_lines = ["| " + " | ".join(_cell(v) for v in row) + " |" for row in shown]
     lines = [header, separator, *body_lines]
 
-    # `row_count` is the true total and stays so when `rows` was capped
-    # upstream, which is exactly the case worth reporting: quoting len(rows)
-    # would describe the size of the fragment as the size of the answer.
-    total = max(sql_result.row_count, len(sql_result.rows))
+    retrieved = len(sql_result.rows)
+    total = max(sql_result.row_count, retrieved)
+
+    # Whether `total` is the number that matched, or only the number reached.
+    #
+    # Every connector sets `row_count=len(rows)`, so after a `row_budget` or
+    # `byte_budget` stop the count describes what was retrieved and is itself a
+    # fragment -- quoting it as "of N rows" asserts a total that is not one.
+    # `sql_table_chunk` is the opposite: it caps `rows` while reporting the full
+    # `row_count`. So the two being unequal is what says the total is real, and
+    # that holds without this renderer having to interpret
+    # `truncation_reason` -- including for a reason added later.
+    total_is_exact = sql_result.row_count > retrieved or not sql_result.truncated
+
     if len(shown) < total:
-        lines.append(f"\n(showing the first {len(shown)} of {total} rows)")
+        if total_is_exact:
+            lines.append(f"\n(showing the first {len(shown)} of {total} rows)")
+        else:
+            lines.append(
+                f"\n(showing the first {len(shown)} of at least {total} rows; "
+                "this result stopped short of the full answer)"
+            )
     elif sql_result.truncated:
-        # Truncated upstream without `row_count` being adjusted, so the total is
-        # unknown; saying it stopped short still beats implying completeness.
+        # Everything retrieved is shown, but the query stopped early, so the
+        # true total is unknown and there is no count worth quoting.
         lines.append("\n(this result stopped short of the full answer)")
     return "\n".join(lines)
 
