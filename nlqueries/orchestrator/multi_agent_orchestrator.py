@@ -795,11 +795,27 @@ class MultiAgentOrchestrator:
                 }
                 for c in hybrid_result.citations
             ]
+            # The statement this answer was built from, under the same key the
+            # `sql` frame uses.
+            #
+            # It used to be recoverable from `sql_table`, which held one cell
+            # containing the statement text. Returning the executed table
+            # instead is what a hybrid answer should show, and it removed the
+            # only route to the statement at the same time -- so a consumer that
+            # scope-checks or audits the query has nothing to read, while the
+            # frame now carries real rows. Both halves of that are new; the
+            # combination is the one worth avoiding.
+            #
+            # Taken from the sub-agent's own final chunk rather than from
+            # `sql_table`, so it is present whether the query ran or not, and
+            # `None` only when the sub-agent produced no statement at all.
+            final_sql_chunk = _final_sql_chunk(sql_tokens)
             yield json.dumps(
                 {
                     "type": "hybrid",
                     "agent_type": "hybrid",
                     "merged_answer": hybrid_result.merged_answer,
+                    "sql": final_sql_chunk.get("sql") if final_sql_chunk else None,
                     "sql_table": sql_table_dict,
                     "citations": citations_list,
                 }
