@@ -84,4 +84,4 @@ This Agreement is signed electronically via the CLA Assistant bot on GitHub. Whe
 
 *NLQueries — https://github.com/nlqueries/nlqueries*
 *Licensor: Theorence Labs Private Ltd — legal@nlqueries.com*
-*Last updated: June 2026*
+*Last updated: September 2026*
