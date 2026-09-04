@@ -659,11 +659,50 @@ def _redirect_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_main, "KB_PATH", kb)
 
 
+def _query() -> None:
+    """The ``query`` command, with generation stubbed so execution is reached.
+
+    The site sits behind `execute_sql and result.sql_is_valid and result.sql and
+    agent_type == "sql" and sql_result is None`, so a result satisfying all five
+    is what makes the command build a connector at all.
+    """
+    from unittest.mock import patch
+
+    from nlqueries.orchestrator.sync_runner import AgentQueryResult
+
+    result = AgentQueryResult(
+        question="how many?",
+        resolved_question="how many?",
+        agent_type="sql",
+        answer="",
+        sql="SELECT 1",
+        sql_result=None,
+        citations=[],
+        merged_answer=None,
+        latency_ms=1,
+        session_id=None,
+        sql_is_valid=True,
+        execution_mode="execute_read_only",
+    )
+    with patch(
+        "nlqueries.orchestrator.sync_runner.run_query_sync",
+        return_value=result,
+    ):
+        _run("query", _AGENT, "how many?")
+
+
 #: One entry per resolution site in ``cli/main.py`` that reads an entry.
 #:
-#: ``connect`` is covered above and is absent here because it has no entry to
-#: read; the ``query`` command's site is covered by
-#: ``tests/security/test_execution_boundary.py``.
+#: ``connect`` is absent because it has no entry to read; it is covered by the
+#: registration tests above.
+#:
+#: ``query`` is here rather than delegated to
+#: ``tests/security/test_execution_boundary.py``. That file substitutes the
+#: connector through ``CONNECTOR_REGISTRY`` and installs no resolver, so it
+#: passes whichever way the class is found -- the very criterion this block
+#: applies to the other five. Recording it as covered there was a claim this
+#: file's own standard contradicts, and it is the site that connects and
+#: executes generated SQL.
 _CLI_SITES = {
     "doctor": _doctor,
     "extract-schema": lambda: _run("extract-schema", _AGENT),
@@ -672,6 +711,7 @@ _CLI_SITES = {
     ),
     "export-kb": lambda: _run("export-kb", _AGENT),
     "kb-stats": lambda: _run("kb-stats", _AGENT),
+    "query": _query,
 }
 
 
