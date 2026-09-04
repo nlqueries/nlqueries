@@ -1,6 +1,12 @@
 # nlqueries-core — OSS (BSL 1.1)
 # This package must NEVER import from the enterprise layer.
 
+import copy
+import logging
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
+from typing import Any
+
 from nlqueries.connectors.base import (
     POLICY_COLUMN,
     POLICY_ROW,
@@ -16,6 +22,8 @@ from nlqueries.connectors.base import (
 from nlqueries.connectors.postgres import PostgresConnector
 from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
 from nlqueries.connectors.sqlite import SQLiteConnector
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Connector registry
@@ -77,6 +85,204 @@ def _register_optional_connectors() -> None:
 
 _register_optional_connectors()
 
+
+# ---------------------------------------------------------------------------
+# Connector class resolution
+#
+# ``CONNECTOR_REGISTRY`` maps a db-type to one class, which is the whole answer
+# for every connector this package ships. It is not the whole answer for a
+# deployment that adds authentication methods on top of one of them: the driver
+# handshake for a key-pair or token sign-in differs from a password sign-in
+# while the schema, history and execution behaviour are identical, so the
+# natural implementation is a subclass overriding ``connect()`` alone -- and a
+# registry keyed by db-type has nowhere to put a second class for the same type.
+#
+# The consequence was a split path. A deployment that resolved its own class at
+# the sites it controlled still went through ``open_connector_for_agent`` on the
+# query path, which reads the registry directly, so a connector could be created
+# and tested successfully and then answer every question through the wrong class
+# -- the same shape as the TLS defect this module's neighbours were fixing, and
+# invisible for the same reason.
+#
+# So resolution is a named seam rather than a dict lookup. The default is
+# exactly the previous behaviour, and an installed resolver is consulted first
+# with the connector's own configuration entry, which is where an
+# authentication method is recorded.
+# ---------------------------------------------------------------------------
+
+#: What :func:`set_connector_resolver` accepts: the db-type and the connector's
+#: configuration entry, returning the class to build or ``None`` to defer to the
+#: registry.
+ConnectorResolver = Callable[[str, Mapping[str, Any]], "type[DatabaseConnector] | None"]
+
+_resolver: ConnectorResolver | None = None
+
+#: Handed to a resolver when there is no entry, so it never receives ``None``.
+_NO_ENTRY: Mapping[str, Any] = MappingProxyType({})
+
+
+def _read_only(cfg: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """A view of *cfg* a resolver cannot change the loader's entry through.
+
+    Deep-copied, then wrapped: the wrapper refuses writes at the top level, and
+    the copy means a write further down lands on something the loader does not
+    hold. Entries are small YAML mappings, and this runs once per cache miss
+    rather than per query, so the copy costs nothing beside opening a database
+    connection.
+    """
+    if not cfg:
+        return _NO_ENTRY
+    return MappingProxyType(copy.deepcopy(dict(cfg)))
+
+
+def set_connector_resolver(resolver: ConnectorResolver | None) -> None:
+    """Install *resolver* as the first choice for connector-class resolution.
+
+    ``None`` removes it. Process-wide and idempotent: the last call wins, and
+    installing the same resolver twice is not an error.
+
+    **Every change here is subject to the connector cache, in both directions.**
+    Resolution happens once per cache fingerprint, and the fingerprint covers the
+    configuration entry and the password -- not which resolver was installed. So
+    with ``CONNECTOR_CACHE_ENABLED``:
+
+    * A resolver installed *late* does not reach a connector already built and
+      cached under the registry class.
+    * Removing or replacing one does not reach a connector already built and
+      cached under the previous resolver's class; it keeps being served under
+      that class until its entry changes or the TTL expires.
+
+    A resolver that *raises* is the exception to the exception: the fallback taken
+    in its place is never reused, so a transient fault corrects itself on the next
+    attempt rather than being held for the TTL. (The loader still files it, under
+    a key nothing can match, so that it is disposed rather than leaked -- see
+    ``open_connector_for_agent``.)
+
+    A connector whose settings change is rebuilt by itself, because the entry is
+    in the fingerprint. Nothing else is. Call
+    :func:`nlqueries.connectors.loader.invalidate_connector_cache` around any
+    change to resolution that has to take effect immediately -- installing,
+    removing or replacing -- which is the same reason a rotated credential calls
+    it rather than waiting for the TTL.
+    """
+    global _resolver
+    _resolver = resolver
+
+
+def connector_class_for(
+    db_type: str, cfg: Mapping[str, Any] | None = None
+) -> type[DatabaseConnector] | None:
+    """The connector class to build for *db_type*, given its entry *cfg*.
+
+    *cfg* is the connector's configuration entry as it appears in
+    ``CONNECTORS_FILE`` -- ``db_type``, ``url``, and whatever else was recorded
+    for it, which is where a deployment records an authentication method. It is
+    what every call site in this package passes, including ``nlqueries connect``,
+    which has no entry yet and builds an entry-shaped mapping rather than handing
+    over its own options: a resolver should never have to ask which caller it is
+    serving. Note that an entry has no discrete ``password`` -- the password is
+    inside ``url``.
+
+    An installed resolver is asked first and its answer wins; ``None`` from it
+    means "no opinion" and falls through to :data:`CONNECTOR_REGISTRY`, which is
+    also the whole of the behaviour when no resolver is installed. Returns
+    ``None`` for a db-type nothing resolves, exactly as ``CONNECTOR_REGISTRY.get``
+    does, so callers keep reporting that themselves.
+
+    A resolver that raises is logged and ignored rather than propagated. It sits
+    on the query path of every connector, including the ones it has no opinion
+    about, so a fault in the extension must not be able to take down a
+    password-authenticated Postgres connector that would otherwise have opened.
+    """
+    return _resolve(db_type, cfg)[0]
+
+
+def _resolve(
+    db_type: str, cfg: Mapping[str, Any] | None = None
+) -> tuple[type[DatabaseConnector] | None, bool]:
+    """As :func:`connector_class_for`, plus whether resolution *degraded*.
+
+    Package-internal, and deliberately not the public form: only the loader has a
+    cache to keep the flag out of, and every other caller wants a class rather
+    than a pair. :func:`connector_class_for` is this with the flag dropped.
+
+    Degraded means the resolver raised and the registry answered in its place, so
+    the class is a fallback rather than a decision. The caller needs to know
+    because a fallback must never be reused: the connector cache is keyed on the
+    entry and the password, so a resolver that fails for a moment -- one
+    consulting a configuration service, say -- would otherwise pin the registry
+    class for the whole TTL of every connector the fallback can still open. One
+    transient fault would reinstate exactly the split this seam removes, and the
+    only trace would be a single warning.
+
+    How the loader arranges that is its own business, and is not simply leaving
+    the connector out of the cache -- see ``open_connector_for_agent``.
+
+    Declining to resolve is not degraded. A resolver returning ``None`` has
+    answered, and its answer is "the registry", which is as cacheable as any
+    other.
+    """
+    if _resolver is not None:
+        try:
+            # Read-only *and* deep-copied, because the loader passes the entry it
+            # has already fingerprinted and will shortly build credentials from.
+            # A resolver that added a default or rewrote `url` would change the
+            # credentials without changing the fingerprint, so the connector would
+            # be cached under a description of a configuration it was not built
+            # from.
+            #
+            # The proxy alone is only skin deep: it refuses `cfg["url"] = ...` and
+            # does nothing about `cfg["options"]["sslmode"] = ...`, which reaches
+            # the loader's own dict through the shared nested value -- silently,
+            # since nothing raises. No entry written by `_save_connector` nests
+            # today, but entries are also hand-edited YAML and the enterprise
+            # projection passes through whatever a connector was configured with,
+            # so "not nested today" is not an invariant to rely on. Copying first
+            # makes the guarantee the one this is here for: a resolver cannot
+            # change what the connector is built from, at any depth.
+            resolved = _resolver(db_type, _read_only(cfg))
+        except Exception:  # noqa: BLE001 -- see the docstring
+            logger.warning(
+                "The installed connector resolver raised for db_type %r; falling back to "
+                "the registry. The connector will be opened with the class registered for "
+                "its type, which is wrong for any authentication method the resolver "
+                "exists to select. It is never reused, so the next attempt resolves again.",
+                db_type,
+                exc_info=True,
+            )
+            return CONNECTOR_REGISTRY.get(db_type), True
+        if resolved is not None:
+            if not isinstance(resolved, type):
+                # A class, not an instance. `return MyConnector()` for
+                # `return MyConnector` is the easy slip, and without this it
+                # passes straight through to `connector_cls()` in the loader,
+                # where the TypeError is caught by the same handler that reports
+                # a missing driver or a malformed entry -- "usually its
+                # configuration rather than the server", pointing the operator at
+                # the connectors file with nothing naming the resolver. Every way
+                # a resolver can be wrong should be reported as a resolver fault,
+                # which is the whole reason the raising path is handled here.
+                #
+                # Deliberately not also `issubclass(resolved, DatabaseConnector)`.
+                # `CONNECTOR_REGISTRY` is annotated as holding such classes and is
+                # not checked at runtime -- the suite substitutes duck-typed
+                # classes into it, and they work -- so requiring the base class of
+                # a resolver alone would make it stricter than the registry it
+                # stands in for, and would refuse a class that would have opened.
+                logger.warning(
+                    "The installed connector resolver returned %r for db_type %r, which is "
+                    "not a class; a resolver returns the connector class to build, not an "
+                    "instance of it. Falling back to the registry, which is wrong for any "
+                    "authentication method the resolver exists to select. It is never "
+                    "reused, so the next attempt resolves again.",
+                    type(resolved).__name__,
+                    db_type,
+                )
+                return CONNECTOR_REGISTRY.get(db_type), True
+            return resolved, False
+    return CONNECTOR_REGISTRY.get(db_type), False
+
+
 __all__ = [
     "ColumnSpec",
     "DatabaseConnector",
@@ -87,6 +293,9 @@ __all__ = [
     "SQLiteConnector",
     "TableSpec",
     "CONNECTOR_REGISTRY",
+    "ConnectorResolver",
+    "connector_class_for",
+    "set_connector_resolver",
     "POLICY_ROW",
     "POLICY_COLUMN",
     "SecurityPolicy",

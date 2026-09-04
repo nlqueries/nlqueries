@@ -24,7 +24,11 @@ from typing import Any
 import yaml
 
 from nlqueries import config
-from nlqueries.connectors import CONNECTOR_REGISTRY, DatabaseConnector
+from nlqueries.connectors import (
+    CONNECTOR_REGISTRY,
+    DatabaseConnector,
+    _resolve,
+)
 from nlqueries.connectors.base import PermittedConnector
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 
@@ -447,7 +451,12 @@ def open_connector_for_agent(
     # then raises on. The default only covers an absent key, not a present one
     # holding nothing.
     db_type = str(cfg.get("db_type") or "").lower()
-    connector_cls = CONNECTOR_REGISTRY.get(db_type)
+    # Through the seam, not the registry. The entry is passed because the class
+    # can depend on more than the db-type -- an authentication method recorded
+    # in it selects a subclass whose `connect()` performs a different handshake
+    # -- and reading the registry here is what made the query path disagree with
+    # every other path that opens a connector.
+    connector_cls, resolution_degraded = _resolve(db_type, cfg)
     if connector_cls is None:
         logger.warning(
             "No connector could be opened for agent %s: db_type %r is not registered. "
@@ -462,7 +471,31 @@ def open_connector_for_agent(
         connector = connector_cls()
         connector.connect(credentials_for(connector_id, cfg))
         if config.CONNECTOR_CACHE_ENABLED:
-            _cache_put(connector_id, connector, fingerprint)
+            # Cached under a fingerprint that cannot match when resolution
+            # degraded, rather than not cached at all.
+            #
+            # It must not be *reused*: the fingerprint covers the entry and the
+            # password, not how the class was chosen, so a fallback taken because
+            # the resolver raised would otherwise hold the wrong class for the
+            # whole TTL -- one momentary fault reinstating the split this seam
+            # removes. Storing it under `<fingerprint>:degraded` guarantees the
+            # next open computes something different, so `_cache_get` treats it as
+            # stale and resolves again.
+            #
+            # But it must still be *disposed*, which is why it is not simply left
+            # out. Callers are told not to close a pooled connector, so the only
+            # thing that ever closes one is `_cache_get` finding it stale or
+            # `_cache_put` replacing it. An uncached connector reaches neither and
+            # lives until garbage collection -- so a resolver that fails
+            # persistently rather than transiently would have every query build an
+            # engine that nothing closes, which is the connection churn the cache
+            # was added to remove. Held this way, exactly one degraded connector
+            # exists at a time and each is disposed by the open that follows it.
+            _cache_put(
+                connector_id,
+                connector,
+                f"{fingerprint}:degraded" if resolution_degraded else fingerprint,
+            )
         return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
         # Deliberately not "the connection attempt failed". This block covers

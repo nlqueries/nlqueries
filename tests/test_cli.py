@@ -79,7 +79,14 @@ def _invoke_process_history(
         patch("nlqueries.cli.main._require_connector", return_value=_FAKE_CFG),
         patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
         patch("nlqueries.cli.main._load_password", return_value=None),
-        patch("nlqueries.cli.main.CONNECTOR_REGISTRY", {"postgres": lambda: _StubConnector()}),
+        # The registry itself, not a name in `cli.main`: the CLI resolves through
+        # `connector_class_for`, which reads this mapping in its own module, so
+        # rebinding the name the CLI imported would no longer be seen.
+        patch.dict(
+            "nlqueries.connectors.CONNECTOR_REGISTRY",
+            {"postgres": lambda: _StubConnector()},
+            clear=False,
+        ),
         patch("nlqueries.processing.pipeline.CAPSULES_DIR", tmp_path),
     ):
         result = runner.invoke(cli, args)
