@@ -153,8 +153,10 @@ def set_connector_resolver(resolver: ConnectorResolver | None) -> None:
       that class until its entry changes or the TTL expires.
 
     A resolver that *raises* is the exception to the exception: the fallback taken
-    in its place is deliberately not cached, so a transient fault corrects itself
-    on the next attempt rather than being held for the TTL.
+    in its place is never reused, so a transient fault corrects itself on the next
+    attempt rather than being held for the TTL. (The loader still files it, under
+    a key nothing can match, so that it is disposed rather than leaked -- see
+    ``open_connector_for_agent``.)
 
     A connector whose settings change is rebuilt by itself, because the entry is
     in the fingerprint. Nothing else is. Call
@@ -206,12 +208,15 @@ def _resolve(
 
     Degraded means the resolver raised and the registry answered in its place, so
     the class is a fallback rather than a decision. The caller needs to know
-    because a fallback must not be cached: the connector cache is keyed on the
+    because a fallback must never be reused: the connector cache is keyed on the
     entry and the password, so a resolver that fails for a moment -- one
     consulting a configuration service, say -- would otherwise pin the registry
     class for the whole TTL of every connector the fallback can still open. One
     transient fault would reinstate exactly the split this seam removes, and the
     only trace would be a single warning.
+
+    How the loader arranges that is its own business, and is not simply leaving
+    the connector out of the cache -- see ``open_connector_for_agent``.
 
     Declining to resolve is not degraded. A resolver returning ``None`` has
     answered, and its answer is "the registry", which is as cacheable as any
@@ -241,7 +246,7 @@ def _resolve(
                 "The installed connector resolver raised for db_type %r; falling back to "
                 "the registry. The connector will be opened with the class registered for "
                 "its type, which is wrong for any authentication method the resolver "
-                "exists to select. It is not cached, so the next attempt resolves again.",
+                "exists to select. It is never reused, so the next attempt resolves again.",
                 db_type,
                 exc_info=True,
             )
