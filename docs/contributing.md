@@ -47,8 +47,6 @@ Python 3.11 to 3.14 are supported. See [Getting started](getting-started.md) for
 
 Branch from `main` and open your pull request against `main`. Name the branch after what it does, in lower case with hyphens — `redshift-connect-timeout`, `loader-says-why-it-returned-none` — rather than with a `feature/` or `fix/` prefix. The name is read in the merge commit, so a phrase saying what changed is worth more than a category.
 
-The repository also contains a `develop` branch. It is dormant — it holds nothing that is not already in `main` — and everything merges to `main` directly. Do not branch from it.
-
 ### 4. Match the code style
 
 We use [Ruff](https://docs.astral.sh/ruff/) for linting and formatting.
