@@ -16,7 +16,7 @@ graph TD
     EMBED["Embeddings\n(sentence-transformers + daemon)"]
     QDRANT["Qdrant (vector store)"]
     LLM["LLM Client\n(Anthropic / OpenAI / LiteLLM)"]
-    CONN["DB Connectors\n(Postgres, MySQL, Snowflake, BigQuery,\nRedshift, MSSQL, DuckDB)"]
+    CONN["DB Connectors\n(Postgres, MySQL, Snowflake, BigQuery,\nRedshift, MSSQL, DuckDB, SQLite)"]
     DOCCONN["Document Connectors\n(PDF, Word, Excel, Notion, Confluence)"]
     PROC["Query Pipeline\n(filter, cluster, parameterize, annotate)"]
     FB["Feedback Store (JSONL)"]
