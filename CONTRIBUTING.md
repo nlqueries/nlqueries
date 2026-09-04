@@ -33,10 +33,6 @@ after what it does, in lower case with hyphens — `redshift-connect-timeout`,
 prefix. The name is read in the merge commit, so a phrase that says what changed
 is worth more than a category.
 
-There is a `develop` branch in the repository. It is dormant: it holds nothing
-that is not already in `main`, and everything merges to `main` directly. Do not
-branch from it.
-
 ---
 
 ## Code Style

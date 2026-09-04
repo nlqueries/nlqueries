@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, "feature/**", "fix/**"]
+    branches: [main, "feature/**", "fix/**"]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   # Run it on demand, against any ref.
   #
   # A GitHub Actions outage on 2026-08-26 created run objects, assigned no
