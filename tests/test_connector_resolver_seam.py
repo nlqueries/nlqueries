@@ -42,8 +42,15 @@ class _Registered:
     def __init__(self) -> None:
         self.credentials: dict[str, Any] | None = None
 
+    closed = False
+
     def connect(self, credentials: dict[str, Any]) -> None:
         self.credentials = credentials
+
+    def close(self) -> None:
+        # The cache disposes what it evicts, and nothing else closes a pooled
+        # connector -- so this is how a leak is observed.
+        self.closed = True
 
     def test_connection(self) -> bool:
         # `nlqueries connect` validates the connection it just opened, so a stub
@@ -450,3 +457,63 @@ def test_a_resolver_that_declines_is_still_cached(connectors_file, registered, m
     assert type(_opened()) is _Registered
     assert type(_opened()) is _Registered
     assert calls == [1], "the second open must have been served from the cache"
+
+
+def test_a_degraded_connector_is_disposed_rather_than_leaked(
+    connectors_file, registered, monkeypatch
+) -> None:
+    """Not caching a degraded connector would have leaked it, one per query.
+
+    Callers are told not to close a pooled connector, so the only things that
+    ever close one are `_cache_get` finding it stale and `_cache_put` replacing
+    it. A connector that reaches neither lives until garbage collection -- so a
+    resolver failing *persistently* rather than transiently would have every
+    query build an engine that nothing closes, which is the connection churn the
+    cache exists to remove.
+
+    Holding it under an unmatchable fingerprint keeps both properties: never
+    reused, always disposed by the open that follows.
+    """
+    monkeypatch.setattr(config, "CONNECTOR_CACHE_ENABLED", True)
+
+    def always_raises(db_type: str, cfg: Any) -> type | None:
+        raise RuntimeError("the configuration service is down and staying down")
+
+    connectors.set_connector_resolver(always_raises)
+    _write(connectors_file)
+
+    first = _opened()
+    assert type(first) is _Registered
+    assert not first.closed
+
+    second = _opened()
+    assert second is not first, "a degraded connector must never be reused"
+    assert first.closed, "the previous degraded connector was not disposed"
+
+
+def test_a_resolver_cannot_mutate_the_entry(connectors_file, registered, caplog) -> None:
+    """The entry is already fingerprinted and credentials are built from it after.
+
+    A resolver adding a default or rewriting `url` would change what the
+    connector is built from without changing the fingerprint it is cached under,
+    so the cache would describe a configuration the connector does not have. The
+    `Mapping` annotation says not to; this makes it impossible, and a resolver
+    that tries is reported like any other misbehaving one rather than silently
+    half-applied.
+    """
+
+    def mutating(db_type: str, cfg: Any) -> type | None:
+        cfg["url"] = "postgresql://smuggled/in"  # noqa: TRY301
+        return _Resolved
+
+    connectors.set_connector_resolver(mutating)
+    _write(connectors_file)
+
+    with caplog.at_level(logging.WARNING, logger=connectors.logger.name):
+        opened = _opened()
+
+    assert type(opened) is _Registered, "the mutation attempt is a resolver fault"
+    assert "connector resolver raised" in caplog.text
+    assert opened.credentials["url"] == "postgresql://user:hunter2@localhost:5432/db", (
+        "the entry the connector was built from must be the one that was read"
+    )

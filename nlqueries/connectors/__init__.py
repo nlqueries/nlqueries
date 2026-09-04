@@ -3,6 +3,7 @@
 
 import logging
 from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Any
 
 from nlqueries.connectors.base import (
@@ -115,6 +116,9 @@ ConnectorResolver = Callable[[str, Mapping[str, Any]], "type[DatabaseConnector] 
 
 _resolver: ConnectorResolver | None = None
 
+#: Handed to a resolver when there is no entry, so it never receives ``None``.
+_NO_ENTRY: Mapping[str, Any] = MappingProxyType({})
+
 
 def set_connector_resolver(resolver: ConnectorResolver | None) -> None:
     """Install *resolver* as the first choice for connector-class resolution.
@@ -181,6 +185,10 @@ def _resolve(
 ) -> tuple[type[DatabaseConnector] | None, bool]:
     """As :func:`connector_class_for`, plus whether resolution *degraded*.
 
+    Package-internal, and deliberately not the public form: only the loader has a
+    cache to keep the flag out of, and every other caller wants a class rather
+    than a pair. :func:`connector_class_for` is this with the flag dropped.
+
     Degraded means the resolver raised and the registry answered in its place, so
     the class is a fallback rather than a decision. The caller needs to know
     because a fallback must not be cached: the connector cache is keyed on the
@@ -196,7 +204,14 @@ def _resolve(
     """
     if _resolver is not None:
         try:
-            resolved = _resolver(db_type, cfg or {})
+            # Read-only, because the loader passes the entry it has already
+            # fingerprinted and will shortly build credentials from. A resolver
+            # that added a default or rewrote `url` would change the credentials
+            # without changing the fingerprint, so the connector would be cached
+            # under a description of a configuration it was not built from. The
+            # `Mapping` annotation states that intention; this enforces it, and a
+            # resolver that tries is reported like any other misbehaving one.
+            resolved = _resolver(db_type, MappingProxyType(dict(cfg)) if cfg else _NO_ENTRY)
         except Exception:  # noqa: BLE001 -- see the docstring
             logger.warning(
                 "The installed connector resolver raised for db_type %r; falling back to "

@@ -470,13 +470,32 @@ def open_connector_for_agent(
     try:
         connector = connector_cls()
         connector.connect(credentials_for(connector_id, cfg))
-        # Not cached when resolution degraded. The fingerprint covers the entry
-        # and the password, not how the class was chosen, so caching a fallback
-        # taken because the resolver raised would hold the wrong class for the
-        # whole TTL -- one momentary fault reinstating the split this seam
-        # removes. Left uncached, the next query resolves again and corrects it.
-        if config.CONNECTOR_CACHE_ENABLED and not resolution_degraded:
-            _cache_put(connector_id, connector, fingerprint)
+        if config.CONNECTOR_CACHE_ENABLED:
+            # Cached under a fingerprint that cannot match when resolution
+            # degraded, rather than not cached at all.
+            #
+            # It must not be *reused*: the fingerprint covers the entry and the
+            # password, not how the class was chosen, so a fallback taken because
+            # the resolver raised would otherwise hold the wrong class for the
+            # whole TTL -- one momentary fault reinstating the split this seam
+            # removes. Storing it under `<fingerprint>:degraded` guarantees the
+            # next open computes something different, so `_cache_get` treats it as
+            # stale and resolves again.
+            #
+            # But it must still be *disposed*, which is why it is not simply left
+            # out. Callers are told not to close a pooled connector, so the only
+            # thing that ever closes one is `_cache_get` finding it stale or
+            # `_cache_put` replacing it. An uncached connector reaches neither and
+            # lives until garbage collection -- so a resolver that fails
+            # persistently rather than transiently would have every query build an
+            # engine that nothing closes, which is the connection churn the cache
+            # was added to remove. Held this way, exactly one degraded connector
+            # exists at a time and each is disposed by the open that follows it.
+            _cache_put(
+                connector_id,
+                connector,
+                f"{fingerprint}:degraded" if resolution_degraded else fingerprint,
+            )
         return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
         # Deliberately not "the connection attempt failed". This block covers
