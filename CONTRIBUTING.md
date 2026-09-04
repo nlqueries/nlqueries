@@ -27,14 +27,15 @@ pip install -e ".[dev]"
 
 ## Branching
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Stable, released code |
-| `develop` | Integration branch for features |
-| `feature/<name>` | Feature work — branch off `develop` |
-| `fix/<name>` | Bug fixes |
+Branch from `main` and open your pull request against `main`. Name the branch
+after what it does, in lower case with hyphens — `redshift-connect-timeout`,
+`loader-says-why-it-returned-none` — rather than with a `feature/` or `fix/`
+prefix. The name is read in the merge commit, so a phrase that says what changed
+is worth more than a category.
 
-Open PRs against `develop`, not `main`.
+There is a `develop` branch in the repository. It is dormant: it holds nothing
+that is not already in `main`, and everything merges to `main` directly. Do not
+branch from it.
 
 ---
 
@@ -65,13 +66,20 @@ All new features need tests. Aim for >90% coverage on new code.
 
 ## Commit Messages
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+A short imperative subject, then a body explaining **why** rather than what —
+the diff already says what. The subject is what a reviewer reads first and what
+shows up in the history, so it should be a sentence about the change, not a
+category:
 
 ```
-feat(connectors): add Snowflake connector
-fix(embeddings): handle empty query list
-docs(cli): update --help text
+Retry the schema fetch when the connection drops mid-introspection
+
+A dropped connection produced a partial schema that looked complete, so the
+knowledge base was generated against half a database without anything failing.
 ```
+
+The project does not use Conventional Commits, and a `feat:` prefix in a pull
+request will be asked about rather than merged.
 
 ---
 

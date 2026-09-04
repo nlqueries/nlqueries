@@ -43,16 +43,11 @@ pip install -e ".[dev]"
 
 Python 3.11 to 3.14 are supported. See [Getting started](getting-started.md) for the runtime prerequisites (an LLM API key, and Qdrant if you are working on embeddings, the semantic cache or document connectors).
 
-### 3. Branch from `develop`
+### 3. Branch from `main`
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Stable, released code |
-| `develop` | Integration branch for features |
-| `feature/<name>` | Feature work — branch off `develop` |
-| `fix/<name>` | Bug fixes |
+Branch from `main` and open your pull request against `main`. Name the branch after what it does, in lower case with hyphens — `redshift-connect-timeout`, `loader-says-why-it-returned-none` — rather than with a `feature/` or `fix/` prefix. The name is read in the merge commit, so a phrase saying what changed is worth more than a category.
 
-Open PRs against `develop`, not `main`.
+The repository also contains a `develop` branch. It is dormant — it holds nothing that is not already in `main` — and everything merges to `main` directly. Do not branch from it.
 
 ### 4. Match the code style
 
@@ -75,15 +70,18 @@ pytest --cov=nlqueries --cov-report=term-missing   # with coverage
 
 All new features need tests. Aim for >90% coverage on new code. Connector tests that need a live engine live under `tests/integration/` and skip themselves when the driver or Docker is not available.
 
-### 6. Write a conventional commit message
+### 6. Write a commit message that explains why
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+A short imperative subject, then a body explaining **why** rather than what — the diff already says what. The subject is what a reviewer reads first and what stays in the history, so make it a sentence about the change:
 
 ```
-feat(connectors): add Snowflake connector
-fix(embeddings): handle empty query list
-docs(cli): update --help text
+Retry the schema fetch when the connection drops mid-introspection
+
+A dropped connection produced a partial schema that looked complete, so the
+knowledge base was generated against half a database without anything failing.
 ```
+
+The project does not use Conventional Commits; a `feat:` prefix will be asked about rather than merged.
 
 ### 7. Open the pull request
 
