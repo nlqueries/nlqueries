@@ -12,12 +12,21 @@ import pytest
 
 
 def _stamp(path: Path) -> tuple[object, ...]:
-    """Enough of *path* to notice any change to it, including a write-and-restore."""
+    """Enough of *path* to notice any write to it, including one that changes nothing.
+
+    Modification time as well as content, because content alone is not enough:
+    rewriting a file with the bytes it already held leaves the hash identical, and
+    so does writing something and putting the original back. Either means a test
+    wrote to the operator's file and got away with it -- against a file holding
+    real connectors, the same write is the destructive one. An earlier version of
+    this compared content only, and missed exactly that.
+    """
     try:
         raw = path.read_bytes()
+        mtime = path.stat().st_mtime_ns
     except OSError:
         return (False,)
-    return (True, len(raw), hashlib.sha256(raw).hexdigest())
+    return (True, mtime, len(raw), hashlib.sha256(raw).hexdigest())
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -37,9 +46,10 @@ def _the_operators_connectors_file_is_left_alone() -> object:
     which is why this is a guard rather than a note in a docstring: the fixture
     that gets it wrong is the fixture that looks right.
 
-    Session-scoped, so it reads the path before any test can patch it. It names
-    no test -- a bisect does that -- but it turns a silent loss into a failure
-    that cannot be missed.
+    Session-scoped, so it reads the path before any test can patch it. Two limits
+    worth knowing rather than discovering: it names no test, so a bisect is what
+    identifies the writer, and it stamps at the first test's setup, which is after
+    collection -- a write during module import happens before it is watching.
     """
     from nlqueries import config
 

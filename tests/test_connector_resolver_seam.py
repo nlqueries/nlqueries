@@ -598,3 +598,115 @@ def test_a_non_class_result_is_degraded_and_so_is_never_reused(
 
     assert type(_opened()) is _Registered
     assert type(_opened()) is _Resolved, "a non-class result must not be cached and reused"
+
+
+# ---------------------------------------------------------------------------
+# Every CLI site, not just the ones a test happened to touch
+# ---------------------------------------------------------------------------
+
+#: Every connector class the CLI built during a case, in order.
+_built: list[type] = []
+
+
+class _Recorded(_Registered):
+    """Records its own construction, so a case can say which class was built."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        _built.append(type(self))
+
+    def extract_schema(self) -> Any:
+        raise RuntimeError("stop here; what was built is what this measures")
+
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> Any:
+        raise RuntimeError("stop here; what was built is what this measures")
+
+
+class _RecordedRegistered(_Recorded):
+    """What the registry holds."""
+
+
+class _RecordedResolved(_Recorded):
+    """What a resolver returns instead."""
+
+
+def _doctor() -> None:
+    from nlqueries.cli import main as cli_main
+
+    cli_main._check_connectors(None)  # noqa: SLF001
+
+
+def _run(*args: str) -> None:
+    from click.testing import CliRunner
+    from nlqueries.cli.main import cli
+
+    CliRunner().invoke(cli, list(args))
+
+
+#: One entry per resolution site in ``cli/main.py`` that reads an entry.
+#:
+#: ``connect`` is covered above and is absent here because it has no entry to
+#: read; the ``query`` command's site is covered by
+#: ``tests/security/test_execution_boundary.py``.
+_CLI_SITES = {
+    "doctor": _doctor,
+    "extract-schema": lambda: _run("extract-schema", _AGENT),
+    "process-history": lambda: _run(
+        "process-history", _AGENT, "--days", "30", "--no-annotate", "--no-embed"
+    ),
+    "export-kb": lambda: _run("export-kb", _AGENT),
+    "kb-stats": lambda: _run("kb-stats", _AGENT),
+}
+
+
+@pytest.mark.parametrize("site", sorted(_CLI_SITES))
+def test_every_cli_site_builds_the_resolved_class(
+    site: str, connectors_file, monkeypatch, tmp_path: Path
+) -> None:
+    """The invariant this whole seam exists to establish, at each site that has one.
+
+    Each of these was a single mechanical line, and each would survive a revert to
+    ``CONNECTOR_REGISTRY.get`` with the suite green: the tests that touch them
+    substitute into the registry itself, so they pass whichever way the class is
+    found, and nothing installs a resolver on those paths. A change that means
+    "resolution happens in one place" is worth only as much as the coverage that
+    would notice it stopping.
+
+    What is asserted is the class the command actually constructed, so a site that
+    resolved correctly and then built something else would still fail. The
+    commands are allowed to fail afterwards -- the stub refuses to extract a
+    schema -- because what happens after the connector is built is not what this
+    measures.
+    """
+    monkeypatch.setattr(config, "KB_PATH", tmp_path / "kb")
+    monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _RecordedRegistered)
+    _write(connectors_file)
+    _built.clear()
+
+    connectors.set_connector_resolver(lambda db_type, cfg: _RecordedResolved)
+    _CLI_SITES[site]()
+
+    assert _built, f"{site} never built a connector, so it cannot be measuring resolution"
+    assert _built == [_RecordedResolved] * len(_built), (
+        f"{site} built {_built}, so it did not go through the seam"
+    )
+
+
+@pytest.mark.parametrize("site", sorted(_CLI_SITES))
+def test_every_cli_site_falls_back_to_the_registry(
+    site: str, connectors_file, monkeypatch, tmp_path: Path
+) -> None:
+    """The control. A case that never reached resolution would pass the test above
+    against a resolver returning the subclass for everything, and would pass this
+    one too -- but only one of the two can pass if the built class is asserted
+    both ways, which is why both exist."""
+    monkeypatch.setattr(config, "KB_PATH", tmp_path / "kb")
+    monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _RecordedRegistered)
+    _write(connectors_file)
+    _built.clear()
+
+    connectors.set_connector_resolver(lambda db_type, cfg: None)
+    _CLI_SITES[site]()
+
+    assert _built == [_RecordedRegistered] * len(_built)
+    assert _built, f"{site} never built a connector"
