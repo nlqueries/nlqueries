@@ -684,11 +684,19 @@ def _query() -> None:
         sql_is_valid=True,
         execution_mode="execute_read_only",
     )
+    # `--no-session`, because `--session` defaults to on and the session branch
+    # runs *before* the resolution site: `_save_turn` writes through
+    # `private_dir(STATE_DIR / "sessions")`, with `STATE_DIR` bound at import from
+    # `nlqueries.config`, so nothing this file redirects reaches it. Left on, each
+    # run appends turns to the operator's real session log -- which is the side
+    # effect `_redirect_kb` and the conftest guard exist to prevent, and it wrote
+    # fourteen of them here before review caught it. Turning it off changes
+    # nothing this case measures.
     with patch(
         "nlqueries.orchestrator.sync_runner.run_query_sync",
         return_value=result,
     ):
-        _run("query", _AGENT, "how many?")
+        _run("query", _AGENT, "how many?", "--no-session")
 
 
 #: One entry per resolution site in ``cli/main.py`` that reads an entry.
