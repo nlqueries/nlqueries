@@ -2,7 +2,7 @@
 
 **NLQueries — Individual Contributor License Agreement**
 
-Thank you for your interest in contributing to NLQueries (the "Project"), maintained by Theorence Labs Private Ltd ("Licensor"). This Contributor License Agreement ("Agreement") clarifies the intellectual property rights granted with contributions from any individual or entity to the Project.
+Thank you for your interest in contributing to NLQueries (the "Project"), maintained by Theorence Labs Private Limited ("Licensor"). This Contributor License Agreement ("Agreement") clarifies the intellectual property rights granted with contributions from any individual or entity to the Project.
 
 By submitting a contribution to this Project, you agree to the following terms.
 
@@ -20,7 +20,7 @@ By submitting a contribution to this Project, you agree to the following terms.
 
 ## 2. Grant of Copyright License
 
-You hereby grant to Theorence Labs Private Ltd and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute your Contributions and such derivative works in any form and under any license terms, including commercially.
+You hereby grant to Theorence Labs Private Limited and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute your Contributions and such derivative works in any form and under any license terms, including commercially.
 
 This includes the right to relicense your Contribution as part of the Project under any license, including proprietary licenses used for commercial editions of NLQueries.
 
@@ -28,7 +28,7 @@ This includes the right to relicense your Contribution as part of the Project un
 
 ## 3. Grant of Patent License
 
-You hereby grant to Theorence Labs Private Ltd and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer the Project, where such license applies only to those patent claims licensable by you that are necessarily infringed by your Contribution alone or by the combination of your Contribution with the Project to which you submitted the Contribution.
+You hereby grant to Theorence Labs Private Limited and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer the Project, where such license applies only to those patent claims licensable by you that are necessarily infringed by your Contribution alone or by the combination of your Contribution with the Project to which you submitted the Contribution.
 
 ---
 
@@ -83,5 +83,5 @@ This Agreement is signed electronically via the CLA Assistant bot on GitHub. Whe
 ---
 
 *NLQueries — https://github.com/nlqueries/nlqueries*
-*Licensor: Theorence Labs Private Ltd — legal@nlqueries.com*
+*Licensor: Theorence Labs Private Limited — legal@nlqueries.com*
 *Last updated: September 2026*
