@@ -252,6 +252,33 @@ def _resolve(
             )
             return CONNECTOR_REGISTRY.get(db_type), True
         if resolved is not None:
+            if not isinstance(resolved, type):
+                # A class, not an instance. `return MyConnector()` for
+                # `return MyConnector` is the easy slip, and without this it
+                # passes straight through to `connector_cls()` in the loader,
+                # where the TypeError is caught by the same handler that reports
+                # a missing driver or a malformed entry -- "usually its
+                # configuration rather than the server", pointing the operator at
+                # the connectors file with nothing naming the resolver. Every way
+                # a resolver can be wrong should be reported as a resolver fault,
+                # which is the whole reason the raising path is handled here.
+                #
+                # Deliberately not also `issubclass(resolved, DatabaseConnector)`.
+                # `CONNECTOR_REGISTRY` is annotated as holding such classes and is
+                # not checked at runtime -- the suite substitutes duck-typed
+                # classes into it, and they work -- so requiring the base class of
+                # a resolver alone would make it stricter than the registry it
+                # stands in for, and would refuse a class that would have opened.
+                logger.warning(
+                    "The installed connector resolver returned %r for db_type %r, which is "
+                    "not a class; a resolver returns the connector class to build, not an "
+                    "instance of it. Falling back to the registry, which is wrong for any "
+                    "authentication method the resolver exists to select. It is never "
+                    "reused, so the next attempt resolves again.",
+                    type(resolved).__name__,
+                    db_type,
+                )
+                return CONNECTOR_REGISTRY.get(db_type), True
             return resolved, False
     return CONNECTOR_REGISTRY.get(db_type), False
 

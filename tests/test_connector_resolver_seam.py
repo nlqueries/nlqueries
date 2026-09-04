@@ -550,3 +550,51 @@ def test_a_resolver_cannot_mutate_a_nested_value_either(connectors_file, registe
     assert opened.credentials["options"] == {"sslmode": "verify-full"}, (
         "the connector must be built from the entry as read, not as the resolver left it"
     )
+
+
+def test_a_resolver_returning_an_instance_is_reported_as_a_resolver_fault(
+    connectors_file, registered, caplog
+) -> None:
+    """`return MyConnector()` for `return MyConnector` is the easy slip.
+
+    Without a check it passes straight through to `connector_cls()` in the
+    loader, where the TypeError is caught by the same handler that reports a
+    missing driver or a malformed entry -- "usually its configuration rather than
+    the server". That sends the operator to the connectors file, and nothing in
+    the message mentions a resolver at all, which is the opposite of the
+    diagnosis the raising path goes to such trouble to produce.
+
+    A resolver can be wrong in more than one way and all of them should read the
+    same, so this is handled exactly as raising is: named, fallen back from, and
+    not reused.
+    """
+    connectors.set_connector_resolver(lambda db_type, cfg: _Resolved())
+    _write(connectors_file)
+
+    with caplog.at_level(logging.WARNING, logger=connectors.logger.name):
+        assert type(_opened()) is _Registered
+    assert "not a class" in caplog.text
+    assert "_Resolved" in caplog.text, "the message must name what was returned"
+
+
+def test_a_non_class_result_is_degraded_and_so_is_never_reused(
+    connectors_file, registered, monkeypatch
+) -> None:
+    """The control for treating it 'exactly as raising is treated'.
+
+    Warning about it and then caching the fallback would leave the wrong class
+    serving that connector for the whole TTL, which is the failure the degraded
+    path exists to prevent -- so the classification matters, not just the message.
+    """
+    monkeypatch.setattr(config, "CONNECTOR_CACHE_ENABLED", True)
+    calls: list[int] = []
+
+    def resolver(db_type: str, cfg: Any) -> Any:
+        calls.append(1)
+        return _Resolved() if len(calls) == 1 else _Resolved
+
+    connectors.set_connector_resolver(resolver)
+    _write(connectors_file)
+
+    assert type(_opened()) is _Registered
+    assert type(_opened()) is _Resolved, "a non-class result must not be cached and reused"
