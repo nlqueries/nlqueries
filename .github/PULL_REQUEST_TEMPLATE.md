@@ -19,7 +19,7 @@ Closes #
 - [ ] Tests added/updated for this change (`pytest`)
 - [ ] `ruff check .` and `mypy nlqueries/` pass locally
 - [ ] Docs updated if this changes user-facing behavior (README.md / docs/)
-- [ ] This branch targets `develop`, not `main` (see [CONTRIBUTING.md#branching](../CONTRIBUTING.md#branching))
+- [ ] This branch targets `main` (see [CONTRIBUTING.md#branching](../CONTRIBUTING.md#branching))
 
 ## How was this tested?
 

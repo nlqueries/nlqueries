@@ -13,4 +13,4 @@ A short list of what's actively planned or being researched. No committed dates 
 
 ## Not currently planned
 
-- We don't have a timeline for expanding beyond the current seven database connectors or five document connectors. If you need one that's missing, an issue with your use case helps prioritize it.
+- We don't have a timeline for expanding beyond the current eight database connectors or five document connectors. If you need one that's missing, an issue with your use case helps prioritize it.

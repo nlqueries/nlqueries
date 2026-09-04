@@ -20,7 +20,7 @@
 
 | Capability | Description |
 |---|---|
-| **Database connectors** | PostgreSQL, MySQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB — plus a generic SQLAlchemy connector for any other SQLAlchemy-reachable database, driven by a connection URL |
+| **Database connectors** | PostgreSQL, MySQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB, SQLite — plus a generic SQLAlchemy connector for any other SQLAlchemy-reachable database, driven by a connection URL |
 | **Document connectors** | PDF, Word, Excel, Notion, Confluence — ask questions over ingested documents with citations |
 | **Query pipeline** | Filter, cluster, and parameterize query history into reusable `QueryCapsule` templates |
 | **Knowledge base** | Auto-generated YAML schema + capsule file, with coverage reporting via `kb-stats` |
