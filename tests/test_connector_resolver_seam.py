@@ -44,6 +44,11 @@ class _Registered:
     def connect(self, credentials: dict[str, Any]) -> None:
         self.credentials = credentials
 
+    def test_connection(self) -> bool:
+        # `nlqueries connect` validates the connection it just opened, so a stub
+        # without this fails the command for a reason unrelated to resolution.
+        return True
+
 
 class _Resolved(_Registered):
     """Stands in for the subclass a deployment resolves for an auth method."""
@@ -273,3 +278,91 @@ def test_removal_does_not_reach_a_cached_connector(
     assert type(_opened()) is _Registered, (
         "invalidating the cache is what actually restores the registry class"
     )
+
+
+# ---------------------------------------------------------------------------
+# Registration, where there is no entry yet
+# ---------------------------------------------------------------------------
+
+
+def test_registration_resolves_from_an_entry_shaped_mapping(
+    connectors_file, registered, monkeypatch
+) -> None:
+    """``nlqueries connect`` is the one site with no entry to hand the resolver.
+
+    It builds one instead of passing its own option dict, so that a resolver
+    never has to ask which caller it is serving. Nothing else in the suite
+    invokes this command, so without this test an edit dropping ``db_type`` or
+    ``url`` from that mapping -- or this site quietly reverting to
+    ``CONNECTOR_REGISTRY.get`` -- would leave the suite green while
+    reintroducing exactly the split this change exists to remove: the connection
+    validated through one class and every later path using another.
+
+    What is asserted is the class ``connect`` actually built, plus the shape the
+    resolver was given, since a resolver that ignored *cfg* would pass on the
+    class assertion alone.
+    """
+    from click.testing import CliRunner
+    from nlqueries.cli.main import cli
+
+    seen: list[dict[str, Any]] = []
+
+    def resolver(db_type: str, cfg: Any) -> type | None:
+        seen.append(dict(cfg))
+        return _Resolved if cfg.get("db_type") == "postgres" else None
+
+    connectors.set_connector_resolver(resolver)
+    monkeypatch.setattr("nlqueries.cli.main._save_password", lambda *a, **k: False)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "connect",
+            "postgres",
+            "--host",
+            "db.internal",
+            "--database",
+            "analytics",
+            "--user",
+            "alice",
+            "--password",
+            "hunter2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen, "the seam was not consulted at registration"
+
+    entry = seen[0]
+    assert entry["db_type"] == "postgres", "a resolver keys on the db-type; it must be there"
+    assert entry["url"].startswith("postgresql"), "an entry always carries its URL"
+    assert "password" not in entry, (
+        "an entry has no discrete password -- it lives inside the URL, and this "
+        "site must not be the one place a resolver sees it separately"
+    )
+    assert "hunter2" in entry["url"], "the password is reachable where it always is"
+
+
+def test_registration_falls_back_to_the_registry(connectors_file, registered, monkeypatch) -> None:
+    """The control. A resolver with no opinion at registration must leave the
+    command validating through the registry class, exactly as before the seam."""
+    from click.testing import CliRunner
+    from nlqueries.cli.main import cli
+
+    built: list[type] = []
+
+    class _Recording(_Registered):
+        def __init__(self) -> None:
+            super().__init__()
+            built.append(type(self))
+
+    monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _Recording)
+    monkeypatch.setattr("nlqueries.cli.main._save_password", lambda *a, **k: False)
+    connectors.set_connector_resolver(lambda db_type, cfg: None)
+
+    result = CliRunner().invoke(
+        cli, ["connect", "postgres", "--database", "analytics", "--user", "a", "--password", "p"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert built == [_Recording]
