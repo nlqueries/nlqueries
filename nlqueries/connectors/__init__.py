@@ -133,6 +133,10 @@ def set_connector_resolver(resolver: ConnectorResolver | None) -> None:
       cached under the previous resolver's class; it keeps being served under
       that class until its entry changes or the TTL expires.
 
+    A resolver that *raises* is the exception to the exception: the fallback taken
+    in its place is deliberately not cached, so a transient fault corrects itself
+    on the next attempt rather than being held for the TTL.
+
     A connector whose settings change is rebuilt by itself, because the entry is
     in the fingerprint. Nothing else is. Call
     :func:`nlqueries.connectors.loader.invalidate_connector_cache` around any
@@ -169,6 +173,27 @@ def connector_class_for(
     about, so a fault in the extension must not be able to take down a
     password-authenticated Postgres connector that would otherwise have opened.
     """
+    return _resolve(db_type, cfg)[0]
+
+
+def _resolve(
+    db_type: str, cfg: Mapping[str, Any] | None = None
+) -> tuple[type[DatabaseConnector] | None, bool]:
+    """As :func:`connector_class_for`, plus whether resolution *degraded*.
+
+    Degraded means the resolver raised and the registry answered in its place, so
+    the class is a fallback rather than a decision. The caller needs to know
+    because a fallback must not be cached: the connector cache is keyed on the
+    entry and the password, so a resolver that fails for a moment -- one
+    consulting a configuration service, say -- would otherwise pin the registry
+    class for the whole TTL of every connector the fallback can still open. One
+    transient fault would reinstate exactly the split this seam removes, and the
+    only trace would be a single warning.
+
+    Declining to resolve is not degraded. A resolver returning ``None`` has
+    answered, and its answer is "the registry", which is as cacheable as any
+    other.
+    """
     if _resolver is not None:
         try:
             resolved = _resolver(db_type, cfg or {})
@@ -177,14 +202,14 @@ def connector_class_for(
                 "The installed connector resolver raised for db_type %r; falling back to "
                 "the registry. The connector will be opened with the class registered for "
                 "its type, which is wrong for any authentication method the resolver "
-                "exists to select.",
+                "exists to select. It is not cached, so the next attempt resolves again.",
                 db_type,
                 exc_info=True,
             )
-        else:
-            if resolved is not None:
-                return resolved
-    return CONNECTOR_REGISTRY.get(db_type)
+            return CONNECTOR_REGISTRY.get(db_type), True
+        if resolved is not None:
+            return resolved, False
+    return CONNECTOR_REGISTRY.get(db_type), False
 
 
 __all__ = [

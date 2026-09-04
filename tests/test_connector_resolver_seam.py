@@ -26,6 +26,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import nlqueries.cli.main as cli_main
 import pytest
 import yaml
 from nlqueries import config, connectors
@@ -68,8 +69,22 @@ def _no_resolver_leaks():
 
 @pytest.fixture
 def connectors_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A temporary connectors file, redirected in *both* places that name it.
+
+    `nlqueries.cli.main` binds `CONNECTORS_FILE` at import, so patching
+    `config.CONNECTORS_FILE` alone redirects every reader and none of the CLI's
+    writes. That is not a cosmetic gap: `_save_connector` reads through
+    `load_connectors_for_update`, which *is* dynamic and returns `{}` for the
+    empty temporary path, then writes the result to the module-level name -- so a
+    test driving `nlqueries connect` would replace the operator's real
+    `~/.nlqueries/connectors.yaml` with its own single entry, destroying every
+    connector registered on the machine running the suite.
+
+    `tests/test_loader_reports_why.py` rebinds both for the same reason.
+    """
     path = tmp_path / "connectors.yaml"
     monkeypatch.setattr(config, "CONNECTORS_FILE", path)
+    monkeypatch.setattr(cli_main, "CONNECTORS_FILE", path)
     monkeypatch.setattr(config, "CONNECTOR_CACHE_ENABLED", False)
     return path
 
@@ -332,6 +347,7 @@ def test_registration_resolves_from_an_entry_shaped_mapping(
 
     assert result.exit_code == 0, result.output
     assert seen, "the seam was not consulted at registration"
+    _assert_registration_stayed_in(connectors_file)
 
     entry = seen[0]
     assert entry["db_type"] == "postgres", "a resolver keys on the db-type; it must be there"
@@ -366,3 +382,71 @@ def test_registration_falls_back_to_the_registry(connectors_file, registered, mo
 
     assert result.exit_code == 0, result.output
     assert built == [_Recording]
+    _assert_registration_stayed_in(connectors_file)
+
+
+def _assert_registration_stayed_in(path: Path) -> None:
+    """`connect` writes, so a test driving it must be held to writing here.
+
+    `nlqueries.cli.main` binds `CONNECTORS_FILE` at import and the fixture has to
+    rebind both names. Miss one and the command reads the temporary file, finds
+    it empty, and writes its single entry over the operator's real
+    `~/.nlqueries/connectors.yaml` -- destroying every connector on the machine
+    running the suite, while the test passes. Nothing else in this file writes at
+    all, so this is the one place that failure can be caught.
+    """
+    written = yaml.safe_load(path.read_text()) or {}
+    assert written, "the command wrote nothing here, so it wrote somewhere else"
+    assert path == config.CONNECTORS_FILE
+    assert path == cli_main.CONNECTORS_FILE, (
+        "the CLI's own binding was not redirected; its write escaped the fixture"
+    )
+
+
+def test_a_transient_resolver_fault_is_not_cached(connectors_file, registered, monkeypatch) -> None:
+    """A fallback taken because the resolver raised must not be pinned by the cache.
+
+    The fingerprint covers the entry and the password, not how the class was
+    chosen. So without this, a resolver that fails for one call -- one consulting
+    a configuration service, say -- would hold the registry class for the whole
+    TTL of every connector its fallback can still open, and the only trace would
+    be a single warning. One momentary fault would reinstate exactly the split
+    this seam removes.
+
+    Uncached, the next query resolves again and corrects itself.
+    """
+    monkeypatch.setattr(config, "CONNECTOR_CACHE_ENABLED", True)
+    calls: list[int] = []
+
+    def resolver(db_type: str, cfg: Any) -> type | None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("configuration service is briefly unreachable")
+        return _Resolved
+
+    connectors.set_connector_resolver(resolver)
+    _write(connectors_file)
+
+    assert type(_opened()) is _Registered, "the fallback is the registry class"
+    assert type(_opened()) is _Resolved, (
+        "the second attempt must resolve again rather than be served the cached fallback"
+    )
+
+
+def test_a_resolver_that_declines_is_still_cached(connectors_file, registered, monkeypatch) -> None:
+    """The control. Declining is an answer -- "use the registry" -- and is as
+    cacheable as any other, so the exception path must be what skips the cache
+    and not merely "the registry class was used"."""
+    monkeypatch.setattr(config, "CONNECTOR_CACHE_ENABLED", True)
+    calls: list[int] = []
+
+    def resolver(db_type: str, cfg: Any) -> type | None:
+        calls.append(1)
+        return None
+
+    connectors.set_connector_resolver(resolver)
+    _write(connectors_file)
+
+    assert type(_opened()) is _Registered
+    assert type(_opened()) is _Registered
+    assert calls == [1], "the second open must have been served from the cache"

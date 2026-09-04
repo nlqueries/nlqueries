@@ -27,7 +27,7 @@ from nlqueries import config
 from nlqueries.connectors import (
     CONNECTOR_REGISTRY,
     DatabaseConnector,
-    connector_class_for,
+    _resolve,
 )
 from nlqueries.connectors.base import PermittedConnector
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
@@ -456,7 +456,7 @@ def open_connector_for_agent(
     # in it selects a subclass whose `connect()` performs a different handshake
     # -- and reading the registry here is what made the query path disagree with
     # every other path that opens a connector.
-    connector_cls = connector_class_for(db_type, cfg)
+    connector_cls, resolution_degraded = _resolve(db_type, cfg)
     if connector_cls is None:
         logger.warning(
             "No connector could be opened for agent %s: db_type %r is not registered. "
@@ -470,7 +470,12 @@ def open_connector_for_agent(
     try:
         connector = connector_cls()
         connector.connect(credentials_for(connector_id, cfg))
-        if config.CONNECTOR_CACHE_ENABLED:
+        # Not cached when resolution degraded. The fingerprint covers the entry
+        # and the password, not how the class was chosen, so caching a fallback
+        # taken because the resolver raised would hold the wrong class for the
+        # whole TTL -- one momentary fault reinstating the split this seam
+        # removes. Left uncached, the next query resolves again and corrects it.
+        if config.CONNECTOR_CACHE_ENABLED and not resolution_degraded:
             _cache_put(connector_id, connector, fingerprint)
         return PermittedConnector(connector, execution)
     except Exception:  # noqa: BLE001
