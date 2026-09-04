@@ -93,13 +93,13 @@ def test_no_execute_reaches_the_orchestrator() -> None:
     )
 
 
-def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
-    """SEC-08 — the July review's finding 3, still live on this path.
+def _statements_the_cli_executed(sql: str, *, sql_is_valid: bool) -> list[str]:
+    """Run ``nlqueries query`` against a spy connector; return what it executed.
 
-    `orchestrator.py` gates its own execution on `is_valid`. `AgentQueryResult`
-    carries no validity field, so by the time the CLI sees the result the only
-    signal left is `sql_result is None` — which is exactly the state a rejected
-    statement produces. The orchestrator's fix made this *more* reachable.
+    Shared by the pair below so the refusal and its control are measured through
+    one harness. The connector is substituted in ``CONNECTOR_REGISTRY`` itself
+    rather than by rebinding a name in ``cli.main``, because the CLI resolves
+    through ``connector_class_for``, which reads that mapping in its own module.
     """
     from nlqueries.cli.main import cli
 
@@ -113,27 +113,65 @@ def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
             executed.append(sql)
             return QueryResult(["x"], [[1]], 1, 1.0, None)
 
-    rejected = "SELECT lab.mark('validator-said-no')"
-
     with (
         patch(
             "nlqueries.orchestrator.sync_runner.run_query_sync",
-            return_value=_result(sql=rejected, sql_result=None, sql_is_valid=False),
+            return_value=_result(sql=sql, sql_result=None, sql_is_valid=sql_is_valid),
         ),
         patch("nlqueries.cli.main._resolve_alias", side_effect=lambda a: a),
         patch(
             "nlqueries.cli.main._require_connector",
             return_value={"db_type": "postgres", "url": "postgresql://u:p@127.0.0.1:1/db"},
         ),
-        patch.dict("nlqueries.cli.main.CONNECTOR_REGISTRY", {"postgres": _Connector}, clear=False),
+        patch.dict(
+            "nlqueries.connectors.CONNECTOR_REGISTRY", {"postgres": _Connector}, clear=False
+        ),
         patch("nlqueries.cli.main._load_password", return_value=""),
     ):
         CliRunner().invoke(cli, ["query", "demo_agent", "how many?"])
+
+    return executed
+
+
+def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
+    """SEC-08 — the July review's finding 3, still live on this path.
+
+    `orchestrator.py` gates its own execution on `is_valid`. `AgentQueryResult`
+    carries no validity field, so by the time the CLI sees the result the only
+    signal left is `sql_result is None` — which is exactly the state a rejected
+    statement produces. The orchestrator's fix made this *more* reachable.
+    """
+    executed = _statements_the_cli_executed(
+        "SELECT lab.mark('validator-said-no')", sql_is_valid=False
+    )
 
     assert executed == [], (
         "the CLI executed SQL the validator rejected: validity is not carried on "
         "AgentQueryResult, so `sql_result is None` reads as 'not run yet' rather "
         "than 'refused'"
+    )
+
+
+def test_the_cli_does_reach_the_connector_when_the_sql_is_valid() -> None:
+    """The control for the test above, which asserts a negative.
+
+    "Nothing was executed" is also what a harness that never reached a connector
+    at all produces — a substituted class the CLI does not resolve, a stubbed
+    helper that makes it return early — and the assertion cannot tell the two
+    apart. Verified: with the connector registered under a db-type the CLI does
+    not ask for, the refusal test still passes, proving it alone measures
+    nothing about resolution.
+
+    So the same harness is run with the statement accepted, and the connector
+    must see it. This is also what holds the CLI's resolution honest: it reaches
+    a class substituted in ``CONNECTOR_REGISTRY``, through the seam rather than
+    by reading the registry itself.
+    """
+    executed = _statements_the_cli_executed(_SQL, sql_is_valid=True)
+
+    assert executed == [_SQL], (
+        "the CLI did not execute SQL the validator accepted, so the refusal test "
+        "beside this one is passing without reaching a connector"
     )
 
 

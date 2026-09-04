@@ -38,7 +38,7 @@ from rich.table import Table
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
-from nlqueries.connectors import CONNECTOR_REGISTRY
+from nlqueries.connectors import connector_class_for
 from nlqueries.connectors.loader import credentials_for
 from nlqueries.state_files import private_dir, restrict
 
@@ -377,7 +377,7 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
         label_name = alias if alias else cid
         service = f"Database ({label_name})"
 
-        connector_cls = CONNECTOR_REGISTRY.get(db_type.lower())
+        connector_cls = connector_class_for(db_type.lower(), cfg)
         if connector_cls is None:
             results.append(
                 _CheckResult(service, "skip", f"no connector class for db_type '{db_type}'")
@@ -696,29 +696,32 @@ def connect(
             f"[cyan]{host}:{resolved_port}/{database}[/cyan] …"
         )
 
-    connector_cls = CONNECTOR_REGISTRY.get(db_type_l)
+    # Built before the class is resolved, not inside the call below, because the
+    # class can depend on the credentials: an authentication method present in
+    # them selects a subclass whose `connect()` performs a different handshake.
+    # Pass through every credential field the connector might need — extra keys
+    # are simply ignored by connectors that don't use them.
+    credentials: dict[str, Any] = {
+        "host": host,
+        "port": resolved_port,
+        "database": database,
+        "user": user,
+        "password": password,
+        "account": account,
+        "warehouse": warehouse,
+        "schema": db_schema,
+        "project_id": project_id,
+        "dataset_id": dataset_id,
+        "service_account_json": service_account_json,
+    }
+    connector_cls = connector_class_for(db_type_l, credentials)
 
     try:
         if connector_cls is not None:
-            # Use the registered DatabaseConnector implementation (e.g. PostgresConnector,
-            # SnowflakeConnector). Pass through every credential field the connector might
-            # need — extra keys are simply ignored by connectors that don't use them.
+            # Use the resolved DatabaseConnector implementation (e.g. PostgresConnector,
+            # SnowflakeConnector).
             connector = connector_cls()
-            connector.connect(
-                {
-                    "host": host,
-                    "port": resolved_port,
-                    "database": database,
-                    "user": user,
-                    "password": password,
-                    "account": account,
-                    "warehouse": warehouse,
-                    "schema": db_schema,
-                    "project_id": project_id,
-                    "dataset_id": dataset_id,
-                    "service_account_json": service_account_json,
-                }
-            )
+            connector.connect(credentials)
             if not connector.test_connection():
                 raise RuntimeError("test_connection() returned False")
         else:
@@ -1098,7 +1101,7 @@ def extract_schema(connector_id: str) -> None:
 
     console.print(f"[bold]Extracting schema[/bold] for connector [cyan]{connector_id}[/cyan] …")
 
-    connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
 
     if connector_cls is not None:
         # Use the registered DatabaseConnector implementation (e.g. PostgresConnector).
@@ -1379,7 +1382,7 @@ def process_history(
         f"(last [bold]{days}[/bold] days) …"
     )
 
-    connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
     if connector_cls is None:
         err_console.print(
             f"[bold red]✗ No connector registered for db_type '{cfg.get('db_type')}'.[/bold red]"
@@ -1595,7 +1598,7 @@ def export_kb(
 
     console.print(f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …")
 
-    connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
 
     if connector_cls is not None:
         # Registered connector path — use SchemaSpec + kb_generator
@@ -2431,7 +2434,7 @@ def query(
     ):
         try:
             cfg = _require_connector(agent_id)
-            connector_cls = CONNECTOR_REGISTRY.get(cfg.get("db_type", "").lower())
+            connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
             if connector_cls is None:
                 err_console.print(
                     f"[yellow]⚠ No connector registered for db_type "
@@ -3073,7 +3076,7 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
     connector: Any = None
     cfg = _load_connectors().get(agent_id)
     if cfg is not None:
-        connector_cls = CONNECTOR_REGISTRY.get((cfg.get("db_type") or "").lower())
+        connector_cls = connector_class_for((cfg.get("db_type") or "").lower(), cfg)
         if connector_cls is not None:
             try:
                 connector = connector_cls()

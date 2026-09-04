@@ -24,7 +24,11 @@ from typing import Any
 import yaml
 
 from nlqueries import config
-from nlqueries.connectors import CONNECTOR_REGISTRY, DatabaseConnector
+from nlqueries.connectors import (
+    CONNECTOR_REGISTRY,
+    DatabaseConnector,
+    connector_class_for,
+)
 from nlqueries.connectors.base import PermittedConnector
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 
@@ -447,7 +451,12 @@ def open_connector_for_agent(
     # then raises on. The default only covers an absent key, not a present one
     # holding nothing.
     db_type = str(cfg.get("db_type") or "").lower()
-    connector_cls = CONNECTOR_REGISTRY.get(db_type)
+    # Through the seam, not the registry. The entry is passed because the class
+    # can depend on more than the db-type -- an authentication method recorded
+    # in it selects a subclass whose `connect()` performs a different handshake
+    # -- and reading the registry here is what made the query path disagree with
+    # every other path that opens a connector.
+    connector_cls = connector_class_for(db_type, cfg)
     if connector_cls is None:
         logger.warning(
             "No connector could be opened for agent %s: db_type %r is not registered. "
