@@ -517,3 +517,36 @@ def test_a_resolver_cannot_mutate_the_entry(connectors_file, registered, caplog)
     assert opened.credentials["url"] == "postgresql://user:hunter2@localhost:5432/db", (
         "the entry the connector was built from must be the one that was read"
     )
+
+
+def test_a_resolver_cannot_mutate_a_nested_value_either(connectors_file, registered) -> None:
+    """The read-only wrapper is skin deep; the copy underneath it is not.
+
+    `MappingProxyType` refuses `cfg["url"] = ...` and does nothing whatever about
+    `cfg["options"]["sslmode"] = ...`, which reaches the loader's own dict through
+    the shared nested value and raises nothing on the way. That is the same
+    failure the wrapper exists to prevent, arriving one level down and more
+    quietly, since there is no warning to notice.
+
+    No entry written by `_save_connector` nests today. Entries are also
+    hand-edited YAML, and the enterprise projection passes through whatever a
+    connector was configured with, so this is a guarantee rather than a
+    restatement of current shapes.
+    """
+    seen: list[Any] = []
+
+    def nesting(db_type: str, cfg: Any) -> type | None:
+        cfg["options"]["sslmode"] = "disable"
+        seen.append(cfg["options"]["sslmode"])
+        return _Resolved
+
+    connectors.set_connector_resolver(nesting)
+    _write(connectors_file, options={"sslmode": "verify-full"})
+
+    opened = _opened()
+
+    assert seen == ["disable"], "the resolver's own copy is writable, so it did not raise"
+    assert type(opened) is _Resolved, "and the resolution itself still succeeded"
+    assert opened.credentials["options"] == {"sslmode": "verify-full"}, (
+        "the connector must be built from the entry as read, not as the resolver left it"
+    )

@@ -1,6 +1,7 @@
 # nlqueries-core — OSS (BSL 1.1)
 # This package must NEVER import from the enterprise layer.
 
+import copy
 import logging
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -120,6 +121,20 @@ _resolver: ConnectorResolver | None = None
 _NO_ENTRY: Mapping[str, Any] = MappingProxyType({})
 
 
+def _read_only(cfg: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """A view of *cfg* a resolver cannot change the loader's entry through.
+
+    Deep-copied, then wrapped: the wrapper refuses writes at the top level, and
+    the copy means a write further down lands on something the loader does not
+    hold. Entries are small YAML mappings, and this runs once per cache miss
+    rather than per query, so the copy costs nothing beside opening a database
+    connection.
+    """
+    if not cfg:
+        return _NO_ENTRY
+    return MappingProxyType(copy.deepcopy(dict(cfg)))
+
+
 def set_connector_resolver(resolver: ConnectorResolver | None) -> None:
     """Install *resolver* as the first choice for connector-class resolution.
 
@@ -204,14 +219,23 @@ def _resolve(
     """
     if _resolver is not None:
         try:
-            # Read-only, because the loader passes the entry it has already
-            # fingerprinted and will shortly build credentials from. A resolver
-            # that added a default or rewrote `url` would change the credentials
-            # without changing the fingerprint, so the connector would be cached
-            # under a description of a configuration it was not built from. The
-            # `Mapping` annotation states that intention; this enforces it, and a
-            # resolver that tries is reported like any other misbehaving one.
-            resolved = _resolver(db_type, MappingProxyType(dict(cfg)) if cfg else _NO_ENTRY)
+            # Read-only *and* deep-copied, because the loader passes the entry it
+            # has already fingerprinted and will shortly build credentials from.
+            # A resolver that added a default or rewrote `url` would change the
+            # credentials without changing the fingerprint, so the connector would
+            # be cached under a description of a configuration it was not built
+            # from.
+            #
+            # The proxy alone is only skin deep: it refuses `cfg["url"] = ...` and
+            # does nothing about `cfg["options"]["sslmode"] = ...`, which reaches
+            # the loader's own dict through the shared nested value -- silently,
+            # since nothing raises. No entry written by `_save_connector` nests
+            # today, but entries are also hand-edited YAML and the enterprise
+            # projection passes through whatever a connector was configured with,
+            # so "not nested today" is not an invariant to rely on. Copying first
+            # makes the guarantee the one this is here for: a resolver cannot
+            # change what the connector is built from, at any depth.
+            resolved = _resolver(db_type, _read_only(cfg))
         except Exception:  # noqa: BLE001 -- see the docstring
             logger.warning(
                 "The installed connector resolver raised for db_type %r; falling back to "
