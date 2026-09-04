@@ -598,3 +598,179 @@ def test_a_non_class_result_is_degraded_and_so_is_never_reused(
 
     assert type(_opened()) is _Registered
     assert type(_opened()) is _Resolved, "a non-class result must not be cached and reused"
+
+
+# ---------------------------------------------------------------------------
+# Every CLI site, not just the ones a test happened to touch
+# ---------------------------------------------------------------------------
+
+#: Every connector class the CLI built during a case, in order.
+_built: list[type] = []
+
+
+class _Recorded(_Registered):
+    """Records its own construction, so a case can say which class was built."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        _built.append(type(self))
+
+    def extract_schema(self) -> Any:
+        raise RuntimeError("stop here; what was built is what this measures")
+
+    def extract_query_history(self, days: int = 30, limit: int = 500) -> Any:
+        raise RuntimeError("stop here; what was built is what this measures")
+
+
+class _RecordedRegistered(_Recorded):
+    """What the registry holds."""
+
+
+class _RecordedResolved(_Recorded):
+    """What a resolver returns instead."""
+
+
+def _doctor() -> None:
+    from nlqueries.cli import main as cli_main
+
+    cli_main._check_connectors(None)  # noqa: SLF001
+
+
+def _run(*args: str) -> None:
+    from click.testing import CliRunner
+    from nlqueries.cli.main import cli
+
+    CliRunner().invoke(cli, list(args))
+
+
+def _redirect_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send the knowledge-base path somewhere disposable, in *both* places.
+
+    `cli/main.py` binds `KB_PATH` at import alongside `CONNECTORS_FILE`, so
+    patching `config.KB_PATH` alone leaves the commands using the operator's real
+    `~/.nlqueries/knowledge_base`: `export-kb` builds its output path from the
+    module-level name and creates that directory before any connector is built,
+    and `kb-stats` reads whatever is already there. The same two-binding trap the
+    `connectors_file` fixture above exists for, one constant along, and
+    `tests/test_kb_stats.py` rebinds both for exactly this reason.
+    """
+    kb = tmp_path / "kb"
+    monkeypatch.setattr(config, "KB_PATH", kb)
+    monkeypatch.setattr(cli_main, "KB_PATH", kb)
+
+
+def _query() -> None:
+    """The ``query`` command, with generation stubbed so execution is reached.
+
+    The site sits behind `execute_sql and result.sql_is_valid and result.sql and
+    agent_type == "sql" and sql_result is None`, so a result satisfying all five
+    is what makes the command build a connector at all.
+    """
+    from unittest.mock import patch
+
+    from nlqueries.orchestrator.sync_runner import AgentQueryResult
+
+    result = AgentQueryResult(
+        question="how many?",
+        resolved_question="how many?",
+        agent_type="sql",
+        answer="",
+        sql="SELECT 1",
+        sql_result=None,
+        citations=[],
+        merged_answer=None,
+        latency_ms=1,
+        session_id=None,
+        sql_is_valid=True,
+        execution_mode="execute_read_only",
+    )
+    # `--no-session`, because `--session` defaults to on and the session branch
+    # runs *before* the resolution site: `_save_turn` writes through
+    # `private_dir(STATE_DIR / "sessions")`, with `STATE_DIR` bound at import from
+    # `nlqueries.config`, so nothing this file redirects reaches it. Left on, each
+    # run appends turns to the operator's real session log -- which is the side
+    # effect `_redirect_kb` and the conftest guard exist to prevent, and it wrote
+    # fourteen of them here before review caught it. Turning it off changes
+    # nothing this case measures.
+    with patch(
+        "nlqueries.orchestrator.sync_runner.run_query_sync",
+        return_value=result,
+    ):
+        _run("query", _AGENT, "how many?", "--no-session")
+
+
+#: One entry per resolution site in ``cli/main.py`` that reads an entry.
+#:
+#: ``connect`` is absent because it has no entry to read; it is covered by the
+#: registration tests above.
+#:
+#: ``query`` is here rather than delegated to
+#: ``tests/security/test_execution_boundary.py``. That file substitutes the
+#: connector through ``CONNECTOR_REGISTRY`` and installs no resolver, so it
+#: passes whichever way the class is found -- the very criterion this block
+#: applies to the other five. Recording it as covered there was a claim this
+#: file's own standard contradicts, and it is the site that connects and
+#: executes generated SQL.
+_CLI_SITES = {
+    "doctor": _doctor,
+    "extract-schema": lambda: _run("extract-schema", _AGENT),
+    "process-history": lambda: _run(
+        "process-history", _AGENT, "--days", "30", "--no-annotate", "--no-embed"
+    ),
+    "export-kb": lambda: _run("export-kb", _AGENT),
+    "kb-stats": lambda: _run("kb-stats", _AGENT),
+    "query": _query,
+}
+
+
+@pytest.mark.parametrize("site", sorted(_CLI_SITES))
+def test_every_cli_site_builds_the_resolved_class(
+    site: str, connectors_file, monkeypatch, tmp_path: Path
+) -> None:
+    """The invariant this whole seam exists to establish, at each site that has one.
+
+    Each of these was a single mechanical line, and each would survive a revert to
+    ``CONNECTOR_REGISTRY.get`` with the suite green: the tests that touch them
+    substitute into the registry itself, so they pass whichever way the class is
+    found, and nothing installs a resolver on those paths. A change that means
+    "resolution happens in one place" is worth only as much as the coverage that
+    would notice it stopping.
+
+    What is asserted is the class the command actually constructed, so a site that
+    resolved correctly and then built something else would still fail. The
+    commands are allowed to fail afterwards -- the stub refuses to extract a
+    schema -- because what happens after the connector is built is not what this
+    measures.
+    """
+    _redirect_kb(tmp_path, monkeypatch)
+    monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _RecordedRegistered)
+    _write(connectors_file)
+    _built.clear()
+
+    connectors.set_connector_resolver(lambda db_type, cfg: _RecordedResolved)
+    _CLI_SITES[site]()
+
+    assert _built, f"{site} never built a connector, so it cannot be measuring resolution"
+    assert _built == [_RecordedResolved] * len(_built), (
+        f"{site} built {_built}, so it did not go through the seam"
+    )
+
+
+@pytest.mark.parametrize("site", sorted(_CLI_SITES))
+def test_every_cli_site_falls_back_to_the_registry(
+    site: str, connectors_file, monkeypatch, tmp_path: Path
+) -> None:
+    """The control. A case that never reached resolution would pass the test above
+    against a resolver returning the subclass for everything, and would pass this
+    one too -- but only one of the two can pass if the built class is asserted
+    both ways, which is why both exist."""
+    _redirect_kb(tmp_path, monkeypatch)
+    monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _RecordedRegistered)
+    _write(connectors_file)
+    _built.clear()
+
+    connectors.set_connector_resolver(lambda db_type, cfg: None)
+    _CLI_SITES[site]()
+
+    assert _built == [_RecordedRegistered] * len(_built)
+    assert _built, f"{site} never built a connector"

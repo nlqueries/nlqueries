@@ -83,7 +83,12 @@ def test_no_execute_reaches_the_orchestrator() -> None:
         patch("nlqueries.orchestrator.sync_runner.run_query_sync", side_effect=_capture),
         patch("nlqueries.cli.main._resolve_alias", side_effect=lambda a: a),
     ):
-        outcome = CliRunner().invoke(cli, ["query", "demo_agent", "how many?", "--no-execute"])
+        # `--no-session` for the same reason as below: the session branch runs
+        # regardless of `--no-execute` and writes to the operator's real state
+        # directory, which nothing here redirects.
+        outcome = CliRunner().invoke(
+            cli, ["query", "demo_agent", "how many?", "--no-execute", "--no-session"]
+        )
 
     assert outcome.exit_code == 0
     assert any("execut" in key or "polic" in key for key in received), (
@@ -128,7 +133,11 @@ def _statements_the_cli_executed(sql: str, *, sql_is_valid: bool) -> list[str]:
         ),
         patch("nlqueries.cli.main._load_password", return_value=""),
     ):
-        CliRunner().invoke(cli, ["query", "demo_agent", "how many?"])
+        # `--no-session`: the session branch runs before the connector is built
+        # and `_save_turn` writes through `STATE_DIR`, which is bound at import
+        # and redirected by nothing here, so every run of this harness appended
+        # turns to the operator's real `~/.nlqueries/sessions/demo_agent.jsonl`.
+        CliRunner().invoke(cli, ["query", "demo_agent", "how many?", "--no-session"])
 
     return executed
 
