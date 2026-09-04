@@ -119,18 +119,26 @@ _resolver: ConnectorResolver | None = None
 def set_connector_resolver(resolver: ConnectorResolver | None) -> None:
     """Install *resolver* as the first choice for connector-class resolution.
 
-    ``None`` removes it, restoring the registry-only behaviour. Process-wide and
-    idempotent: the last call wins, and installing the same resolver twice is
-    not an error.
+    ``None`` removes it. Process-wide and idempotent: the last call wins, and
+    installing the same resolver twice is not an error.
 
-    **Install it before the first connector is opened.** Resolution happens once
-    per cache fingerprint, so a connector already built and cached under the
-    registry class is served from the cache and not re-resolved. The
-    configuration entry is part of that fingerprint, so a connector whose
-    settings change is rebuilt through the new resolver by itself; a resolver
-    installed late against unchanged settings is not. Call
-    :func:`nlqueries.connectors.loader.invalidate_connector_cache` if that
-    ordering cannot be guaranteed.
+    **Every change here is subject to the connector cache, in both directions.**
+    Resolution happens once per cache fingerprint, and the fingerprint covers the
+    configuration entry and the password -- not which resolver was installed. So
+    with ``CONNECTOR_CACHE_ENABLED``:
+
+    * A resolver installed *late* does not reach a connector already built and
+      cached under the registry class.
+    * Removing or replacing one does not reach a connector already built and
+      cached under the previous resolver's class; it keeps being served under
+      that class until its entry changes or the TTL expires.
+
+    A connector whose settings change is rebuilt by itself, because the entry is
+    in the fingerprint. Nothing else is. Call
+    :func:`nlqueries.connectors.loader.invalidate_connector_cache` around any
+    change to resolution that has to take effect immediately -- installing,
+    removing or replacing -- which is the same reason a rotated credential calls
+    it rather than waiting for the TTL.
     """
     global _resolver
     _resolver = resolver
@@ -140,6 +148,15 @@ def connector_class_for(
     db_type: str, cfg: Mapping[str, Any] | None = None
 ) -> type[DatabaseConnector] | None:
     """The connector class to build for *db_type*, given its entry *cfg*.
+
+    *cfg* is the connector's configuration entry as it appears in
+    ``CONNECTORS_FILE`` -- ``db_type``, ``url``, and whatever else was recorded
+    for it, which is where a deployment records an authentication method. It is
+    what every call site in this package passes, including ``nlqueries connect``,
+    which has no entry yet and builds an entry-shaped mapping rather than handing
+    over its own options: a resolver should never have to ask which caller it is
+    serving. Note that an entry has no discrete ``password`` -- the password is
+    inside ``url``.
 
     An installed resolver is asked first and its answer wins; ``None`` from it
     means "no opinion" and falls through to :data:`CONNECTOR_REGISTRY`, which is

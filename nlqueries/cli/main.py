@@ -714,7 +714,22 @@ def connect(
         "dataset_id": dataset_id,
         "service_account_json": service_account_json,
     }
-    connector_cls = connector_class_for(db_type_l, credentials)
+    # Entry-shaped, rather than the CLI's own option dict. `connector_class_for`
+    # documents its second argument as the connector's configuration entry, and
+    # the six other sites in this module pass exactly that; registration is the
+    # one point in the package where no entry exists yet. Handing over
+    # `credentials` unchanged would make this the single site where a resolver
+    # saw a different shape -- no `db_type` to key on, and a discrete `password`
+    # that an entry never carries, because there the password lives inside the
+    # URL. A resolver written against the documented shape would decline here and
+    # the connection would be validated through the registry class while every
+    # later path used the resolved one, which is the split this seam removes.
+    resolver_entry: dict[str, Any] = {
+        key: value for key, value in credentials.items() if key != "password"
+    }
+    resolver_entry["db_type"] = db_type_l
+    resolver_entry["url"] = url
+    connector_cls = connector_class_for(db_type_l, resolver_entry)
 
     try:
         if connector_cls is not None:

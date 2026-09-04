@@ -241,3 +241,35 @@ def test_a_changed_auth_method_is_re_resolved_through_the_cache(
 
     _write(connectors_file, auth_method="keypair")
     assert type(_opened()) is _Resolved, "the entry changed, so the cached class must not be reused"
+
+
+def test_removal_does_not_reach_a_cached_connector(
+    connectors_file, registered, monkeypatch
+) -> None:
+    """The other direction of the cache caveat, and the reason it is documented.
+
+    The fingerprint covers the entry and the password, not which resolver was
+    installed. So a connector already built through a resolver keeps being served
+    under that class after the resolver is removed -- removal is not a rebuild.
+    The test above it passes only because its fixture disables the cache, which
+    is exactly the kind of guard that reads like a proof and is not one.
+
+    Asserted rather than assumed: this is what makes
+    ``invalidate_connector_cache`` part of the documented procedure instead of an
+    optimisation.
+    """
+    monkeypatch.setattr(config, "CONNECTOR_CACHE_ENABLED", True)
+    connectors.set_connector_resolver(lambda db_type, cfg: _Resolved)
+    _write(connectors_file)
+    assert type(_opened()) is _Resolved
+
+    connectors.set_connector_resolver(None)
+    assert type(_opened()) is _Resolved, (
+        "removal alone must not be claimed to restore the registry: the cached "
+        "connector is served under the resolved class until something invalidates it"
+    )
+
+    loader.invalidate_connector_cache()
+    assert type(_opened()) is _Registered, (
+        "invalidating the cache is what actually restores the registry class"
+    )
