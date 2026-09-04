@@ -57,14 +57,32 @@ def _the_operators_connectors_file_is_left_alone() -> object:
     before = _stamp(real)
     yield
     after = _stamp(real)
-    if before != after:
-        pytest.fail(
-            f"The suite modified {real}, which is the operator's real connector "
-            f"registry and must never be written by a test. A fixture is very "
-            f"likely patching `config.CONNECTORS_FILE` without also rebinding "
-            f"`nlqueries.cli.main.CONNECTORS_FILE`, which the CLI's writer uses.",
-            pytrace=False,
-        )
+    if before == after:
+        return
+
+    # Two different faults, and one diagnosis for both would send half the readers
+    # after the wrong thing. Changed content is a test that wrote something else
+    # over the file. Identical content with a newer timestamp is a test that wrote
+    # the same bytes back -- harmless here, and the same call against a file with
+    # real connectors in it is the destructive one, so it is reported just as
+    # loudly and with the fact that made it survivable stated rather than implied.
+    same_content = before[2:] == after[2:]
+    what = (
+        "rewrote it with the bytes it already held (the contents are unchanged, "
+        "so nothing was lost this time)"
+        if same_content
+        else "changed its contents"
+    )
+    pytest.fail(
+        f"The suite {what}: {real}. That is the operator's real connector registry "
+        f"and must never be written by a test. The usual cause is a fixture "
+        f"patching `config.CONNECTORS_FILE` without also rebinding "
+        f"`nlqueries.cli.main.CONNECTORS_FILE`, which the CLI's writer uses -- and "
+        f"the same applies to `KB_PATH`. Note that this fixture starts watching at "
+        f"the first test's setup, so a write during collection happens before it "
+        f"is looking.",
+        pytrace=False,
+    )
 
 
 @pytest.fixture(autouse=True)

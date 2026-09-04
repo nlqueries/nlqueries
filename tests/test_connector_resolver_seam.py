@@ -643,6 +643,22 @@ def _run(*args: str) -> None:
     CliRunner().invoke(cli, list(args))
 
 
+def _redirect_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send the knowledge-base path somewhere disposable, in *both* places.
+
+    `cli/main.py` binds `KB_PATH` at import alongside `CONNECTORS_FILE`, so
+    patching `config.KB_PATH` alone leaves the commands using the operator's real
+    `~/.nlqueries/knowledge_base`: `export-kb` builds its output path from the
+    module-level name and creates that directory before any connector is built,
+    and `kb-stats` reads whatever is already there. The same two-binding trap the
+    `connectors_file` fixture above exists for, one constant along, and
+    `tests/test_kb_stats.py` rebinds both for exactly this reason.
+    """
+    kb = tmp_path / "kb"
+    monkeypatch.setattr(config, "KB_PATH", kb)
+    monkeypatch.setattr(cli_main, "KB_PATH", kb)
+
+
 #: One entry per resolution site in ``cli/main.py`` that reads an entry.
 #:
 #: ``connect`` is covered above and is absent here because it has no entry to
@@ -678,7 +694,7 @@ def test_every_cli_site_builds_the_resolved_class(
     schema -- because what happens after the connector is built is not what this
     measures.
     """
-    monkeypatch.setattr(config, "KB_PATH", tmp_path / "kb")
+    _redirect_kb(tmp_path, monkeypatch)
     monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _RecordedRegistered)
     _write(connectors_file)
     _built.clear()
@@ -700,7 +716,7 @@ def test_every_cli_site_falls_back_to_the_registry(
     against a resolver returning the subclass for everything, and would pass this
     one too -- but only one of the two can pass if the built class is asserted
     both ways, which is why both exist."""
-    monkeypatch.setattr(config, "KB_PATH", tmp_path / "kb")
+    _redirect_kb(tmp_path, monkeypatch)
     monkeypatch.setitem(loader.CONNECTOR_REGISTRY, "postgres", _RecordedRegistered)
     _write(connectors_file)
     _built.clear()
