@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -962,18 +962,26 @@ class TestTier2TemplateCache:
 
     def test_tier2_returns_bound_sql_on_hit(self) -> None:
         """A Tier 2 template hit returns a CacheEntry with entity-filled SQL."""
+        # A binding whose dialect needs translating, so this exercises the wiring
+        # rather than only the happy name: sqlglot rejects `mssql` outright, and
+        # `get()` is the only place a dialect is taken from the binding at all.
+        binding = replace(TEST_BINDING, dialect="mssql")
         tmpl_payload = sign(
             {
                 "question": "orders after <DATE>",
                 "resolved_question": "orders after <DATE>",
                 "agent_type": "sql",
                 "answer": "Found results.",
-                "sql": "SELECT * FROM orders WHERE order_date >= '[d:DATE]'",
+                # A quoted identifier, so the rendering is dialect-visible: T-SQL
+                # writes it in brackets and every other dialect in double quotes.
+                # Without it a bound DATE renders identically everywhere and the
+                # dialect could be dropped on the way in without failing anything.
+                "sql": "SELECT * FROM orders WHERE \"order date\" >= '[d:DATE]'",
                 "created_at": datetime.now(UTC).isoformat(),
                 "hit_count": 0,
                 "kind": "template",
             },
-            TEST_BINDING,
+            binding,
             TEST_KEY,
         )
         mock_client = self._make_tier2_client(tmpl_payload, score=0.95)
@@ -982,11 +990,14 @@ class TestTier2TemplateCache:
             patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
             patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
         ):
-            entry = SemanticCache("agent1", binding=TEST_BINDING).get("orders after 2024-06-01")
+            entry = SemanticCache("agent1", binding=binding).get("orders after 2024-06-01")
 
         assert entry is not None
-        assert entry.sql is not None
-        assert "2024-06-01" in entry.sql
+        # The whole statement, not a substring of it. `"2024-06-01" in entry.sql`
+        # passed just as readily against the old `>= ''2024-06-01''`, which did
+        # not parse on any dialect -- the same weak assertion that let the bug
+        # this change fixes live in a covered code path.
+        assert entry.sql == "SELECT * FROM orders WHERE [order date] >= '2024-06-01'"
 
     def test_tier2_miss_below_threshold_returns_none(self) -> None:
         """Tier 2 returns None when template score is below CACHE_TEMPLATE_THRESHOLD."""
