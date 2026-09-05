@@ -356,3 +356,118 @@ def test_the_first_write_in_a_process_always_sweeps(
     assert _prune_expired(client, "cache_agent1", 24) is True, (
         "a fresh process did not sweep, so a CLI-only deployment would never prune"
     )
+
+
+def test_dropping_a_collection_forgets_its_indexes() -> None:
+    """`invalidate()` deletes the collection, so its index record must go too.
+
+    `_indexed_fields` exists so repeated `ensure_collection` calls are cheap, and
+    nothing invalidated it when a collection was dropped. In a long-lived process
+    that also serves the admin clear endpoint, the recreated collection then came
+    back with neither the `kind` keyword index nor the `created_at` datetime
+    index -- leaving the sweep to scan exactly the field it ranges over, for the
+    life of that process.
+    """
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    client = MagicMock()
+    client.collection_exists.return_value = True
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch.object(qs, "_get_client", return_value=client),
+    ):
+        cache = SemanticCache("agent1", binding=TEST_BINDING)
+        cache.put("how many orders", _Result())
+        assert client.create_payload_index.call_count == 2, "the fixture never indexed"
+
+        cache.invalidate("agent1")
+
+        client.reset_mock()
+        cache.put("how many orders", _Result())
+
+    assert client.create_payload_index.call_count == 2, (
+        "the recreated collection was left without its indexes, because the "
+        "process still believed they existed"
+    )
+
+
+def test_the_index_record_is_cleared_after_the_collection_is_deleted() -> None:
+    """Ordering, so a concurrent write cannot reinstate the stale record.
+
+    Clearing before the delete left a window: a `put()` reaching
+    `ensure_collection` between the two re-adds the keys for a collection that is
+    about to disappear, which is precisely the stale record this exists to
+    remove. Clearing afterwards inverts the race into a harmless one -- a
+    concurrent recreation costs one redundant `create_payload_index`, and
+    creating an index that already exists succeeds rather than raising.
+    """
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    order: list[str] = []
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.delete_collection.side_effect = lambda *a, **k: order.append("delete")
+
+    real_forget = qs.forget_collection_indexes
+
+    def _recording(name: str) -> None:
+        order.append("forget")
+        real_forget(name)
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.forget_collection_indexes", _recording),
+    ):
+        SemanticCache("agent1", binding=TEST_BINDING).invalidate("agent1")
+
+    assert order == ["delete", "forget"], (
+        f"expected the record to be cleared after the delete, got {order}"
+    )
+
+
+def test_forgetting_indexes_tolerates_a_concurrent_write() -> None:
+    """`_indexed_fields` is shared across threads, so it must not be iterated live.
+
+    Cache writes reach `ensure_collection` through `asyncio.to_thread`, so
+    another agent's first write can add a key while this is scanning, and
+    iterating the set directly raises "Set changed size during iteration". This
+    runs on the housekeeping path -- nobody is waiting on it -- so it must not
+    raise at all.
+
+    Reproduced against the live-iteration form before the fix; this pins the
+    snapshot so it cannot regress to it.
+    """
+    import threading
+
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    for i in range(2000):
+        qs._indexed_fields.add(f"other:{i}")
+    qs._indexed_fields.add("cache_a:kind")
+    qs._indexed_fields.add("cache_a:created_at:datetime")
+
+    stop = threading.Event()
+
+    def churn() -> None:
+        i = 0
+        while not stop.is_set():
+            key = f"live:{i % 500}"
+            qs._indexed_fields.add(key)
+            qs._indexed_fields.discard(key)
+            i += 1
+
+    writer = threading.Thread(target=churn, daemon=True)
+    writer.start()
+    try:
+        for _ in range(500):
+            qs.forget_collection_indexes("cache_a")
+    finally:
+        stop.set()
+        writer.join(timeout=2)
+
+    assert not [k for k in qs._indexed_fields.copy() if k.startswith("cache_a:")]

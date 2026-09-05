@@ -104,6 +104,35 @@ def _capsule_id(capsule: QueryCapsule, index: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def forget_collection_indexes(name: str) -> None:
+    """Drop *name*'s entries from the payload-index cache.
+
+    Call this whenever a collection is deleted. `_indexed_fields` records which
+    indexes have been created so repeated `ensure_collection` calls are cheap,
+    and it is keyed by collection -- but nothing invalidated it when the
+    collection went away, so recreating one in the same process skipped every
+    `create_payload_index` call as already done. The collection came back
+    without its indexes and stayed that way for the life of the process.
+
+    The key format is this module's business, which is why the clearing lives
+    here rather than at the call site.
+    """
+    # A snapshot, not a live iteration. `_indexed_fields` is shared across
+    # threads -- cache writes reach `ensure_collection` through
+    # `asyncio.to_thread` -- so another agent's first write can add a key while
+    # this is scanning, and iterating the set directly raises "Set changed size
+    # during iteration". `set.copy()` is a single C-level operation, so the
+    # snapshot itself cannot tear.
+    #
+    # This runs on the housekeeping path -- callers invoke it to tidy up after
+    # a collection is gone, not to accomplish anything a user is waiting on --
+    # so it must not raise at all.
+    prefix = f"{name}:"
+    for key in _indexed_fields.copy():
+        if key.startswith(prefix):
+            _indexed_fields.discard(key)
+
+
 def ensure_collection(
     name: str,
     vector_size: int = config.EMBED_DIMENSIONS,
