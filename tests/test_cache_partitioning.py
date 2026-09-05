@@ -677,6 +677,64 @@ def test_an_expired_template_does_not_end_the_tier2_scan() -> None:
     assert entry.answer != "Stale.", "the expired template was served"
 
 
+def test_tier2_verifies_a_candidate_before_parsing_its_sql() -> None:
+    """Order of work inside the loop, and it is not only about speed.
+
+    Expired templates cluster at the front of the ranking -- nothing deletes them
+    until the sweep runs -- so binding and parsing before verifying spends a full
+    sqlglot parse on each one before discarding it. The other half matters more:
+    it means taking SQL out of a payload whose signature has not been checked and
+    handing it to the parser.
+
+    `_bind_entities` is patched to record what it is asked to parse. An entry
+    that fails verification must never reach it.
+    """
+    from datetime import timedelta
+
+    expired = sign(
+        {
+            "question": _mask_entities(QUESTION),
+            "resolved_question": _mask_entities(QUESTION),
+            "agent_type": "sql",
+            "answer": "Stale.",
+            "sql": "SELECT 'never-parsed' FROM orders WHERE d >= '[d:DATE]'",
+            "created_at": (datetime.now(UTC) - timedelta(hours=48)).isoformat(),
+            "hit_count": 0,
+            "kind": "template",
+        },
+        TEST_BINDING,
+        TEST_KEY,
+    )
+    stale_point = MagicMock()
+    stale_point.score = 0.99
+    stale_point.payload = expired
+    stale_point.id = 1
+
+    client = _client()
+    client.query_points.side_effect = [
+        MagicMock(points=[]),  # Tier 1 miss
+        MagicMock(points=[stale_point]),
+    ]
+
+    seen: list[str] = []
+    real_bind = __import__(
+        "nlqueries.cache.semantic_cache", fromlist=["_bind_entities"]
+    )._bind_entities
+
+    def _recording(question: str, template_sql: str, dialect: str | None = None) -> str | None:
+        seen.append(template_sql)
+        return real_bind(question, template_sql, dialect)
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch("nlqueries.cache.semantic_cache._bind_entities", side_effect=_recording),
+    ):
+        assert SemanticCache("agent1", binding=TEST_BINDING).get(QUESTION) is None
+
+    assert seen == [], f"SQL from an unverified, expired entry was handed to the binder: {seen}"
+
+
 def test_put_and_get_agree_on_the_tier0_point_id() -> None:
     """The round trip, which `_point_id_for_question` alone cannot establish.
 

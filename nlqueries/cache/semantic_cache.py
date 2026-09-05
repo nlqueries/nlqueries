@@ -649,8 +649,13 @@ def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) ->
 _last_prune_at: dict[str, float] = {}
 
 
-def _prune_expired(client: Any, collection: str, ttl_hours: int) -> int | None:
-    """Delete points past the TTL. Returns None when the sweep was skipped.
+def _prune_expired(client: Any, collection: str, ttl_hours: int) -> bool:
+    """Delete points past the TTL. True when a sweep ran and succeeded.
+
+    `bool`, not a count: Qdrant's delete does not report how many points matched,
+    so an int here would have to be a lie or a constant. False covers both "not
+    due yet" and "the delete raised"; the latter is logged, and no caller needs
+    to tell them apart -- both mean the collection did not shrink this time.
 
     Nothing else removes anything: the TTL is applied on read, and
     `invalidate()` drops the collection wholesale. That was survivable while a
@@ -668,12 +673,12 @@ def _prune_expired(client: Any, collection: str, ttl_hours: int) -> int | None:
     """
     interval = config.CACHE_PRUNE_INTERVAL_SECONDS
     if interval <= 0:
-        return None
+        return False
 
     now = time.time()
     last = _last_prune_at.get(collection)
     if last is not None and now - last < interval:
-        return None
+        return False
     _last_prune_at[collection] = now
 
     from qdrant_client.models import (  # noqa: PLC0415
@@ -704,8 +709,8 @@ def _prune_expired(client: Any, collection: str, ttl_hours: int) -> int | None:
             collection,
             exc_info=True,
         )
-        return None
-    return 0
+        return False
+    return True
 
 
 def _context_of(payload: dict[str, Any]) -> dict[str, str]:
@@ -1137,6 +1142,16 @@ class SemanticCache:
             payload = candidate.payload or {}
             if not _payload_matches(payload, payload_filter):
                 continue
+            # Verified before its SQL is touched, for two reasons. Expired
+            # templates cluster at the front of the ranking -- they are never
+            # deleted until the sweep runs -- so binding first spends a full
+            # sqlglot parse on each one before discarding it. And it would mean
+            # parsing SQL out of a payload whose signature has not been checked,
+            # which is the wrong order to do those two things in.
+            candidate_entry = self._verified_entry(payload)
+            if candidate_entry is None:
+                continue  # expired or unverifiable: try the next candidate
+
             template_sql = str(payload.get("sql") or "")
             if not template_sql:
                 continue
@@ -1153,10 +1168,6 @@ class SemanticCache:
             # `_bind_entities` already parses; this is the assertion that it did.
             if _parse_or_none(candidate_sql, dialect) is None:
                 continue
-
-            candidate_entry = self._verified_entry(payload)
-            if candidate_entry is None:
-                continue  # expired or unverifiable: try the next candidate
 
             entry = candidate_entry
             tmpl_score = float(candidate.score)

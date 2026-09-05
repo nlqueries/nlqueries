@@ -14,20 +14,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   overwritten either. Expired points were also still ranked by the vector search
   and consumed the `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans.
 
+- `NLQ_CACHE_MAX_QUESTION_CHARS` (default 500) and `NLQ_CACHE_ANSWER_TIERS`
+  (default `0,1,2`). The first caps the length of a question that may be written
+  to the semantic cache; the second selects which tiers may serve an answer, so
+  an operator can run exact-match-only caching for a sensitive agent without
+  turning the cache off. Existing deployments are unaffected by the defaults.
+
 ### Fixed
 
 - Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
   expired or unverifiable template ranked above a usable one ended the lookup
   instead of continuing past it — which mattered increasingly, since expired
   points were never deleted.
-
-### Added
-
-- `NLQ_CACHE_MAX_QUESTION_CHARS` (default 500) and `NLQ_CACHE_ANSWER_TIERS`
-  (default `0,1,2`). The first caps the length of a question that may be written
-  to the semantic cache; the second selects which tiers may serve an answer, so
-  an operator can run exact-match-only caching for a sensitive agent without
-  turning the cache off. Existing deployments are unaffected by the defaults.
 
 ### Security
 
@@ -54,9 +52,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   applied on read), so a repeated question used to upsert over its own id.
   Entries written under a context that changes per turn now accumulate
   indefinitely, are still searched after expiry, and pre-existing scoped entries
-  are orphaned rather than paying a one-off miss. A prune is required and is not
-  in this change; see "Cache partitioning and authorisation" in
-  `docs/architecture.md`. Two callers
+  are orphaned rather than paying a one-off miss. The sweep added above reclaims
+  them; see "Cache partitioning and authorisation" in `docs/architecture.md`. Two callers
   in different contexts asking the same question previously derived the same id
   and upserted over one another; with the equality match below, neither then read
   the survivor back. Not a leak -- the partition holds -- but both missed

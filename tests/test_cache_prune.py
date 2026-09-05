@@ -108,7 +108,7 @@ def test_zero_disables_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nlqueries.config.CACHE_PRUNE_INTERVAL_SECONDS", 0)
     client = _client()
 
-    assert _prune_expired(client, "cache_agent1", 24) is None
+    assert _prune_expired(client, "cache_agent1", 24) is False
     client.delete.assert_not_called()
 
 
@@ -126,7 +126,7 @@ def test_a_failing_sweep_does_not_fail_the_write(
     client.delete.side_effect = RuntimeError("qdrant is unhappy")
 
     with caplog.at_level(logging.WARNING):
-        assert _prune_expired(client, "cache_agent1", 24) is None
+        assert _prune_expired(client, "cache_agent1", 24) is False
 
     assert any("sweep" in r.getMessage().lower() for r in caplog.records), (
         "the sweep failed silently, so a collection that stops shrinking is invisible"
