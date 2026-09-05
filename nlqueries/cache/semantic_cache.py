@@ -572,20 +572,42 @@ def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | N
 # ---------------------------------------------------------------------------
 
 
+#: Raw `CACHE_ANSWER_TIERS` values already reported as unusable, so a
+#: misconfiguration costs one line rather than one per cache lookup.
+_UNUSABLE_TIER_VALUES_LOGGED: set[str] = set()
+
+
 def _enabled_tiers() -> frozenset[int]:
     """Parse ``CACHE_ANSWER_TIERS`` into the set of tiers allowed to serve.
 
-    Unparseable entries are ignored rather than raising: this is read on the
+    Unrecognised entries are ignored rather than raising: this is read on the
     answer path, and a typo in an operator's environment should not turn every
-    question into a 500. An empty or entirely unparseable value disables the
-    cache reads, which is the safe direction and is what the operator was
-    reaching for if they wrote nonsense into a setting named "tiers".
+    question into a 500.
+
+    Ignoring them quietly is a different matter. A value like ``all`` or
+    ``0;1;2`` parses to nothing, which disables cache reads entirely -- the hit
+    rate goes to zero and latency and model cost rise, with no trace anywhere
+    except the absence of hits. Whoever wrote ``all`` meant every tier, not
+    none, so a non-empty setting that yields no tiers is reported once. An
+    explicitly empty value is left silent: that one does say "serve nothing".
     """
+    raw = config.CACHE_ANSWER_TIERS
     tiers = set()
-    for part in config.CACHE_ANSWER_TIERS.split(","):
+    for part in raw.split(","):
         part = part.strip()
         if part in {"0", "1", "2"}:
             tiers.add(int(part))
+
+    if not tiers and raw.strip() and raw not in _UNUSABLE_TIER_VALUES_LOGGED:
+        _UNUSABLE_TIER_VALUES_LOGGED.add(raw)
+        logger.warning(
+            "The semantic cache is serving nothing: NLQ_CACHE_ANSWER_TIERS=%r "
+            "names no usable tier. Expected a comma-separated subset of 0, 1, 2 "
+            "(for example %r, the default, or %r for exact matches only).",
+            raw,
+            "0,1,2",
+            "0",
+        )
     return frozenset(tiers)
 
 

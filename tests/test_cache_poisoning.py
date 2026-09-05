@@ -221,6 +221,45 @@ def test_the_tier_setting_parses(monkeypatch: pytest.MonkeyPatch) -> None:
         assert _enabled_tiers() == expected, value
 
 
+def test_a_tier_setting_that_names_no_tier_says_so_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Silently serving nothing is the failure this avoids.
+
+    `all` and `0;1;2` are the shapes an operator actually writes, and both parse
+    to no tiers -- which disables cache reads completely. The only symptom is a
+    hit rate of zero, which looks like a cold cache. Reported once per value, so
+    a misconfiguration costs one line rather than one per lookup.
+    """
+    import logging
+
+    from nlqueries.cache.semantic_cache import _UNUSABLE_TIER_VALUES_LOGGED
+
+    for value in ("all", "0;1;2"):
+        _UNUSABLE_TIER_VALUES_LOGGED.discard(value)
+        monkeypatch.setattr("nlqueries.config.CACHE_ANSWER_TIERS", value)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="nlqueries.cache.semantic_cache"):
+            assert _enabled_tiers() == set()
+            assert _enabled_tiers() == set()
+        said = [r for r in caplog.records if value in r.getMessage()]
+        assert len(said) == 1, f"{value!r}: expected one warning, got {len(said)}"
+
+    # An explicitly empty value does say "serve nothing", so it stays silent.
+    monkeypatch.setattr("nlqueries.config.CACHE_ANSWER_TIERS", "")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="nlqueries.cache.semantic_cache"):
+        assert _enabled_tiers() == set()
+    assert not caplog.records
+
+    # ...and neither does a usable one.
+    monkeypatch.setattr("nlqueries.config.CACHE_ANSWER_TIERS", "0")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="nlqueries.cache.semantic_cache"):
+        assert _enabled_tiers() == {0}
+    assert not caplog.records
+
+
 def test_with_tier_zero_only_a_near_identical_question_is_a_miss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
