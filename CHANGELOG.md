@@ -4,6 +4,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Changed
+
+- The semantic cache's `cache_context` (seam S2) is now matched by equality
+  rather than as a subset. A caller that passes no context previously matched
+  entries written under *any* context, while the reverse correctly missed --
+  so the case the mechanism exists to catch, a caller that forgets to pass its
+  context on read, was the one that silently succeeded. A context-free read now
+  sees only entries written without a context. In practice this affects
+  follow-up-scoped entries, which are no longer served to standalone questions;
+  standalone turns still share with each other as before. See "Cache
+  partitioning and authorisation" in `docs/architecture.md`.
+
 ### Fixed
 
 - Semantic cache Tier 2 template hits returned SQL that did not parse. A stored

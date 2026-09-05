@@ -71,4 +71,44 @@ nlqueries/
 └── config.py             Environment-variable configuration
 ```
 
+## Cache partitioning and authorisation
+
+The semantic cache is partitioned by agent: one Qdrant collection per agent,
+named `cache_{agent_id}`. **Every entry in a collection is readable by everyone
+who may query that agent.** That is not a gap in the model, it is a restatement
+of it -- authorisation is granted at agent level, row filters are a property of
+the agent record rather than of the caller, and cached SQL is replayed through
+the same filtered connector that produced it, so a replay is subject to the
+filters a fresh run would be. Document answers are cached verbatim, and every
+user of the agent is entitled to the same documents.
+
+That reasoning holds only as long as nothing narrows what a caller may see
+*below* the agent. The invariant to preserve:
+
+> Anything that makes two callers of the same agent entitled to different
+> results -- per-user row filters, per-user document ACLs, row-level security
+> keyed on caller identity, per-user column masking -- must contribute its
+> distinguishing value to `cache_context` on **both** `get()` and `put()`.
+> If it cannot, it must not be built.
+
+`cache_context` (seam S2) is stored in the entry payload on write and compared
+on read. The comparison is an **equality**, not a subset test: a caller that
+passes no context reads only entries written with none. That direction matters
+more than it looks. The failure being guarded against is a caller that forgets
+to pass its context on one `get()` path, and under a subset test that caller
+would have matched entries scoped by every context -- failing open, silently,
+in exactly the case the mechanism exists for.
+
+The context is recovered from the payload as whatever keys the cache did not
+write itself (`_RESERVED_PAYLOAD_KEYS` in `cache/semantic_cache.py`), so there
+is no marker field to keep in sync and entries written before the check existed
+are still read correctly. A consequence worth knowing: **adding a new key to a
+stored payload without adding it to that set makes it count as caller context,
+and every entry carrying it will miss.**
+
+The invariant is guarded by `tests/test_cache_partitioning.py`, which asserts
+across all three tiers that an entry written under one context is a miss for a
+different context and for no context, and -- as the control that gives those
+their meaning -- a hit for its own.
+
 See [cli-reference.md](cli-reference.md) for what each CLI command does, [connectors.md](connectors.md) for connector-specific behavior, and [configuration.md](configuration.md) for the environment variables that wire these modules together.

@@ -50,7 +50,13 @@ import sqlglot
 from sqlglot import exp
 
 from nlqueries import config
-from nlqueries.cache.envelope import CacheBinding, sign, verify
+from nlqueries.cache.envelope import (
+    SIGNATURE_KEY,
+    VERSION_KEY,
+    CacheBinding,
+    sign,
+    verify,
+)
 from nlqueries.embeddings.embedder import embed_text
 from nlqueries.embeddings.qdrant_store import ensure_collection
 
@@ -555,16 +561,47 @@ def _point_id_for_question(question: str) -> int:
     return int(digest[:16], 16)
 
 
-def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | None) -> bool:
-    """True when *payload* contains every key of *payload_filter* with an equal value.
+#: Payload keys the cache writes itself. Everything else in a stored payload
+#: came from `put()`'s `payload_extra`, which is the caller's cache context --
+#: so the context can be recovered from an entry without a marker field, and
+#: entries written before this existed are read correctly.
+_RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "question",
+        "resolved_question",
+        "agent_type",
+        "answer",
+        "sql",
+        "created_at",
+        "hit_count",
+        "kind",
+        SIGNATURE_KEY,
+        VERSION_KEY,
+    }
+)
 
-    Used to scope a Tier 0 (exact-id) hit by the caller's ``payload_filter`` —
-    Tier 1/2 push the same constraint down into the Qdrant query filter instead.
-    An empty/``None`` filter matches everything (default behaviour unchanged).
+
+def _context_of(payload: dict[str, Any]) -> dict[str, str]:
+    """The cache context an entry was written with, recovered from its payload."""
+    return {str(k): str(v) for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS}
+
+
+def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | None) -> bool:
+    """True when *payload* was written in exactly the caller's cache context.
+
+    The comparison is an equality, not a subset test, and that is the point.
+    Asking only whether the payload *contains* the caller's keys made a
+    context-free read match an entry written under any context: a caller that
+    forgot to pass its context on `get()` was served entries scoped by it, while
+    the reverse correctly missed. Since the whole value of `cache_context` is
+    that it must be supplied on both sides or not built at all, the direction
+    that silently succeeded was the dangerous one.
+
+    A caller with no context therefore reads only entries written with none,
+    which is what standalone turns already do with each other, and a follow-up
+    turn's context-scoped entry is no longer served to a context-free question.
     """
-    if not payload_filter:
-        return True
-    return all(str(payload.get(k)) == str(v) for k, v in payload_filter.items())
+    return _context_of(payload) == {str(k): str(v) for k, v in (payload_filter or {}).items()}
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +800,11 @@ class SemanticCache:
             hit = response.points[0]
             if hit.score >= config.CACHE_ANSWER_THRESHOLD:
                 payload = hit.payload or {}
+                # The Qdrant filter is a subset test -- it can require the
+                # caller's keys but cannot require the absence of others -- so
+                # the equality is re-applied here, as at Tier 0.
+                if not _payload_matches(payload, payload_filter):
+                    return None
                 entry = self._verified_entry(payload)
                 if entry is not None:
                     entry.hit_count = self._increment_hit_count(client, hit.id, payload)
@@ -794,6 +836,8 @@ class SemanticCache:
             return None
 
         tmpl_payload = tmpl_hit.payload or {}
+        if not _payload_matches(tmpl_payload, payload_filter):
+            return None
         template_sql = str(tmpl_payload.get("sql") or "")
         if not template_sql:
             return None
