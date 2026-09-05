@@ -24,6 +24,7 @@ made yet is worth little if it only runs where Docker is installed.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -81,7 +82,7 @@ def _entry(context: dict[str, str] | None, *, kind: str = "answer") -> dict[str,
             "agent_type": "sql",
             "answer": "There were 42 orders.",
             "sql": sql,
-            "created_at": "2026-09-05T00:00:00+00:00",
+            "created_at": datetime.now(UTC).isoformat(),
             "hit_count": 0,
             "kind": kind,
         },
