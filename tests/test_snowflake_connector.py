@@ -508,3 +508,78 @@ def test_list_security_policies_degrades_when_account_usage_unavailable(caplog):
     assert report.supported is True
     assert report.policies == []
     assert any("POLICY_REFERENCES unavailable" in r.message for r in caplog.records)
+
+
+def test_two_concurrent_queries_do_not_share_one_transaction():
+    """A Snowflake transaction belongs to the session, not the cursor.
+
+    This connector holds one connection for its lifetime, `loader.py` caches
+    connector instances, and callers arrive through `asyncio.to_thread` -- so two
+    `execute_query` calls really can overlap on one session. Unserialised they
+    interleave as BEGIN(A), BEGIN(B) (ignored, a transaction is already open),
+    query(A), ROLLBACK(A) -- which ends the transaction both were in, leaving B's
+    statement running under autocommit with nothing left to roll back and B's own
+    ROLLBACK a no-op.
+
+    The guard would disappear in exactly the situation `capabilities.py` and
+    `docs/database-hardening.md` tell an operator it holds, and silently: both
+    queries return results and no error is raised.
+
+    Asserted as a property of the emitted sequence rather than by racing threads,
+    which would pass or fail depending on the scheduler: every statement between
+    a BEGIN and its ROLLBACK must belong to the thread that opened it.
+    """
+    import threading
+
+    connector, mock_connection = _connector_with_mock_connection()
+
+    events: list[tuple[str, str]] = []
+    events_lock = threading.Lock()
+    both_inside = threading.Event()
+
+    def _make_cursor(name: str) -> MagicMock:
+        cur = MagicMock()
+        cur.description = None
+
+        def _execute(sql, *a, **kw):
+            with events_lock:
+                events.append((name, str(sql).split()[0].upper()))
+            # After BEGIN, give the other thread every chance to interleave.
+            if str(sql).upper().startswith("BEGIN"):
+                both_inside.wait(timeout=0.5)
+            return None
+
+        cur.execute.side_effect = _execute
+        return cur
+
+    cursors = {"A": _make_cursor("A"), "B": _make_cursor("B")}
+    order = iter(["A", "B"])
+    mock_connection.cursor.side_effect = lambda: cursors[next(order)]
+
+    def run(name: str) -> None:
+        connector.execute_query(f"SELECT {name}")
+
+    t1 = threading.Thread(target=run, args=("A",))
+    t2 = threading.Thread(target=run, args=("B",))
+    t1.start()
+    t2.start()
+    both_inside.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert not t1.is_alive() and not t2.is_alive(), "a query did not finish"
+
+    # Walk the sequence: between a BEGIN and the matching ROLLBACK, every
+    # statement must come from the same thread.
+    owner: str | None = None
+    for who, verb in events:
+        if verb == "BEGIN":
+            assert owner is None, (
+                f"{who} sent BEGIN while {owner}'s transaction was still open; "
+                f"Snowflake ignores it and {who} runs under autocommit. {events}"
+            )
+            owner = who
+        elif verb == "ROLLBACK":
+            assert owner == who, f"{who} rolled back {owner}'s transaction. {events}"
+            owner = None
+        else:
+            assert owner == who, f"{who} ran a statement inside {owner}'s transaction. {events}"

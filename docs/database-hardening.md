@@ -420,6 +420,16 @@ are not defence in depth — they are the whole defence.
 
 Three entries deserve particular attention.
 
+**Snowflake queries on one connector run one at a time.** A Snowflake
+transaction belongs to the session rather than the cursor, and the connector
+holds a single connection for its lifetime while connector instances are cached
+and callers arrive on threads. Two overlapping queries would otherwise share one
+transaction, and the first `ROLLBACK` would end it for both — leaving the other
+running under autocommit with nothing left to undo. The `BEGIN` … `ROLLBACK`
+span is therefore serialised per connector. A shared session cannot offer both
+concurrency and a per-query transaction, and a guard that stops holding under
+load is worth less than the throughput it would buy.
+
 **Snowflake's DDL survives the rollback.** The transaction undoes an `INSERT`; it
 does not undo a `CREATE TABLE`. If the role can create objects, it can create them
 through a query, so the grant is carrying more of the boundary here than anywhere
