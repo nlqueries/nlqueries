@@ -59,7 +59,10 @@ from nlqueries.cache.envelope import (
     verify,
 )
 from nlqueries.embeddings.embedder import embed_text
-from nlqueries.embeddings.qdrant_store import ensure_collection
+from nlqueries.embeddings.qdrant_store import (
+    ensure_collection,
+    forget_collection_indexes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1335,6 +1338,12 @@ class SemanticCache:
         but is not used — the collection to clear is always ``self._collection``.
         """
         _known_collections.discard(self._collection)
+        # The collection is about to stop existing, so the record of which
+        # payload indexes it has must go with it. Without this the next put()
+        # recreates the collection and skips every index as already done,
+        # leaving it without the `kind` keyword index or the `created_at`
+        # datetime index the sweep ranges over -- for the life of the process.
+        forget_collection_indexes(self._collection)
         with contextlib.suppress(Exception):
             _get_client().delete_collection(self._collection)
 

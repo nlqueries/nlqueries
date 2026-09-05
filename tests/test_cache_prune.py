@@ -356,3 +356,39 @@ def test_the_first_write_in_a_process_always_sweeps(
     assert _prune_expired(client, "cache_agent1", 24) is True, (
         "a fresh process did not sweep, so a CLI-only deployment would never prune"
     )
+
+
+def test_dropping_a_collection_forgets_its_indexes() -> None:
+    """`invalidate()` deletes the collection, so its index record must go too.
+
+    `_indexed_fields` exists so repeated `ensure_collection` calls are cheap, and
+    nothing invalidated it when a collection was dropped. In a long-lived process
+    that also serves the admin clear endpoint, the recreated collection then came
+    back with neither the `kind` keyword index nor the `created_at` datetime
+    index -- leaving the sweep to scan exactly the field it ranges over, for the
+    life of that process.
+    """
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    client = MagicMock()
+    client.collection_exists.return_value = True
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch.object(qs, "_get_client", return_value=client),
+    ):
+        cache = SemanticCache("agent1", binding=TEST_BINDING)
+        cache.put("how many orders", _Result())
+        assert client.create_payload_index.call_count == 2, "the fixture never indexed"
+
+        cache.invalidate("agent1")
+
+        client.reset_mock()
+        cache.put("how many orders", _Result())
+
+    assert client.create_payload_index.call_count == 2, (
+        "the recreated collection was left without its indexes, because the "
+        "process still believed they existed"
+    )
