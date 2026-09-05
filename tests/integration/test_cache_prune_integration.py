@@ -30,11 +30,16 @@ from qdrant_client import models as qm  # noqa: E402
 
 #: Pinned, not `latest`. This file exists to establish a version-dependent
 #: property of Qdrant's filtering, and evidence is only worth what it says about
-#: the versions actually deployed: `docker-compose.yml` here pins v1.9.3 and
-#: enterprise pins v1.18.2. Verified against both; the older is used, since a
-#: property that holds on the oldest supported server holds on the newer one.
-#: Bump this deliberately, alongside those files.
-QDRANT_IMAGE = "qdrant/qdrant:v1.9.3"
+#: the versions actually run.
+#:
+#: v1.10 is the floor -- `query_points`, which every search here goes through,
+#: arrived then -- and v1.18.2 is what both `docker-compose.yml` and enterprise
+#: pin, so that is what this measures. The sweep's filter was checked on v1.9.3
+#: too, but that server cannot serve the searches this project makes, so
+#: evidence from it says nothing about a deployment anyone can run.
+#:
+#: Bump this deliberately, alongside those compose files.
+QDRANT_IMAGE = "qdrant/qdrant:v1.18.2"
 
 COLLECTION = "cache_prune_probe"
 TTL_HOURS = 24

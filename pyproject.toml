@@ -43,7 +43,13 @@ dependencies = [
 
     # Embeddings + vector store
     "sentence-transformers>=3.0",
-    "qdrant-client>=1.9",
+    # >=1.10, not >=1.9: `query_points` (the Universal Query API) arrived in the
+    # client at 1.10, alongside the server API. A resolved 1.9.x raises
+    # AttributeError at every search call site, which the `except Exception`
+    # handlers turn back into an empty result -- a silent loss of caching,
+    # dynamic context and document retrieval. Verified: 1.9.2 has no
+    # `query_points`, 1.10.0 does.
+    "qdrant-client>=1.10",
 
     # OIDC token verification
     "PyJWT>=2.8",

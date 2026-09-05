@@ -156,9 +156,11 @@ That the filter behaves correctly is established against a real Qdrant in
 is an ISO string; a `DatetimeRange` that needed a datetime index it did not have
 would either match nothing or -- far worse -- match everything, and the
 difference between those is a cache that grows and a cache that is gone. It was
-measured on both versions this project ships (`docker-compose.yml` pins v1.9.3,
-enterprise pins v1.18.2) and holds indexed, keyword-indexed and unindexed alike:
-correctness never depended on the index.
+measured on v1.9.3 and v1.18.2 and holds indexed, keyword-indexed and unindexed
+alike: correctness never depended on the index. Both `docker-compose.yml` and
+enterprise now pin v1.18.2 -- v1.9.3 predates the `query_points` API every search
+here goes through, so it was never a version this project could run against,
+only one it used to ship.
 
 Speed does, which is why the sweep is issued with `wait=False` and `created_at`
 is now indexed **as a datetime**. `ensure_collection`'s `payload_indexes`

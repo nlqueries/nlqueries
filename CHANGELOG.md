@@ -14,7 +14,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   found nothing and document retrieval returned nothing — and because several of
   those paths treat a failed search as an empty result, the symptom was a system
   answering slowly and without context rather than reporting an error. Both
-  files now pin v1.18.2, matching what enterprise ships.
+  files now pin v1.18.2, matching what enterprise ships, and the
+  `qdrant-client` floor moves from `>=1.9` to `>=1.10` — the client gained
+  `query_points` at the same release, so a resolved 1.9.x raised `AttributeError`
+  at every call site and reached the same silent empty result.
 
 - The semantic cache no longer reports a failed search as a cache miss. A
   rejected request and an empty cache were the same `None` to the caller while
