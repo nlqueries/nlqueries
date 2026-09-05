@@ -28,6 +28,7 @@ pytest.importorskip("testcontainers")
 
 from nlqueries.cache import semantic_cache as sc  # noqa: E402
 from nlqueries.cache.envelope import CacheBinding, sign  # noqa: E402
+from nlqueries.embeddings import qdrant_store  # noqa: E402
 from qdrant_client import QdrantClient  # noqa: E402
 from qdrant_client import models as qm  # noqa: E402
 
@@ -259,8 +260,13 @@ def test_a_scoped_entry_written_by_put_is_found_by_get(client: QdrantClient) -> 
 
     context = {"context_fingerprint": "fp-round-trip"}
 
+    # `qdrant_store._get_client` as well: `put()` calls `ensure_collection`,
+    # which resolves its own client rather than using the cache's. Patching only
+    # the cache's left that one building a real client from config -- which found
+    # a developer's local Qdrant and refused the connection in CI.
     with (
         patch.object(sc, "_get_client", return_value=client),
+        patch.object(qdrant_store, "_get_client", return_value=client),
         patch.object(sc, "embed_text", return_value=QUERY_VECTOR),
     ):
         sc.SemanticCache("agent1", binding=TEST_BINDING).put(
