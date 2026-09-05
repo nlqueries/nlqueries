@@ -4,6 +4,90 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Added
+
+- `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
+  cache now sweeps points past the TTL on write, at most once per collection per
+  interval. Nothing previously deleted anything — the TTL is applied on read, and
+  `invalidate()` drops the whole collection — which stopped being survivable when
+  point IDs gained the cache context, since an id that never recurs is never
+  overwritten either. Expired points were also still ranked by the vector search
+  and consumed the `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans.
+
+
+- `NLQ_CACHE_MAX_QUESTION_CHARS` (default 500) and `NLQ_CACHE_ANSWER_TIERS`
+  (default `0,1,2`). The first caps the length of a question that may be written
+  to the semantic cache; the second selects which tiers may serve an answer, so
+  an operator can run exact-match-only caching for a sensitive agent without
+  turning the cache off. Existing deployments are unaffected by the defaults.
+
+### Changed
+
+- The caller's `cache_context` is now matched inside the Qdrant query rather than
+  after it. `put()` writes a digest of the context under a reserved payload key
+  and `get()` filters on that single value, so a lookup's candidates already
+  belong to the caller. Previously the context was compared key by key, which
+  Qdrant can only evaluate as a subset test — entries from other callers came
+  back and were discarded after the search, consuming the
+  `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans. On a busy conversational
+  agent that starved context-free reads outright.
+
+  Entries written before the key existed carry no digest, so a **context-free**
+  read matches either its absence or the empty-context digest, and those entries
+  stay readable. The disjunction is on that branch only: a scoped read takes the
+  exact-match path, so a pre-digest entry that carries a context is no longer
+  reachable through Tier 1 or Tier 2. That costs nothing in practice, because the
+  signature and point-ID changes above already invalidate such entries — an entry
+  written with a context by any released version fails verification today. The digest is derived rather than signed, so it can
+  misdirect a lookup but cannot get a foreign entry served — `_payload_matches`
+  still compares the real, signed context before anything is returned.
+
+
+- Cache entry signatures now cover the caller's `cache_context`. Previously the
+  HMAC covered the answer and its SQL but not the context keys, so anyone with
+  write access to Qdrant and no access to the signing key could move a valid
+  entry between contexts by editing them -- no forgery required. The context is
+  appended to the signed message only when non-empty, so entries written without
+  one keep verifying and the cache does not go cold on upgrade; only
+  context-carrying entries miss once.
+
+
+- Semantic cache point IDs now include the caller's `cache_context`. **This
+  removes what bounded a collection's size**: nothing deletes points (the TTL is
+  applied on read), so a repeated question used to upsert over its own id.
+  Entries written under a context that changes per turn now accumulate
+  indefinitely, are still searched after expiry, and pre-existing scoped entries
+  are orphaned rather than paying a one-off miss. The sweep added above reclaims
+  them; see "Cache partitioning and authorisation" in `docs/architecture.md`. Two callers
+  in different contexts asking the same question previously derived the same id
+  and upserted over one another; with the equality match below, neither then read
+  the survivor back. Not a leak -- the partition holds -- but both missed
+  indefinitely. Entries written without a context keep the id they had.
+
+
+- A `cache_context` naming a key the cache writes itself (`kind`, `sql`, …) is
+  now refused on both read and write, with a warning. Such a key was overwritten
+  during the write, so the entry was stored unscoped -- readable by every
+  context-free caller and not by the caller that asked to be scoped.
+
+
+- The semantic cache's `cache_context` (seam S2) is now matched by equality
+  rather than as a subset. A caller that passes no context previously matched
+  entries written under *any* context, while the reverse correctly missed --
+  so the case the mechanism exists to catch, a caller that forgets to pass its
+  context on read, was the one that silently succeeded. A context-free read now
+  sees only entries written without a context. In practice this affects
+  follow-up-scoped entries, which are no longer served to standalone questions;
+  standalone turns still share with each other.
+
+  Because the equality is applied client-side -- Qdrant's filter can require the
+  caller's keys but not the absence of others -- the cosine tiers now fetch a
+  few candidates and take the first that clears both the similarity threshold
+  and the context. Fetching one would let a nearer entry from another context
+  shadow a valid one ranked just below it, which for a context-free read is any
+  follow-up-scoped entry at all. See "Cache partitioning and authorisation" in
+  `docs/architecture.md`.
+
 ### Fixed
 
 - **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
@@ -32,32 +116,27 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   what rebuilding costs. The cache regenerates itself; document chunks need
   re-ingesting.
 
+
 - The semantic cache no longer reports a failed search as a cache miss. A
   rejected request and an empty cache were the same `None` to the caller while
   meaning opposite things. A failure is now logged once per collection and tier,
   naming the version requirement, since a 404 from a pre-v1.10 server is its
   most likely cause.
 
+
 - Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
   expired or unverifiable template ranked above a usable one ended the lookup
   instead of continuing past it — which mattered increasingly, since expired
   points were never deleted.
 
-### Added
 
-- `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
-  cache now sweeps points past the TTL on write, at most once per collection per
-  interval. Nothing previously deleted anything — the TTL is applied on read, and
-  `invalidate()` drops the whole collection — which stopped being survivable when
-  point IDs gained the cache context, since an id that never recurs is never
-  overwritten either. Expired points were also still ranked by the vector search
-  and consumed the `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans.
-
-- `NLQ_CACHE_MAX_QUESTION_CHARS` (default 500) and `NLQ_CACHE_ANSWER_TIERS`
-  (default `0,1,2`). The first caps the length of a question that may be written
-  to the semantic cache; the second selects which tiers may serve an answer, so
-  an operator can run exact-match-only caching for a sensitive agent without
-  turning the cache off. Existing deployments are unaffected by the defaults.
+- Semantic cache Tier 2 template hits returned SQL that did not parse. A stored
+  template already quotes its placeholder (`d >= '[d:DATE]'`), and the binder
+  quoted the value again, so a date bound as `>= ''2024-06-01''` and failed on
+  every dialect — the hit then served the cached answer text beside "Cached SQL
+  failed revalidation and was not executed". String values were doubly wrong:
+  the entity patterns captured the question's quote characters as part of the
+  value, so `"East"` compared against `"East"` rather than `East`.
 
 ### Security
 
@@ -69,61 +148,6 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   to its answers. They refuse the shapes that are never worth storing, one of
   which is where a padded prompt injection sits.
 
-### Changed
-
-- Cache entry signatures now cover the caller's `cache_context`. Previously the
-  HMAC covered the answer and its SQL but not the context keys, so anyone with
-  write access to Qdrant and no access to the signing key could move a valid
-  entry between contexts by editing them -- no forgery required. The context is
-  appended to the signed message only when non-empty, so entries written without
-  one keep verifying and the cache does not go cold on upgrade; only
-  context-carrying entries miss once.
-
-- Semantic cache point IDs now include the caller's `cache_context`. **This
-  removes what bounded a collection's size**: nothing deletes points (the TTL is
-  applied on read), so a repeated question used to upsert over its own id.
-  Entries written under a context that changes per turn now accumulate
-  indefinitely, are still searched after expiry, and pre-existing scoped entries
-  are orphaned rather than paying a one-off miss. The sweep added above reclaims
-  them; see "Cache partitioning and authorisation" in `docs/architecture.md`. Two callers
-  in different contexts asking the same question previously derived the same id
-  and upserted over one another; with the equality match below, neither then read
-  the survivor back. Not a leak -- the partition holds -- but both missed
-  indefinitely. Entries written without a context keep the id they had.
-
-- A `cache_context` naming a key the cache writes itself (`kind`, `sql`, …) is
-  now refused on both read and write, with a warning. Such a key was overwritten
-  during the write, so the entry was stored unscoped -- readable by every
-  context-free caller and not by the caller that asked to be scoped.
-
-- The semantic cache's `cache_context` (seam S2) is now matched by equality
-  rather than as a subset. A caller that passes no context previously matched
-  entries written under *any* context, while the reverse correctly missed --
-  so the case the mechanism exists to catch, a caller that forgets to pass its
-  context on read, was the one that silently succeeded. A context-free read now
-  sees only entries written without a context. In practice this affects
-  follow-up-scoped entries, which are no longer served to standalone questions;
-  standalone turns still share with each other.
-
-  Because the equality is applied client-side -- Qdrant's filter can require the
-  caller's keys but not the absence of others -- the cosine tiers now fetch a
-  few candidates and take the first that clears both the similarity threshold
-  and the context. Fetching one would let a nearer entry from another context
-  shadow a valid one ranked just below it, which for a context-free read is any
-  follow-up-scoped entry at all. See "Cache partitioning and authorisation" in
-  `docs/architecture.md`.
-
-### Fixed
-
-- Semantic cache Tier 2 template hits returned SQL that did not parse. A stored
-  template already quotes its placeholder (`d >= '[d:DATE]'`), and the binder
-  quoted the value again, so a date bound as `>= ''2024-06-01''` and failed on
-  every dialect — the hit then served the cached answer text beside "Cached SQL
-  failed revalidation and was not executed". String values were doubly wrong:
-  the entity patterns captured the question's quote characters as part of the
-  value, so `"East"` compared against `"East"` rather than `East`.
-
-### Security
 
 - Cache template binding no longer builds SQL by string substitution. Values are
   bound as literal nodes in a parsed statement and rendered by sqlglot for the
@@ -137,6 +161,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   injection was not exploitable — for three separate reasons, all accidental —
   but the protection was two bugs cancelling out, and the obvious fix for the
   parsing failure above would have made it real. No advisory is warranted.
+
 
 - Every connector now runs the query in the most restrictive execution its
   engine offers, rather than only the four that already did. SQL Server and the

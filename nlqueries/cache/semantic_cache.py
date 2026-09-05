@@ -613,6 +613,14 @@ def _point_id_for_question(question: str, context: dict[str, str] | None = None)
     return int(digest[:16], 16)
 
 
+#: Payload key holding a digest of the entry's cache context. Written by `put()`
+#: so `get()` can push the context into the Qdrant query instead of filtering
+#: client-side. Reserved, so it is never mistaken for caller context itself --
+#: `_RESERVED_PAYLOAD_KEYS` and `envelope`'s copy both carry it, and a test pins
+#: them equal.
+CONTEXT_DIGEST_KEY = "_ctx"
+
+
 #: Payload keys the cache writes itself. Everything else in a stored payload
 #: came from `put()`'s `payload_extra`, which is the caller's cache context --
 #: so the context can be recovered from an entry without a marker field, and
@@ -627,6 +635,7 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "created_at",
         "hit_count",
         "kind",
+        CONTEXT_DIGEST_KEY,
         SIGNATURE_KEY,
         VERSION_KEY,
     }
@@ -762,6 +771,31 @@ def _prune_expired(client: Any, collection: str, ttl_hours: int, *, wait: bool =
         )
         return False
     return True
+
+
+def _context_digest(context: dict[str, str] | None) -> str:
+    """A stable digest of *context*, for equality-matching inside Qdrant.
+
+    Qdrant's filter can require a field to equal a value; it cannot require the
+    *absence* of fields it was not told about, which is why the context equality
+    has to be applied client-side as well. Reducing the whole context to one
+    field turns that into something the query can express, so the candidates a
+    lookup scans are mostly its own rather than everyone else's.
+
+    Empty and absent contexts share a digest, so an unscoped write and an
+    unscoped read agree.
+
+    This value is **not** signed: it is derived from the context rather than
+    trusted, and `_payload_matches` still compares the real (signed) context
+    before an entry is served. Tampering with it can therefore cause a miss, not
+    a wrong hit.
+    """
+    canonical = json.dumps(
+        {str(k): str(v) for k, v in (context or {}).items()},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
 def _context_of(payload: dict[str, Any]) -> dict[str, str]:
@@ -1042,19 +1076,48 @@ class SemanticCache:
         from qdrant_client.models import (  # noqa: PLC0415
             FieldCondition,
             Filter,
+            IsEmptyCondition,
             MatchAny,
             MatchValue,
+            PayloadField,
         )
 
+        wanted_digest = _context_digest(payload_filter)
+
         def _kind_filter(kind: str) -> Filter:
-            """kind== plus every payload_filter key as an exact-match must-condition."""
+            """`kind`, plus the caller's context expressed as one exact match.
+
+            Matching each context key individually would be a *subset* test --
+            Qdrant can require the keys the caller named but cannot require the
+            absence of any it did not -- so entries from other contexts came back
+            and had to be discarded client-side, consuming the candidate slots a
+            lookup scans. One digest field turns the same condition into
+            something the query expresses exactly.
+
+            A context-free read is the case needing care: entries written before
+            this key existed do not carry it at all, and must still be found. So
+            that side is a disjunction -- no digest, or the digest of an empty
+            context -- which keeps legacy entries readable rather than requiring
+            the whole cache to be rewritten.
+
+            `_payload_matches` still runs on what comes back. This filter is an
+            optimisation over the real check, not a replacement for it: the
+            digest is derived rather than signed, so it can misdirect a lookup
+            but cannot get a foreign entry served.
+            """
             must: list[Any] = [FieldCondition(key="kind", match=MatchAny(any=[kind]))]
             if payload_filter:
-                must += [
-                    FieldCondition(key=k, match=MatchValue(value=v))
-                    for k, v in payload_filter.items()
-                ]
-            return Filter(must=must)
+                must.append(
+                    FieldCondition(key=CONTEXT_DIGEST_KEY, match=MatchValue(value=wanted_digest))
+                )
+                return Filter(must=must)
+            return Filter(
+                must=must,
+                should=[
+                    IsEmptyCondition(is_empty=PayloadField(key=CONTEXT_DIGEST_KEY)),
+                    FieldCondition(key=CONTEXT_DIGEST_KEY, match=MatchValue(value=wanted_digest)),
+                ],
+            )
 
         enabled = _enabled_tiers()
 
@@ -1127,12 +1190,15 @@ class SemanticCache:
                 _report_search_failure(self._collection, "tier 1", exc)
                 return None
 
-            # The first candidate clearing both the threshold and the context,
-            # not simply the nearest. The Qdrant filter is a subset test -- it
-            # can require the caller's keys but cannot require the absence of
-            # others -- so the equality is applied here, as at Tier 0, and asking
-            # for one point would let a neighbour from another context shadow a
-            # same-context entry ranked just below it.
+            # The first *usable* candidate, not simply the nearest. The digest
+            # condition in the query already excludes other contexts, so what
+            # comes back belongs to this caller -- but a candidate can still fail
+            # verification, the TTL, or entity binding, and the window is what
+            # lets the lookup move past one that does.
+            #
+            # `_payload_matches` still runs on it. The digest is derived rather
+            # than signed, so the query is an optimisation over that check and
+            # not a replacement for it.
             #
             # Exhausting them falls through to Tier 2 rather than returning: the
             # tiers are independent, and this one being occupied by other
@@ -1169,10 +1235,9 @@ class SemanticCache:
             _report_search_failure(self._collection, "tier 2", exc)
             return None
 
-        # The nearest template belonging to this context, for the same reason as
-        # Tier 1: the context equality is applied here rather than pushed into
-        # the query, so asking for one point lets another context's template
-        # shadow ours.
+        # The nearest *usable* template, for the same reason as Tier 1: the query
+        # has already narrowed these to this caller's context, and the window is
+        # what lets the scan move past one that fails a later check.
         # The binding dialect, so values are rendered the way the engine that
         # will run them reads them. Without it sqlglot writes its own dialect and
         # MySQL's backslash escaping in particular is lost.
@@ -1306,6 +1371,7 @@ class SemanticCache:
 
         answer_payload: dict[str, Any] = {
             **(payload_extra or {}),
+            CONTEXT_DIGEST_KEY: _context_digest(payload_extra),
             "question": question,
             "resolved_question": result.resolved_question,
             "agent_type": result.agent_type,
@@ -1339,6 +1405,7 @@ class SemanticCache:
                         tmpl_id = _point_id_for_question(f"tmpl:{masked}", payload_extra)
                         tmpl_payload: dict[str, Any] = {
                             **(payload_extra or {}),
+                            CONTEXT_DIGEST_KEY: _context_digest(payload_extra),
                             "question": masked,
                             "resolved_question": result.resolved_question,
                             "agent_type": result.agent_type,
