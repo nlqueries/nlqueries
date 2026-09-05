@@ -13,8 +13,14 @@ Qdrant is **optional** — NLQueries works without it, but `--embed`, semantic c
 ## Check if it's already running
 
 ```bash
-curl http://localhost:6333/healthz
-# Windows PowerShell: Invoke-WebRequest http://localhost:6333/healthz
+curl http://localhost:6333/
+# Windows PowerShell: Invoke-WebRequest http://localhost:6333/
+```
+
+A `200 OK` means it's up, and the body carries the version:
+
+```json
+{"title":"qdrant - vector search engine","version":"1.18.2","commit":"..."}
 ```
 
 > **Qdrant v1.10 or newer is required.** NLQueries searches through the
@@ -23,10 +29,13 @@ curl http://localhost:6333/healthz
 > to exact-match hits only, dynamic context injection finds nothing, and document
 > retrieval returns nothing. Several of those paths treat a failed search as an
 > empty result, so the symptom is a system that answers, slowly and without
-> context, rather than one that reports an error. Check the `version` field in
-> the response below.
+> context, rather than one that reports an error. Check the `version` above
+> before assuming a quiet system is a working one.
 
-A `200 OK` with `{"title":"qdrant","version":"..."}` means it's up — skip to [Configure NLQueries](#configure-nlqueries-to-use-qdrant).
+(`/healthz` also answers, but only with the plain text `healthz check passed` —
+it tells you the server is alive, not whether it is new enough.)
+
+Once it's up, skip to [Configure NLQueries](#configure-nlqueries-to-use-qdrant).
 
 ## Option A — Docker (recommended for local development)
 
