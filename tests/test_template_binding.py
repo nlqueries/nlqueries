@@ -23,17 +23,26 @@ decides to quote things.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 import sqlglot
 from nlqueries.cache.semantic_cache import (
     _bind_entities,
     _coerce_entity,
     _literal_shape,
+    _parse_or_none,
     _sqlglot_name,
 )
 from sqlglot import exp
 
-pytestmark = pytest.mark.security
+# Deliberately not marked `security`, and deliberately not under
+# `tests/security/`. That directory's conftest calls
+# `pytest.importorskip("testcontainers.postgres")` at import time, so without
+# that extra installed the whole directory is skipped -- and the marker also
+# removes it from a `-m "not security"` run. Nothing here needs Docker or a
+# database, and the regression suite for FINDING-001 is the last thing that
+# should be silently skippable on a contributor's machine.
 
 DIALECTS = ("postgres", "mysql", "bigquery", "snowflake", "tsql")
 
@@ -140,7 +149,11 @@ def test_a_value_can_never_change_the_statement_shape(dialect: str) -> None:
     for payload in payloads:
         bound = _bind_entities(f'sales for "{payload}"', STRING_TEMPLATE, dialect)
         assert bound is not None, f"{dialect}: {payload!r} was refused rather than bound inertly"
-        assert _literal_shape(sqlglot.parse_one(bound, read=dialect)) == template_shape, (
+        # `_one_select`, not a bare `parse_one`: the shape comparison alone is
+        # satisfied by the *first* statement of a bound string that terminated
+        # the statement and began another, which is exactly what the `; DROP`
+        # payload above would do if a value ever escaped its literal.
+        assert _literal_shape(_one_select(bound, dialect)) == template_shape, (
             f"{dialect}: {payload!r} changed the statement's shape"
         )
 
@@ -280,3 +293,47 @@ def test_an_unreplaced_sentinel_is_refused_rather_than_executed(
     monkeypatch.setattr(sc.exp.Expression, "replace", lambda self, other: self)
 
     assert _bind_entities('sales for "East"', STRING_TEMPLATE, "postgres") is None
+
+
+def test_a_bound_statement_that_became_two_is_refused() -> None:
+    """The count check, not the parser's incidental behaviour.
+
+    `parse_one` is specified to return the first statement and discard the rest.
+    This sqlglot version returns a `Block` instead, whose shape does not match a
+    single `Select`, so the shape gate refuses multi-statement input today
+    without needing this. That is the parser's choice and not ours: the defence
+    exists for the case where a value has escaped its literal, so it must not
+    depend on which behaviour the release has.
+    """
+    assert _parse_or_none("SELECT 1", "postgres") is not None
+    assert _parse_or_none("SELECT 1; DROP TABLE users", "postgres") is None
+    assert _parse_or_none("SELECT 1; DROP TABLE users; --", "postgres") is None
+
+
+def test_an_unknown_dialect_says_so_once_instead_of_missing_silently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unregistered engine name is a configuration problem, not a cache miss.
+
+    sqlglot raises `ValueError` for a dialect it does not know, which would turn
+    every Tier 2 hit into a miss for the life of the deployment. The orchestrator
+    logs the same condition at ERROR precisely so it is not diagnosed by noticing
+    that cached queries quietly stopped running, and binding now fails before it
+    is reached. Logged once per name, so an unregistered engine costs one line
+    rather than one per lookup.
+    """
+    from nlqueries.cache.semantic_cache import _UNKNOWN_DIALECTS_LOGGED
+
+    _UNKNOWN_DIALECTS_LOGGED.discard("not_a_real_engine")
+    with caplog.at_level(logging.WARNING, logger="nlqueries.cache.semantic_cache"):
+        assert _parse_or_none("SELECT 1", "not_a_real_engine") is None
+        assert _parse_or_none("SELECT 1", "not_a_real_engine") is None
+
+    warnings = [r for r in caplog.records if "not_a_real_engine" in r.getMessage()]
+    assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"
+
+    # A template that simply does not parse stays silent -- it is an ordinary miss.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="nlqueries.cache.semantic_cache"):
+        assert _parse_or_none("this is not sql at all", "postgres") is None
+    assert not caplog.records

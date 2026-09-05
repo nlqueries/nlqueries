@@ -204,7 +204,7 @@ def test_the_policy_allows_union_and_that_is_not_the_binder_s_licence() -> None:
     by the policy guessing at intent.
 
     The property that actually matters lives one layer up and is asserted in
-    `tests/security/test_template_binding.py`: a *cached template* that contained
+    `tests/test_template_binding.py`: a *cached template* that contained
     no UNION can never acquire one from a question, because values are bound as
     literal nodes and a bound statement that differs in shape from its template is
     discarded. So the payload below is allowed here and inert there, and this test

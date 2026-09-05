@@ -269,24 +269,59 @@ def _sqlglot_name(dialect: str | None) -> str | None:
     return _sqlglot_dialect(dialect)
 
 
+#: Unknown dialect names already reported, so an engine nobody registered costs
+#: one line rather than one per cache lookup.
+_UNKNOWN_DIALECTS_LOGGED: set[str] = set()
+
+
 def _parse_or_none(sql: str, dialect: str | None) -> exp.Expression | None:
-    """Parse *sql*, or ``None`` if it will not parse in *dialect*.
+    """Parse *sql* as exactly one statement, or ``None``.
 
     An unparseable template or bound statement is a cache miss, not an error:
     the caller falls through to generation, which is the outcome that was always
     intended and did not happen while the parse result was discarded inside a
     `contextlib.suppress`.
+
+    `parse`, not `parse_one`, and the count is checked -- the convention
+    `sql_policy.evaluate` documents at its own parse call. `parse_one` is
+    specified to return the first statement and discard the rest; this sqlglot
+    version happens to return a `Block` for multi-statement input instead, whose
+    shape does not match a single `Select`, so the gate in `_bind_entities` holds
+    either way today. That is incidental rather than intended: this defence
+    exists precisely for the case where a value has escaped its literal, so it
+    should not rest on which of two behaviours the parser has this release.
     """
+    read = _sqlglot_name(dialect)
     try:
-        # `parse_one` is declared to return sqlglot's `Expr`, which is the
-        # *parent* of `Expression` -- so the declaration is wider than what it
-        # returns, and mypy will not narrow it. Everything downstream here
-        # (`find_all`, `copy`, `sql`) is `Expression` behaviour, and the runtime
-        # type always is one.
-        parsed = cast("exp.Expression", sqlglot.parse_one(sql, read=_sqlglot_name(dialect)))
+        statements = sqlglot.parse(sql, read=read)
+    except ValueError as exc:
+        # sqlglot raises a plain ValueError for a dialect it does not know.
+        # Distinguished from an unparseable statement and logged, because it is
+        # a configuration problem an operator can fix and it disables every
+        # Tier 2 hit for the life of the deployment. `_is_executable_select`
+        # logs the same condition at ERROR for the same reason, and no longer
+        # sees it now that binding fails first.
+        if dialect and dialect not in _UNKNOWN_DIALECTS_LOGGED:
+            _UNKNOWN_DIALECTS_LOGGED.add(dialect)
+            logger.warning(
+                "Cache template binding is disabled: %r is not a dialect sqlglot "
+                "knows (%s). Every Tier 2 template hit will miss until the "
+                "connector's db_type is corrected.",
+                dialect,
+                exc,
+            )
+        return None
     except Exception:  # noqa: BLE001 -- an unparseable statement is a cache miss
         return None
-    return parsed
+
+    parsed = [st for st in statements if st is not None]
+    if len(parsed) != 1:
+        return None
+    # sqlglot declares these as `Expr`, the *parent* of `Expression`, so the
+    # declaration is wider than what it returns and mypy will not narrow it.
+    # Everything downstream here (`find_all`, `copy`, `sql`) is `Expression`
+    # behaviour, and the runtime type always is one.
+    return cast("exp.Expression", parsed[0])
 
 
 def _bind_entities(question: str, template_sql: str, dialect: str | None = None) -> str | None:
