@@ -90,6 +90,12 @@ Compose prefixes volume names with the project name, which defaults to the
 directory the file sits in; `docker volume ls` will show the exact name if the
 command above does not match.
 
+The benchmarks stack in `benchmarks/docker-compose.yaml` keeps its own Qdrant
+and its own volume, `qdrant_bench_data`, and was pinned to v1.9.2 — so it fails
+the same way and the command above will not match it. Remove that volume by name
+instead. Nothing in it is worth preserving: a benchmark run rebuilds its own
+fixtures.
+
 **What that costs.** Nothing in Qdrant here is a system of record, but the parts
 are not equally cheap to rebuild. The semantic cache regenerates on its own as
 questions are asked. Schema and capsule vectors come back from

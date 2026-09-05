@@ -27,6 +27,11 @@ services:
       retries: 5
 
   qdrant:
+    # v1.18.2; this file previously pinned v1.9.2, and v1.18.2 will not open a
+    # `qdrant_bench_data` volume written by it -- the container panics at
+    # startup. Remove the volume by name; a benchmark run rebuilds its fixtures,
+    # so nothing there is worth preserving. See "Upgrading an existing Qdrant"
+    # in docs/qdrant-setup.md.
     image: qdrant/qdrant:v1.18.2
     ports:
       # Loopback by default, as in the top-level compose file: this Qdrant runs
