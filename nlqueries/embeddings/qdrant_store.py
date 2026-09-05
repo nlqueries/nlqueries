@@ -179,13 +179,27 @@ def ensure_collection(
                     field_name=field,
                     field_schema=schema,
                 )
+                # Recorded only on success, so a transient failure is retried.
+                # Marking it regardless meant Qdrant being briefly unreachable
+                # during a process's first write disabled that index for the life
+                # of the process, leaving the sweep to full-scan exactly the
+                # collections it exists for -- with a debug line to show for it.
+                #
+                # Safe to retry because creating an index that already exists
+                # succeeds rather than raising. Measured on v1.9.3 and v1.18.2,
+                # the two versions this project ships, since the value of
+                # retrying rests entirely on that.
+                _indexed_fields.add(key)
             except Exception:  # noqa: BLE001
-                # Logged rather than suppressed outright. An index that already
-                # exists lands here, which is why this is not an error -- but so
-                # does a programming mistake, and that is exactly what went
+                # Logged rather than suppressed outright: a genuine failure and a
+                # programming mistake both land here, and the latter is what went
                 # unseen when the import was in the wrong scope.
-                logger.debug("Payload index %s on %s was not created.", field, name, exc_info=True)
-            _indexed_fields.add(key)
+                logger.debug(
+                    "Payload index %s on %s was not created; it will be retried.",
+                    field,
+                    name,
+                    exc_info=True,
+                )
 
 
 def upsert_capsules(

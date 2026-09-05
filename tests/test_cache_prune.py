@@ -298,3 +298,39 @@ def test_both_kinds_of_index_are_created_with_the_right_schema() -> None:
     assert "datetime" in got["created_at"], (
         f"created_at was indexed as {got['created_at']}, which does nothing for a DatetimeRange"
     )
+
+
+def test_a_failed_index_creation_is_retried() -> None:
+    """A transient failure must not disable the index for the process's life.
+
+    `_indexed_fields` used to be stamped whether or not creation succeeded, so
+    Qdrant being briefly unreachable during a process's first write left the
+    sweep full-scanning exactly the collections it exists for -- with a debug
+    line to show for it.
+
+    Retrying is safe because creating an index that already exists succeeds
+    rather than raising, measured on both versions this project ships.
+    """
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.create_payload_index.side_effect = RuntimeError("qdrant unreachable")
+
+    with patch.object(qs, "_get_client", return_value=client):
+        qs.ensure_collection("c", 4, datetime_indexes=["created_at"])
+
+    assert "c:created_at:datetime" not in qs._indexed_fields, (
+        "a failed index creation was recorded as done, so it will never be retried"
+    )
+
+    # The next call tries again, and succeeds.
+    client.create_payload_index.side_effect = None
+    with patch.object(qs, "_get_client", return_value=client):
+        qs.ensure_collection("c", 4, datetime_indexes=["created_at"])
+
+    assert client.create_payload_index.call_count == 2
+    assert "c:created_at:datetime" in qs._indexed_fields, (
+        "a successful creation was not recorded, so every write will retry it"
+    )
