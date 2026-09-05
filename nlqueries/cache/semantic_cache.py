@@ -609,6 +609,100 @@ def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | N
 # ---------------------------------------------------------------------------
 
 
+#: Raw `CACHE_ANSWER_TIERS` values already reported as unusable, so a
+#: misconfiguration costs one line rather than one per cache lookup.
+_UNUSABLE_TIER_VALUES_LOGGED: set[str] = set()
+
+
+def _enabled_tiers() -> frozenset[int]:
+    """Parse ``CACHE_ANSWER_TIERS`` into the set of tiers allowed to serve.
+
+    Unrecognised entries are ignored rather than raising: this is read on the
+    answer path, and a typo in an operator's environment should not turn every
+    question into a 500.
+
+    Ignoring them quietly is a different matter. A value like ``all`` or
+    ``0;1;2`` parses to nothing, which disables cache reads entirely -- the hit
+    rate goes to zero and latency and model cost rise, with no trace anywhere
+    except the absence of hits. Whoever wrote ``all`` meant every tier, not
+    none, so a non-empty setting that yields no tiers is reported once. An
+    explicitly empty value is left silent: that one does say "serve nothing".
+    """
+    raw = config.CACHE_ANSWER_TIERS
+    tiers = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part in {"0", "1", "2"}:
+            tiers.add(int(part))
+
+    if not tiers and raw.strip() and raw not in _UNUSABLE_TIER_VALUES_LOGGED:
+        _UNUSABLE_TIER_VALUES_LOGGED.add(raw)
+        logger.warning(
+            "The semantic cache is serving nothing: NLQ_CACHE_ANSWER_TIERS=%r "
+            "names no usable tier. Expected a comma-separated subset of 0, 1, 2 "
+            "(for example %r, the default, or %r for exact matches only).",
+            raw,
+            "0,1,2",
+            "0",
+        )
+    return frozenset(tiers)
+
+
+def _write_refusal(question: str, result: _PutResult) -> str | None:
+    """Why *question*/*result* must not be cached, or ``None`` to store it.
+
+    Three cheap write-side checks. None of them is a boundary -- an attacker who
+    can query the agent can still poison it with a short, plausible question, and
+    the fix for that is that the blast radius is other users of the same agent,
+    who are already authorised to see its answers. These refuse the shapes that
+    are never worth storing, which is where a padded injection happens to sit.
+
+    An over-long question is the interesting one. A padded injection is the
+    attacker's question plus an instruction suffix long enough to carry the
+    payload but short enough that the whole thing still embeds near a question a
+    colleague might ask. Length is the cheapest part of that shape to refuse, and
+    questions this long are near-unique anyway: they cost a write and are
+    unlikely ever to be hit.
+
+    The other two keep the cache from serving something that was never an
+    answer. An empty answer is not worth a hit, and an error frame re-served on a
+    hit is the failure that has already happened once here -- a prose refusal was
+    stored with its SQL and re-executed against a customer's database on every
+    subsequent hit.
+    """
+    answer = (result.answer or "").strip()
+    if not answer:
+        return "the answer was empty"
+    if _looks_like_an_error(answer):
+        return "the answer is an error frame"
+
+    limit = config.CACHE_MAX_QUESTION_CHARS
+    if limit > 0 and len(question) > limit:
+        return f"the question is {len(question)} chars, over the {limit} limit"
+    return None
+
+
+#: Openings of the error text this codebase produces itself. Matched at the
+#: start of the answer only: a legitimate answer may well *discuss* an error,
+#: and refusing those would quietly stop caching a whole class of question.
+_ERROR_PREFIXES: tuple[str, ...] = (
+    "error:",
+    "failed to",
+    "i encountered an error",
+    "i'm sorry, i encountered",
+    "sorry, i encountered",
+    "an error occurred",
+    "query failed",
+    "unable to answer",
+)
+
+
+def _looks_like_an_error(answer: str) -> bool:
+    """Return ``True`` when *answer* is this system reporting its own failure."""
+    head = answer.lstrip().lower()
+    return head.startswith(_ERROR_PREFIXES)
+
+
 class SemanticCache:
     """Semantic query cache for a single agent, backed by a Qdrant collection.
 
@@ -763,55 +857,75 @@ class SemanticCache:
                 ]
             return Filter(must=must)
 
+        enabled = _enabled_tiers()
+
         # --- Tier 0: exact-match hash lookup (zero embed calls on hit) ---
-        normalized = _normalize_question(question)
-        tier0_id = _point_id_for_question(normalized)
-        with contextlib.suppress(Exception):
-            tier0_hits = client.retrieve(
-                collection_name=self._collection,
-                ids=[tier0_id],
-                with_payload=True,
-            )
-            if tier0_hits:
-                payload = tier0_hits[0].payload or {}
-                # retrieve() is id-only, so enforce payload_filter here (Tier 1/2
-                # push it into the Qdrant query filter). A mismatch falls through
-                # to the cosine tiers rather than returning a foreign-context hit.
-                if _payload_matches(payload, payload_filter):
-                    entry = self._verified_entry(payload)
-                    if entry is not None:
-                        entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
-                        record_cache(hit=True, tier="exact")  # provenance (SYL-1.1)
-                        return entry
+        # Guards the lookup only. A disabled tier is skipped, not a return: the
+        # tiers are independent, and `"1,2"` has to leave 1 and 2 working.
+        if 0 in enabled:
+            tier0_id = _point_id_for_question(_normalize_question(question))
+            with contextlib.suppress(Exception):
+                tier0_hits = client.retrieve(
+                    collection_name=self._collection,
+                    ids=[tier0_id],
+                    with_payload=True,
+                )
+                if tier0_hits:
+                    payload = tier0_hits[0].payload or {}
+                    # retrieve() is id-only, so enforce payload_filter here (Tier
+                    # 1/2 push it into the Qdrant query filter). A mismatch falls
+                    # through to the cosine tiers rather than returning a foreign-
+                    # context hit.
+                    if _payload_matches(payload, payload_filter):
+                        entry = self._verified_entry(payload)
+                        if entry is not None:
+                            entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
+                            record_cache(hit=True, tier="exact")  # provenance (SYL-1.1)
+                            return entry
 
         # --- Tier 1: answer cache (cosine similarity, kind=answer filter) ---
-        v = vector if vector is not None else embed_text(question)
-        try:
-            response = client.query_points(
-                collection_name=self._collection,
-                query=v,
-                query_filter=_kind_filter("answer"),
-                limit=1,
-            )
-        except Exception:  # noqa: BLE001
-            return None
+        # Tiers 1 and 2 are what let one user's answer reach another user's
+        # differently-worded question. That is their purpose and also the only
+        # route by which a poisoned entry travels, so an operator can turn them
+        # off per deployment without losing Tier 0.
+        if 1 in enabled:
+            # Skipped entirely when disabled, which also saves the embed call --
+            # Tier 2 embeds the *masked* question separately and does not use `v`.
+            v = vector if vector is not None else embed_text(question)
+            try:
+                response = client.query_points(
+                    collection_name=self._collection,
+                    query=v,
+                    query_filter=_kind_filter("answer"),
+                    limit=1,
+                )
+            except Exception:  # noqa: BLE001
+                return None
 
-        if response.points:
-            hit = response.points[0]
-            if hit.score >= config.CACHE_ANSWER_THRESHOLD:
-                payload = hit.payload or {}
-                # The Qdrant filter is a subset test -- it can require the
-                # caller's keys but cannot require the absence of others -- so
-                # the equality is re-applied here, as at Tier 0.
-                if not _payload_matches(payload, payload_filter):
-                    return None
-                entry = self._verified_entry(payload)
-                if entry is not None:
-                    entry.hit_count = self._increment_hit_count(client, hit.id, payload)
-                    record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
-                    return entry
+            if response.points:
+                hit = response.points[0]
+                if hit.score >= config.CACHE_ANSWER_THRESHOLD:
+                    payload = hit.payload or {}
+                    # The Qdrant filter is a subset test -- it can require the
+                    # caller's keys but cannot require the absence of others --
+                    # so the equality is re-applied here, as at Tier 0.
+                    #
+                    # A mismatch falls through to Tier 2 rather than returning:
+                    # the tiers are independent, and this one being occupied by
+                    # an entry from another context says nothing about whether a
+                    # template exists for this one.
+                    if _payload_matches(payload, payload_filter):
+                        entry = self._verified_entry(payload)
+                        if entry is not None:
+                            entry.hit_count = self._increment_hit_count(client, hit.id, payload)
+                            record_cache(
+                                hit=True, similarity=float(hit.score), tier="answer"
+                            )  # SYL-1.1
+                            return entry
 
         # --- Tier 2: template cache (masked cosine similarity, kind=template) ---
+        if 2 not in enabled:
+            return None
         masked = _mask_entities(question)
         if masked == question:
             # No entities found — template would be identical to answer; skip.
@@ -899,6 +1013,13 @@ class SemanticCache:
                       before.
         """
         from qdrant_client.models import PointStruct  # noqa: PLC0415
+
+        # Refused before the collection is touched and before the question is
+        # embedded, so a rejected write costs nothing.
+        refusal = _write_refusal(question, result)
+        if refusal is not None:
+            logger.debug("Cache write skipped: %s.", refusal)
+            return
 
         ensure_collection(self._collection, CACHE_VECTOR_SIZE, payload_indexes=["kind"])
         # It exists as of now, so stop remembering that it did not — otherwise

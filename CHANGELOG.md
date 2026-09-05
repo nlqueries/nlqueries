@@ -4,6 +4,24 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Added
+
+- `NLQ_CACHE_MAX_QUESTION_CHARS` (default 500) and `NLQ_CACHE_ANSWER_TIERS`
+  (default `0,1,2`). The first caps the length of a question that may be written
+  to the semantic cache; the second selects which tiers may serve an answer, so
+  an operator can run exact-match-only caching for a sensitive agent without
+  turning the cache off. Existing deployments are unaffected by the defaults.
+
+### Security
+
+- The semantic cache no longer stores an entry whose answer is empty or is this
+  system reporting its own failure, nor one whose question is over the length
+  limit above. None of these is an authorisation boundary -- a user who can
+  query an agent can still write a short, plausible question into its cache, and
+  the blast radius is other users of that same agent, who are already entitled
+  to its answers. They refuse the shapes that are never worth storing, one of
+  which is where a padded prompt injection sits.
+
 ### Changed
 
 - The semantic cache's `cache_context` (seam S2) is now matched by equality

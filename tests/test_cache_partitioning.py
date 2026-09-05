@@ -202,6 +202,38 @@ def test_an_unscoped_entry_is_a_hit_for_an_unscoped_caller(make_client: Any) -> 
     assert _get(make_client(None), None) is not None
 
 
+def test_a_foreign_tier1_hit_does_not_block_tier2() -> None:
+    """A mismatch at one tier is not a verdict on the next.
+
+    Tier 1's top-scoring neighbour belonging to another context says nothing
+    about whether a template exists for this one, so the mismatch falls through
+    rather than ending the lookup. Written because the alternative -- returning
+    `None` on a foreign Tier 1 hit -- is the more obvious code and would make one
+    caller's cached answer able to suppress another caller's template hit, which
+    is a quiet denial rather than a leak but is still not what the partition
+    means.
+    """
+    client = _client()
+    foreign = MagicMock()
+    foreign.score = 0.99
+    foreign.payload = _entry(CONTEXT_B)
+    foreign.id = 1
+
+    ours = MagicMock()
+    ours.score = 0.95
+    ours.payload = _entry(CONTEXT_A, kind="template")
+    ours.id = 99
+
+    client.query_points.side_effect = [
+        MagicMock(points=[foreign]),  # Tier 1: another context's entry on top
+        MagicMock(points=[ours]),  # Tier 2: ours
+    ]
+
+    entry = _get(client, CONTEXT_A)
+    assert entry is not None, "a foreign Tier 1 neighbour suppressed our own Tier 2 template"
+    assert client.query_points.call_count == 2, "Tier 2 was never reached"
+
+
 def test_a_partial_context_match_is_not_enough() -> None:
     """Two keys stored, one supplied: a subset is not the same context.
 
