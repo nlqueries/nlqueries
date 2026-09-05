@@ -447,6 +447,21 @@ first statement, so by the time the connector could send it the transaction
 exists. `START TRANSACTION READ ONLY` is the statement that would work and is not
 available to a caller while SQLAlchemy owns the transaction.
 
+**Nor does it reach a non-transactional storage engine.** An `INSERT` into a
+MyISAM or MEMORY table on MySQL or MariaDB survives the `ROLLBACK` outright --
+those engines have no transaction to undo, and the server reports warning 1196
+rather than an error, so nothing in the connector can even notice. If the schema
+NLQueries reads contains such tables, the grant is the only control over writes
+to them.
+
+**Oracle's gap looks closable.** It has a transaction-scoped
+`SET TRANSACTION READ ONLY` that must be the first statement of the transaction
+-- exactly where the connector applies one -- and refuses DML and DDL thereafter
+with ORA-01456. It is left out of `_apply_read_only` only because no test here
+can reach an Oracle instance, and adding a statement to the execution path of an
+untested engine is how every query against it becomes an error instead. Someone
+with an instance should try it and move Oracle out of the column below.
+
 **And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit
 implicitly around DDL, so a `CREATE` or `DROP` sent through this connector is
 permanent whatever the transaction does — the same limit Snowflake has, for the

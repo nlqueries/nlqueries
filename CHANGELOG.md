@@ -39,8 +39,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   front of a connector asks whether the root node is a `SELECT`, and
   `SELECT some_volatile_function(...)` satisfies that while writing.
 
-  What the rollback does not cover is documented rather than implied, and the
-  gap is DDL. An engine that commits implicitly around DDL keeps a `CREATE` or
+  What the rollback does not cover is documented rather than implied. The gap is
+  mostly DDL, and on MySQL also the storage engine: an `INSERT` into a MyISAM or
+  MEMORY table survives the rollback outright, with only warning 1196. An engine that commits implicitly around DDL keeps a `CREATE` or
   `DROP` whatever the transaction does -- Snowflake, and MySQL, MariaDB and
   Oracle behind the generic connector -- and SQLite runs DDL outside the
   transaction altogether. BigQuery has no transaction at all: its jobs are

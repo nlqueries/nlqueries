@@ -66,6 +66,22 @@ def _apply_read_only(conn: Connection) -> None:
     and is not something a caller can issue when SQLAlchemy owns the transaction.
     Issuing the session form anyway would turn every MySQL query into an error,
     which is a worse outcome than the rollback it would be layered on top of.
+
+    And the rollback does not cover MySQL's non-transactional storage engines at
+    all: an ``INSERT`` into a MyISAM or MEMORY table survives, and the server
+    reports warning 1196 rather than an error. Nothing here can prevent that; the
+    grant is the control.
+
+    Oracle is a gap rather than a limit, and the distinction is worth keeping.
+    It has a transaction-scoped ``SET TRANSACTION READ ONLY`` that must be the
+    first statement of the transaction -- exactly the position this function
+    occupies -- and refuses DML and DDL thereafter with ORA-01456, so the DDL
+    exposure recorded for Oracle elsewhere in the docs looks closable rather than
+    inherent. It is left out because no test here can reach an Oracle instance,
+    and adding a statement to the execution path of an engine nothing exercises
+    is how every query against it becomes an error instead. Whoever has an
+    instance to try it against should add ``oracle`` to the tuple below and move
+    it out of the "commits implicitly and nothing more" column.
     """
     name = conn.engine.dialect.name
     if name in ("postgresql", "redshift"):

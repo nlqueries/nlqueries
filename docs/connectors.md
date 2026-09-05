@@ -12,8 +12,11 @@ read-only execution is asked for one, but neither limits *what* the role can
 read, and neither is a substitute for a least-privilege grant.
 
 How much the connector can enforce differs by engine, and the gap worth knowing
-is **DDL**. A rolled-back transaction undoes an `INSERT` everywhere; it does not
-undo a `CREATE` or `DROP` on an engine that commits implicitly around DDL. That
+is **DDL**. A rolled-back transaction undoes an `INSERT` on a transactional
+table; it does not undo a `CREATE` or `DROP` on an engine that commits
+implicitly around DDL. (Nor does it undo an `INSERT` into a **MyISAM or MEMORY**
+table on MySQL or MariaDB — those engines have no transaction to roll back, and
+the server reports only warning 1196.) That
 is **Snowflake**, and also **MySQL, MariaDB and Oracle** behind the generic
 SQLAlchemy connector; **SQLite** is a third variant, running DDL outside the
 transaction altogether. **BigQuery** has no transaction to roll back at all, so a
