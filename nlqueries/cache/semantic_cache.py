@@ -177,7 +177,8 @@ _QUOTED_PLACEHOLDER_RE = re.compile(r"'?\[([^:\]]+):([^\]]+)\]'?")
 #: silently miss every numeric placeholder and bind only the strings. Turning
 #: every placeholder into the same quoted sentinel first gives one code path
 #: that finds all of them, in every dialect.
-_BIND_SENTINEL = "__nlq_bind_{}__"
+_BIND_SENTINEL_PREFIX = "__nlq_bind_"
+_BIND_SENTINEL = _BIND_SENTINEL_PREFIX + "{}__"
 _BIND_SENTINEL_RE = re.compile(r"^__nlq_bind_(\d+)__$")
 
 #: Values a placeholder type will accept. A value that does not match is not
@@ -246,6 +247,28 @@ def _literal_shape(tree: exp.Expression) -> str:
     return clone.sql()
 
 
+def _sqlglot_name(dialect: str | None) -> str | None:
+    """Translate a caller's dialect name into one sqlglot answers to.
+
+    The name that reaches the cache is whatever the deployment calls its engine,
+    and several of those are not sqlglot dialects: `CAPABILITIES` keys SQL Server
+    as `mssql`, the MCP `query` tool documents `mssql` and `mysql`, and a binding
+    may carry `postgresql` or `mariadb`. sqlglot rejects all three with
+    ``ValueError: Unknown dialect``.
+
+    Untranslated, that error is swallowed by :func:`_parse_or_none` and every
+    Tier 2 hit becomes a miss on those deployments -- silently, and including the
+    numeric templates that bound correctly before binding moved to the AST.
+    `sql_policy.evaluate` translates the same strings for the same reason, and
+    this defers to its table rather than keeping a second one.
+    """
+    if not dialect:
+        return None
+    from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
+
+    return _sqlglot_dialect(dialect)
+
+
 def _parse_or_none(sql: str, dialect: str | None) -> exp.Expression | None:
     """Parse *sql*, or ``None`` if it will not parse in *dialect*.
 
@@ -260,7 +283,7 @@ def _parse_or_none(sql: str, dialect: str | None) -> exp.Expression | None:
         # returns, and mypy will not narrow it. Everything downstream here
         # (`find_all`, `copy`, `sql`) is `Expression` behaviour, and the runtime
         # type always is one.
-        parsed = cast("exp.Expression", sqlglot.parse_one(sql, read=dialect or None))
+        parsed = cast("exp.Expression", sqlglot.parse_one(sql, read=_sqlglot_name(dialect)))
     except Exception:  # noqa: BLE001 -- an unparseable statement is a cache miss
         return None
     return parsed
@@ -370,7 +393,7 @@ def _bind_entities(question: str, template_sql: str, dialect: str | None = None)
             exp.Literal.number(value) if ptype in ("INT", "DECIMAL") else exp.Literal.string(value)
         )
 
-    bound = tree.sql(dialect=dialect or None)
+    bound = tree.sql(dialect=_sqlglot_name(dialect))
 
     # The gate that does not depend on getting the escaping right. A bound
     # statement may differ from its template only in the values of its literals;
@@ -378,6 +401,19 @@ def _bind_entities(question: str, template_sql: str, dialect: str | None = None)
     # result is discarded however it was quoted.
     bound_tree = _parse_or_none(bound, dialect)
     if bound_tree is None or _literal_shape(template_tree) != _literal_shape(bound_tree):
+        return None
+
+    # Fail closed if a sentinel survived, which the shape gate cannot see: it
+    # blanks every literal, so an unreplaced `'__nlq_bind_0__'` is
+    # indistinguishable from a bound value. Such a statement would pass the gate,
+    # pass the re-parse, pass the SQL policy and run -- comparing a column
+    # against the string `__nlq_bind_0__` and returning nothing, which reads to
+    # the caller as "no matching rows" rather than as a fault.
+    #
+    # It should be unreachable, because every placeholder is normalised to a
+    # quoted sentinel that parses as a literal in all five dialects. That is an
+    # argument rather than a guarantee, and the check costs one substring scan.
+    if _BIND_SENTINEL_PREFIX in bound:
         return None
 
     return bound

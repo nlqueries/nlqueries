@@ -25,7 +25,12 @@ from __future__ import annotations
 
 import pytest
 import sqlglot
-from nlqueries.cache.semantic_cache import _bind_entities, _coerce_entity, _literal_shape
+from nlqueries.cache.semantic_cache import (
+    _bind_entities,
+    _coerce_entity,
+    _literal_shape,
+    _sqlglot_name,
+)
 from sqlglot import exp
 
 pytestmark = pytest.mark.security
@@ -36,6 +41,11 @@ DIALECTS = ("postgres", "mysql", "bigquery", "snowflake", "tsql")
 #: Testing a bare `= [region:VARCHAR]` template would be testing a shape that
 #: never reaches this code, which is the mistake the original review made.
 STRING_TEMPLATE = "SELECT region, amount FROM sales WHERE region = '[region:VARCHAR]'"
+
+#: The shape a stored template actually takes for a date, which is the case that
+#: reaches production: `put()` skips string literals, so DATE is the placeholder
+#: type Tier 2 hits carry.
+DATE_TEMPLATE = "SELECT * FROM orders WHERE d >= '[d:DATE]'"
 
 
 def _one_select(sql: str, dialect: str) -> exp.Expression:
@@ -216,3 +226,57 @@ def test_bound_sql_passes_the_sql_policy(dialect: str) -> None:
     bound = _bind_entities('sales for "East"', STRING_TEMPLATE, dialect)
     assert bound is not None
     assert evaluate(bound, dialect).allowed is True, f"{dialect}: {bound}"
+
+
+#: Names a deployment actually uses, several of which sqlglot rejects outright.
+#: `CAPABILITIES` keys SQL Server as `mssql`, the MCP `query` tool documents
+#: `mssql` and `mysql`, and a binding may carry `postgresql` or `mariadb`.
+CALLER_DIALECTS = ("mssql", "postgresql", "mariadb", "postgres", "mysql", "tsql", "bigquery")
+
+
+@pytest.mark.parametrize("dialect", CALLER_DIALECTS)
+def test_a_caller_s_dialect_name_still_binds(dialect: str) -> None:
+    """The names that reach this code are not all sqlglot dialect names.
+
+    `sqlglot.parse_one(..., read="mssql")` raises `ValueError: Unknown dialect`,
+    and so do `postgresql` and `mariadb`. Untranslated, that error is swallowed
+    and every Tier 2 hit becomes a miss on those deployments -- silently, and
+    including the numeric templates that bound correctly before binding moved to
+    the AST. A regression rather than a missing feature, which is why it is
+    parameterised over the names callers use rather than the ones sqlglot knows.
+    """
+    bound = _bind_entities("orders after 2024-06-01", DATE_TEMPLATE, dialect)
+    assert bound == "SELECT * FROM orders WHERE d >= '2024-06-01'", dialect
+
+
+@pytest.mark.parametrize("dialect", CALLER_DIALECTS)
+def test_a_caller_s_dialect_name_still_makes_a_payload_inert(dialect: str) -> None:
+    """The translation must not quietly drop the dialect either: a value is only
+    escaped correctly if the renderer knows which engine it is writing for."""
+    payload = "' UNION SELECT password, 1 FROM users --"
+    bound = _bind_entities(f'sales for "{payload}"', STRING_TEMPLATE, dialect)
+
+    assert bound is not None, dialect
+    tree = _one_select(bound, _sqlglot_name(dialect) or dialect)
+    assert [node.this for node in tree.find_all(exp.Literal)] == [payload], dialect
+
+
+def test_an_unreplaced_sentinel_is_refused_rather_than_executed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate the shape check cannot provide.
+
+    Blanking every literal makes an unreplaced `'__nlq_bind_0__'` look exactly
+    like a bound value, so such a statement would pass the shape gate, pass the
+    re-parse, pass the SQL policy and run -- comparing a column against the
+    string `__nlq_bind_0__` and returning nothing, which reads as "no matching
+    rows" rather than as a fault.
+
+    Simulated by making the replacement a no-op, which is what a dialect that
+    parsed a sentinel as something other than a literal would produce.
+    """
+    import nlqueries.cache.semantic_cache as sc
+
+    monkeypatch.setattr(sc.exp.Expression, "replace", lambda self, other: self)
+
+    assert _bind_entities('sales for "East"', STRING_TEMPLATE, "postgres") is None
