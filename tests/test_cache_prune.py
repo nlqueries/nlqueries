@@ -433,11 +433,10 @@ def test_forgetting_indexes_tolerates_a_concurrent_write() -> None:
     """`_indexed_fields` is shared across threads, so it must not be iterated live.
 
     Cache writes reach `ensure_collection` through `asyncio.to_thread`, so
-    another agent's first write can add a key while this is scanning. Iterating
-    the set directly raises "Set changed size during iteration" -- and
-    `invalidate()` calls this *before* the `suppress(Exception)` around the
-    delete, so that error would propagate and leave the collection undeleted by
-    a failure that has nothing to do with deleting it.
+    another agent's first write can add a key while this is scanning, and
+    iterating the set directly raises "Set changed size during iteration". This
+    runs on the housekeeping path -- nobody is waiting on it -- so it must not
+    raise at all.
 
     Reproduced against the live-iteration form before the fix; this pins the
     snapshot so it cannot regress to it.

@@ -124,9 +124,9 @@ def forget_collection_indexes(name: str) -> None:
     # during iteration". `set.copy()` is a single C-level operation, so the
     # snapshot itself cannot tear.
     #
-    # It would propagate, too: `invalidate()` calls this *before* the
-    # `suppress(Exception)` around the delete, so the collection would be left
-    # undeleted by a failure that has nothing to do with deleting it.
+    # This runs on the housekeeping path -- callers invoke it to tidy up after
+    # a collection is gone, not to accomplish anything a user is waiting on --
+    # so it must not raise at all.
     prefix = f"{name}:"
     for key in _indexed_fields.copy():
         if key.startswith(prefix):
