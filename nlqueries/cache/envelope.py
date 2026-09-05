@@ -63,8 +63,11 @@ SIGNED_FIELDS = (
 #: Keys the cache writes itself. Everything else in a payload came from the
 #: caller's cache context. Mirrors `semantic_cache._RESERVED_PAYLOAD_KEYS`,
 #: which a test pins to this; duplicated rather than imported to avoid a cycle.
+#: `_ctx` is the context digest `semantic_cache` writes so the context can be
+#: matched inside Qdrant. Reserved here too, or it would count as context, be
+#: signed as part of it, and change the very digest it is derived from.
 _RESERVED_PAYLOAD_KEYS_FOR_SIGNING: frozenset[str] = frozenset(
-    {*SIGNED_FIELDS, "hit_count", SIGNATURE_KEY, VERSION_KEY}
+    {*SIGNED_FIELDS, "hit_count", "_ctx", SIGNATURE_KEY, VERSION_KEY}
 )
 
 

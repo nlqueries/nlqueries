@@ -4,45 +4,6 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
-### Fixed
-
-- **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
-  vector search.** NLQueries searches through the Universal Query API
-  (`query_points`), which Qdrant added in v1.10; the compose file pinned v1.9.3
-  and the benchmarks compose v1.9.2, so every search returned `404`. The
-  semantic cache degraded to exact-match hits only, dynamic context injection
-  found nothing and document retrieval returned nothing — and because several of
-  those paths treat a failed search as an empty result, the symptom was a system
-  answering slowly and without context rather than reporting an error. Measured
-  on the version this file pinned and the one it pins now: `v1.9.3 -> MISS`,
-  `v1.18.2 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
-  serve it (v1.12.4 was measured too, and also serves it). Both
-  files now pin v1.18.2, matching enterprise and the locked client, and the
-  `qdrant-client` floor moves from `>=1.9` to
-  `>=1.10` — the client gained `query_points` at the same release, so a resolved
-  1.9.x raised `AttributeError` at every call site and reached the same silent
-  empty result.
-
-  **An existing `qdrant-data` volume written by v1.9.x must be removed.**
-  v1.18.2 panics on startup against it, and there is no data-preserving path
-  forward: stepping v1.9.3 → v1.12.4 → v1.18.2 panics identically at the last
-  hop, and staying on v1.12.4 makes `qdrant-client` 1.19.0 report the server as
-  incompatible on every construction. The failure is loud — the container exits
-  — and `docs/qdrant-setup.md` records the measurements, the exact error, and
-  what rebuilding costs. The cache regenerates itself; document chunks need
-  re-ingesting.
-
-- The semantic cache no longer reports a failed search as a cache miss. A
-  rejected request and an empty cache were the same `None` to the caller while
-  meaning opposite things. A failure is now logged once per collection and tier,
-  naming the version requirement, since a 404 from a pre-v1.10 server is its
-  most likely cause.
-
-- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
-  expired or unverifiable template ranked above a usable one ended the lookup
-  instead of continuing past it — which mattered increasingly, since expired
-  points were never deleted.
-
 ### Added
 
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
@@ -59,17 +20,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   an operator can run exact-match-only caching for a sensitive agent without
   turning the cache off. Existing deployments are unaffected by the defaults.
 
-### Security
-
-- The semantic cache no longer stores an entry whose answer is empty or is this
-  system reporting its own failure, nor one whose question is over the length
-  limit above. None of these is an authorisation boundary -- a user who can
-  query an agent can still write a short, plausible question into its cache, and
-  the blast radius is other users of that same agent, who are already entitled
-  to its answers. They refuse the shapes that are never worth storing, one of
-  which is where a padded prompt injection sits.
-
 ### Changed
+
+- The caller's `cache_context` is now matched inside the Qdrant query rather than
+  after it. `put()` writes a digest of the context under a reserved payload key
+  and `get()` filters on that single value, so a lookup's candidates already
+  belong to the caller. Previously the context was compared key by key, which
+  Qdrant can only evaluate as a subset test — entries from other callers came
+  back and were discarded after the search, consuming the
+  `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans. On a busy conversational
+  agent that starved context-free reads outright.
+
+  Entries written before the key existed carry no digest, so a context-free read
+  matches either its absence or the empty-context digest. No cache is rebuilt and
+  no entry becomes unreadable. The digest is derived rather than signed, so it can
+  misdirect a lookup but cannot get a foreign entry served — `_payload_matches`
+  still compares the real, signed context before anything is returned.
 
 - Cache entry signatures now cover the caller's `cache_context`. Previously the
   HMAC covered the answer and its SQL but not the context keys, so anyone with
@@ -115,6 +81,78 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
+  vector search.** NLQueries searches through the Universal Query API
+  (`query_points`), which Qdrant added in v1.10; the compose file pinned v1.9.3
+  and the benchmarks compose v1.9.2, so every search returned `404`. The
+  semantic cache degraded to exact-match hits only, dynamic context injection
+  found nothing and document retrieval returned nothing — and because several of
+  those paths treat a failed search as an empty result, the symptom was a system
+  answering slowly and without context rather than reporting an error. Measured
+  on the version this file pinned and the one it pins now: `v1.9.3 -> MISS`,
+  `v1.18.2 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
+  serve it (v1.12.4 was measured too, and also serves it). Both
+  files now pin v1.18.2, matching enterprise and the locked client, and the
+  `qdrant-client` floor moves from `>=1.9` to
+  `>=1.10` — the client gained `query_points` at the same release, so a resolved
+  1.9.x raised `AttributeError` at every call site and reached the same silent
+  empty result.
+
+  **An existing `qdrant-data` volume written by v1.9.x must be removed.**
+  v1.18.2 panics on startup against it, and there is no data-preserving path
+  forward: stepping v1.9.3 → v1.12.4 → v1.18.2 panics identically at the last
+  hop, and staying on v1.12.4 makes `qdrant-client` 1.19.0 report the server as
+  incompatible on every construction. The failure is loud — the container exits
+  — and `docs/qdrant-setup.md` records the measurements, the exact error, and
+  what rebuilding costs. The cache regenerates itself; document chunks need
+  re-ingesting.
+
+- The semantic cache no longer reports a failed search as a cache miss. A
+  rejected request and an empty cache were the same `None` to the caller while
+  meaning opposite things. A failure is now logged once per collection and tier,
+  naming the version requirement, since a 404 from a pre-v1.10 server is its
+  most likely cause.
+
+- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
+  expired or unverifiable template ranked above a usable one ended the lookup
+  instead of continuing past it — which mattered increasingly, since expired
+  points were never deleted.
+
+- **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
+  vector search.** NLQueries searches through the Universal Query API
+  (`query_points`), which Qdrant added in v1.10; the compose file pinned v1.9.3
+  and the benchmarks compose v1.9.2, so every search returned `404`. The
+  semantic cache degraded to exact-match hits only, dynamic context injection
+  found nothing and document retrieval returned nothing — and because several of
+  those paths treat a failed search as an empty result, the symptom was a system
+  answering slowly and without context rather than reporting an error. Measured
+  on the version this file pinned and the one it pins now: `v1.9.3 -> MISS`,
+  `v1.12.4 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
+  serve it. Both
+  files now pin v1.12.4, and the `qdrant-client` floor moves from `>=1.9` to
+  `>=1.10` — the client gained `query_points` at the same release, so a resolved
+  1.9.x raised `AttributeError` at every call site and reached the same silent
+  empty result.
+
+  **v1.12.4 rather than the v1.18.2 enterprise pins, because of the data
+  volume.** Measured by writing with v1.9.3 and reopening the same volume:
+  v1.10.1 and v1.12.4 start with the data intact, v1.18.2 panics on startup and
+  exits. Pinning v1.18.2 would have turned `docker compose pull && up` into a
+  Qdrant that will not start for anyone already running this stack. See
+  "Upgrading an existing Qdrant" in `docs/qdrant-setup.md` for the route to
+  newer versions and what a volume reset costs.
+
+- The semantic cache no longer reports a failed search as a cache miss. A
+  rejected request and an empty cache were the same `None` to the caller while
+  meaning opposite things. A failure is now logged once per collection and tier,
+  naming the version requirement, since a 404 from a pre-v1.10 server is its
+  most likely cause.
+
+- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
+  expired or unverifiable template ranked above a usable one ended the lookup
+  instead of continuing past it — which mattered increasingly, since expired
+  points were never deleted.
+
 - Semantic cache Tier 2 template hits returned SQL that did not parse. A stored
   template already quotes its placeholder (`d >= '[d:DATE]'`), and the binder
   quoted the value again, so a date bound as `>= ''2024-06-01''` and failed on
@@ -124,6 +162,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   value, so `"East"` compared against `"East"` rather than `East`.
 
 ### Security
+
+- The semantic cache no longer stores an entry whose answer is empty or is this
+  system reporting its own failure, nor one whose question is over the length
+  limit above. None of these is an authorisation boundary -- a user who can
+  query an agent can still write a short, plausible question into its cache, and
+  the blast radius is other users of that same agent, who are already entitled
+  to its answers. They refuse the shapes that are never worth storing, one of
+  which is where a padded prompt injection sits.
 
 - Cache template binding no longer builds SQL by string substitution. Values are
   bound as literal nodes in a parsed statement and rendered by sqlglot for the
