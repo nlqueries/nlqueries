@@ -7,9 +7,15 @@ NLQueries reads two kinds of sources: databases (for structured SQL answers) and
 ## Before you connect: the role to use
 
 Give NLQueries a login that cannot write and cannot read more than you would put
-in an answer. The connector requires TLS and runs every query in a read-only
-transaction, but neither of those limits *what* the role can read, and neither
-is a substitute for a least-privilege grant.
+in an answer. The connector requires TLS, and every engine that can express a
+read-only execution is asked for one, but neither limits *what* the role can
+read, and neither is a substitute for a least-privilege grant.
+
+How much the connector can enforce differs by engine, and on two it stops short
+of what you might assume: **Snowflake** rolls back DML but cannot undo DDL, which
+is not transactional there, and **BigQuery** has no transaction to roll back at
+all, so a non-`SELECT` statement type is logged after the job has run rather than
+prevented. On those two the grant is doing the work the connector cannot.
 
 [docs/database-hardening.md](database-hardening.md) has the SQL, per engine.
 
