@@ -13,7 +13,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   semantic cache degraded to exact-match hits only, dynamic context injection
   found nothing and document retrieval returned nothing — and because several of
   those paths treat a failed search as an empty result, the symptom was a system
-  answering slowly and without context rather than reporting an error. Both
+  answering slowly and without context rather than reporting an error. Measured
+  on the version this file pinned and the one it pins now: `v1.9.3 -> MISS`,
+  `v1.12.4 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
+  serve it. Both
   files now pin v1.12.4, and the `qdrant-client` floor moves from `>=1.9` to
   `>=1.10` — the client gained `query_points` at the same release, so a resolved
   1.9.x raised `AttributeError` at every call site and reached the same silent
@@ -33,6 +36,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   naming the version requirement, since a 404 from a pre-v1.10 server is its
   most likely cause.
 
+- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
+  expired or unverifiable template ranked above a usable one ended the lookup
+  instead of continuing past it — which mattered increasingly, since expired
+  points were never deleted.
+
 ### Added
 
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
@@ -48,11 +56,6 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   to the semantic cache; the second selects which tiers may serve an answer, so
   an operator can run exact-match-only caching for a sensitive agent without
   turning the cache off. Existing deployments are unaffected by the defaults.
-
-- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
-  expired or unverifiable template ranked above a usable one ended the lookup
-  instead of continuing past it — which mattered increasingly, since expired
-  points were never deleted.
 
 ### Security
 
