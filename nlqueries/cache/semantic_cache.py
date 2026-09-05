@@ -44,7 +44,10 @@ import string
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
+
+import sqlglot
+from sqlglot import exp
 
 from nlqueries import config
 from nlqueries.cache.envelope import CacheBinding, sign, verify
@@ -93,8 +96,12 @@ _MONTH_RE = re.compile(
     re.IGNORECASE,
 )
 _CURRENCY_RE = re.compile(r"\$[\d,]+(?:\.\d+)?")
-_DQUOTE_RE = re.compile(r'"[^"]*"')
-_SQUOTE_RE = re.compile(r"'[^']*'")
+# Capture groups: the *value* is bound into SQL, and it must not carry the
+# quote characters that delimited it in the question. `sub` still replaces the
+# whole match, so `_mask_entities` -- and therefore every cache key ever written
+# -- is unaffected by the groups being here.
+_DQUOTE_RE = re.compile(r'"([^"]*)"')
+_SQUOTE_RE = re.compile(r"'([^']*)'")
 _NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 # Each entry: (pattern, token_type_string)
@@ -159,14 +166,165 @@ def _extract_entities_by_type(question: str) -> dict[str, list[str]]:
     return result
 
 
-def _quote_sql_value(value: str, param_type: str) -> str:
-    """Format *value* for inline SQL according to its *param_type*."""
-    if param_type.upper() in ("INT", "DECIMAL"):
-        return value
-    return f"'{value}'"
+#: Placeholders as they appear in a stored template, with the quotes the
+#: parameterizer may have wrapped them in. Both forms occur: a VARCHAR
+#: placeholder is emitted inside a string literal, an INT one bare.
+_QUOTED_PLACEHOLDER_RE = re.compile(r"'?\[([^:\]]+):([^\]]+)\]'?")
+
+#: What a placeholder becomes before the template is parsed. A bare
+#: ``[x:INT]`` is not a literal in any dialect -- Postgres reads it as array
+#: indexing, T-SQL as a quoted identifier -- so walking ``exp.Literal`` would
+#: silently miss every numeric placeholder and bind only the strings. Turning
+#: every placeholder into the same quoted sentinel first gives one code path
+#: that finds all of them, in every dialect.
+_BIND_SENTINEL_PREFIX = "__nlq_bind_"
+_BIND_SENTINEL = _BIND_SENTINEL_PREFIX + "{}__"
+_BIND_SENTINEL_RE = re.compile(r"^__nlq_bind_(\d+)__$")
+
+#: Values a placeholder type will accept. A value that does not match is not
+#: bound at all: `_bind_entities` returns None and the caller falls through to
+#: generation, which is what it already does when an entity is missing.
+_COERCE_PATTERNS: dict[str, re.Pattern[str]] = {
+    "INT": re.compile(r"^\d+$"),
+    "DECIMAL": re.compile(r"^\d+(\.\d+)?$"),
+    "DATE": re.compile(r"^\d{4}-\d{2}-\d{2}$"),
+    "TIMESTAMP": re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$"),
+}
+
+#: Longer than any real filter value, and the shape a padded injection takes.
+_MAX_VARCHAR_ENTITY_CHARS = 512
 
 
-def _bind_entities(question: str, template_sql: str) -> str | None:
+def _coerce_entity(value: str, param_type: str) -> str | None:
+    """Return *value* if it is a legal value for *param_type*, else ``None``.
+
+    The first of two independent defences. This one is cheap and readable and
+    stops the obvious thing: a numeric placeholder can only ever receive digits,
+    so no amount of SQL in a question can reach one. The second, the structural
+    gate in :func:`_bind_entities`, is what holds when this is wrong.
+
+    VARCHAR deliberately accepts anything printable -- a filter value legitimately
+    contains apostrophes, spaces and punctuation -- and relies on the AST binding
+    to make it inert. It refuses only two things: a NUL, which truncates in some
+    drivers rather than erroring, and a value long enough to be padding rather
+    than a filter.
+    """
+    ptype = param_type.upper()
+    pattern = _COERCE_PATTERNS.get(ptype)
+    if pattern is not None:
+        return value if pattern.match(value) else None
+    if "\x00" in value or len(value) > _MAX_VARCHAR_ENTITY_CHARS:
+        return None
+    return value
+
+
+def _sentinel_template(template_sql: str) -> tuple[str, list[tuple[str, str]]]:
+    """Replace every placeholder with a quoted sentinel; return it and their order.
+
+    The order matches ``_PLACEHOLDER_RE.findall``, so sentinel *i* belongs to
+    placeholder *i* -- which is what lets a template mentioning the same column
+    twice receive two different values, as the previous ``str.replace(..., 1)``
+    loop did.
+    """
+    order: list[tuple[str, str]] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        order.append((match.group(1), match.group(2)))
+        return "'" + _BIND_SENTINEL.format(len(order) - 1) + "'"
+
+    return _QUOTED_PLACEHOLDER_RE.sub(_sub, template_sql), order
+
+
+def _literal_shape(tree: exp.Expression) -> str:
+    """The statement with every literal blanked, for comparing shapes.
+
+    Two statements with the same shape differ only in the values they compare
+    against. That is the whole of what binding is allowed to do.
+    """
+    clone = tree.copy()
+    for node in clone.find_all(exp.Literal):
+        node.replace(exp.Literal.string("?"))
+    return clone.sql()
+
+
+def _sqlglot_name(dialect: str | None) -> str | None:
+    """Translate a caller's dialect name into one sqlglot answers to.
+
+    The name that reaches the cache is whatever the deployment calls its engine,
+    and several of those are not sqlglot dialects: `CAPABILITIES` keys SQL Server
+    as `mssql`, the MCP `query` tool documents `mssql` and `mysql`, and a binding
+    may carry `postgresql` or `mariadb`. sqlglot rejects all three with
+    ``ValueError: Unknown dialect``.
+
+    Untranslated, that error is swallowed by :func:`_parse_or_none` and every
+    Tier 2 hit becomes a miss on those deployments -- silently, and including the
+    numeric templates that bound correctly before binding moved to the AST.
+    `sql_policy.evaluate` translates the same strings for the same reason, and
+    this defers to its table rather than keeping a second one.
+    """
+    if not dialect:
+        return None
+    from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
+
+    return _sqlglot_dialect(dialect)
+
+
+#: Unknown dialect names already reported, so an engine nobody registered costs
+#: one line rather than one per cache lookup.
+_UNKNOWN_DIALECTS_LOGGED: set[str] = set()
+
+
+def _parse_or_none(sql: str, dialect: str | None) -> exp.Expression | None:
+    """Parse *sql* as exactly one statement, or ``None``.
+
+    An unparseable template or bound statement is a cache miss, not an error:
+    the caller falls through to generation, which is the outcome that was always
+    intended and did not happen while the parse result was discarded inside a
+    `contextlib.suppress`.
+
+    `parse`, not `parse_one`, and the count is checked -- the convention
+    `sql_policy.evaluate` documents at its own parse call. `parse_one` is
+    specified to return the first statement and discard the rest; this sqlglot
+    version happens to return a `Block` for multi-statement input instead, whose
+    shape does not match a single `Select`, so the gate in `_bind_entities` holds
+    either way today. That is incidental rather than intended: this defence
+    exists precisely for the case where a value has escaped its literal, so it
+    should not rest on which of two behaviours the parser has this release.
+    """
+    read = _sqlglot_name(dialect)
+    try:
+        statements = sqlglot.parse(sql, read=read)
+    except ValueError as exc:
+        # sqlglot raises a plain ValueError for a dialect it does not know.
+        # Distinguished from an unparseable statement and logged, because it is
+        # a configuration problem an operator can fix and it disables every
+        # Tier 2 hit for the life of the deployment. `_is_executable_select`
+        # logs the same condition at ERROR for the same reason, and no longer
+        # sees it now that binding fails first.
+        if dialect and dialect not in _UNKNOWN_DIALECTS_LOGGED:
+            _UNKNOWN_DIALECTS_LOGGED.add(dialect)
+            logger.warning(
+                "Cache template binding is disabled: %r is not a dialect sqlglot "
+                "knows (%s). Every Tier 2 template hit will miss until the "
+                "connector's db_type is corrected.",
+                dialect,
+                exc,
+            )
+        return None
+    except Exception:  # noqa: BLE001 -- an unparseable statement is a cache miss
+        return None
+
+    parsed = [st for st in statements if st is not None]
+    if len(parsed) != 1:
+        return None
+    # sqlglot declares these as `Expr`, the *parent* of `Expression`, so the
+    # declaration is wider than what it returns and mypy will not narrow it.
+    # Everything downstream here (`find_all`, `copy`, `sql`) is `Expression`
+    # behaviour, and the runtime type always is one.
+    return cast("exp.Expression", parsed[0])
+
+
+def _bind_entities(question: str, template_sql: str, dialect: str | None = None) -> str | None:
     """Substitute question entities into *template_sql* placeholders.
 
     Placeholders look like ``[column_name:DATE]``.  Entities are matched using
@@ -224,21 +382,74 @@ def _bind_entities(question: str, template_sql: str) -> str | None:
     remaining["NUMBER"] = number_pool
     type_used: dict[str, int] = {}
 
-    bound = template_sql
+    values: list[str] = []
     for name, ptype in placeholders:
         if (name, ptype) in pre_assigned:
-            sql_value = _quote_sql_value(pre_assigned[(name, ptype)], ptype)
+            raw = pre_assigned[(name, ptype)]
         else:
             entity_type = _PARAM_TYPE_TO_ENTITY.get(ptype.upper(), "STRING")
             idx = type_used.get(entity_type, 0)
             available = remaining.get(entity_type, [])
             if idx >= len(available):
-                return None  # not enough entities — unsafe to bind
-            value = available[idx]
+                return None  # not enough entities -- unsafe to bind
+            raw = available[idx]
             type_used[entity_type] = idx + 1
-            sql_value = _quote_sql_value(value, ptype)
 
-        bound = bound.replace(f"[{name}:{ptype}]", sql_value, 1)
+        coerced = _coerce_entity(raw, ptype)
+        if coerced is None:
+            return None  # not a legal value for this placeholder's type
+        values.append(coerced)
+
+    # From here a value never touches SQL text. It becomes a literal node in a
+    # parsed tree and sqlglot renders it for the dialect, which makes quoting,
+    # doubling and MySQL's backslash escaping its problem rather than ours.
+    #
+    # `str.replace` could not do that. It quoted values itself, inside a template
+    # that had already quoted the placeholder, so `"East"` bound to `''"East"''`
+    # and failed to parse on every dialect but MySQL. Two bugs cancelling out --
+    # the regex kept the question's quote characters and the template supplied
+    # its own -- and correcting either alone would have made the other exploitable.
+    normalised, order = _sentinel_template(template_sql)
+    template_tree = _parse_or_none(normalised, dialect)
+    if template_tree is None or len(order) != len(values):
+        return None
+
+    tree = template_tree.copy()
+    for node in tree.find_all(exp.Literal):
+        match = _BIND_SENTINEL_RE.match(str(node.this))
+        if match is None:
+            continue
+        position = int(match.group(1))
+        if position >= len(values):
+            return None
+        ptype = order[position][1].upper()
+        value = values[position]
+        node.replace(
+            exp.Literal.number(value) if ptype in ("INT", "DECIMAL") else exp.Literal.string(value)
+        )
+
+    bound = tree.sql(dialect=_sqlglot_name(dialect))
+
+    # The gate that does not depend on getting the escaping right. A bound
+    # statement may differ from its template only in the values of its literals;
+    # if the shapes differ then something in a value became syntax, and the
+    # result is discarded however it was quoted.
+    bound_tree = _parse_or_none(bound, dialect)
+    if bound_tree is None or _literal_shape(template_tree) != _literal_shape(bound_tree):
+        return None
+
+    # Fail closed if a sentinel survived, which the shape gate cannot see: it
+    # blanks every literal, so an unreplaced `'__nlq_bind_0__'` is
+    # indistinguishable from a bound value. Such a statement would pass the gate,
+    # pass the re-parse, pass the SQL policy and run -- comparing a column
+    # against the string `__nlq_bind_0__` and returning nothing, which reads to
+    # the caller as "no matching rows" rather than as a fault.
+    #
+    # It should be unreachable, because every placeholder is normalised to a
+    # quoted sentinel that parses as a literal in all five dialects. That is an
+    # argument rather than a guarantee, and the check costs one substring scan.
+    if _BIND_SENTINEL_PREFIX in bound:
+        return None
 
     return bound
 
@@ -587,15 +798,22 @@ class SemanticCache:
         if not template_sql:
             return None
 
-        bound_sql = _bind_entities(question, template_sql)
+        # The binding dialect, so values are rendered the way the engine that
+        # will run them reads them. Without it sqlglot writes its own dialect and
+        # MySQL's backslash escaping in particular is lost.
+        dialect = self._binding.dialect if self._binding is not None else None
+        bound_sql = _bind_entities(question, template_sql, dialect)
         if bound_sql is None:
             return None
 
-        # Basic syntactic validation before returning a template-filled SQL.
-        with contextlib.suppress(Exception):
-            import sqlglot  # noqa: PLC0415
-
-            sqlglot.parse_one(bound_sql)
+        # A real check, not a suppressed one. This used to parse the bound SQL
+        # inside `contextlib.suppress(Exception)` and discard the result, so a
+        # statement that did not parse was handed to the orchestrator anyway --
+        # which is how a template hit could return a stale answer alongside
+        # "Cached SQL failed revalidation and was not executed". `_bind_entities`
+        # already parses; this is the assertion that it did.
+        if _parse_or_none(bound_sql, dialect) is None:
+            return None
 
         entry = self._verified_entry(tmpl_payload)
         if entry is None:
