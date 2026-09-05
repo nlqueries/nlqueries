@@ -203,18 +203,17 @@ fail verification, expiry or entity binding -- but it no longer has to absorb
 other callers' entries. Twenty scoped entries ranked above an unscoped one used
 to starve it against a window of five; a hundred now do not.
 
-**Why the cosine tiers fetch more than one candidate.** Qdrant's filter is a
-subset test: it can require the caller's keys but cannot require the absence of
-others, so the equality is applied after the search rather than pushed into it.
-Asking for a single point would therefore let the nearest neighbour decide the
-outcome for everybody -- an entry from another context, ranked top, would consume
-the only candidate slot and the lookup would fall through even with a
-same-context entry immediately below it and above the threshold. That bites
-hardest on context-free reads, where the pushed-down filter is `kind` alone and
-every context-scoped entry competes freely for that slot. Both tiers take the
-first candidate clearing the threshold *and* the context, and stop scanning at
-the first below-threshold point so widening the window cannot lower the
-similarity bar.
+**Why the cosine tiers still fetch more than one candidate.** Not to absorb
+other callers' entries -- the digest condition above keeps those out of the
+result entirely. A candidate that belongs to the right context can still be
+unusable: its signature may not verify, it may be past the TTL, or its entities
+may not bind into the stored template. The window gives the lookup somewhere to
+go when the nearest match fails one of those, rather than reporting a miss with
+a usable entry one rank below.
+
+Both tiers take the first candidate clearing the threshold *and* every check,
+and stop scanning at the first below-threshold point, so widening the window
+cannot lower the similarity bar.
 
 The invariant is guarded by `tests/test_cache_partitioning.py`, which asserts
 across all three tiers that an entry written under one context is a miss for a

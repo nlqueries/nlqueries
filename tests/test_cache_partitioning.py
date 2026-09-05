@@ -735,6 +735,52 @@ def test_tier2_verifies_a_candidate_before_parsing_its_sql() -> None:
     assert seen == [], f"SQL from an unverified, expired entry was handed to the binder: {seen}"
 
 
+def test_put_writes_the_digest_get_asks_for() -> None:
+    """The write side of the filter, which nothing else pins.
+
+    `get()` puts `_ctx == _context_digest(payload_filter)` in the query's `must`
+    for a scoped read. If `put()` stopped writing that key, or wrote it from the
+    wrong argument, the condition would match no stored point and every scoped
+    Tier 1 and Tier 2 lookup would miss -- silently, and squarely on the
+    deployment that actually uses `cache_context`.
+
+    Verified that the gap was real before closing it: removing the write from
+    `put()` left the whole suite green.
+
+    Both points are checked. The template payload is built separately and could
+    drift from the answer payload.
+    """
+    from nlqueries.cache.semantic_cache import CONTEXT_DIGEST_KEY, _context_digest
+
+    class _Result:
+        resolved_question = QUESTION
+        agent_type = "sql"
+        answer = "There were 42 orders."
+        sql = "SELECT * FROM orders WHERE order_date >= '2024-06-01'"
+
+    for context in (None, dict(CONTEXT_A)):
+        client = _client()
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1", binding=TEST_BINDING).put(
+                QUESTION, _Result(), payload_extra=context
+            )
+
+        points = client.upsert.call_args.kwargs["points"]
+        kinds = {p.payload["kind"] for p in points}
+        assert kinds == {"answer", "template"}, f"expected both points, got {kinds}"
+
+        for point in points:
+            assert point.payload.get(CONTEXT_DIGEST_KEY) == _context_digest(context), (
+                f"the {point.payload['kind']} point for context {context!r} carries "
+                f"{point.payload.get(CONTEXT_DIGEST_KEY)!r}, but get() will ask for "
+                f"{_context_digest(context)!r} -- every scoped lookup would miss"
+            )
+
+
 def test_put_and_get_agree_on_the_tier0_point_id() -> None:
     """The round trip, which `_point_id_for_question` alone cannot establish.
 

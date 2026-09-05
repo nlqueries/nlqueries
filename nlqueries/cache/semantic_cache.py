@@ -1087,12 +1087,12 @@ class SemanticCache:
         def _kind_filter(kind: str) -> Filter:
             """`kind`, plus the caller's context expressed as one exact match.
 
-            Matching each context key individually is a *subset* test -- Qdrant
-            can require the keys the caller named but cannot require the absence
-            of any it did not -- so entries from other contexts came back and had
-            to be discarded client-side, consuming the candidate slots a lookup
-            scans. One digest field turns the same condition into something the
-            query can express exactly.
+            Matching each context key individually would be a *subset* test --
+            Qdrant can require the keys the caller named but cannot require the
+            absence of any it did not -- so entries from other contexts came back
+            and had to be discarded client-side, consuming the candidate slots a
+            lookup scans. One digest field turns the same condition into
+            something the query expresses exactly.
 
             A context-free read is the case needing care: entries written before
             this key existed do not carry it at all, and must still be found. So
@@ -1190,12 +1190,15 @@ class SemanticCache:
                 _report_search_failure(self._collection, "tier 1", exc)
                 return None
 
-            # The first candidate clearing both the threshold and the context,
-            # not simply the nearest. The Qdrant filter is a subset test -- it
-            # can require the caller's keys but cannot require the absence of
-            # others -- so the equality is applied here, as at Tier 0, and asking
-            # for one point would let a neighbour from another context shadow a
-            # same-context entry ranked just below it.
+            # The first *usable* candidate, not simply the nearest. The digest
+            # condition in the query already excludes other contexts, so what
+            # comes back belongs to this caller -- but a candidate can still fail
+            # verification, the TTL, or entity binding, and the window is what
+            # lets the lookup move past one that does.
+            #
+            # `_payload_matches` still runs on it. The digest is derived rather
+            # than signed, so the query is an optimisation over that check and
+            # not a replacement for it.
             #
             # Exhausting them falls through to Tier 2 rather than returning: the
             # tiers are independent, and this one being occupied by other
@@ -1232,10 +1235,9 @@ class SemanticCache:
             _report_search_failure(self._collection, "tier 2", exc)
             return None
 
-        # The nearest template belonging to this context, for the same reason as
-        # Tier 1: the context equality is applied here rather than pushed into
-        # the query, so asking for one point lets another context's template
-        # shadow ours.
+        # The nearest *usable* template, for the same reason as Tier 1: the query
+        # has already narrowed these to this caller's context, and the window is
+        # what lets the scan move past one that fails a later check.
         # The binding dialect, so values are rendered the way the engine that
         # will run them reads them. Without it sqlglot writes its own dialect and
         # MySQL's backslash escaping in particular is lost.

@@ -448,17 +448,18 @@ is amortised rather than paid per query.
 CACHE_COSINE_CANDIDATES: int = max(1, int(os.getenv("NLQ_CACHE_COSINE_CANDIDATES", "5")))
 """How many neighbours the Tier 1 and Tier 2 searches ask Qdrant for.
 
-More than one because the cache-context equality is applied after the search
-rather than pushed into it: Qdrant's filter can require the caller's keys but
-cannot require the absence of others, so a nearest neighbour belonging to another
-context would otherwise consume the only candidate slot and shadow a valid entry
-ranked just below it.
+More than one because a candidate that belongs to the right context can still be
+unusable: its signature may not verify, it may be past the TTL, or its entities
+may not bind into the stored template. The window gives the lookup somewhere to
+go when the nearest match fails one of those, rather than reporting a miss with a
+usable entry one rank below.
 
-Raise it on an agent whose cache carries many context-scoped entries for the same
-question -- a busy conversational agent accumulates one per conversation context,
-since each context now has its own point ID, and a context-free lookup has to
-scan past all of them to reach its own. The cost of raising it is payload
-transfer for candidates that are usually discarded.
+It is no longer about other callers' entries. The caller's context is matched
+inside the query as a single digest condition, so those do not come back at all.
+
+Raise it on an agent whose cached entries often fail one of those later checks --
+a short TTL, or templates whose entities frequently will not bind. The cost of
+raising it is payload transfer for candidates that are then discarded.
 
 """
 

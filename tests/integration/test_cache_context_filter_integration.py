@@ -236,3 +236,60 @@ def test_an_entry_written_before_the_digest_existed_is_still_readable(
         "upgrading would empty every cache in the field"
     )
     assert entry.answer == "WRITTEN BEFORE"
+
+
+def test_a_scoped_entry_written_by_put_is_found_by_get(client: QdrantClient) -> None:
+    """The genuine round trip: `put()` writes, `get()` reads, nothing hand-built.
+
+    Every other case here seeds points through `_entry()`, which computes the
+    digest the same way `get()` does — so all of them would pass even if `put()`
+    never wrote the key at all. It was verified that this gap was real: removing
+    the write from `put()` left the entire suite green, while every scoped Tier 1
+    and Tier 2 lookup would have missed in production.
+
+    Driving both sides through the real code against a real server is the only
+    arrangement that cannot agree with itself by construction.
+    """
+
+    class _Result:
+        resolved_question = QUESTION
+        agent_type = "sql"
+        answer = "ROUND TRIP"
+        sql = "SELECT 1"
+
+    context = {"context_fingerprint": "fp-round-trip"}
+
+    with (
+        patch.object(sc, "_get_client", return_value=client),
+        patch.object(sc, "embed_text", return_value=QUERY_VECTOR),
+    ):
+        sc.SemanticCache("agent1", binding=TEST_BINDING).put(
+            QUESTION, _Result(), payload_extra=context
+        )
+
+    # A different question, so Tier 0's id lookup cannot serve it and the answer
+    # can only come back through the digest-filtered cosine search.
+    with (
+        patch.object(sc, "_get_client", return_value=client),
+        patch.object(sc, "embed_text", return_value=QUERY_VECTOR),
+    ):
+        entry = sc.SemanticCache("agent1", binding=TEST_BINDING).get(
+            "roughly how many orders were there", payload_filter=context
+        )
+
+    assert entry is not None, (
+        "an entry written by put() could not be found by get() in the same "
+        "context -- the digest written and the digest queried disagree"
+    )
+    assert entry.answer == "ROUND TRIP"
+
+    # And the partition still holds for a write that went through put().
+    with (
+        patch.object(sc, "_get_client", return_value=client),
+        patch.object(sc, "embed_text", return_value=QUERY_VECTOR),
+    ):
+        other = sc.SemanticCache("agent1", binding=TEST_BINDING).get(
+            "roughly how many orders were there",
+            payload_filter={"context_fingerprint": "someone-else"},
+        )
+    assert other is None, "another context reached an entry put() wrote"
