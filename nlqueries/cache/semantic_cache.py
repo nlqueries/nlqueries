@@ -642,6 +642,72 @@ def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) ->
     return True
 
 
+#: When each collection was last swept, so the sweep is amortised rather than
+#: paid on every write. Process-local: several processes sharing a collection
+#: each sweep on their own schedule, which is harmless -- the delete is
+#: idempotent and matches by age, not by identity.
+_last_prune_at: dict[str, float] = {}
+
+
+def _prune_expired(client: Any, collection: str, ttl_hours: int) -> int | None:
+    """Delete points past the TTL. Returns None when the sweep was skipped.
+
+    Nothing else removes anything: the TTL is applied on read, and
+    `invalidate()` drops the collection wholesale. That was survivable while a
+    repeated question upserted over its own point, and stopped being so when the
+    point id gained the cache context -- a context that changes per turn writes
+    ids that never recur, are never overwritten and were never removed.
+
+    The cutoff is the same `ttl_hours` the read path applies, so this deletes
+    only what a read would already have discarded. It cannot remove an entry that
+    is still servable.
+
+    Best-effort: a failed sweep is logged and the write continues. A cache that
+    grows is worse than one that does not, but not so much worse that it should
+    cost the caller their answer.
+    """
+    interval = config.CACHE_PRUNE_INTERVAL_SECONDS
+    if interval <= 0:
+        return None
+
+    now = time.time()
+    last = _last_prune_at.get(collection)
+    if last is not None and now - last < interval:
+        return None
+    _last_prune_at[collection] = now
+
+    from qdrant_client.models import (  # noqa: PLC0415
+        DatetimeRange,
+        FieldCondition,
+        Filter,
+        FilterSelector,
+    )
+
+    # A datetime, not its isoformat string: `DatetimeRange` declares
+    # `datetime | date | None`, and while pydantic coerces the string, passing
+    # the declared type keeps mypy honest and does not depend on that coercion.
+    cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+    try:
+        client.delete(
+            collection_name=collection,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[FieldCondition(key="created_at", range=DatetimeRange(lt=cutoff))]
+                )
+            ),
+            wait=True,
+        )
+    except Exception:  # noqa: BLE001 -- a failed sweep must not fail the write
+        logger.warning(
+            "Cache sweep of %s failed; expired points remain and will be "
+            "retried on the next write after the interval.",
+            collection,
+            exc_info=True,
+        )
+        return None
+    return 0
+
+
 def _context_of(payload: dict[str, Any]) -> dict[str, str]:
     """The cache context an entry was written with, recovered from its payload."""
     return {str(k): str(v) for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS}
@@ -1221,6 +1287,11 @@ class SemanticCache:
 
         client = _get_client()
         client.upsert(collection_name=self._collection, points=points)
+
+        # After the upsert, so a failed sweep cannot cost the caller the write
+        # that prompted it. At most once per collection per interval, so the cost
+        # is amortised rather than paid on every put.
+        _prune_expired(client, self._collection, self._ttl_hours)
 
     def invalidate(self, agent_id: str) -> None:  # noqa: ARG002
         """Delete all points in the cache collection (full invalidation).

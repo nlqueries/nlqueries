@@ -6,6 +6,23 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
+  cache now sweeps points past the TTL on write, at most once per collection per
+  interval. Nothing previously deleted anything — the TTL is applied on read, and
+  `invalidate()` drops the whole collection — which stopped being survivable when
+  point IDs gained the cache context, since an id that never recurs is never
+  overwritten either. Expired points were also still ranked by the vector search
+  and consumed the `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans.
+
+### Fixed
+
+- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
+  expired or unverifiable template ranked above a usable one ended the lookup
+  instead of continuing past it — which mattered increasingly, since expired
+  points were never deleted.
+
+### Added
+
 - `NLQ_CACHE_MAX_QUESTION_CHARS` (default 500) and `NLQ_CACHE_ANSWER_TIERS`
   (default `0,1,2`). The first caps the length of a question that may be written
   to the semantic cache; the second selects which tiers may serve an answer, so

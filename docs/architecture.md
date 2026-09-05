@@ -129,42 +129,34 @@ then missed indefinitely, which is a collapsed hit rate rather than a leak and
 correspondingly harder to attribute. The context is now part of the id, appended
 only when non-empty so entries written without one keep the id they had.
 
-**Putting the context in the point ID removes what bounded the collection's
-size, and nothing here replaces it.** This is the most important operational
-consequence on this page, so it is stated before the rest.
+**The collection is swept on write, because the point ID no longer bounds it.**
+Nothing else deletes: the TTL is applied on *read*, in `_payload_to_entry`, and
+`invalidate()` drops the whole collection. That was survivable while a repeated
+question upserted over its own id, since the point count then tracked an agent's
+distinct question vocabulary. Once the id carried the cache context it stopped
+being true -- enterprise derives `context_fingerprint` from the conversation
+summary, the last SQL and a window of turns, so it changes on virtually every
+follow-up turn, and each turn wrote points at an id that never recurs, was never
+overwritten and was never removed.
 
-Nothing in the cache ever deletes a point. The TTL is applied on *read*, in
-`_payload_to_entry`, and the only removal path is `invalidate()`, which drops the
-whole collection. That was survivable while a repeated question upserted over its
-own id: the point count tracked an agent's distinct question vocabulary and went
-no further.
+`_prune_expired` deletes points past the TTL, at most once per collection per
+`NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default one hour; `0` disables it), after the
+upsert so a failed sweep cannot cost the caller the write that prompted it. The
+cutoff is the same `ttl_hours` the read path applies, so it can only remove what
+a read would already have discarded -- it cannot delete a servable entry.
 
-With the context in the id that no longer holds. Enterprise derives
-`context_fingerprint` from the conversation summary, the last SQL and a window of
-turns, so it changes on virtually every follow-up turn — and each such turn now
-writes one or two points at an id that will essentially never recur, is never
-overwritten, and is never removed. **Point count therefore grows linearly with
-follow-up traffic for the life of the agent.** Three consequences follow:
+Two things this also fixes, which were true before the id change and simply less
+visible: expired points were still *ranked* by the vector search, since the TTL
+is checked afterwards, so they consumed the candidate slots described below; and
+scoped entries written before the id change are orphaned under ids nothing will
+look up, so only an age-based sweep can ever reclaim them.
 
-- Storage grows without bound, and only `invalidate()` reclaims it — which
-  discards the whole cache, including the entries worth keeping.
-- Expired entries are still *searched*. The TTL discards them after the vector
-  search has already ranked them, so they go on competing for the
-  `NLQ_CACHE_COSINE_CANDIDATES` slots described below, and the starvation that
-  section describes gets worse over time rather than staying level.
-- Scoped entries written **before** this change are orphaned permanently. They
-  keep their old context-free ids, which nothing will now look up, so they pay
-  more than the one-off miss the signature change costs — they are never read
-  again and never removed.
-
-**A prune is required, and is deliberately not in this change.** The shape that
-fits is a delete-by-filter on `created_at` older than the TTL, issued on write.
-Qdrant can express it (`DatetimeRange` inside a `FilterSelector`), but whether it
-behaves correctly against an unindexed string `created_at` — collections created
-before this carry a payload index on `kind` only — is exactly the sort of thing
-that must be measured against a real Qdrant rather than reasoned about. A delete
-that matches the wrong points destroys live cache entries, so it should arrive
-with a testcontainers-backed test and not on inference.
+That the filter behaves correctly is established against a real Qdrant in
+`tests/integration/test_cache_prune_integration.py`, not inferred. `created_at`
+is an ISO string and collections in the field carry a payload index on `kind`
+alone; a `DatetimeRange` that needed a datetime index would either match nothing
+or -- far worse -- match everything, and the difference between those is a
+deleted cache and a destroyed one.
 
 **What the candidate window bounds rather than eliminates.**
 `NLQ_CACHE_COSINE_CANDIDATES` defaults to five. A context-free read on an agent
