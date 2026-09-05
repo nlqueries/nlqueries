@@ -20,6 +20,7 @@ where a padded prompt injection sits.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -88,7 +89,7 @@ def _signed_answer(question: str = "how many orders were there") -> dict[str, ob
             "agent_type": "sql",
             "answer": "There were 42 orders.",
             "sql": "SELECT count(*) FROM orders",
-            "created_at": "2026-09-05T00:00:00+00:00",
+            "created_at": datetime.now(UTC).isoformat(),
             "hit_count": 0,
             "kind": "answer",
         },
@@ -431,7 +432,7 @@ def test_with_tier_two_off_a_template_hit_is_a_miss(monkeypatch: pytest.MonkeyPa
             "agent_type": "sql",
             "answer": "There were 42 orders.",
             "sql": "SELECT * FROM orders WHERE order_date >= '[d:DATE]'",
-            "created_at": "2026-09-05T00:00:00+00:00",
+            "created_at": datetime.now(UTC).isoformat(),
             "hit_count": 0,
             "kind": "template",
         },
