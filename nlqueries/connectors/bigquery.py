@@ -349,12 +349,15 @@ class BigQueryConnector(DatabaseConnector):
             job_config = bigquery.QueryJobConfig(
                 use_legacy_sql=False,
                 create_session=False,
-                job_timeout_ms=(
-                    int(effective_timeout * 1000)
-                    if effective_timeout is not None and effective_timeout > 0
-                    else None
-                ),
             )
+            # Set only when a timeout actually applies, rather than passing None
+            # to mean "no timeout". On the installed 3.41 the setter runs the
+            # value through `_int_or_none` and clears the property, so both forms
+            # work -- but the declared floor is `google-cloud-bigquery>=3.0` and
+            # this avoids depending on that detail holding across the whole range
+            # we say we support. Behaviour is identical either way.
+            if effective_timeout is not None and effective_timeout > 0:
+                job_config.job_timeout_ms = int(effective_timeout * 1000)
             query_job = client.query(sql, job_config=job_config)
             result = query_job.result()
             elapsed_ms = (time.perf_counter() - start) * 1000
