@@ -190,3 +190,29 @@ def test_anything_allowed_satisfies_the_policy_s_own_invariant(sql: str) -> None
     assert len(parsed) == 1
     assert isinstance(parsed[0], exp.Select | exp.Union)
     assert not list(parsed[0].find_all(*_FORBIDDEN_NODES))
+
+
+def test_the_policy_allows_union_and_that_is_not_the_binder_s_licence() -> None:
+    """Where the policy's job ends and the cache binder's begins.
+
+    The September 2026 external review submitted a regression test asserting that
+    `SELECT ... UNION SELECT password FROM users` is refused. It is not, and it
+    should not be: `UNION` is ordinary read-only SQL, a question like "sales in
+    the north and the south" legitimately generates one, and a policy that
+    refused it would break real queries to no benefit -- the reviewer's payload
+    reads a column the caller is already permitted to read, so nothing is gained
+    by the policy guessing at intent.
+
+    The property that actually matters lives one layer up and is asserted in
+    `tests/security/test_template_binding.py`: a *cached template* that contained
+    no UNION can never acquire one from a question, because values are bound as
+    literal nodes and a bound statement that differs in shape from its template is
+    discarded. So the payload below is allowed here and inert there, and this test
+    exists to stop someone reading the review and tightening the wrong component.
+    """
+    payload = "SELECT region FROM sales UNION SELECT password FROM users"
+
+    assert evaluate(payload, "postgres").allowed is True, (
+        "UNION is legitimate read-only SQL; refusing it here would break real "
+        "queries without closing the path the review was worried about"
+    )

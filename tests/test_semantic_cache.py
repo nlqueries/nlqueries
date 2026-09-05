@@ -685,11 +685,70 @@ class TestMaskEntities:
 
 class TestBindEntities:
     def test_binds_date_placeholder(self) -> None:
+        """The exact shape `put()` stores, asserted on the whole statement.
+
+        This used to assert only `"2024-06-01" in result`, which the old binder
+        satisfied while producing `>= ''2024-06-01''` -- a doubled quote that
+        failed to parse on every dialect, so every Tier 2 hit with a date served
+        a stale answer beside "Cached SQL failed revalidation". A substring of a
+        whole statement is not an assertion about that statement.
+        """
         template = "SELECT COUNT(*) FROM orders WHERE order_date >= '[d:DATE]'"
         question = "how many orders after 2024-06-01"
         result = _bind_entities(question, template)
-        assert result is not None
-        assert "2024-06-01" in result
+        assert result == "SELECT COUNT(*) FROM orders WHERE order_date >= '2024-06-01'"
+
+    def test_binds_string_value_without_its_quote_characters(self) -> None:
+        """`"East"` is the value East, not the five characters `"East"`.
+
+        The entity regexes used to capture the delimiters along with the value,
+        and the binder added quotes of its own around them.
+        """
+        template = "SELECT * FROM sales WHERE region = '[region:VARCHAR]'"
+        assert (
+            _bind_entities('sales for "East"', template)
+            == "SELECT * FROM sales WHERE region = 'East'"
+        )
+        assert (
+            _bind_entities("sales for 'East'", template)
+            == "SELECT * FROM sales WHERE region = 'East'"
+        )
+
+    def test_escaping_belongs_to_the_dialect_not_to_us(self) -> None:
+        """Why values are rendered by sqlglot rather than quoted by hand.
+
+        The correct escape is not one rule. An apostrophe doubles on Postgres,
+        MySQL and T-SQL but is backslash-escaped on BigQuery and Snowflake; a
+        backslash is doubled on MySQL and left alone on Postgres. Any single
+        hand-written quoting rule is wrong on some engine, and wrong here means a
+        value stops being a value.
+        """
+        template = "SELECT * FROM users WHERE name = '[name:VARCHAR]'"
+        apostrophe = 'users called "O\'Brien"'
+
+        for dialect in ("postgres", "mysql", "tsql"):
+            assert _bind_entities(apostrophe, template, dialect) == (
+                "SELECT * FROM users WHERE name = 'O''Brien'"
+            ), dialect
+        backslash_escaped = "SELECT * FROM users WHERE name = 'O" + chr(92) + "'Brien'"
+        for dialect in ("bigquery", "snowflake"):
+            assert _bind_entities(apostrophe, template, dialect) == backslash_escaped, dialect
+
+        backslash = 'users called "back' + chr(92) + 'slash"'
+        assert _bind_entities(backslash, template, "mysql") == (
+            "SELECT * FROM users WHERE name = 'back" + chr(92) * 2 + "slash'"
+        )
+        assert _bind_entities(backslash, template, "postgres") == (
+            "SELECT * FROM users WHERE name = 'back" + chr(92) + "slash'"
+        )
+
+    def test_masking_is_unchanged_by_the_capture_groups(self) -> None:
+        """Cache keys are built from the masked question, so every entry ever
+        written depends on this being byte-identical to what it was."""
+        assert _mask_entities('sales for "East" on 2024-06-01 over $1,000') == (
+            "sales for <STRING> on <DATE> over <CURRENCY>"
+        )
+        assert _mask_entities("top 10 for 'West'") == "top <NUMBER> for <STRING>"
 
     def test_binds_number_int_placeholder(self) -> None:
         template = "SELECT * FROM orders WHERE amount > '[amount:INT]'"
@@ -721,8 +780,13 @@ class TestBindEntities:
     def test_year_column_gets_four_digit_number(self) -> None:
         # "start_year" contains "year" → should receive 2025, not 10 or 10000.
         # Template uses unquoted INT placeholders (as the updated parameterizer generates).
+        # A whole statement, not a fragment: binding parses the template now, so
+        # `WHERE ...` alone is no longer bindable. Stored templates are always whole
+        # statements -- `put()` gets them from `_parameterize_sql`, which returns the
+        # SQL unchanged with no placeholders when it cannot parse it.
         template = (
-            "WHERE tb.start_year = [start_year:INT]"
+            "SELECT tb.id FROM titles tb JOIN ratings tr ON tr.id = tb.id"
+            " WHERE tb.start_year = [start_year:INT]"
             " AND tr.num_votes > [num_votes:INT]"
             " LIMIT [param_1:INT]"
         )
@@ -742,7 +806,7 @@ class TestBindEntities:
 
     def test_multiple_numbers_no_year_column_uses_positional(self) -> None:
         # When placeholder name has no "year" and no "top N" pattern, positional binding applies.
-        template = "WHERE amount > [amount:INT] AND qty < [qty:INT]"
+        template = "SELECT * FROM orders WHERE amount > [amount:INT] AND qty < [qty:INT]"
         question = "orders where amount exceeds 100 and qty less than 50"
         result = _bind_entities(question, template)
         assert result is not None
@@ -751,7 +815,10 @@ class TestBindEntities:
 
     def test_year_preassign_does_not_consume_non_year_numbers(self) -> None:
         # After pre-assigning 2024 to start_year, 100 must still be available for num_votes.
-        template = "WHERE tb.start_year = [start_year:INT] AND tr.num_votes > [num_votes:INT]"
+        template = (
+            "SELECT tb.id FROM titles tb JOIN ratings tr ON tr.id = tb.id"
+            " WHERE tb.start_year = [start_year:INT] AND tr.num_votes > [num_votes:INT]"
+        )
         question = "movies from 2024 with more than 100 votes"
         result = _bind_entities(question, template)
         assert result is not None

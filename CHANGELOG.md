@@ -4,6 +4,31 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Fixed
+
+- Semantic cache Tier 2 template hits returned SQL that did not parse. A stored
+  template already quotes its placeholder (`d >= '[d:DATE]'`), and the binder
+  quoted the value again, so a date bound as `>= ''2024-06-01''` and failed on
+  every dialect — the hit then served the cached answer text beside "Cached SQL
+  failed revalidation and was not executed". String values were doubly wrong:
+  the entity patterns captured the question's quote characters as part of the
+  value, so `"East"` compared against `"East"` rather than `East`.
+
+### Security
+
+- Cache template binding no longer builds SQL by string substitution. Values are
+  bound as literal nodes in a parsed statement and rendered by sqlglot for the
+  target dialect, so quoting and escaping follow the engine's own rules rather
+  than a hand-written one. Three defences, each independently tested: values are
+  type-checked against their placeholder before binding, they can only ever
+  become literals, and a bound statement whose shape differs from its template is
+  discarded rather than executed.
+
+  This closes FINDING-001 of the September 2026 external review. The reported
+  injection was not exploitable — for three separate reasons, all accidental —
+  but the protection was two bugs cancelling out, and the obvious fix for the
+  parsing failure above would have made it real. No advisory is warranted.
+
 ## [0.2.0] — 2026-07-07
 
 ### Added
