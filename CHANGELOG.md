@@ -22,6 +22,51 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   to its answers. They refuse the shapes that are never worth storing, one of
   which is where a padded prompt injection sits.
 
+### Changed
+
+- Cache entry signatures now cover the caller's `cache_context`. Previously the
+  HMAC covered the answer and its SQL but not the context keys, so anyone with
+  write access to Qdrant and no access to the signing key could move a valid
+  entry between contexts by editing them -- no forgery required. The context is
+  appended to the signed message only when non-empty, so entries written without
+  one keep verifying and the cache does not go cold on upgrade; only
+  context-carrying entries miss once.
+
+- Semantic cache point IDs now include the caller's `cache_context`. **This
+  removes what bounded a collection's size**: nothing deletes points (the TTL is
+  applied on read), so a repeated question used to upsert over its own id.
+  Entries written under a context that changes per turn now accumulate
+  indefinitely, are still searched after expiry, and pre-existing scoped entries
+  are orphaned rather than paying a one-off miss. A prune is required and is not
+  in this change; see "Cache partitioning and authorisation" in
+  `docs/architecture.md`. Two callers
+  in different contexts asking the same question previously derived the same id
+  and upserted over one another; with the equality match below, neither then read
+  the survivor back. Not a leak -- the partition holds -- but both missed
+  indefinitely. Entries written without a context keep the id they had.
+
+- A `cache_context` naming a key the cache writes itself (`kind`, `sql`, …) is
+  now refused on both read and write, with a warning. Such a key was overwritten
+  during the write, so the entry was stored unscoped -- readable by every
+  context-free caller and not by the caller that asked to be scoped.
+
+- The semantic cache's `cache_context` (seam S2) is now matched by equality
+  rather than as a subset. A caller that passes no context previously matched
+  entries written under *any* context, while the reverse correctly missed --
+  so the case the mechanism exists to catch, a caller that forgets to pass its
+  context on read, was the one that silently succeeded. A context-free read now
+  sees only entries written without a context. In practice this affects
+  follow-up-scoped entries, which are no longer served to standalone questions;
+  standalone turns still share with each other.
+
+  Because the equality is applied client-side -- Qdrant's filter can require the
+  caller's keys but not the absence of others -- the cosine tiers now fetch a
+  few candidates and take the first that clears both the similarity threshold
+  and the context. Fetching one would let a nearer entry from another context
+  shadow a valid one ranked just below it, which for a context-free read is any
+  follow-up-scoped entry at all. See "Cache partitioning and authorisation" in
+  `docs/architecture.md`.
+
 ### Fixed
 
 - Semantic cache Tier 2 template hits returned SQL that did not parse. A stored

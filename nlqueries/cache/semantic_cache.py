@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import re
 import string
@@ -50,7 +51,13 @@ import sqlglot
 from sqlglot import exp
 
 from nlqueries import config
-from nlqueries.cache.envelope import CacheBinding, sign, verify
+from nlqueries.cache.envelope import (
+    SIGNATURE_KEY,
+    VERSION_KEY,
+    CacheBinding,
+    sign,
+    verify,
+)
 from nlqueries.embeddings.embedder import embed_text
 from nlqueries.embeddings.qdrant_store import ensure_collection
 
@@ -544,27 +551,118 @@ def _collection_exists(client: Any, collection: str) -> bool:
     return False
 
 
-def _point_id_for_question(question: str) -> int:
+def _point_id_for_question(question: str, context: dict[str, str] | None = None) -> int:
     """Derive a deterministic unsigned-64-bit Qdrant point ID from a question.
 
     Uses the first 16 hex characters of SHA-256(question), which gives a
     uniform distribution over 2^64 values — collision probability is
     negligible for any realistic cache size.
+
+    *context* is the caller's cache context, and it has to be here. Without it
+    two callers in different contexts asking the same question derive the same
+    id and upsert over one another: each write clobbers the other's entry, and
+    since the contexts differ neither reads the survivor back. Not a leak -- the
+    partition still holds -- but both callers miss indefinitely, and a collapsed
+    hit rate is harder to attribute than a wrong answer.
+
+    Appended only when non-empty, so an entry written without a context keeps
+    the id it had before this existed. That is the same reasoning as the
+    signature in `envelope`, and for the same reason: not to invalidate what is
+    already stored.
     """
+    if context:
+        canonical = json.dumps(context, sort_keys=True, separators=(",", ":"))
+        question = f"{question}\n{canonical}"
     digest = hashlib.sha256(question.encode()).hexdigest()
     return int(digest[:16], 16)
 
 
-def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | None) -> bool:
-    """True when *payload* contains every key of *payload_filter* with an equal value.
+#: Payload keys the cache writes itself. Everything else in a stored payload
+#: came from `put()`'s `payload_extra`, which is the caller's cache context --
+#: so the context can be recovered from an entry without a marker field, and
+#: entries written before this existed are read correctly.
+_RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "question",
+        "resolved_question",
+        "agent_type",
+        "answer",
+        "sql",
+        "created_at",
+        "hit_count",
+        "kind",
+        SIGNATURE_KEY,
+        VERSION_KEY,
+    }
+)
 
-    Used to scope a Tier 0 (exact-id) hit by the caller's ``payload_filter`` —
-    Tier 1/2 push the same constraint down into the Qdrant query filter instead.
-    An empty/``None`` filter matches everything (default behaviour unchanged).
+
+#: Point ids already reported as holding the wrong question. The condition is a
+#: planted or corrupted entry, which persists -- so without this the warning
+#: fires once per request, for as long as the entry survives, each time carrying
+#: the asker's question text into the log.
+_MISMATCHED_POINTS_LOGGED: set[int] = set()
+
+#: Contexts already reported as unusable, so a caller with an unfortunate key
+#: name costs one line rather than one per lookup.
+_RESERVED_CONTEXT_KEYS_LOGGED: set[str] = set()
+
+
+def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) -> bool:
+    """True when *context* uses a key the cache writes itself.
+
+    Such a key never survives: `put()` merges `payload_extra` first and the
+    reserved literal that follows overwrites it, so the entry is stored with no
+    context at all -- readable by every context-free caller, and not readable by
+    the caller that asked to be scoped, for the entry's whole life. That is the
+    failure this module exists to close, reached by an unlucky key name rather
+    than a forgotten call site, and nothing reported it.
+
+    Refused rather than repaired: silently renaming a caller's key would be its
+    own surprise, and there is no correct guess. Both sides refuse, so a context
+    that cannot be stored also cannot be used to read.
     """
-    if not payload_filter:
-        return True
-    return all(str(payload.get(k)) == str(v) for k, v in payload_filter.items())
+    if not context:
+        return False
+    clashing = sorted(set(context) & _RESERVED_PAYLOAD_KEYS)
+    if not clashing:
+        return False
+    token = f"{where}:{','.join(clashing)}"
+    if token not in _RESERVED_CONTEXT_KEYS_LOGGED:
+        _RESERVED_CONTEXT_KEYS_LOGGED.add(token)
+        logger.warning(
+            "Cache %s refused: the supplied cache_context uses %s, which the cache "
+            "writes itself. Such a key is overwritten on write, so the entry would "
+            "be stored unscoped and served to callers with no context at all. "
+            "Rename it (for example %r).",
+            where,
+            ", ".join(repr(k) for k in clashing),
+            f"ctx_{clashing[0]}",
+        )
+    return True
+
+
+def _context_of(payload: dict[str, Any]) -> dict[str, str]:
+    """The cache context an entry was written with, recovered from its payload."""
+    return {str(k): str(v) for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS}
+
+
+def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | None) -> bool:
+    """True when *payload* was written in exactly the caller's cache context.
+
+    The comparison is an equality, not a subset test, and that is the point.
+    Asking only whether the payload *contains* the caller's keys made a
+    context-free read match an entry written under any context: a caller that
+    forgot to pass its context on `get()` was served entries scoped by it, while
+    the reverse correctly missed. Since the whole value of `cache_context` is
+    that it must be supplied on both sides or not built at all, the direction
+    that silently succeeded was the dangerous one.
+
+    A caller with no context therefore reads only entries written with none,
+    which is what standalone turns already do with each other, and a follow-up
+    turn's context-scoped entry is no longer served to a context-free question.
+    """
+    return _context_of(payload) == {str(k): str(v) for k, v in (payload_filter or {}).items()}
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +673,10 @@ def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | N
 #: Raw `CACHE_ANSWER_TIERS` values already reported as unusable, so a
 #: misconfiguration costs one line rather than one per cache lookup.
 _UNUSABLE_TIER_VALUES_LOGGED: set[str] = set()
+
+
+# `_COSINE_CANDIDATES` moved to config.CACHE_COSINE_CANDIDATES so an operator
+# can raise it; read at call time so tests and deployments can change it.
 
 
 def _enabled_tiers() -> frozenset[int]:
@@ -786,14 +888,26 @@ class SemanticCache:
             question: The user question.
             vector:   Pre-computed embedding vector.  When provided, the
                       ``embed_text()`` call for Tier 1 is skipped.
-            payload_filter: Optional exact-match constraints on stored payload
-                      keys (paired with :meth:`put`'s ``payload_extra``). A hit is
-                      only returned when the stored point carries every key/value
-                      here — every tier applies it. Enterprise uses this to scope
-                      a follow-up's cache entry to one conversation context
-                      (``{"context_fingerprint": ...}``); ``None`` (default)
-                      leaves lookups exactly as before.
+            payload_filter: The caller's cache context (paired with
+                      :meth:`put`'s ``payload_extra``). Matched as an
+                      **equality**, not a subset: a hit is returned only when the
+                      stored entry was written under exactly this context, and
+                      every tier applies it. Passing ``None`` therefore reads
+                      only entries written without a context — it does not match
+                      everything. Enterprise uses this to scope a follow-up's
+                      entry to one conversation context
+                      (``{"context_fingerprint": ...}``).
+
+                      The equality is the point: under a subset rule a caller
+                      that forgot to pass its context matched entries scoped by
+                      every context, failing open in exactly the case the
+                      mechanism exists for. See "Cache partitioning and
+                      authorisation" in ``docs/architecture.md`` before building
+                      anything that relies on this.
         """
+        if _context_names_a_reserved_key(payload_filter, "lookup"):
+            return None
+
         client = _get_client()
 
         # Lazy import to avoid a cycle: the orchestrator package eagerly imports
@@ -826,7 +940,8 @@ class SemanticCache:
         # Guards the lookup only. A disabled tier is skipped, not a return: the
         # tiers are independent, and `"1,2"` has to leave 1 and 2 working.
         if 0 in enabled:
-            tier0_id = _point_id_for_question(_normalize_question(question))
+            normalized = _normalize_question(question)
+            tier0_id = _point_id_for_question(normalized, payload_filter)
             with contextlib.suppress(Exception):
                 tier0_hits = client.retrieve(
                     collection_name=self._collection,
@@ -835,11 +950,35 @@ class SemanticCache:
                 )
                 if tier0_hits:
                     payload = tier0_hits[0].payload or {}
+                    # The stored question must be the one asked. Tier 0 trusts an
+                    # id, and the id is not part of the signed message -- so an
+                    # entry can be *relocated* without being forged. Copying a
+                    # genuine, correctly signed entry onto the id another question
+                    # hashes to made Tier 0 answer that other question with it:
+                    # the signature verifies (the payload really is untouched) and
+                    # nothing compared the question. Reproduced before this check
+                    # existed: "how many refunds were issued" was answered with
+                    # "There were 42 orders."
+                    stored_question = _normalize_question(str(payload.get("question") or ""))
+                    if stored_question != normalized:
+                        # Once per point, like the other two warnings in this
+                        # module. The entry persists, so an unguarded warning
+                        # would fire on every request that lands on it.
+                        if tier0_id not in _MISMATCHED_POINTS_LOGGED:
+                            _MISMATCHED_POINTS_LOGGED.add(tier0_id)
+                            logger.warning(
+                                "Cache point %s holds a different question than the "
+                                "one it is keyed by. Ignoring it; this should not "
+                                "happen unless the collection has been written to "
+                                "directly.",
+                                tier0_id,
+                            )
+                        payload = {}
                     # retrieve() is id-only, so enforce payload_filter here (Tier
                     # 1/2 push it into the Qdrant query filter). A mismatch falls
                     # through to the cosine tiers rather than returning a foreign-
                     # context hit.
-                    if _payload_matches(payload, payload_filter):
+                    if payload and _payload_matches(payload, payload_filter):
                         entry = self._verified_entry(payload)
                         if entry is not None:
                             entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
@@ -860,22 +999,32 @@ class SemanticCache:
                     collection_name=self._collection,
                     query=v,
                     query_filter=_kind_filter("answer"),
-                    limit=1,
+                    limit=config.CACHE_COSINE_CANDIDATES,
                 )
             except Exception:  # noqa: BLE001
                 return None
 
-            if response.points:
-                hit = response.points[0]
-                if hit.score >= config.CACHE_ANSWER_THRESHOLD:
-                    payload = hit.payload or {}
-                    entry = self._verified_entry(payload)
-                    if entry is not None:
-                        entry.hit_count = self._increment_hit_count(client, hit.id, payload)
-                        record_cache(
-                            hit=True, similarity=float(hit.score), tier="answer"
-                        )  # SYL-1.1
-                        return entry
+            # The first candidate clearing both the threshold and the context,
+            # not simply the nearest. The Qdrant filter is a subset test -- it
+            # can require the caller's keys but cannot require the absence of
+            # others -- so the equality is applied here, as at Tier 0, and asking
+            # for one point would let a neighbour from another context shadow a
+            # same-context entry ranked just below it.
+            #
+            # Exhausting them falls through to Tier 2 rather than returning: the
+            # tiers are independent, and this one being occupied by other
+            # contexts says nothing about whether a template exists for this one.
+            for hit in response.points:
+                if hit.score < config.CACHE_ANSWER_THRESHOLD:
+                    break  # ranked by score, so nothing below clears it either
+                payload = hit.payload or {}
+                if not _payload_matches(payload, payload_filter):
+                    continue
+                entry = self._verified_entry(payload)
+                if entry is not None:
+                    entry.hit_count = self._increment_hit_count(client, hit.id, payload)
+                    record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
+                    return entry
 
         # --- Tier 2: template cache (masked cosine similarity, kind=template) ---
         if 2 not in enabled:
@@ -891,22 +1040,29 @@ class SemanticCache:
                 collection_name=self._collection,
                 query=masked_vector,
                 query_filter=_kind_filter("template"),
-                limit=1,
+                limit=config.CACHE_COSINE_CANDIDATES,
             )
         except Exception:  # noqa: BLE001
             return None
 
-        if not tmpl_response.points:
-            return None
+        # The nearest template belonging to this context, for the same reason as
+        # Tier 1: the context equality is applied here rather than pushed into
+        # the query, so asking for one point lets another context's template
+        # shadow ours.
+        tmpl_payload: dict[str, Any] | None = None
+        tmpl_score = 0.0
+        for candidate in tmpl_response.points:
+            if candidate.score < config.CACHE_TEMPLATE_THRESHOLD:
+                break  # ranked by score
+            payload = candidate.payload or {}
+            if _payload_matches(payload, payload_filter) and payload.get("sql"):
+                tmpl_payload = payload
+                tmpl_score = float(candidate.score)
+                break
 
-        tmpl_hit = tmpl_response.points[0]
-        if tmpl_hit.score < config.CACHE_TEMPLATE_THRESHOLD:
+        if tmpl_payload is None:
             return None
-
-        tmpl_payload = tmpl_hit.payload or {}
         template_sql = str(tmpl_payload.get("sql") or "")
-        if not template_sql:
-            return None
 
         # The binding dialect, so values are rendered the way the engine that
         # will run them reads them. Without it sqlglot writes its own dialect and
@@ -933,7 +1089,7 @@ class SemanticCache:
         entry.sql = bound_sql
         entry.hit_count = 0
         entry.kind = "template"
-        record_cache(hit=True, similarity=float(tmpl_hit.score), tier="template")  # SYL-1.1
+        record_cache(hit=True, similarity=tmpl_score, tier="template")  # SYL-1.1
         return entry
 
     def put(
@@ -966,6 +1122,9 @@ class SemanticCache:
         """
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
+        if _context_names_a_reserved_key(payload_extra, "write"):
+            return
+
         # Refused before the collection is touched and before the question is
         # embedded, so a rejected write costs nothing.
         refusal = _write_refusal(question, result)
@@ -982,7 +1141,7 @@ class SemanticCache:
 
         # Answer entry (Tier 0 exact-match + Tier 1 cosine)
         normalized = _normalize_question(question)
-        answer_id = _point_id_for_question(normalized)
+        answer_id = _point_id_for_question(normalized, payload_extra)
         answer_vector = embed_text(question)
 
         if self._binding is None:
@@ -1023,7 +1182,7 @@ class SemanticCache:
                     )
                     if placeholders:  # only store if SQL has literal parameters
                         masked_vector = embed_text(masked)
-                        tmpl_id = _point_id_for_question(f"tmpl:{masked}")
+                        tmpl_id = _point_id_for_question(f"tmpl:{masked}", payload_extra)
                         tmpl_payload: dict[str, Any] = {
                             **(payload_extra or {}),
                             "question": masked,

@@ -541,6 +541,20 @@ class MultiAgentOrchestrator:
           entry (e.g. a follow-up to one conversation context). ``None`` leaves
           caching unchanged.
 
+          A cache collection is per agent and every entry in it is readable by
+          everyone who may query that agent -- which is sound only because
+          authorisation is granted at agent level, row filters belong to the
+          agent record rather than to the caller, and cached SQL replays through
+          the same filtered connector. Anything that ever narrows what a caller
+          may see *below* the agent (per-user row filters, per-user document
+          ACLs, RLS keyed on caller identity) must put its distinguishing value
+          into ``cache_context`` on **both** ``get()`` and ``put()``, or it must
+          not be built: the cache would otherwise serve one caller's answer to
+          another. The match is an equality, so omitting the context on read is
+          a miss rather than a hit on everything. See "Cache partitioning and
+          authorisation" in ``docs/architecture.md`` and the guard in
+          ``tests/test_cache_partitioning.py``.
+
         Sprint 21: the resolved question is looked up in the semantic cache
         before dispatching. On a cache hit the stored answer is yielded
         word-by-word and the final JSON chunk includes ``"from_cache": True``.
