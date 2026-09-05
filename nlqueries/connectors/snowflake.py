@@ -9,7 +9,6 @@ part of the public OSS API and has no dependency on the enterprise layer.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import threading
 import time
@@ -458,11 +457,27 @@ class SnowflakeConnector(DatabaseConnector):
                 finally:
                     # Before the cursor closes, and on the success path too: the
                     # point is that a statement which *worked* is still undone.
-                    # Suppressed because a failed rollback must not replace the
-                    # query's own error, and the connection is about to be returned
-                    # to the pool either way.
-                    with contextlib.suppress(Exception):
+                    #
+                    # Logged, not suppressed. A failed rollback must not replace
+                    # the query's own error -- that is why it is caught -- but the
+                    # justification used in `mssql.py` and
+                    # `sqlalchemy_connector.py`, that the connection is reset when
+                    # the pool takes it back, does not hold here: this connector
+                    # keeps one session for its lifetime, so a rollback that fails
+                    # can leave an explicit transaction open on that session until
+                    # some later query happens to end it. Nothing is committed, so
+                    # it is a visibility gap rather than an exposure -- which is
+                    # exactly the kind that should not be silent.
+                    try:
                         cursor.execute("ROLLBACK")
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "SnowflakeConnector: ROLLBACK after the query failed. "
+                            "Nothing was committed, but this connector holds one "
+                            "session, so a transaction may remain open on it until "
+                            "the next query ends it.",
+                            exc_info=True,
+                        )
                     cursor.close()
         except Exception as exc:  # noqa: BLE001 — surfaced via QueryResult.error, not raised
             elapsed_ms = (time.perf_counter() - start) * 1000

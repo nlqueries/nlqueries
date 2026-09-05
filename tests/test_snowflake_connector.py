@@ -633,3 +633,39 @@ def test_two_concurrent_queries_do_not_share_one_transaction():
             owner = None
         else:
             assert owner == who, f"{who} ran a statement inside {owner}'s transaction. {events}"
+
+
+def test_a_failing_rollback_is_logged_rather_than_swallowed(caplog):
+    """This connector cannot borrow the pool's justification.
+
+    `mssql.py` and `sqlalchemy_connector.py` catch a failing rollback on the
+    grounds that the connection is reset when the pool takes it back. That does
+    not transfer here: this connector holds one session for the life of the
+    object, so a rollback that fails can leave an explicit transaction open on
+    that session until some later query happens to end it.
+
+    Nothing is committed either way, so it is a visibility gap rather than an
+    exposure -- which is the kind that must not be silent.
+    """
+    import logging
+
+    connector, mock_connection = _connector_with_mock_connection()
+    mock_cursor = MagicMock()
+    mock_cursor.description = None
+
+    def _execute(sql, *args, **kwargs):
+        if sql == "ROLLBACK":
+            raise RuntimeError("session is gone")
+        return None
+
+    mock_cursor.execute.side_effect = _execute
+    mock_connection.cursor.return_value = mock_cursor
+
+    with caplog.at_level(logging.WARNING):
+        result = connector.execute_query("SELECT 1")
+
+    assert result.error is None, f"a failing rollback became the query's error: {result.error}"
+    assert any("ROLLBACK" in r.getMessage() for r in caplog.records), (
+        "the rollback failed and left no trace"
+    )
+    mock_cursor.close.assert_called_once()

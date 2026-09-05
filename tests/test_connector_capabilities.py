@@ -131,3 +131,40 @@ class TestTheRecordedFacts:
     def test_every_entry_states_what_the_operator_must_do(self) -> None:
         for name, caps in CAPABILITIES.items():
             assert caps.operator_requirement.strip(), name
+
+
+def test_a_health_line_stays_scannable() -> None:
+    """`concerns` is what `nlqueries health` prints, one warning per line.
+
+    `read_only_mechanism` is interpolated verbatim into one of those lines, so it
+    has to stay a label. Writing the engine's caveats into it turned a scannable
+    warning into 503 characters of prose in a single line, which is how an
+    operator stops reading them. Limits belong in `not_covered`, which gets a
+    line of its own.
+    """
+    for dialect, caps in CAPABILITIES.items():
+        if caps.read_only_mechanism:
+            assert len(caps.read_only_mechanism) <= 140, (
+                f"{dialect}: read_only_mechanism is {len(caps.read_only_mechanism)} "
+                f"characters and is interpolated into a health warning; it should be "
+                f"a label, with the caveats in `not_covered`"
+            )
+        for line in caps.concerns:
+            assert len(line) <= 320, f"{dialect}: a health line is {len(line)} characters"
+
+
+def test_the_engines_with_a_surprising_gap_declare_it() -> None:
+    """`not_covered` is where an operator learns the rollback is not enough.
+
+    Snowflake's DDL is not transactional and the generic connector reaches
+    engines that commit implicitly around DDL or have no transaction at all.
+    Those are the two the hardening docs single out, so they are the two that
+    must say so here -- this is the record the health check reads.
+    """
+    assert "DDL" in CAPABILITIES["snowflake"].not_covered
+    assert "DDL" in CAPABILITIES["sqlalchemy"].not_covered
+    assert "MyISAM" in CAPABILITIES["sqlalchemy"].not_covered
+
+    # SQL Server's DDL *is* transactional, so it has no surprising gap and must
+    # not manufacture one -- an empty field is the correct answer, not prose.
+    assert CAPABILITIES["mssql"].not_covered == ""

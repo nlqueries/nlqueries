@@ -51,6 +51,14 @@ class DialectCapabilities:
     #: connector applies a mechanism of its own.
     operator_requirement: str
 
+    #: What the mechanism does *not* cover, where that is not obvious -- DDL on
+    #: an engine that commits implicitly around it, a storage engine with no
+    #: transaction. Kept out of `read_only_mechanism` so that stays a label:
+    #: `concerns` interpolates the mechanism into one line, and a paragraph
+    #: there turned a scannable health warning into 500 characters of prose.
+    #: Empty where the mechanism has no surprising limits.
+    not_covered: str = ""
+
     @property
     def enforces_read_only(self) -> bool:
         return self.read_only_mechanism is not None
@@ -74,6 +82,8 @@ class DialectCapabilities:
                 f"the read-only mechanism ({self.read_only_mechanism}) is not "
                 f"exercised by any test in this repository"
             )
+        if self.not_covered:
+            found.append(f"the read-only mechanism does not cover {self.not_covered}")
         return tuple(found)
 
     def summary(self) -> str:
@@ -119,10 +129,11 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     ),
     "mssql": DialectCapabilities(
         dialect="mssql",
+        # No `not_covered`: T-SQL DDL is transactional, so a DROP is undone with
+        # the rest and there is no surprising gap to warn an operator about.
         read_only_mechanism=(
-            "the query runs on a connection that is never committed and is rolled back "
-            "whether it succeeded or failed; T-SQL DDL is transactional, so a DROP is "
-            "undone with it"
+            "never committed, rolled back either way; T-SQL DDL is transactional, so a "
+            "DROP is undone too"
         ),
         statement_timeout_mechanism=None,
         verified_here=False,
@@ -154,9 +165,10 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     ),
     "snowflake": DialectCapabilities(
         dialect="snowflake",
-        read_only_mechanism=(
-            "the query runs inside BEGIN ... ROLLBACK, so DML is undone; DDL is not "
-            "transactional on Snowflake and still stands"
+        read_only_mechanism="BEGIN ... ROLLBACK, serialised per connector",
+        not_covered=(
+            "DDL, which is not transactional on Snowflake -- a CREATE or DROP stands "
+            "after the rollback"
         ),
         statement_timeout_mechanism="cursor.execute(timeout=…), cancelled server-side",
         verified_here=False,
@@ -187,12 +199,14 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     "sqlalchemy": DialectCapabilities(
         dialect="sqlalchemy",
         read_only_mechanism=(
-            "DML on a transactional table is never committed and is rolled back either "
-            "way; plus SET TRANSACTION READ ONLY where the dialect is postgresql or "
-            "redshift. Two things are NOT covered: DDL, since MySQL, MariaDB and Oracle "
-            "commit implicitly around it and SQLite runs it outside the transaction; and "
-            "MySQL's non-transactional storage engines, where an INSERT into a MyISAM or "
-            "MEMORY table survives the rollback with only warning 1196"
+            "never committed, rolled back either way; plus SET TRANSACTION READ ONLY on "
+            "postgresql and redshift"
+        ),
+        not_covered=(
+            "DDL, since MySQL, MariaDB and Oracle commit implicitly around it and SQLite "
+            "runs it outside the transaction; nor MySQL's non-transactional storage "
+            "engines, where an INSERT into a MyISAM or MEMORY table survives with only "
+            "warning 1196"
         ),
         statement_timeout_mechanism="a best-effort per-dialect SET, where the dialect is known",
         verified_here=False,
