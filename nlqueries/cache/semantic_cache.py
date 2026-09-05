@@ -1049,39 +1049,54 @@ class SemanticCache:
         # Tier 1: the context equality is applied here rather than pushed into
         # the query, so asking for one point lets another context's template
         # shadow ours.
-        tmpl_payload: dict[str, Any] | None = None
-        tmpl_score = 0.0
-        for candidate in tmpl_response.points:
-            if candidate.score < config.CACHE_TEMPLATE_THRESHOLD:
-                break  # ranked by score
-            payload = candidate.payload or {}
-            if _payload_matches(payload, payload_filter) and payload.get("sql"):
-                tmpl_payload = payload
-                tmpl_score = float(candidate.score)
-                break
-
-        if tmpl_payload is None:
-            return None
-        template_sql = str(tmpl_payload.get("sql") or "")
-
         # The binding dialect, so values are rendered the way the engine that
         # will run them reads them. Without it sqlglot writes its own dialect and
         # MySQL's backslash escaping in particular is lost.
         dialect = self._binding.dialect if self._binding is not None else None
-        bound_sql = _bind_entities(question, template_sql, dialect)
-        if bound_sql is None:
-            return None
 
-        # A real check, not a suppressed one. This used to parse the bound SQL
-        # inside `contextlib.suppress(Exception)` and discard the result, so a
-        # statement that did not parse was handed to the orchestrator anyway --
-        # which is how a template hit could return a stale answer alongside
-        # "Cached SQL failed revalidation and was not executed". `_bind_entities`
-        # already parses; this is the assertion that it did.
-        if _parse_or_none(bound_sql, dialect) is None:
-            return None
+        # Every check inside the loop, as Tier 1 does, so a candidate that fails
+        # one moves to the next rather than ending the lookup. Selecting a
+        # candidate first and validating afterwards meant an expired or
+        # unverifiable template -- or one whose entities would not bind --
+        # returned a miss even with a usable template for a different phrasing
+        # ranked just below it and above the threshold. Expired points are never
+        # deleted and go on being ranked by the search, so that is not a rare
+        # shape; it is the one that accumulates.
+        entry = None
+        tmpl_score = 0.0
+        bound_sql = ""
+        for candidate in tmpl_response.points:
+            if candidate.score < config.CACHE_TEMPLATE_THRESHOLD:
+                break  # ranked by score, so nothing below clears it either
+            payload = candidate.payload or {}
+            if not _payload_matches(payload, payload_filter):
+                continue
+            template_sql = str(payload.get("sql") or "")
+            if not template_sql:
+                continue
 
-        entry = self._verified_entry(tmpl_payload)
+            candidate_sql = _bind_entities(question, template_sql, dialect)
+            if candidate_sql is None:
+                continue
+
+            # A real check, not a suppressed one. This used to parse the bound
+            # SQL inside `contextlib.suppress(Exception)` and discard the result,
+            # so a statement that did not parse was handed to the orchestrator
+            # anyway -- which is how a template hit could return a stale answer
+            # alongside "Cached SQL failed revalidation and was not executed".
+            # `_bind_entities` already parses; this is the assertion that it did.
+            if _parse_or_none(candidate_sql, dialect) is None:
+                continue
+
+            candidate_entry = self._verified_entry(payload)
+            if candidate_entry is None:
+                continue  # expired or unverifiable: try the next candidate
+
+            entry = candidate_entry
+            tmpl_score = float(candidate.score)
+            bound_sql = candidate_sql
+            break
+
         if entry is None:
             return None
 

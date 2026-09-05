@@ -621,6 +621,62 @@ def test_two_contexts_do_not_share_a_point_id() -> None:
     )
 
 
+def test_an_expired_template_does_not_end_the_tier2_scan() -> None:
+    """Tier 2 validates each candidate, as Tier 1 does, instead of picking one.
+
+    Selecting the first context-matching candidate and validating it afterwards
+    meant an expired or unverifiable template returned a miss even with a usable
+    one ranked just below it and above the threshold. Expired points are never
+    deleted -- the TTL is applied on read -- so they go on being ranked by the
+    search, which makes this the shape that accumulates rather than a rare one.
+    """
+    from datetime import timedelta
+
+    stale = sign(
+        {
+            "question": _mask_entities(QUESTION),
+            "resolved_question": _mask_entities(QUESTION),
+            "agent_type": "sql",
+            "answer": "Stale.",
+            "sql": "SELECT * FROM orders WHERE order_date >= '[d:DATE]'",
+            # Older than the default ttl_hours=24, so `_verified_entry` drops it
+            # -- but only after the search has already ranked it first.
+            "created_at": (datetime.now(UTC) - timedelta(hours=48)).isoformat(),
+            "hit_count": 0,
+            "kind": "template",
+        },
+        TEST_BINDING,
+        TEST_KEY,
+    )
+
+    expired = MagicMock()
+    expired.score = 0.99
+    expired.payload = stale
+    expired.id = 1
+
+    usable = MagicMock()
+    usable.score = 0.95  # still above CACHE_TEMPLATE_THRESHOLD (0.90)
+    usable.payload = _entry(None, kind="template")
+    usable.id = 2
+
+    client = _client()
+    client.query_points.side_effect = [
+        MagicMock(points=[]),  # Tier 1 miss, so the request reaches Tier 2
+        MagicMock(points=[expired, usable]),
+    ]
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+    ):
+        entry = SemanticCache("agent1", binding=TEST_BINDING).get(QUESTION)
+
+    assert entry is not None, (
+        "an expired template ranked first ended the scan, discarding a usable one below it"
+    )
+    assert entry.answer != "Stale.", "the expired template was served"
+
+
 def test_put_and_get_agree_on_the_tier0_point_id() -> None:
     """The round trip, which `_point_id_for_question` alone cannot establish.
 
