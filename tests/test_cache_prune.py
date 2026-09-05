@@ -394,6 +394,41 @@ def test_dropping_a_collection_forgets_its_indexes() -> None:
     )
 
 
+def test_the_index_record_is_cleared_after_the_collection_is_deleted() -> None:
+    """Ordering, so a concurrent write cannot reinstate the stale record.
+
+    Clearing before the delete left a window: a `put()` reaching
+    `ensure_collection` between the two re-adds the keys for a collection that is
+    about to disappear, which is precisely the stale record this exists to
+    remove. Clearing afterwards inverts the race into a harmless one -- a
+    concurrent recreation costs one redundant `create_payload_index`, and
+    creating an index that already exists succeeds rather than raising.
+    """
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    order: list[str] = []
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.delete_collection.side_effect = lambda *a, **k: order.append("delete")
+
+    real_forget = qs.forget_collection_indexes
+
+    def _recording(name: str) -> None:
+        order.append("forget")
+        real_forget(name)
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.forget_collection_indexes", _recording),
+    ):
+        SemanticCache("agent1", binding=TEST_BINDING).invalidate("agent1")
+
+    assert order == ["delete", "forget"], (
+        f"expected the record to be cleared after the delete, got {order}"
+    )
+
+
 def test_forgetting_indexes_tolerates_a_concurrent_write() -> None:
     """`_indexed_fields` is shared across threads, so it must not be iterated live.
 

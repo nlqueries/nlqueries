@@ -1338,14 +1338,23 @@ class SemanticCache:
         but is not used — the collection to clear is always ``self._collection``.
         """
         _known_collections.discard(self._collection)
-        # The collection is about to stop existing, so the record of which
-        # payload indexes it has must go with it. Without this the next put()
-        # recreates the collection and skips every index as already done,
-        # leaving it without the `kind` keyword index or the `created_at`
-        # datetime index the sweep ranges over -- for the life of the process.
-        forget_collection_indexes(self._collection)
         with contextlib.suppress(Exception):
             _get_client().delete_collection(self._collection)
+
+        # After the delete, not before. The record of which payload indexes this
+        # collection has must go with the collection -- otherwise the next put()
+        # recreates it and skips every index as already done, leaving it without
+        # the `kind` keyword index or the `created_at` datetime index the sweep
+        # ranges over, for the life of the process.
+        #
+        # Clearing first left a window: a concurrent put() reaching
+        # `ensure_collection` between the two could re-add the keys just before
+        # the collection was deleted, reinstating exactly the stale record this
+        # is here to remove. Clearing afterwards inverts the race into a harmless
+        # one -- a concurrent recreation costs one redundant
+        # `create_payload_index`, and creating an index that already exists
+        # succeeds rather than raising (measured on v1.9.3 and v1.18.2).
+        forget_collection_indexes(self._collection)
 
     def list_entries(self, limit: int = 100) -> list[CacheEntry]:
         """Return up to *limit* cached entries, ordered by creation time descending.
