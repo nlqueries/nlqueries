@@ -49,6 +49,14 @@ dependencies = [
     # handlers turn back into an empty result -- a silent loss of caching,
     # dynamic context and document retrieval. Verified: 1.9.2 has no
     # `query_points`, 1.10.0 does.
+    #
+    # This floor is about the API existing, not about matching a server. The
+    # client warns when its minor differs from the server's by more than one, so
+    # 1.10 against the v1.18.2 the compose file ships is reported incompatible --
+    # but raising the floor to suit that server would refuse an installation
+    # running its own older Qdrant with a client to match, which works. The
+    # pairing is a deployment concern and is documented in docs/qdrant-setup.md;
+    # requirements/core.lock pins 1.19.0, which suits the shipped server.
     "qdrant-client>=1.10",
 
     # OIDC token verification

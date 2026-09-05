@@ -32,6 +32,16 @@ A `200 OK` means it's up, and the body carries the version:
 > context, rather than one that reports an error. Check the `version` above
 > before assuming a quiet system is a working one.
 
+> **Keep the client within one minor of the server.** `qdrant-client` compares
+> the two and warns on every connection when the minor versions differ by more
+> than one — "Qdrant client version X is incompatible with server version Y". It
+> is a warning rather than a failure, and searches keep working, but it is easy
+> to mistake for the fault above. `requirements/core.lock` pins client 1.19.0,
+> which suits the v1.18.2 the compose file ships. If you run your own Qdrant at
+> an older version, install a client to match it — the `>=1.10` floor in
+> `pyproject.toml` is about the query API existing, not about which server you
+> point at.
+
 (`/healthz` also answers, but only with the plain text `healthz check passed` —
 it tells you the server is alive, not whether it is new enough.)
 
@@ -66,9 +76,19 @@ incompatible and warns on every client construction — so pinning v1.12.4 buys 
 warning rather than a working upgrade.
 
 ```bash
-docker compose down -v      # removes the qdrant-data volume
+docker compose down
+docker volume rm "$(basename "$PWD")_qdrant-data"   # this volume only
 docker compose up -d
 ```
+
+**Not `docker compose down -v`.** That removes *every* named volume in the
+stack, and this one also defines `nlqueries-data`, which holds knowledge bases,
+`connectors.yaml`, capsules and feedback — none of which the Qdrant version has
+anything to do with, and not all of which is regenerable. Name the volume.
+
+Compose prefixes volume names with the project name, which defaults to the
+directory the file sits in; `docker volume ls` will show the exact name if the
+command above does not match.
 
 **What that costs.** Nothing in Qdrant here is a system of record, but the parts
 are not equally cheap to rebuild. The semantic cache regenerates on its own as
