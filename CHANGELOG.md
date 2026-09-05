@@ -4,6 +4,43 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Fixed
+
+- **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
+  vector search.** NLQueries searches through the Universal Query API
+  (`query_points`), which Qdrant added in v1.10; the compose file pinned v1.9.3
+  and the benchmarks compose v1.9.2, so every search returned `404`. The
+  semantic cache degraded to exact-match hits only, dynamic context injection
+  found nothing and document retrieval returned nothing — and because several of
+  those paths treat a failed search as an empty result, the symptom was a system
+  answering slowly and without context rather than reporting an error. Measured
+  on the version this file pinned and the one it pins now: `v1.9.3 -> MISS`,
+  `v1.12.4 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
+  serve it. Both
+  files now pin v1.12.4, and the `qdrant-client` floor moves from `>=1.9` to
+  `>=1.10` — the client gained `query_points` at the same release, so a resolved
+  1.9.x raised `AttributeError` at every call site and reached the same silent
+  empty result.
+
+  **v1.12.4 rather than the v1.18.2 enterprise pins, because of the data
+  volume.** Measured by writing with v1.9.3 and reopening the same volume:
+  v1.10.1 and v1.12.4 start with the data intact, v1.18.2 panics on startup and
+  exits. Pinning v1.18.2 would have turned `docker compose pull && up` into a
+  Qdrant that will not start for anyone already running this stack. See
+  "Upgrading an existing Qdrant" in `docs/qdrant-setup.md` for the route to
+  newer versions and what a volume reset costs.
+
+- The semantic cache no longer reports a failed search as a cache miss. A
+  rejected request and an empty cache were the same `None` to the caller while
+  meaning opposite things. A failure is now logged once per collection and tier,
+  naming the version requirement, since a 404 from a pre-v1.10 server is its
+  most likely cause.
+
+- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
+  expired or unverifiable template ranked above a usable one ended the lookup
+  instead of continuing past it — which mattered increasingly, since expired
+  points were never deleted.
+
 ### Added
 
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
@@ -19,13 +56,6 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   to the semantic cache; the second selects which tiers may serve an answer, so
   an operator can run exact-match-only caching for a sensitive agent without
   turning the cache off. Existing deployments are unaffected by the defaults.
-
-### Fixed
-
-- Tier 2 template lookups now validate each candidate in turn, as Tier 1 does. An
-  expired or unverifiable template ranked above a usable one ended the lookup
-  instead of continuing past it — which mattered increasingly, since expired
-  points were never deleted.
 
 ### Security
 

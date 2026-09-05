@@ -279,6 +279,39 @@ def _sqlglot_name(dialect: str | None) -> str | None:
     return _sqlglot_dialect(dialect)
 
 
+#: Search failures already reported, so an unreachable or too-old Qdrant costs
+#: one line rather than one per lookup.
+_SEARCH_FAILURES_LOGGED: set[str] = set()
+
+
+def _report_search_failure(collection: str, tier: str, exc: BaseException) -> None:
+    """Say that a lookup *failed* rather than letting it read as a miss.
+
+    A cache miss and a rejected request are the same `None` to the caller, and
+    they mean opposite things: the first is the cache working, the second is the
+    cache not being consulted at all. Reported once per collection and tier,
+    because the condition persists -- an unreachable Qdrant, or a server too old
+    for the query API this uses, fails identically on every request.
+
+    That second case is not hypothetical. `query_points` is Qdrant's Universal
+    Query API, added in v1.10; against an older server every Tier 1 and Tier 2
+    lookup returns 404 and, before this, was indistinguishable from a cache that
+    simply had nothing to offer.
+    """
+    key = f"{collection}:{tier}"
+    if key in _SEARCH_FAILURES_LOGGED:
+        return
+    _SEARCH_FAILURES_LOGGED.add(key)
+    logger.warning(
+        "Cache %s search on %s failed; treating it as a miss. Every lookup will "
+        "miss until this is fixed. If the message below is a 404, the server "
+        "predates the query API this uses -- Qdrant v1.10 or newer is required.",
+        tier,
+        collection,
+        exc_info=exc,
+    )
+
+
 #: Unknown dialect names already reported, so an engine nobody registered costs
 #: one line rather than one per cache lookup.
 _UNKNOWN_DIALECTS_LOGGED: set[str] = set()
@@ -1090,7 +1123,8 @@ class SemanticCache:
                     query_filter=_kind_filter("answer"),
                     limit=config.CACHE_COSINE_CANDIDATES,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                _report_search_failure(self._collection, "tier 1", exc)
                 return None
 
             # The first candidate clearing both the threshold and the context,
@@ -1131,7 +1165,8 @@ class SemanticCache:
                 query_filter=_kind_filter("template"),
                 limit=config.CACHE_COSINE_CANDIDATES,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            _report_search_failure(self._collection, "tier 2", exc)
             return None
 
         # The nearest template belonging to this context, for the same reason as
