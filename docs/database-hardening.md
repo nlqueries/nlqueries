@@ -14,9 +14,11 @@ each supported engine.
 
 ## What NLQueries already does, and what it does not
 
-The connector opens every query in a read-only transaction (`SET TRANSACTION
-READ ONLY`). PostgreSQL applies this to what a statement *does* rather than to
-how it is written, so it refuses DML and DDL anywhere in the call graph,
+The PostgreSQL connector opens every query in a read-only transaction
+(`SET TRANSACTION READ ONLY`); what the other engines do is not the same
+everywhere, and [What each connector enforces](#what-each-connector-enforces)
+below is the per-engine account. PostgreSQL applies this to what a statement
+*does* rather than to how it is written, so it refuses DML and DDL anywhere in the call graph,
 including within a function invoked by a `SELECT`, and refuses sequence
 functions by name.
 
@@ -36,6 +38,7 @@ you. The rest of this page is how.
 SQLite and DuckDB are the exceptions to "the rest is yours to configure". Their
 file access is reachable from any `SELECT` rather than granted by a DBA, so the
 connectors close it in code. See [SQLite](#sqlite) and [DuckDB](#duckdb) below.
+
 
 ---
 
@@ -387,29 +390,52 @@ worthwhile. The sandbox above is defence in depth and does not replace it.
 
 ## What each connector enforces
 
-The read-only transaction described above is a PostgreSQL mechanism. It is not
-available on every engine, and several connectors apply nothing equivalent. The
-table records what the connector does, not what the engine could support.
+The read-only transaction described above is a PostgreSQL mechanism, and it is
+not available on every engine. Where it is not, the connector does the next best
+thing its engine allows -- usually running the query in a transaction it never
+commits -- and the table records what the connector does, not what the engine
+could support.
+
+Those are not equivalent guarantees. Refusing a write and undoing one look the
+same from the outside and are not the same thing: a rollback still ran the
+statement, and anything it did outside the transaction stands.
 
 | dialect | read-only mechanism | statement timeout | verified in this repository |
 |---|---|---|---|
 | `postgres` | `SET TRANSACTION READ ONLY` | `SET LOCAL statement_timeout` | yes |
 | `sqlite` | `mode=ro` + authorizer | watchdog `interrupt()` | yes |
 | `duckdb` | `read_only=True` + locked sandbox | watchdog | yes |
-| `mssql` | **none** | **none per query** | no |
+| `mssql` | never committed; rolled back either way. T-SQL DDL is transactional, so a `DROP` is undone too | **none per query** | no — asserted against a fake driver |
 | `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
-| `snowflake` | **none** | `cursor.execute(timeout=…)` | no |
+| `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `cursor.execute(timeout=…)` | no — asserted against a fake driver |
 | `bigquery` | **none** | `job_timeout_ms` | no |
-| `sqlalchemy` | **none** | best-effort per dialect | no |
+| `sqlalchemy` | never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift` | best-effort per dialect | no — asserted against a fake driver |
 
 `nlqueries health` reports this per connector, so the row that applies to a
 deployment does not have to be looked up here.
 
 **Where the mechanism is "none", the only thing preventing a write is the
-privilege granted to the login.** For those dialects the sections above are not
-defence in depth — they are the whole defence.
+privilege granted to the login.** That is BigQuery, and for it the sections above
+are not defence in depth — they are the whole defence.
 
-Two entries deserve particular attention.
+Three entries deserve particular attention.
+
+**Snowflake's DDL survives the rollback.** The transaction undoes an `INSERT`; it
+does not undo a `CREATE TABLE`. If the role can create objects, it can create them
+through a query, so the grant is carrying more of the boundary here than anywhere
+else.
+
+**BigQuery has nothing to undo with.** A single query job has no transaction. The
+connector pins the job to standard SQL with no session and logs a statement type
+other than `SELECT` at warning, but the job has already run by the time the type
+is readable — an audit signal, not a control.
+
+**MySQL and MariaDB get the rollback and nothing more.** Their read-only form is
+`SET SESSION TRANSACTION READ ONLY`, which configures *subsequent* transactions
+and is refused with error 1568 inside an open one; SQLAlchemy opens one on the
+first statement, so by the time the connector could send it the transaction
+exists. `START TRANSACTION READ ONLY` is the statement that would work and is not
+available to a caller while SQLAlchemy owns the transaction.
 
 **Redshift enforces both, but no test here reaches a cluster.** CI cannot
 provision one, so the mechanisms were measured by hand against Redshift
@@ -419,12 +445,16 @@ and a WLM query-monitoring rule remain worth having — the read-only transactio
 restricts what a statement may do, not what the login may reach.
 
 **The generic `sqlalchemy` connector reaches any engine SQLAlchemy supports**,
-so no single statement about its behaviour holds. Nothing read-only is applied.
+so no single statement about its behaviour holds beyond the rollback, which does.
+It adds `SET TRANSACTION READ ONLY` when the URL turns out to be `postgresql` or
+`redshift`, and nothing further for a dialect it does not recognise.
 
 "Verified in this repository" means the mechanism is exercised by a test against
-a real engine. Snowflake, BigQuery and Redshift require accounts that a test run
-cannot provision, so they are recorded as unverified whatever their
-documentation says.
+a real engine. Snowflake, BigQuery, Redshift, SQL Server and MySQL require
+accounts or servers a test run cannot provision, so they are recorded as
+unverified whatever their documentation says — their tests assert the statements
+sent to a fake driver, which shows the connector asks for the right thing and not
+that the engine honours it.
 
 ### What to grant, per vendor
 

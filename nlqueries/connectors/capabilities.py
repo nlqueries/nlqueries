@@ -109,13 +109,20 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     ),
     "mssql": DialectCapabilities(
         dialect="mssql",
-        read_only_mechanism=None,
+        read_only_mechanism=(
+            "the query runs on a connection that is never committed and is rolled back "
+            "whether it succeeded or failed; T-SQL DDL is transactional, so a DROP is "
+            "undone with it"
+        ),
         statement_timeout_mechanism=None,
         verified_here=False,
         operator_requirement=(
-            "SQL Server has no session-level read-only transaction. Grant db_datareader and "
-            "nothing else. The pymssql connection-level 'timeout' is applied at connect from "
-            "CONNECTOR_STATEMENT_TIMEOUT_SECONDS; a per-query timeout is not implemented."
+            "SQL Server has no read-only transaction mode to ask for -- "
+            "ApplicationIntent=ReadOnly is availability-group routing, not a permission -- so "
+            "the rollback is the whole of what the connector can do. Grant db_datareader and "
+            "nothing else: WAITFOR DELAY, extended procedures and table access are all "
+            "privilege questions. The pymssql connection-level 'timeout' is applied at connect "
+            "from CONNECTOR_STATEMENT_TIMEOUT_SECONDS; a per-query timeout is not implemented."
         ),
     ),
     "redshift": DialectCapabilities(
@@ -137,34 +144,50 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     ),
     "snowflake": DialectCapabilities(
         dialect="snowflake",
-        read_only_mechanism=None,
+        read_only_mechanism=(
+            "the query runs inside BEGIN ... ROLLBACK, so DML is undone; DDL is not "
+            "transactional on Snowflake and still stands"
+        ),
         statement_timeout_mechanism="cursor.execute(timeout=…), cancelled server-side",
         verified_here=False,
         operator_requirement=(
-            "Snowflake has no read-only transaction. Use a role with SELECT on explicit "
-            "objects, no CREATE on any schema, and a resource monitor on the warehouse."
+            "The rollback undoes an INSERT and does not undo a CREATE or DROP, so the grant "
+            "carries more of the boundary here than on any other engine. Use a role with "
+            "SELECT on explicit objects, no CREATE on any schema, and a resource monitor on "
+            "the warehouse."
         ),
     ),
     "bigquery": DialectCapabilities(
         dialect="bigquery",
+        # Deliberately still None. The job is pinned to standard SQL with no
+        # session, and a statement type other than SELECT is logged at warning --
+        # but a query job cannot be rolled back, and the type is only readable
+        # after the job has run. Recording that as a read-only mechanism would
+        # tell an operator they are protected when nothing was prevented.
         read_only_mechanism=None,
         statement_timeout_mechanism="job_timeout_ms, cancelled server-side",
         verified_here=False,
         operator_requirement=(
-            "BigQuery has no read-only transaction. Grant roles/bigquery.dataViewer on "
-            "explicit datasets, withhold jobUser where possible, and set a maximum bytes "
-            "billed."
+            "BigQuery has no transaction to roll back, so IAM is the whole boundary. Grant "
+            "roles/bigquery.dataViewer on explicit datasets, withhold jobUser where possible, "
+            "and set a maximum bytes billed. The connector logs a non-SELECT statement type at "
+            "warning after the job has run; that is an audit signal, not a control."
         ),
     ),
     "sqlalchemy": DialectCapabilities(
         dialect="sqlalchemy",
-        read_only_mechanism=None,
+        read_only_mechanism=(
+            "never committed, and rolled back either way; plus SET TRANSACTION READ ONLY "
+            "where the dialect is postgresql or redshift"
+        ),
         statement_timeout_mechanism="a best-effort per-dialect SET, where the dialect is known",
         verified_here=False,
         operator_requirement=(
-            "This connector reaches any engine SQLAlchemy supports, so no single statement "
-            "about its behaviour holds. Nothing read-only is applied. The restriction must "
-            "come entirely from the privileges granted to the login."
+            "This connector reaches any engine SQLAlchemy supports, so the rollback is the "
+            "only thing that holds everywhere. MySQL and MariaDB get no read-only transaction: "
+            "their form configures subsequent transactions and is refused inside an open one, "
+            "and SQLAlchemy has already opened one by the time the connector can send "
+            "anything. The restriction must come from the privileges granted to the login."
         ),
     ),
 }

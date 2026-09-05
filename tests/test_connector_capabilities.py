@@ -48,19 +48,50 @@ class TestTheRecordedFacts:
     """
 
     def test_the_three_verified_dialects_are_the_ones_with_tests(self) -> None:
+        """`verified_here` means exercised against a *real* engine.
+
+        MSSQL, Snowflake and the generic connector gained read-only mechanisms
+        without joining this set, and that is correct: their tests assert the
+        statements sent to a fake driver, because CI provisions neither SQL
+        Server nor Snowflake nor MySQL. Redshift has been in the same position
+        all along. Marking them verified would suppress the concern
+        `nlqueries health` reports -- that the mechanism is not exercised by any
+        test here -- which is true and worth an operator seeing.
+        """
         verified = {name for name, c in CAPABILITIES.items() if c.verified_here}
 
         assert verified == {"postgres", "sqlite", "duckdb"}
 
     def test_the_dialects_that_enforce_read_only(self) -> None:
-        """The remaining four apply no read-only mechanism of their own.
+        """Everything except BigQuery applies something of its own.
 
-        Redshift enforces one but is not in the verified set: no test here
-        reaches a cluster, so it was measured by hand instead.
+        The mechanisms are not equivalent, which is the point of recording them
+        as prose rather than a boolean: Postgres and Redshift refuse a write
+        outright, SQLite and DuckDB open the file read-only, and MSSQL, Snowflake
+        and the generic connector run in a transaction that is never committed.
+        The last three undo a write rather than refusing it, and Snowflake's DDL
+        is not transactional at all, so a CREATE there still stands.
+
+        BigQuery is the one that records nothing, and deliberately: a query job
+        cannot be rolled back, and the statement type is only readable after the
+        job has run. Recording that as a mechanism would tell an operator they
+        were protected when nothing was prevented.
+
+        Only three are in the verified set, which is a different question --
+        see the test above.
         """
         enforcing = {name for name, c in CAPABILITIES.items() if c.enforces_read_only}
 
-        assert enforcing == {"postgres", "sqlite", "duckdb", "redshift"}
+        assert enforcing == {
+            "postgres",
+            "sqlite",
+            "duckdb",
+            "redshift",
+            "mssql",
+            "snowflake",
+            "sqlalchemy",
+        }
+        assert not CAPABILITIES["bigquery"].enforces_read_only
 
     def test_redshift_enforces_both_controls(self) -> None:
         """Measured against Redshift Serverless: a write is refused with
@@ -79,8 +110,23 @@ class TestTheRecordedFacts:
         assert any("not exercised by any test" in c for c in caps.concerns)
 
     def test_a_dialect_without_read_only_says_so_first(self) -> None:
-        for name in ("mssql", "snowflake", "bigquery", "sqlalchemy"):
-            assert "no read-only mechanism" in CAPABILITIES[name].concerns[0], name
+        """BigQuery is the only one left that has to lead with this.
+
+        The other three gained a mechanism, so their first concern is now
+        something else -- and saying "no read-only mechanism" for them would be
+        false. What they must still report is that the mechanism is unverified
+        here, which the test below covers.
+        """
+        assert "no read-only mechanism" in CAPABILITIES["bigquery"].concerns[0]
+
+    def test_a_dialect_with_an_unverified_mechanism_says_that_instead(self) -> None:
+        """The concern an operator needs once a mechanism exists but no test in
+        this repository reaches a real engine to prove it works."""
+        for name in ("mssql", "snowflake", "sqlalchemy", "redshift"):
+            caps = CAPABILITIES[name]
+            assert caps.enforces_read_only, name
+            assert any("not exercised by any test" in c for c in caps.concerns), name
+            assert not any("no read-only mechanism" in c for c in caps.concerns), name
 
     def test_every_entry_states_what_the_operator_must_do(self) -> None:
         for name, caps in CAPABILITIES.items():
