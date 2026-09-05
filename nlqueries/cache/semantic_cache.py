@@ -597,6 +597,12 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
 )
 
 
+#: Point ids already reported as holding the wrong question. The condition is a
+#: planted or corrupted entry, which persists -- so without this the warning
+#: fires once per request, for as long as the entry survives, each time carrying
+#: the asker's question text into the log.
+_MISMATCHED_POINTS_LOGGED: set[int] = set()
+
 #: Contexts already reported as unusable, so a caller with an unfortunate key
 #: name costs one line rather than one per lookup.
 _RESERVED_CONTEXT_KEYS_LOGGED: set[str] = set()
@@ -955,13 +961,18 @@ class SemanticCache:
                     # "There were 42 orders."
                     stored_question = _normalize_question(str(payload.get("question") or ""))
                     if stored_question != normalized:
-                        logger.warning(
-                            "Cache entry at the Tier 0 id for %r stores a different "
-                            "question (%r). Ignoring it; this should not happen "
-                            "unless the collection has been written to directly.",
-                            normalized,
-                            stored_question,
-                        )
+                        # Once per point, like the other two warnings in this
+                        # module. The entry persists, so an unguarded warning
+                        # would fire on every request that lands on it.
+                        if tier0_id not in _MISMATCHED_POINTS_LOGGED:
+                            _MISMATCHED_POINTS_LOGGED.add(tier0_id)
+                            logger.warning(
+                                "Cache point %s holds a different question than the "
+                                "one it is keyed by. Ignoring it; this should not "
+                                "happen unless the collection has been written to "
+                                "directly.",
+                                tier0_id,
+                            )
                         payload = {}
                     # retrieve() is id-only, so enforce payload_filter here (Tier
                     # 1/2 push it into the Qdrant query filter). A mismatch falls

@@ -667,6 +667,43 @@ def test_put_and_get_agree_on_the_tier0_point_id() -> None:
         )
 
 
+def test_the_mismatch_warning_fires_once_and_omits_the_question(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The condition persists, so an unguarded warning repeats per request.
+
+    A planted or corrupted entry does not go away by being noticed. The other two
+    warnings in the module dedupe for this reason, and this one carried the
+    asker's question text into every line as well -- so the log filled with user
+    input at a rate set by traffic rather than by the fault.
+    """
+    import logging
+
+    from nlqueries.cache.semantic_cache import _MISMATCHED_POINTS_LOGGED
+
+    victim = "how many refunds were issued"
+    point = MagicMock()
+    point.payload = _entry(None)  # signed for QUESTION, not for `victim`
+    point.id = _point_id_for_question(_normalize_question(victim))
+    _MISMATCHED_POINTS_LOGGED.discard(point.id)
+
+    client = _client()
+    client.retrieve.return_value = [point]
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+    ):
+        cache = SemanticCache("agent1", binding=TEST_BINDING)
+        for _ in range(3):
+            assert cache.get(victim) is None
+
+    warned = [r.getMessage() for r in caplog.records if "different question" in r.getMessage()]
+    assert len(warned) == 1, f"three requests produced {len(warned)} warnings"
+    assert victim not in warned[0], f"the asker's question was written to the log: {warned[0]}"
+
+
 def test_tier0_refuses_an_entry_stored_under_another_question() -> None:
     """Tier 0 trusts an id, and the id is not part of the signed message.
 
