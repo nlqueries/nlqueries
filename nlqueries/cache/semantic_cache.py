@@ -614,6 +614,15 @@ def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | N
 _UNUSABLE_TIER_VALUES_LOGGED: set[str] = set()
 
 
+#: How many neighbours a cosine tier asks Qdrant for. More than one because the
+#: context equality is applied here rather than pushed down: Qdrant's filter can
+#: require the caller's keys but not the absence of others, so a nearest
+#: neighbour from another context would otherwise consume the only candidate slot
+#: and shadow a same-context entry sitting just below it. Small, because the
+#: cost is payload transfer for candidates that are usually discarded.
+_COSINE_CANDIDATES = 5
+
+
 def _enabled_tiers() -> frozenset[int]:
     """Parse ``CACHE_ANSWER_TIERS`` into the set of tiers allowed to serve.
 
@@ -823,13 +832,22 @@ class SemanticCache:
             question: The user question.
             vector:   Pre-computed embedding vector.  When provided, the
                       ``embed_text()`` call for Tier 1 is skipped.
-            payload_filter: Optional exact-match constraints on stored payload
-                      keys (paired with :meth:`put`'s ``payload_extra``). A hit is
-                      only returned when the stored point carries every key/value
-                      here — every tier applies it. Enterprise uses this to scope
-                      a follow-up's cache entry to one conversation context
-                      (``{"context_fingerprint": ...}``); ``None`` (default)
-                      leaves lookups exactly as before.
+            payload_filter: The caller's cache context (paired with
+                      :meth:`put`'s ``payload_extra``). Matched as an
+                      **equality**, not a subset: a hit is returned only when the
+                      stored entry was written under exactly this context, and
+                      every tier applies it. Passing ``None`` therefore reads
+                      only entries written without a context — it does not match
+                      everything. Enterprise uses this to scope a follow-up's
+                      entry to one conversation context
+                      (``{"context_fingerprint": ...}``).
+
+                      The equality is the point: under a subset rule a caller
+                      that forgot to pass its context matched entries scoped by
+                      every context, failing open in exactly the case the
+                      mechanism exists for. See "Cache partitioning and
+                      authorisation" in ``docs/architecture.md`` before building
+                      anything that relies on this.
         """
         client = _get_client()
 
@@ -897,31 +915,32 @@ class SemanticCache:
                     collection_name=self._collection,
                     query=v,
                     query_filter=_kind_filter("answer"),
-                    limit=1,
+                    limit=_COSINE_CANDIDATES,
                 )
             except Exception:  # noqa: BLE001
                 return None
 
-            if response.points:
-                hit = response.points[0]
-                if hit.score >= config.CACHE_ANSWER_THRESHOLD:
-                    payload = hit.payload or {}
-                    # The Qdrant filter is a subset test -- it can require the
-                    # caller's keys but cannot require the absence of others --
-                    # so the equality is re-applied here, as at Tier 0.
-                    #
-                    # A mismatch falls through to Tier 2 rather than returning:
-                    # the tiers are independent, and this one being occupied by
-                    # an entry from another context says nothing about whether a
-                    # template exists for this one.
-                    if _payload_matches(payload, payload_filter):
-                        entry = self._verified_entry(payload)
-                        if entry is not None:
-                            entry.hit_count = self._increment_hit_count(client, hit.id, payload)
-                            record_cache(
-                                hit=True, similarity=float(hit.score), tier="answer"
-                            )  # SYL-1.1
-                            return entry
+            # The first candidate clearing both the threshold and the context,
+            # not simply the nearest. The Qdrant filter is a subset test -- it
+            # can require the caller's keys but cannot require the absence of
+            # others -- so the equality is applied here, as at Tier 0, and asking
+            # for one point would let a neighbour from another context shadow a
+            # same-context entry ranked just below it.
+            #
+            # Exhausting them falls through to Tier 2 rather than returning: the
+            # tiers are independent, and this one being occupied by other
+            # contexts says nothing about whether a template exists for this one.
+            for hit in response.points:
+                if hit.score < config.CACHE_ANSWER_THRESHOLD:
+                    break  # ranked by score, so nothing below clears it either
+                payload = hit.payload or {}
+                if not _payload_matches(payload, payload_filter):
+                    continue
+                entry = self._verified_entry(payload)
+                if entry is not None:
+                    entry.hit_count = self._increment_hit_count(client, hit.id, payload)
+                    record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
+                    return entry
 
         # --- Tier 2: template cache (masked cosine similarity, kind=template) ---
         if 2 not in enabled:
@@ -937,24 +956,29 @@ class SemanticCache:
                 collection_name=self._collection,
                 query=masked_vector,
                 query_filter=_kind_filter("template"),
-                limit=1,
+                limit=_COSINE_CANDIDATES,
             )
         except Exception:  # noqa: BLE001
             return None
 
-        if not tmpl_response.points:
-            return None
+        # The nearest template belonging to this context, for the same reason as
+        # Tier 1: the context equality is applied here rather than pushed into
+        # the query, so asking for one point lets another context's template
+        # shadow ours.
+        tmpl_payload: dict[str, Any] | None = None
+        tmpl_score = 0.0
+        for candidate in tmpl_response.points:
+            if candidate.score < config.CACHE_TEMPLATE_THRESHOLD:
+                break  # ranked by score
+            payload = candidate.payload or {}
+            if _payload_matches(payload, payload_filter) and payload.get("sql"):
+                tmpl_payload = payload
+                tmpl_score = float(candidate.score)
+                break
 
-        tmpl_hit = tmpl_response.points[0]
-        if tmpl_hit.score < config.CACHE_TEMPLATE_THRESHOLD:
-            return None
-
-        tmpl_payload = tmpl_hit.payload or {}
-        if not _payload_matches(tmpl_payload, payload_filter):
+        if tmpl_payload is None:
             return None
         template_sql = str(tmpl_payload.get("sql") or "")
-        if not template_sql:
-            return None
 
         # The binding dialect, so values are rendered the way the engine that
         # will run them reads them. Without it sqlglot writes its own dialect and
@@ -981,7 +1005,7 @@ class SemanticCache:
         entry.sql = bound_sql
         entry.hit_count = 0
         entry.kind = "template"
-        record_cache(hit=True, similarity=float(tmpl_hit.score), tier="template")  # SYL-1.1
+        record_cache(hit=True, similarity=tmpl_score, tier="template")  # SYL-1.1
         return entry
 
     def put(

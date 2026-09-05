@@ -421,3 +421,101 @@ def test_the_two_reserved_lists_agree() -> None:
     assert _RESERVED_PAYLOAD_KEYS_FOR_SIGNING == _RESERVED_PAYLOAD_KEYS, (
         "semantic_cache and envelope disagree about which payload keys are the caller's context"
     )
+
+
+def test_a_foreign_neighbour_does_not_shadow_our_own_entry() -> None:
+    """The cost of applying the equality here instead of pushing it down.
+
+    Qdrant's filter can require the caller's keys but not the absence of others,
+    so the equality runs client-side. Asking for a single point therefore let the
+    nearest neighbour decide the outcome for everyone: an entry from another
+    context, ranked top, consumed the only candidate slot and the lookup fell
+    through even though a same-context entry sat just below it and above the
+    threshold.
+
+    It bites hardest for context-free reads, where the pushed-down filter is
+    `kind` alone and every follow-up-scoped entry competes freely for that slot.
+    "Standalone turns still share with each other" is only true if this holds.
+    """
+    client = _client()
+    foreign = MagicMock()
+    foreign.score = 0.99
+    foreign.payload = _entry(CONTEXT_B)
+    foreign.id = 1
+
+    ours = MagicMock()
+    ours.score = 0.98  # still above CACHE_ANSWER_THRESHOLD (0.97)
+    ours.payload = _entry(CONTEXT_A)
+    ours.id = 2
+
+    client.query_points.return_value = MagicMock(points=[foreign, ours])
+
+    entry = _get(client, CONTEXT_A)
+    assert entry is not None, (
+        "a nearer entry from another context shadowed ours, which was above the "
+        "threshold and one rank below it"
+    )
+
+    # And that we actually asked Qdrant for more than one candidate. The mock
+    # above returns both points whatever `limit` says, so the scan alone passes
+    # just as well against `limit=1` -- against which the real client would
+    # return only the foreign entry and there would be nothing to scan.
+    limit = client.query_points.call_args.kwargs["limit"]
+    assert limit > 1, (
+        f"asked Qdrant for {limit} point(s), so the nearest neighbour still "
+        f"decides the outcome no matter how the results are scanned"
+    )
+
+
+def test_a_foreign_neighbour_does_not_shadow_an_unscoped_reader() -> None:
+    """The same, for the caller that passes no context.
+
+    This is the direction the CHANGELOG's claim about standalone turns rests on:
+    a follow-up-scoped entry ranking above an unscoped one must not stop the
+    unscoped read finding its own.
+    """
+    client = _client()
+    scoped = MagicMock()
+    scoped.score = 0.995
+    scoped.payload = _entry({"context_fingerprint": "fp1"})
+    scoped.id = 1
+
+    unscoped = MagicMock()
+    unscoped.score = 0.98
+    unscoped.payload = _entry(None)
+    unscoped.id = 2
+
+    client.query_points.return_value = MagicMock(points=[scoped, unscoped])
+
+    assert _get(client, None) is not None, (
+        "a follow-up-scoped entry shadowed a standalone turn's own cached answer"
+    )
+    assert client.query_points.call_args.kwargs["limit"] > 1
+
+
+def test_the_scan_stops_at_the_threshold() -> None:
+    """Below-threshold candidates are not rescued by matching the context.
+
+    Points come back ranked, so the first one under the threshold ends the scan.
+    Without that, widening the candidate window would quietly lower the
+    similarity bar for anyone whose context happens to sit further down.
+    """
+    client = _client()
+    foreign = MagicMock()
+    foreign.score = 0.99
+    foreign.payload = _entry(CONTEXT_B)
+    foreign.id = 1
+
+    ours_but_distant = MagicMock()
+    ours_but_distant.score = 0.10  # far below CACHE_ANSWER_THRESHOLD
+    ours_but_distant.payload = _entry(CONTEXT_A)
+    ours_but_distant.id = 2
+
+    client.query_points.side_effect = [
+        MagicMock(points=[foreign, ours_but_distant]),  # Tier 1
+        MagicMock(points=[]),  # Tier 2, so the miss is Tier 1's
+    ]
+
+    assert _get(client, CONTEXT_A) is None, (
+        "an entry far below the similarity threshold was served because its context matched"
+    )

@@ -39,8 +39,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   context on read, was the one that silently succeeded. A context-free read now
   sees only entries written without a context. In practice this affects
   follow-up-scoped entries, which are no longer served to standalone questions;
-  standalone turns still share with each other as before. See "Cache
-  partitioning and authorisation" in `docs/architecture.md`.
+  standalone turns still share with each other.
+
+  Because the equality is applied client-side -- Qdrant's filter can require the
+  caller's keys but not the absence of others -- the cosine tiers now fetch a
+  few candidates and take the first that clears both the similarity threshold
+  and the context. Fetching one would let a nearer entry from another context
+  shadow a valid one ranked just below it, which for a context-free read is any
+  follow-up-scoped entry at all. See "Cache partitioning and authorisation" in
+  `docs/architecture.md`.
 
 ### Fixed
 
