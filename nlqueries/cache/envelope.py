@@ -60,6 +60,14 @@ SIGNED_FIELDS = (
     "kind",
 )
 
+#: Keys the cache writes itself. Everything else in a payload came from the
+#: caller's cache context. Mirrors `semantic_cache._RESERVED_PAYLOAD_KEYS`,
+#: which a test pins to this; duplicated rather than imported to avoid a cycle.
+_RESERVED_PAYLOAD_KEYS_FOR_SIGNING: frozenset[str] = frozenset(
+    {*SIGNED_FIELDS, "hit_count", SIGNATURE_KEY, VERSION_KEY}
+)
+
+
 _KEY_ENV = "NLQ_CACHE_SIGNING_KEY"
 
 #: A file holding the key, for deployments that mount secrets rather than pass
@@ -184,10 +192,39 @@ def signing_key() -> bytes:
     return key
 
 
+def _context_fields(payload: dict[str, Any]) -> dict[str, str]:
+    """The caller's cache context: every key the cache does not write itself."""
+    return {
+        str(k): str(v) for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS_FOR_SIGNING
+    }
+
+
 def _message(payload: dict[str, Any], binding: CacheBinding) -> bytes:
     fields = {name: payload.get(name) for name in SIGNED_FIELDS}
     body = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
-    return f"{ENVELOPE_VERSION}\n{binding.canonical()}\n{body}".encode()
+    message = f"{ENVELOPE_VERSION}\n{binding.canonical()}\n{body}"
+
+    # The caller's cache context is covered too, appended only when there is one
+    # -- so an entry written without a context produces byte-identical output to
+    # before this existed and keeps verifying across the upgrade. Only
+    # context-carrying entries pay a one-off miss.
+    #
+    # Without this the context was the one part of a partition boundary the HMAC
+    # did not cover: anyone with write access to Qdrant and no access to the key
+    # could take a valid entry, change `tenant` from `a` to `b`, and have it
+    # verify and be served under the other context -- the threat this module's
+    # docstring says it defends against, reached by relabelling a good tag
+    # rather than forging one.
+    #
+    # Conditional inclusion is sound in both directions. Stripping the context
+    # from a scoped entry makes the verifier build the short message, which does
+    # not match a tag computed over the long one; adding a context to an
+    # unscoped entry makes it build the long message against a tag computed over
+    # the short one. Both fail.
+    context = _context_fields(payload)
+    if context:
+        message += "\n" + json.dumps(context, sort_keys=True, separators=(",", ":"), default=str)
+    return message.encode()
 
 
 def sign(

@@ -106,6 +106,29 @@ are still read correctly. A consequence worth knowing: **adding a new key to a
 stored payload without adding it to that set makes it count as caller context,
 and every entry carrying it will miss.**
 
+**The context is covered by the signature.** `envelope.py` protects a cache
+entry against anyone with write access to Qdrant but no access to the signing
+key. Until the context was part of the signed message, that protection stopped
+at the partition: reaching another context did not require forging a tag, only
+moving a valid one, by editing the context keys the HMAC did not cover. The
+context is now appended to the signed message -- but only when it is non-empty,
+so an entry written without one produces byte-identical output to before and
+keeps verifying. Only context-carrying entries pay a one-off miss on upgrade,
+rather than the whole cache going cold. Conditional inclusion is still sound
+both ways: stripping a context makes the verifier build the short message
+against a tag computed over the long one, and adding a context does the reverse.
+
+**A second thing the future feature must do: put the distinguishing value in the
+point ID as well.** The invariant above is about *reads*, and satisfying it is
+not sufficient on its own. `put()` derives point IDs from the question alone
+(`_point_id_for_question(normalized)`, and `tmpl:{masked}` for the template
+point), so two callers in different contexts asking the same question upsert
+over one another. Scoping built exactly as prescribed above would be *safe* --
+neither caller reads the other's entry -- but each write would clobber the
+other's and both would then read a miss indefinitely. The failure is a collapsed
+hit rate rather than a leak, which is why it is easy to ship and hard to
+diagnose.
+
 The invariant is guarded by `tests/test_cache_partitioning.py`, which asserts
 across all three tiers that an entry written under one context is a miss for a
 different context and for no context, and -- as the control that gives those

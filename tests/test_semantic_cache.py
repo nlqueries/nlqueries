@@ -75,10 +75,18 @@ def _fresh_payload(
     sql: str | None = "SELECT COUNT(*) FROM orders",
     hours_old: int = 0,
     kind: str = "answer",
+    context: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """A signed cache payload.
+
+    *context* is merged in **before** signing. It has to be: the signature covers
+    the caller's cache context, so attaching a context key to an already-signed
+    payload is the tampering `envelope` refuses, not a way to build a fixture.
+    """
     created_at = datetime.now(UTC) - timedelta(hours=hours_old)
     return sign(
         {
+            **(context or {}),
             "question": question,
             "resolved_question": resolved,
             "agent_type": agent_type,
@@ -1201,7 +1209,7 @@ class TestPayloadScopedEntries:
         client = self._client_with_collection()
         pt = _make_scored_point(
             score=1.0,
-            payload={**_fresh_payload(), "context_fingerprint": "fp1"},
+            payload=_fresh_payload(context={"context_fingerprint": "fp1"}),
         )
         client.retrieve.return_value = [pt]
         with (
@@ -1219,7 +1227,7 @@ class TestPayloadScopedEntries:
         client = self._client_with_collection()
         pt = _make_scored_point(
             score=1.0,
-            payload={**_fresh_payload(), "context_fingerprint": "OTHER"},
+            payload=_fresh_payload(context={"context_fingerprint": "OTHER"}),
         )
         client.retrieve.return_value = [pt]
         client.query_points.return_value = _make_query_response([])  # Tier 1 finds nothing

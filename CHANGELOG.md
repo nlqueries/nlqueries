@@ -24,6 +24,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- Cache entry signatures now cover the caller's `cache_context`. Previously the
+  HMAC covered the answer and its SQL but not the context keys, so anyone with
+  write access to Qdrant and no access to the signing key could move a valid
+  entry between contexts by editing them -- no forgery required. The context is
+  appended to the signed message only when non-empty, so entries written without
+  one keep verifying and the cache does not go cold on upgrade; only
+  context-carrying entries miss once.
+
 - The semantic cache's `cache_context` (seam S2) is now matched by equality
   rather than as a subset. A caller that passes no context previously matched
   entries written under *any* context, while the reverse correctly missed --

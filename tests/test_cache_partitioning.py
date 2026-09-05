@@ -29,7 +29,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from nlqueries.cache.envelope import CacheBinding, sign
+from nlqueries.cache.envelope import CacheBinding, sign, verify
 from nlqueries.cache.semantic_cache import (
     SemanticCache,
     _context_of,
@@ -247,15 +247,7 @@ def test_a_partial_context_match_is_not_enough() -> None:
 
 
 def test_the_context_is_recovered_from_the_payload_not_a_marker_field() -> None:
-    """How the context is known, stated so the reserved list stays honest.
-
-    There is no field recording which keys were context. They are whatever is
-    left after the keys the cache writes itself, which is what lets entries
-    written before this check existed be read correctly rather than all missing
-    for one TTL. If a new reserved key is ever added to a stored payload and not
-    to `_RESERVED_PAYLOAD_KEYS`, it starts counting as context and every entry
-    carrying it misses -- this is the test that says so.
-    """
+    """`_context_of` on hand-built payloads: the shape of the rule."""
     assert _context_of(_entry(None)) == {}
     assert _context_of(_entry(CONTEXT_A)) == {"tenant": "a"}
     assert _context_of(_entry({"tenant": "a", "user": "u1"})) == {
@@ -263,9 +255,169 @@ def test_the_context_is_recovered_from_the_payload_not_a_marker_field() -> None:
         "user": "u1",
     }
 
-    # Every key the cache writes itself, for both kinds of entry.
-    for kind in ("answer", "template"):
-        assert _context_of(_entry(None, kind=kind)) == {}, (
-            f"a {kind} entry with no context reported one, so a key the cache "
-            f"writes is missing from _RESERVED_PAYLOAD_KEYS"
+
+@pytest.mark.parametrize("with_context", [False, True], ids=["unscoped", "scoped"])
+def test_reserved_keys_covers_everything_put_actually_writes(with_context: bool) -> None:
+    """Asserted against `put()`'s own output, not against this file's copy of it.
+
+    There is no field recording which keys were context; they are whatever is
+    left over after the keys the cache writes itself. That is what lets entries
+    written before this check existed still be read correctly instead of all
+    missing for one TTL, and the cost is that `_RESERVED_PAYLOAD_KEYS` has to
+    stay complete: a key added to a stored payload and not to that set starts
+    counting as caller context, and every entry carrying it misses.
+
+    An earlier version of this checked `_context_of` against `_entry()` above --
+    this file's hand-written copy of the payload -- which could not detect that
+    at all. Whoever adds a key to `put()` and forgets `_RESERVED_PAYLOAD_KEYS`
+    has no reason to have added it here either, so the test would have stayed
+    green while the hit rate quietly dropped. `docs/architecture.md` promises
+    this is a red test; it has to read the real payload to be one.
+
+    Both points are checked. The template payload is built separately in `put()`
+    and could acquire a key the answer payload does not.
+    """
+    from unittest.mock import patch as _patch
+
+    class _Result:
+        resolved_question = "orders after 2024-06-01"
+        agent_type = "sql"
+        answer = "There were 42 orders."
+        sql = "SELECT * FROM orders WHERE order_date >= '2024-06-01'"
+
+    context = dict(CONTEXT_A) if with_context else None
+    client = _client()
+    with (
+        _patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        _patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        _patch("nlqueries.cache.semantic_cache.ensure_collection"),
+    ):
+        SemanticCache("agent1", binding=TEST_BINDING).put(
+            QUESTION, _Result(), payload_extra=context
         )
+
+    points = client.upsert.call_args.kwargs["points"]
+    assert points, "put() upserted nothing, so this asserts nothing"
+    kinds = {p.payload["kind"] for p in points}
+    assert kinds == {"answer", "template"}, (
+        f"expected both point kinds so the template payload is covered too, got {kinds}"
+    )
+
+    for point in points:
+        recovered = _context_of(point.payload)
+        assert recovered == (context or {}), (
+            f"the {point.payload['kind']} payload reports context {recovered}, "
+            f"expected {context or {}} -- a key put() writes is missing from "
+            f"_RESERVED_PAYLOAD_KEYS, so every entry carrying it will miss"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The context is part of what is signed
+# ---------------------------------------------------------------------------
+
+
+def _signed(**extra: object) -> dict[str, object]:
+    payload = {
+        "question": QUESTION,
+        "resolved_question": QUESTION,
+        "agent_type": "sql",
+        "answer": "There were 42 orders.",
+        "sql": "SELECT 1",
+        "created_at": datetime.now(UTC).isoformat(),
+        "kind": "answer",
+        "hit_count": 0,
+        **extra,
+    }
+    return sign(payload, TEST_BINDING, TEST_KEY)
+
+
+def test_the_context_cannot_be_relabelled_without_the_key() -> None:
+    """A partition boundary the signature does not cover is not a boundary.
+
+    `envelope.py` says it defends against "an attacker with write access to the
+    vector store but not to the key". Reaching another context did not require
+    forging a tag -- only moving a valid one, by editing the context keys the
+    HMAC did not cover. All three edits below verified before this was fixed.
+    """
+    scoped = _signed(tenant="a")
+    assert verify(scoped, TEST_BINDING, TEST_KEY), "the control: it verifies as written"
+
+    relabelled = {**scoped, "tenant": "b"}
+    assert not verify(relabelled, TEST_BINDING, TEST_KEY), (
+        "an entry was moved to another context by editing the payload"
+    )
+
+    stripped = {k: v for k, v in scoped.items() if k != "tenant"}
+    assert not verify(stripped, TEST_BINDING, TEST_KEY), (
+        "a scoped entry was made readable by every caller by deleting its context"
+    )
+
+    unscoped = _signed()
+    promoted = {**unscoped, "tenant": "b"}
+    assert not verify(promoted, TEST_BINDING, TEST_KEY), (
+        "an unscoped entry was given a context it was not signed with"
+    )
+
+
+def test_an_entry_written_without_a_context_still_verifies_after_the_change() -> None:
+    """Why the context is appended only when there is one.
+
+    Covering it unconditionally would change the signed message for every entry
+    ever written, so the whole cache would miss for one TTL on upgrade. Appending
+    only a non-empty context leaves the message byte-identical for unscoped
+    entries -- which is nearly all of them -- so only context-carrying entries
+    pay a one-off miss.
+
+    This reproduces the old message format directly rather than trusting that
+    claim.
+    """
+    import hashlib
+    import hmac
+    import json
+
+    from nlqueries.cache.envelope import (
+        ENVELOPE_VERSION,
+        SIGNATURE_KEY,
+        SIGNED_FIELDS,
+        VERSION_KEY,
+    )
+
+    def _old_tag(payload: dict[str, object]) -> str:
+        fields = {name: payload.get(name) for name in SIGNED_FIELDS}
+        body = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+        message = f"{ENVELOPE_VERSION}\n{TEST_BINDING.canonical()}\n{body}".encode()
+        return hmac.new(TEST_KEY, message, hashlib.sha256).hexdigest()
+
+    written_before: dict[str, object] = {
+        "question": QUESTION,
+        "resolved_question": QUESTION,
+        "agent_type": "sql",
+        "answer": "There were 42 orders.",
+        "sql": "SELECT 1",
+        "created_at": datetime.now(UTC).isoformat(),
+        "kind": "answer",
+        "hit_count": 0,
+    }
+    written_before[SIGNATURE_KEY] = _old_tag(written_before)
+    written_before[VERSION_KEY] = ENVELOPE_VERSION
+
+    assert verify(written_before, TEST_BINDING, TEST_KEY), (
+        "an entry written before this change stopped verifying, so every cache "
+        "in existence would go cold for a TTL on upgrade"
+    )
+
+
+def test_the_two_reserved_lists_agree() -> None:
+    """`envelope` keeps its own copy to avoid an import cycle, so pin them.
+
+    If they drift, a key one module treats as context the other treats as
+    reserved: entries would be signed over one view of the context and verified
+    against another, and every entry carrying that key would fail to verify.
+    """
+    from nlqueries.cache.envelope import _RESERVED_PAYLOAD_KEYS_FOR_SIGNING
+    from nlqueries.cache.semantic_cache import _RESERVED_PAYLOAD_KEYS
+
+    assert _RESERVED_PAYLOAD_KEYS_FOR_SIGNING == _RESERVED_PAYLOAD_KEYS, (
+        "semantic_cache and envelope disagree about which payload keys are the caller's context"
+    )
