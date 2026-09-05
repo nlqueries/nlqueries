@@ -413,6 +413,34 @@ CACHE_ANSWER_THRESHOLD: float = float(os.getenv("NLQ_CACHE_ANSWER_THRESHOLD", "0
 CACHE_TEMPLATE_THRESHOLD: float = float(os.getenv("NLQ_CACHE_TEMPLATE_THRESHOLD", "0.90"))
 """Cosine similarity threshold for the Tier 2 template cache (kind=template)."""
 
+CACHE_MAX_QUESTION_CHARS: int = int(os.getenv("NLQ_CACHE_MAX_QUESTION_CHARS", "500"))
+"""Longest question that may be written to the semantic cache. 0 disables the limit.
+
+A padded prompt injection has a characteristic shape: the attacker's own
+question with a long instruction suffix appended, so that the whole thing still
+embeds close to something a colleague might ask. The length is the cheapest part
+of that shape to refuse, and questions this long are rarely worth caching --
+they are near-unique, so they cost a write and are unlikely to be hit again.
+
+This is a write-side limit only. Nothing already cached stops being served, and
+a long question is still answered normally; it simply is not stored.
+"""
+
+CACHE_ANSWER_TIERS: str = os.getenv("NLQ_CACHE_ANSWER_TIERS", "0,1,2")
+"""Which cache tiers may serve an answer. Comma-separated subset of 0, 1, 2.
+
+  0 — exact match on the normalised question
+  1 — cosine similarity over stored answers (CACHE_ANSWER_THRESHOLD)
+  2 — a stored SQL template with the question's entities bound into it
+
+Tier 0 cannot serve one user's answer to another user's differently-worded
+question, because the questions have to be identical. Tiers 1 and 2 can, which
+is the whole point of them and also the only way a poisoned entry reaches
+someone who did not write it. `"0"` is therefore the setting for an agent where
+that trade is not worth making -- it keeps the cache working for repeat
+questions rather than turning it off.
+"""
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
