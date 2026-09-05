@@ -642,6 +642,92 @@ def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) ->
     return True
 
 
+#: When each collection was last swept, so the sweep is amortised rather than
+#: paid on every write. Process-local: several processes sharing a collection
+#: each sweep on their own schedule, which is harmless -- the delete is
+#: idempotent and matches by age, not by identity.
+#:
+#: It starts empty, so the first write in a process always sweeps. In a
+#: long-lived server that is what you want. Under the CLI, where a process
+#: answers one question and exits, it means one delete-by-filter per invocation.
+#:
+#: That is deliberate rather than overlooked. Seeding this so the first sweep
+#: waits out an interval would mean a CLI-only deployment never sweeps at all --
+#: no process lives long enough -- and those are the deployments whose
+#: collections still grow. The cost is bounded the other way instead: the delete
+#: is issued with `wait=False` so the caller never waits for it, and
+#: `created_at` is indexed as a datetime on every collection created from now
+#: on, so what Qdrant does with it is a range query rather than a scan. Only
+#: collections predating that change pay a scan, and only until they age out.
+_last_prune_at: dict[str, float] = {}
+
+
+def _prune_expired(client: Any, collection: str, ttl_hours: int, *, wait: bool = False) -> bool:
+    """Delete points past the TTL. True when a sweep ran and succeeded.
+
+    `bool`, not a count: Qdrant's delete does not report how many points matched,
+    so an int here would have to be a lie or a constant. False covers both "not
+    due yet" and "the delete raised"; the latter is logged, and no caller needs
+    to tell them apart -- both mean the collection did not shrink this time.
+
+    Nothing else removes anything: the TTL is applied on read, and
+    `invalidate()` drops the collection wholesale. That was survivable while a
+    repeated question upserted over its own point, and stopped being so when the
+    point id gained the cache context -- a context that changes per turn writes
+    ids that never recur, are never overwritten and were never removed.
+
+    The cutoff is the same `ttl_hours` the read path applies, so this deletes
+    only what a read would already have discarded. It cannot remove an entry that
+    is still servable.
+
+    Best-effort: a failed sweep is logged and the write continues. A cache that
+    grows is worse than one that does not, but not so much worse that it should
+    cost the caller their answer.
+    """
+    interval = config.CACHE_PRUNE_INTERVAL_SECONDS
+    if interval <= 0:
+        return False
+
+    now = time.time()
+    last = _last_prune_at.get(collection)
+    if last is not None and now - last < interval:
+        return False
+    _last_prune_at[collection] = now
+
+    from qdrant_client.models import (  # noqa: PLC0415
+        DatetimeRange,
+        FieldCondition,
+        Filter,
+        FilterSelector,
+    )
+
+    # A datetime, not its isoformat string: `DatetimeRange` declares
+    # `datetime | date | None`, and while pydantic coerces the string, passing
+    # the declared type keeps mypy honest and does not depend on that coercion.
+    cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+    try:
+        client.delete(
+            collection_name=collection,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[FieldCondition(key="created_at", range=DatetimeRange(lt=cutoff))]
+                )
+            ),
+            wait=wait,
+        )
+    except Exception:  # noqa: BLE001 -- a failed sweep must not fail the write
+        logger.warning(
+            "Cache sweep of %s could not be issued; it will be retried on the "
+            "first write after the interval. Whether the delete reached Qdrant "
+            "is not knowable from here -- the request is sent without waiting "
+            "for it to be applied.",
+            collection,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def _context_of(payload: dict[str, Any]) -> dict[str, str]:
     """The cache context an entry was written with, recovered from its payload."""
     return {str(k): str(v) for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS}
@@ -1049,39 +1135,60 @@ class SemanticCache:
         # Tier 1: the context equality is applied here rather than pushed into
         # the query, so asking for one point lets another context's template
         # shadow ours.
-        tmpl_payload: dict[str, Any] | None = None
-        tmpl_score = 0.0
-        for candidate in tmpl_response.points:
-            if candidate.score < config.CACHE_TEMPLATE_THRESHOLD:
-                break  # ranked by score
-            payload = candidate.payload or {}
-            if _payload_matches(payload, payload_filter) and payload.get("sql"):
-                tmpl_payload = payload
-                tmpl_score = float(candidate.score)
-                break
-
-        if tmpl_payload is None:
-            return None
-        template_sql = str(tmpl_payload.get("sql") or "")
-
         # The binding dialect, so values are rendered the way the engine that
         # will run them reads them. Without it sqlglot writes its own dialect and
         # MySQL's backslash escaping in particular is lost.
         dialect = self._binding.dialect if self._binding is not None else None
-        bound_sql = _bind_entities(question, template_sql, dialect)
-        if bound_sql is None:
-            return None
 
-        # A real check, not a suppressed one. This used to parse the bound SQL
-        # inside `contextlib.suppress(Exception)` and discard the result, so a
-        # statement that did not parse was handed to the orchestrator anyway --
-        # which is how a template hit could return a stale answer alongside
-        # "Cached SQL failed revalidation and was not executed". `_bind_entities`
-        # already parses; this is the assertion that it did.
-        if _parse_or_none(bound_sql, dialect) is None:
-            return None
+        # Every check inside the loop, as Tier 1 does, so a candidate that fails
+        # one moves to the next rather than ending the lookup. Selecting a
+        # candidate first and validating afterwards meant an expired or
+        # unverifiable template -- or one whose entities would not bind --
+        # returned a miss even with a usable template for a different phrasing
+        # ranked just below it and above the threshold. Expired points are never
+        # deleted and go on being ranked by the search, so that is not a rare
+        # shape; it is the one that accumulates.
+        entry = None
+        tmpl_score = 0.0
+        bound_sql = ""
+        for candidate in tmpl_response.points:
+            if candidate.score < config.CACHE_TEMPLATE_THRESHOLD:
+                break  # ranked by score, so nothing below clears it either
+            payload = candidate.payload or {}
+            if not _payload_matches(payload, payload_filter):
+                continue
+            # Verified before its SQL is touched, for two reasons. Expired
+            # templates cluster at the front of the ranking -- they are never
+            # deleted until the sweep runs -- so binding first spends a full
+            # sqlglot parse on each one before discarding it. And it would mean
+            # parsing SQL out of a payload whose signature has not been checked,
+            # which is the wrong order to do those two things in.
+            candidate_entry = self._verified_entry(payload)
+            if candidate_entry is None:
+                continue  # expired or unverifiable: try the next candidate
 
-        entry = self._verified_entry(tmpl_payload)
+            template_sql = str(payload.get("sql") or "")
+            if not template_sql:
+                continue
+
+            candidate_sql = _bind_entities(question, template_sql, dialect)
+            if candidate_sql is None:
+                continue
+
+            # A real check, not a suppressed one. This used to parse the bound
+            # SQL inside `contextlib.suppress(Exception)` and discard the result,
+            # so a statement that did not parse was handed to the orchestrator
+            # anyway -- which is how a template hit could return a stale answer
+            # alongside "Cached SQL failed revalidation and was not executed".
+            # `_bind_entities` already parses; this is the assertion that it did.
+            if _parse_or_none(candidate_sql, dialect) is None:
+                continue
+
+            entry = candidate_entry
+            tmpl_score = float(candidate.score)
+            bound_sql = candidate_sql
+            break
+
         if entry is None:
             return None
 
@@ -1132,7 +1239,16 @@ class SemanticCache:
             logger.debug("Cache write skipped: %s.", refusal)
             return
 
-        ensure_collection(self._collection, CACHE_VECTOR_SIZE, payload_indexes=["kind"])
+        # `created_at` is indexed as a datetime because the sweep filters on it
+        # with `DatetimeRange`. A keyword index would not accelerate that, and
+        # unindexed means Qdrant scans the collection -- on exactly the
+        # collections large enough for the sweep to matter.
+        ensure_collection(
+            self._collection,
+            CACHE_VECTOR_SIZE,
+            payload_indexes=["kind"],
+            datetime_indexes=["created_at"],
+        )
         # It exists as of now, so stop remembering that it did not — otherwise
         # the very process that just created it would keep reporting a miss for
         # up to the negative TTL.
@@ -1206,6 +1322,11 @@ class SemanticCache:
 
         client = _get_client()
         client.upsert(collection_name=self._collection, points=points)
+
+        # After the upsert, so a failed sweep cannot cost the caller the write
+        # that prompted it. At most once per collection per interval, so the cost
+        # is amortised rather than paid on every put.
+        _prune_expired(client, self._collection, self._ttl_hours)
 
     def invalidate(self, agent_id: str) -> None:  # noqa: ARG002
         """Delete all points in the cache collection (full invalidation).

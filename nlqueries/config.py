@@ -426,6 +426,25 @@ This is a write-side limit only. Nothing already cached stops being served, and
 a long question is still answered normally; it simply is not stored.
 """
 
+CACHE_PRUNE_INTERVAL_SECONDS: float = float(os.getenv("NLQ_CACHE_PRUNE_INTERVAL_SECONDS", "3600"))
+"""How often a cache collection is swept for expired points. 0 disables it.
+
+Nothing else deletes from the cache: the TTL is applied on *read*, and
+``invalidate()`` drops the whole collection. Until entries were keyed by cache
+context, a repeated question upserted over its own point and the point count
+tracked an agent's distinct question vocabulary. It no longer does -- a context
+that changes per conversation turn writes points at ids that never recur -- so
+without a sweep the collection grows for the life of the agent.
+
+Expired points are not merely wasted storage. The TTL is checked after the
+vector search has ranked them, so they go on consuming the
+``CACHE_COSINE_CANDIDATES`` slots that a lookup has to scan, and the starvation
+that bounds gets worse over time rather than staying level.
+
+The sweep runs on write, at most once per collection per interval, so its cost
+is amortised rather than paid per query.
+"""
+
 CACHE_COSINE_CANDIDATES: int = max(1, int(os.getenv("NLQ_CACHE_COSINE_CANDIDATES", "5")))
 """How many neighbours the Tier 1 and Tier 2 searches ask Qdrant for.
 
