@@ -1273,8 +1273,19 @@ class TestPayloadScopedEntries:
         # And a scoped read is an exact `must`, with no disjunction widening it.
         assert not query_filter.should
 
-    def test_no_payload_filter_leaves_lookup_unchanged(self) -> None:
-        """Without payload_filter, the Tier 1 query filter is just the kind condition."""
+    def test_a_context_free_lookup_asks_for_kind_and_an_absent_or_empty_digest(
+        self,
+    ) -> None:
+        """A context-free lookup is no longer just the kind condition.
+
+        It carries a disjunction so that entries written before the digest key
+        existed -- which have no `_ctx` at all -- are still found, alongside
+        entries written since with the empty-context digest. Asserting only that
+        `must` is `["kind"]` would pass whether or not that disjunction is there,
+        which is the half that keeps existing caches readable.
+        """
+        from nlqueries.cache.semantic_cache import CONTEXT_DIGEST_KEY, _context_digest
+
         client = self._client_with_collection()
         client.retrieve.return_value = []
         client.query_points.return_value = _make_query_response([])
@@ -1285,8 +1296,20 @@ class TestPayloadScopedEntries:
             SemanticCache("agentX", binding=TEST_BINDING).get("q")
 
         query_filter = client.query_points.call_args.kwargs["query_filter"]
-        keys = [cond.key for cond in query_filter.must]
-        assert keys == ["kind"]
+        assert [cond.key for cond in query_filter.must] == ["kind"], (
+            "a context-free lookup must not constrain the digest in `must`, or "
+            "pre-digest entries become unreachable"
+        )
+
+        should = query_filter.should or []
+        assert len(should) == 2, f"expected the two-branch disjunction, got {should}"
+        assert any(getattr(c, "is_empty", None) is not None for c in should), (
+            "no IsEmpty branch, so entries written before the digest key are lost"
+        )
+        assert any(
+            getattr(c, "key", None) == CONTEXT_DIGEST_KEY and c.match.value == _context_digest(None)
+            for c in should
+        ), "no empty-context-digest branch, so entries written since are lost"
 
 
 # ---------------------------------------------------------------------------

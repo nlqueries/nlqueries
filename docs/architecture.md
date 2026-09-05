@@ -181,7 +181,16 @@ A context-free read is the case needing care, because entries written before the
 key existed do not carry it. That side of the filter is a disjunction -- either
 no digest, or the digest of an empty context -- so those entries stay readable
 and no cache has to be rebuilt. Measured against a real Qdrant, since getting it
-wrong would make every entry in every existing deployment unreadable at once.
+wrong would make every unscoped entry in every existing deployment unreadable at
+once.
+
+The disjunction is on that branch only. A **scoped** read takes the exact-match
+path, so a pre-digest entry carrying a context is no longer reachable through
+Tier 1 or Tier 2 -- only through Tier 0's id retrieval. That costs nothing in
+practice: the signature now covers the context and the point id now includes it,
+so an entry written with a context by any released version already fails
+verification. The narrower claim is the true one, and it is worth stating
+narrowly rather than letting "no entry becomes unreadable" stand.
 
 The digest is derived from the context rather than signed with it. It can
 therefore misdirect a lookup but cannot get a foreign entry served:
