@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import re
 import string
@@ -550,13 +551,28 @@ def _collection_exists(client: Any, collection: str) -> bool:
     return False
 
 
-def _point_id_for_question(question: str) -> int:
+def _point_id_for_question(question: str, context: dict[str, str] | None = None) -> int:
     """Derive a deterministic unsigned-64-bit Qdrant point ID from a question.
 
     Uses the first 16 hex characters of SHA-256(question), which gives a
     uniform distribution over 2^64 values — collision probability is
     negligible for any realistic cache size.
+
+    *context* is the caller's cache context, and it has to be here. Without it
+    two callers in different contexts asking the same question derive the same
+    id and upsert over one another: each write clobbers the other's entry, and
+    since the contexts differ neither reads the survivor back. Not a leak -- the
+    partition still holds -- but both callers miss indefinitely, and a collapsed
+    hit rate is harder to attribute than a wrong answer.
+
+    Appended only when non-empty, so an entry written without a context keeps
+    the id it had before this existed. That is the same reasoning as the
+    signature in `envelope`, and for the same reason: not to invalidate what is
+    already stored.
     """
+    if context:
+        canonical = json.dumps(context, sort_keys=True, separators=(",", ":"))
+        question = f"{question}\n{canonical}"
     digest = hashlib.sha256(question.encode()).hexdigest()
     return int(digest[:16], 16)
 
@@ -579,6 +595,45 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         VERSION_KEY,
     }
 )
+
+
+#: Contexts already reported as unusable, so a caller with an unfortunate key
+#: name costs one line rather than one per lookup.
+_RESERVED_CONTEXT_KEYS_LOGGED: set[str] = set()
+
+
+def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) -> bool:
+    """True when *context* uses a key the cache writes itself.
+
+    Such a key never survives: `put()` merges `payload_extra` first and the
+    reserved literal that follows overwrites it, so the entry is stored with no
+    context at all -- readable by every context-free caller, and not readable by
+    the caller that asked to be scoped, for the entry's whole life. That is the
+    failure this module exists to close, reached by an unlucky key name rather
+    than a forgotten call site, and nothing reported it.
+
+    Refused rather than repaired: silently renaming a caller's key would be its
+    own surprise, and there is no correct guess. Both sides refuse, so a context
+    that cannot be stored also cannot be used to read.
+    """
+    if not context:
+        return False
+    clashing = sorted(set(context) & _RESERVED_PAYLOAD_KEYS)
+    if not clashing:
+        return False
+    token = f"{where}:{','.join(clashing)}"
+    if token not in _RESERVED_CONTEXT_KEYS_LOGGED:
+        _RESERVED_CONTEXT_KEYS_LOGGED.add(token)
+        logger.warning(
+            "Cache %s refused: the supplied cache_context uses %s, which the cache "
+            "writes itself. Such a key is overwritten on write, so the entry would "
+            "be stored unscoped and served to callers with no context at all. "
+            "Rename it (for example %r).",
+            where,
+            ", ".join(repr(k) for k in clashing),
+            f"ctx_{clashing[0]}",
+        )
+    return True
 
 
 def _context_of(payload: dict[str, Any]) -> dict[str, str]:
@@ -849,6 +904,9 @@ class SemanticCache:
                       authorisation" in ``docs/architecture.md`` before building
                       anything that relies on this.
         """
+        if _context_names_a_reserved_key(payload_filter, "lookup"):
+            return None
+
         client = _get_client()
 
         # Lazy import to avoid a cycle: the orchestrator package eagerly imports
@@ -881,7 +939,7 @@ class SemanticCache:
         # Guards the lookup only. A disabled tier is skipped, not a return: the
         # tiers are independent, and `"1,2"` has to leave 1 and 2 working.
         if 0 in enabled:
-            tier0_id = _point_id_for_question(_normalize_question(question))
+            tier0_id = _point_id_for_question(_normalize_question(question), payload_filter)
             with contextlib.suppress(Exception):
                 tier0_hits = client.retrieve(
                     collection_name=self._collection,
@@ -1038,6 +1096,9 @@ class SemanticCache:
         """
         from qdrant_client.models import PointStruct  # noqa: PLC0415
 
+        if _context_names_a_reserved_key(payload_extra, "write"):
+            return
+
         # Refused before the collection is touched and before the question is
         # embedded, so a rejected write costs nothing.
         refusal = _write_refusal(question, result)
@@ -1054,7 +1115,7 @@ class SemanticCache:
 
         # Answer entry (Tier 0 exact-match + Tier 1 cosine)
         normalized = _normalize_question(question)
-        answer_id = _point_id_for_question(normalized)
+        answer_id = _point_id_for_question(normalized, payload_extra)
         answer_vector = embed_text(question)
 
         if self._binding is None:
@@ -1095,7 +1156,7 @@ class SemanticCache:
                     )
                     if placeholders:  # only store if SQL has literal parameters
                         masked_vector = embed_text(masked)
-                        tmpl_id = _point_id_for_question(f"tmpl:{masked}")
+                        tmpl_id = _point_id_for_question(f"tmpl:{masked}", payload_extra)
                         tmpl_payload: dict[str, Any] = {
                             **(payload_extra or {}),
                             "question": masked,

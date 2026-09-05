@@ -32,6 +32,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   one keep verifying and the cache does not go cold on upgrade; only
   context-carrying entries miss once.
 
+- Semantic cache point IDs now include the caller's `cache_context`. Two callers
+  in different contexts asking the same question previously derived the same id
+  and upserted over one another; with the equality match below, neither then read
+  the survivor back. Not a leak -- the partition holds -- but both missed
+  indefinitely. Entries written without a context keep the id they had.
+
+- A `cache_context` naming a key the cache writes itself (`kind`, `sql`, …) is
+  now refused on both read and write, with a warning. Such a key was overwritten
+  during the write, so the entry was stored unscoped -- readable by every
+  context-free caller and not by the caller that asked to be scoped.
+
 - The semantic cache's `cache_context` (seam S2) is now matched by equality
   rather than as a subset. A caller that passes no context previously matched
   entries written under *any* context, while the reverse correctly missed --

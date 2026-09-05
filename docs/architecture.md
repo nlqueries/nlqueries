@@ -118,16 +118,23 @@ rather than the whole cache going cold. Conditional inclusion is still sound
 both ways: stripping a context makes the verifier build the short message
 against a tag computed over the long one, and adding a context does the reverse.
 
-**A second thing the future feature must do: put the distinguishing value in the
-point ID as well.** The invariant above is about *reads*, and satisfying it is
-not sufficient on its own. `put()` derives point IDs from the question alone
-(`_point_id_for_question(normalized)`, and `tmpl:{masked}` for the template
-point), so two callers in different contexts asking the same question upsert
-over one another. Scoping built exactly as prescribed above would be *safe* --
-neither caller reads the other's entry -- but each write would clobber the
-other's and both would then read a miss indefinitely. The failure is a collapsed
-hit rate rather than a leak, which is why it is easy to ship and hard to
-diagnose.
+**The point ID carries the context too.** `put()` used to derive point IDs from
+the question alone (`_point_id_for_question(normalized)`, and `tmpl:{masked}` for
+the template point), so two callers in different contexts asking the same
+question upserted over one another. That is not a future problem: `cache_context`
+is already in use for follow-up turns, so a scoped follow-up write and a
+context-free write of the same normalised question collided. The partition still
+held -- neither read the other's entry -- but each clobbered the other and both
+then missed indefinitely, which is a collapsed hit rate rather than a leak and
+correspondingly harder to attribute. The context is now part of the id, appended
+only when non-empty so entries written without one keep the id they had.
+
+**What the candidate window bounds rather than eliminates.** `_COSINE_CANDIDATES`
+is five. A context-free read on an agent carrying more than five near-duplicate
+scoped entries, all above the threshold and all ranked above the unscoped one,
+still falls through to a miss. Raising the number trades payload transfer for a
+smaller tail; pushing the equality into the query would remove it entirely, and
+cannot be done while Qdrant's filter can only require the presence of keys.
 
 **Why the cosine tiers fetch more than one candidate.** Qdrant's filter is a
 subset test: it can require the caller's keys but cannot require the absence of

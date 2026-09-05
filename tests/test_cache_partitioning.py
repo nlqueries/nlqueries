@@ -519,3 +519,103 @@ def test_the_scan_stops_at_the_threshold() -> None:
     assert _get(client, CONTEXT_A) is None, (
         "an entry far below the similarity threshold was served because its context matched"
     )
+
+
+# ---------------------------------------------------------------------------
+# Two ways the partition could be lost without a call site being at fault
+# ---------------------------------------------------------------------------
+
+
+def test_a_context_naming_a_reserved_key_is_refused_on_both_sides(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The fail-open case, reached by an unlucky key name.
+
+    `put()` merges `payload_extra` first, so a reserved literal following it wins
+    and the key never reaches storage. The entry is then stored with **no**
+    context: readable by every context-free caller, and not readable by the
+    caller that asked to be scoped, for its whole life. That is precisely the
+    failure this module exists to close, and nothing reported it.
+
+    Both sides refuse, so a context that cannot be stored cannot be used to read
+    either — refusing only the write would leave the reader silently matching
+    everything.
+    """
+    import logging
+
+    from nlqueries.cache.semantic_cache import _RESERVED_CONTEXT_KEYS_LOGGED
+
+    _RESERVED_CONTEXT_KEYS_LOGGED.clear()
+
+    class _Result:
+        resolved_question = QUESTION
+        agent_type = "sql"
+        answer = "There were 42 orders."
+        sql = "SELECT 1"
+
+    client = _client()
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch("nlqueries.cache.semantic_cache.ensure_collection"),
+    ):
+        cache = SemanticCache("agent1", binding=TEST_BINDING)
+        cache.put(QUESTION, _Result(), payload_extra={"kind": "x"})
+        assert not client.upsert.called, (
+            "an entry was stored with a context key that cannot survive the write, "
+            "so it is readable by every context-free caller"
+        )
+
+        assert cache.get(QUESTION, payload_filter={"kind": "x"}) is None
+
+    # Both sides must *say so*, and the read side is the one that needs saying.
+    # A lookup with such a context misses whether or not it is refused --
+    # `_context_of` strips the key from the stored payload too, so the equality
+    # compares {} against the caller's filter and never matches. Refusing early
+    # is what turns a permanent silent miss into something diagnosable, so the
+    # warning is the assertion here, not the None.
+    said = [r.getMessage() for r in caplog.records if "kind" in r.getMessage()]
+    assert any(m.startswith("Cache write refused") for m in said), (
+        f"the write was refused without saying why: {said}"
+    )
+    assert any(m.startswith("Cache lookup refused") for m in said), (
+        f"the lookup missed silently rather than reporting the unusable context: {said}"
+    )
+
+    # The control: an ordinary key is unaffected.
+    client = _client()
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch("nlqueries.cache.semantic_cache.ensure_collection"),
+    ):
+        SemanticCache("agent1", binding=TEST_BINDING).put(
+            QUESTION, _Result(), payload_extra=dict(CONTEXT_A)
+        )
+    assert client.upsert.called, "an ordinary context key was refused"
+
+
+def test_two_contexts_do_not_share_a_point_id() -> None:
+    """Otherwise each write clobbers the other and neither reads it back.
+
+    Not hypothetical and not a future feature: `cache_context` is already used
+    for follow-up turns, so a scoped follow-up write and a context-free write of
+    the same normalised question collide today. The partition still holds --
+    neither reads the other's entry -- but both miss indefinitely, and a
+    collapsed hit rate is harder to attribute than a wrong answer.
+    """
+    ids = {
+        "unscoped": _point_id_for_question("q"),
+        "tenant-a": _point_id_for_question("q", {"tenant": "a"}),
+        "tenant-b": _point_id_for_question("q", {"tenant": "b"}),
+    }
+    assert len(set(ids.values())) == 3, f"point ids collide across contexts: {ids}"
+
+    # Stable, and unchanged for entries written without a context -- the same
+    # reasoning as the signature: do not invalidate what is already stored.
+    assert _point_id_for_question("q") == _point_id_for_question("q", None)
+    assert _point_id_for_question("q") == _point_id_for_question("q", {})
+    assert _point_id_for_question("q", {"tenant": "a"}) == _point_id_for_question(
+        "q", {"tenant": "a"}
+    )
