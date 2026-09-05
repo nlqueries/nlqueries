@@ -619,3 +619,83 @@ def test_two_contexts_do_not_share_a_point_id() -> None:
     assert _point_id_for_question("q", {"tenant": "a"}) == _point_id_for_question(
         "q", {"tenant": "a"}
     )
+
+
+def test_put_and_get_agree_on_the_tier0_point_id() -> None:
+    """The round trip, which `_point_id_for_question` alone cannot establish.
+
+    `put()` and `get()` derive the Tier 0 id independently, and every other case
+    in this file mocks `client.retrieve` to answer whatever id it is asked for --
+    so dropping `payload_filter` from the derivation in `get()` would leave all
+    of them green while scoped callers silently lost Tier 0 for good. That is the
+    same shape of quiet hit-rate collapse this file exists to prevent, so the two
+    sides are compared directly: write with a context, capture the id actually
+    upserted, and require the lookup to ask for exactly that one.
+    """
+
+    class _Result:
+        resolved_question = QUESTION
+        agent_type = "sql"
+        answer = "There were 42 orders."
+        sql = "SELECT 1"
+
+    for context in (None, dict(CONTEXT_A)):
+        write_client = _client()
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=write_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1", binding=TEST_BINDING).put(
+                QUESTION, _Result(), payload_extra=context
+            )
+
+        points = write_client.upsert.call_args.kwargs["points"]
+        answer_id = next(p.id for p in points if p.payload["kind"] == "answer")
+
+        read_client = _client()
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=read_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            SemanticCache("agent1", binding=TEST_BINDING).get(QUESTION, payload_filter=context)
+
+        asked_for = read_client.retrieve.call_args.kwargs["ids"]
+        assert asked_for == [answer_id], (
+            f"context {context!r}: put() stored the answer point at {answer_id} but "
+            f"get() looked for {asked_for} -- Tier 0 can never hit"
+        )
+
+
+def test_tier0_refuses_an_entry_stored_under_another_question() -> None:
+    """Tier 0 trusts an id, and the id is not part of the signed message.
+
+    So an entry can be *relocated* without being forged. Copying a genuine,
+    correctly signed entry onto the id another question hashes to made Tier 0
+    answer that other question with it -- the signature verifies, because the
+    payload really is untouched, and nothing compared the question. Before this
+    check, "how many refunds were issued" was answered with "There were 42
+    orders."
+
+    Pre-existing rather than introduced by the context in the id, and cheap to
+    close where the id is already being trusted.
+    """
+    victim = "how many refunds were issued"
+
+    stolen = _entry(None)  # genuinely signed, for QUESTION rather than `victim`
+    point = MagicMock()
+    point.payload = stolen
+    point.id = _point_id_for_question(_normalize_question(victim))
+
+    client = _client()
+    client.retrieve.return_value = [point]
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+    ):
+        entry = SemanticCache("agent1", binding=TEST_BINDING).get(victim)
+
+    assert entry is None, (
+        f"Tier 0 answered {victim!r} with an entry stored for {stolen['question']!r}"
+    )

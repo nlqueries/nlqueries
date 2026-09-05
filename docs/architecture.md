@@ -129,12 +129,27 @@ then missed indefinitely, which is a collapsed hit rate rather than a leak and
 correspondingly harder to attribute. The context is now part of the id, appended
 only when non-empty so entries written without one keep the id they had.
 
-**What the candidate window bounds rather than eliminates.** `_COSINE_CANDIDATES`
-is five. A context-free read on an agent carrying more than five near-duplicate
-scoped entries, all above the threshold and all ranked above the unscoped one,
-still falls through to a miss. Raising the number trades payload transfer for a
-smaller tail; pushing the equality into the query would remove it entirely, and
-cannot be done while Qdrant's filter can only require the presence of keys.
+**What the candidate window bounds rather than eliminates.**
+`NLQ_CACHE_COSINE_CANDIDATES` defaults to five. A context-free read on an agent
+carrying more than five near-duplicate scoped entries, all above the threshold
+and all ranked above the unscoped one, still falls through to a miss.
+
+**Giving each context its own point ID makes that more likely, not less**, and
+the two changes have to be read together. Scoped entries for one question used
+to collapse onto a single point; they now accumulate one per context, so a busy
+conversational agent can carry well past five follow-up-scoped entries for a
+popular question, and from then on a context-free Tier 1 or Tier 2 lookup for it
+is starved. Tier 0 hides this for a verbatim repeat but not for a paraphrase --
+which is what tiers 1 and 2 exist for. Raising the setting is the immediate
+answer, and the trade is payload transfer for candidates that are discarded.
+
+The change that would remove it rather than bound it: store a digest of the
+context as its own payload key, so the equality becomes an exact match Qdrant
+*can* express, push it into the query filter and return the window to one. It is
+not done here because every entry already stored lacks that key, so either the
+whole cache goes cold for a TTL or the filter needs an `IsEmpty`-or-match
+disjunction to keep matching them — worth doing deliberately rather than as the
+tail of this change.
 
 **Why the cosine tiers fetch more than one candidate.** Qdrant's filter is a
 subset test: it can require the caller's keys but cannot require the absence of

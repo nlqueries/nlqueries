@@ -669,13 +669,8 @@ def _payload_matches(payload: dict[str, Any], payload_filter: dict[str, str] | N
 _UNUSABLE_TIER_VALUES_LOGGED: set[str] = set()
 
 
-#: How many neighbours a cosine tier asks Qdrant for. More than one because the
-#: context equality is applied here rather than pushed down: Qdrant's filter can
-#: require the caller's keys but not the absence of others, so a nearest
-#: neighbour from another context would otherwise consume the only candidate slot
-#: and shadow a same-context entry sitting just below it. Small, because the
-#: cost is payload transfer for candidates that are usually discarded.
-_COSINE_CANDIDATES = 5
+# `_COSINE_CANDIDATES` moved to config.CACHE_COSINE_CANDIDATES so an operator
+# can raise it; read at call time so tests and deployments can change it.
 
 
 def _enabled_tiers() -> frozenset[int]:
@@ -939,7 +934,8 @@ class SemanticCache:
         # Guards the lookup only. A disabled tier is skipped, not a return: the
         # tiers are independent, and `"1,2"` has to leave 1 and 2 working.
         if 0 in enabled:
-            tier0_id = _point_id_for_question(_normalize_question(question), payload_filter)
+            normalized = _normalize_question(question)
+            tier0_id = _point_id_for_question(normalized, payload_filter)
             with contextlib.suppress(Exception):
                 tier0_hits = client.retrieve(
                     collection_name=self._collection,
@@ -948,11 +944,30 @@ class SemanticCache:
                 )
                 if tier0_hits:
                     payload = tier0_hits[0].payload or {}
+                    # The stored question must be the one asked. Tier 0 trusts an
+                    # id, and the id is not part of the signed message -- so an
+                    # entry can be *relocated* without being forged. Copying a
+                    # genuine, correctly signed entry onto the id another question
+                    # hashes to made Tier 0 answer that other question with it:
+                    # the signature verifies (the payload really is untouched) and
+                    # nothing compared the question. Reproduced before this check
+                    # existed: "how many refunds were issued" was answered with
+                    # "There were 42 orders."
+                    stored_question = _normalize_question(str(payload.get("question") or ""))
+                    if stored_question != normalized:
+                        logger.warning(
+                            "Cache entry at the Tier 0 id for %r stores a different "
+                            "question (%r). Ignoring it; this should not happen "
+                            "unless the collection has been written to directly.",
+                            normalized,
+                            stored_question,
+                        )
+                        payload = {}
                     # retrieve() is id-only, so enforce payload_filter here (Tier
                     # 1/2 push it into the Qdrant query filter). A mismatch falls
                     # through to the cosine tiers rather than returning a foreign-
                     # context hit.
-                    if _payload_matches(payload, payload_filter):
+                    if payload and _payload_matches(payload, payload_filter):
                         entry = self._verified_entry(payload)
                         if entry is not None:
                             entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
@@ -973,7 +988,7 @@ class SemanticCache:
                     collection_name=self._collection,
                     query=v,
                     query_filter=_kind_filter("answer"),
-                    limit=_COSINE_CANDIDATES,
+                    limit=config.CACHE_COSINE_CANDIDATES,
                 )
             except Exception:  # noqa: BLE001
                 return None
@@ -1014,7 +1029,7 @@ class SemanticCache:
                 collection_name=self._collection,
                 query=masked_vector,
                 query_filter=_kind_filter("template"),
-                limit=_COSINE_CANDIDATES,
+                limit=config.CACHE_COSINE_CANDIDATES,
             )
         except Exception:  # noqa: BLE001
             return None

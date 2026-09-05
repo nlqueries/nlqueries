@@ -426,6 +426,23 @@ This is a write-side limit only. Nothing already cached stops being served, and
 a long question is still answered normally; it simply is not stored.
 """
 
+CACHE_COSINE_CANDIDATES: int = max(1, int(os.getenv("NLQ_CACHE_COSINE_CANDIDATES", "5")))
+"""How many neighbours the Tier 1 and Tier 2 searches ask Qdrant for.
+
+More than one because the cache-context equality is applied after the search
+rather than pushed into it: Qdrant's filter can require the caller's keys but
+cannot require the absence of others, so a nearest neighbour belonging to another
+context would otherwise consume the only candidate slot and shadow a valid entry
+ranked just below it.
+
+Raise it on an agent whose cache carries many context-scoped entries for the same
+question -- a busy conversational agent accumulates one per conversation context,
+since each context now has its own point ID, and a context-free lookup has to
+scan past all of them to reach its own. The cost of raising it is payload
+transfer for candidates that are usually discarded.
+
+"""
+
 CACHE_ANSWER_TIERS: str = os.getenv("NLQ_CACHE_ANSWER_TIERS", "0,1,2")
 """Which cache tiers may serve an answer. Comma-separated subset of 0, 1, 2.
 
