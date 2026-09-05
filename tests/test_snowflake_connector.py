@@ -669,3 +669,49 @@ def test_a_failing_rollback_is_logged_rather_than_swallowed(caplog):
         "the rollback failed and left no trace"
     )
     mock_cursor.close.assert_called_once()
+
+
+def test_a_held_lock_fails_the_query_instead_of_blocking_forever(monkeypatch):
+    """Serialising must not turn one stuck query into a stuck connector.
+
+    The lock is held across the whole span, including the row fetch, so a query
+    that never returns would block every later query on this connector. With
+    `CONNECTOR_STATEMENT_TIMEOUT_SECONDS = 0` -- documented and supported --
+    nothing bounds the holder, and because `loader.py` caches the connector and
+    callers arrive through `asyncio.to_thread`, the waiters occupy pool threads.
+
+    So the *waiter* is bounded even when the holder is not, and the wait ends in
+    an error a caller can read rather than in silence.
+    """
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("nlqueries.connectors.snowflake._LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS", 0.05)
+    connector, cursor = _mock_cursor()
+
+    connector._txn_lock.acquire()  # noqa: SLF001 - stand in for a query still running
+    try:
+        result = connector.execute_query("SELECT 1")
+    finally:
+        connector._txn_lock.release()  # noqa: SLF001
+
+    assert result.error is not None, "the query waited on the lock indefinitely"
+    assert "busy" in result.error.lower(), f"unhelpful error: {result.error}"
+    assert cursor.execute.call_count == 0, "the query ran without holding the lock"
+
+
+def test_the_lock_is_released_when_the_query_raises(monkeypatch):
+    """Otherwise one failure wedges the connector for every later caller.
+
+    The release is in a `finally` for this reason: a query that raises on the way
+    through must not leave the next caller to wait out its whole timeout.
+    """
+    monkeypatch.setattr("nlqueries.connectors.snowflake._LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS", 0.05)
+    connector, mock_connection = _connector_with_mock_connection()
+    mock_cursor = MagicMock()
+    mock_cursor.execute.side_effect = RuntimeError("boom")
+    mock_connection.cursor.return_value = mock_cursor
+
+    assert connector.execute_query("SELECT 1").error is not None
+
+    acquired = connector._txn_lock.acquire(timeout=0.5)  # noqa: SLF001
+    assert acquired, "the lock was not released after the query raised"
+    connector._txn_lock.release()  # noqa: SLF001

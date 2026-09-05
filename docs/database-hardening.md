@@ -430,6 +430,12 @@ span is therefore serialised per connector. A shared session cannot offer both
 concurrency and a per-query transaction, and a guard that stops holding under
 load is worth less than the throughput it would buy.
 
+The wait is bounded, so serialising cannot turn one stuck query into a stuck
+connector: a caller waits for the statement timeout plus a margin, or five
+minutes where no statement timeout applies, and then fails with an error saying
+the connector was busy. `CONNECTOR_STATEMENT_TIMEOUT_SECONDS=0` bounds the
+*query* but not the *queue* behind it, and those waiters occupy pool threads.
+
 **Snowflake's DDL survives the rollback.** The transaction undoes an `INSERT`; it
 does not undo a `CREATE TABLE`. If the role can create objects, it can create them
 through a query, so the grant is carrying more of the boundary here than anywhere
