@@ -10,6 +10,7 @@ part of the public OSS API and has no dependency on the enterprise layer.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -37,6 +38,23 @@ logger = logging.getLogger(__name__)
 _SYSTEM_SCHEMAS = ("INFORMATION_SCHEMA",)
 
 
+#: Longest a query waits for the connector's transaction lock when no statement
+#: timeout applies. With a timeout, the wait is derived from it: whoever holds
+#: the lock cannot legitimately outlast their own timeout by much, so waiting a
+#: little longer and then failing is the honest outcome.
+#:
+#: Without one -- `CONNECTOR_STATEMENT_TIMEOUT_SECONDS=0`, which is documented
+#: and supported -- there is nothing bounding the holder, so this bounds the
+#: waiter instead. An operator who disables the statement timeout is saying a
+#: *query* may run unbounded; they are not asking for every later query on the
+#: same connector to queue behind it indefinitely on a pool thread.
+_LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
+
+#: Added to the statement timeout when deriving the lock wait, to cover the row
+#: fetch and the ROLLBACK that happen inside the span after the query returns.
+_LOCK_WAIT_MARGIN_SECONDS = 30.0
+
+
 class SnowflakeConnector(DatabaseConnector):
     """Connector for Snowflake.
 
@@ -57,6 +75,16 @@ class SnowflakeConnector(DatabaseConnector):
 
     def __init__(self) -> None:
         self._connection: Any = None
+        #: Serialises the BEGIN ... ROLLBACK span below. A Snowflake transaction
+        #: is scoped to the *session*, not the cursor, and this connector holds
+        #: one connection for its lifetime while `loader.py` caches instances and
+        #: callers arrive through `asyncio.to_thread`. Two overlapping queries
+        #: would otherwise interleave as BEGIN(A), BEGIN(B) -- ignored, a
+        #: transaction is already open -- query(A), ROLLBACK(A), leaving B
+        #: running under autocommit with nothing left to roll back and its own
+        #: ROLLBACK a no-op. The guard would vanish precisely where it is
+        #: documented to hold.
+        self._txn_lock = threading.Lock()
         self._database: str | None = None
         self._db_schema: str | None = None
 
@@ -393,33 +421,116 @@ class SnowflakeConnector(DatabaseConnector):
         start = time.perf_counter()
         try:
             connection = self._require_connection()
-            cursor = connection.cursor()
-            try:
-                if effective_timeout is not None and effective_timeout > 0:
-                    cursor.execute(sql, timeout=max(1, int(effective_timeout)))
-                else:
-                    cursor.execute(sql)
+            # Held across the whole span, not just BEGIN: the transaction belongs
+            # to the session, so releasing it before the ROLLBACK would let a
+            # second query run inside this one's transaction. The cost is that
+            # queries on one Snowflake connector serialise; a shared session
+            # cannot give both concurrency and a per-query transaction, and a
+            # guard that silently stops holding under load is worth less than the
+            # throughput.
+            # Bounded, so a wedged session degrades to a failed query rather
+            # than blocking every later query on this connector. The holder
+            # cannot legitimately outlast its own statement timeout by more than
+            # the fetch and the ROLLBACK, so that plus a margin is the wait.
+            lock_wait = (
+                effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
+                if effective_timeout is not None and effective_timeout > 0
+                else _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS
+            )
+            if not self._txn_lock.acquire(timeout=lock_wait):
                 elapsed_ms = (time.perf_counter() - start) * 1000
-
-                _truncated, _reason = False, None
-                if cursor.description:
-                    columns = [col[0] for col in cursor.description]
-                    rows, _truncated, _reason = collect(cursor, max_rows)
-                else:
-                    columns = []
-                    rows = []
-
-                return QueryResult(
-                    columns=columns,
-                    rows=rows,
-                    row_count=len(rows),
-                    truncated=_truncated,
-                    truncation_reason=_reason,
-                    execution_time_ms=elapsed_ms,
-                    error=None,
+                logger.warning(
+                    "SnowflakeConnector: gave up after %.0fs waiting for the "
+                    "connector's transaction lock. A Snowflake transaction is "
+                    "session-scoped and this connector holds one session, so "
+                    "queries on it run one at a time.",
+                    lock_wait,
                 )
+                return QueryResult(
+                    columns=[],
+                    rows=[],
+                    row_count=0,
+                    execution_time_ms=elapsed_ms,
+                    error=(
+                        f"The Snowflake connector was busy for {lock_wait:.0f}s and the "
+                        f"query was not run. Queries on one connector run one at a time, "
+                        f"because a Snowflake transaction belongs to the session rather "
+                        f"than the cursor."
+                    ),
+                )
+            try:
+                cursor = connection.cursor()
+                try:
+                    # An explicit transaction that is never committed.
+                    #
+                    # Snowflake has no read-only transaction mode to ask for, and by
+                    # default each statement autocommits -- so a write that reached
+                    # here was permanent the moment it ran. Every validator in front
+                    # of this one asks only whether the root node is a Select, and
+                    # `SELECT some_volatile_function(...)` satisfies that while still
+                    # writing; an audit reproduced exactly that shape through another
+                    # connector twice, eight weeks apart.
+                    #
+                    # BEGIN turns autocommit off for what follows, and the ROLLBACK in
+                    # the `finally` below undoes it whether the statement succeeded or
+                    # not. DDL is not transactional on Snowflake, so a `CREATE` or
+                    # `DROP` still stands: the control for that is a role holding only
+                    # USAGE and SELECT, which only the operator can grant. See
+                    # docs/database-hardening.md.
+                    cursor.execute("BEGIN")
+                    if effective_timeout is not None and effective_timeout > 0:
+                        cursor.execute(sql, timeout=max(1, int(effective_timeout)))
+                    else:
+                        cursor.execute(sql)
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+
+                    _truncated, _reason = False, None
+                    if cursor.description:
+                        columns = [col[0] for col in cursor.description]
+                        rows, _truncated, _reason = collect(cursor, max_rows)
+                    else:
+                        columns = []
+                        rows = []
+
+                    return QueryResult(
+                        columns=columns,
+                        rows=rows,
+                        row_count=len(rows),
+                        truncated=_truncated,
+                        truncation_reason=_reason,
+                        execution_time_ms=elapsed_ms,
+                        error=None,
+                    )
+                finally:
+                    # Before the cursor closes, and on the success path too: the
+                    # point is that a statement which *worked* is still undone.
+                    #
+                    # Logged, not suppressed. A failed rollback must not replace
+                    # the query's own error -- that is why it is caught -- but the
+                    # justification used in `mssql.py` and
+                    # `sqlalchemy_connector.py`, that the connection is reset when
+                    # the pool takes it back, does not hold here: this connector
+                    # keeps one session for its lifetime, so a rollback that fails
+                    # can leave an explicit transaction open on that session until
+                    # some later query happens to end it. Nothing is committed, so
+                    # it is a visibility gap rather than an exposure -- which is
+                    # exactly the kind that should not be silent.
+                    try:
+                        cursor.execute("ROLLBACK")
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "SnowflakeConnector: ROLLBACK after the query failed. "
+                            "Nothing was committed, but this connector holds one "
+                            "session, so a transaction may remain open on it until "
+                            "the next query ends it.",
+                            exc_info=True,
+                        )
+                    cursor.close()
             finally:
-                cursor.close()
+                # Paired with the bounded `acquire` above. In a `finally` so the
+                # next caller is not left waiting out its whole timeout because
+                # this one raised on the way through.
+                self._txn_lock.release()
         except Exception as exc:  # noqa: BLE001 — surfaced via QueryResult.error, not raised
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.exception("SnowflakeConnector.execute_query failed")

@@ -369,24 +369,67 @@ class MSSQLConnector(DatabaseConnector):
         start = time.perf_counter()
         try:
             engine = self._require_engine()
-            with engine.begin() as conn:
-                cursor_result = conn.execute(text(sql))
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                _truncated, _reason = False, None
-                if cursor_result.returns_rows:
-                    columns = list(cursor_result.keys())
-                    rows, _truncated, _reason = collect(cursor_result, max_rows)
-                else:
-                    columns, rows = [], []
-                return QueryResult(
-                    columns=columns,
-                    rows=rows,
-                    row_count=len(rows),
-                    truncated=_truncated,
-                    truncation_reason=_reason,
-                    execution_time_ms=elapsed_ms,
-                    error=None,
-                )
+            # `connect()` with an unconditional rollback, never `begin()`.
+            #
+            # `begin()` commits when its block exits without an exception, and
+            # every validator in front of this one asks only whether the root
+            # node is a Select. `SELECT some_volatile_function(...)` satisfies
+            # that and can still write: an audit reproduced exactly that through
+            # the Postgres connector twice, eight weeks apart, and `begin()`
+            # committed it. The same statement reached the same ending here.
+            #
+            # SQL Server offers no read-only transaction to ask for instead --
+            # `ApplicationIntent=ReadOnly` is availability-group routing, not a
+            # permission. What it does offer is transactional DDL, so a `DROP`
+            # inside this block is undone by the rollback along with any DML.
+            #
+            # This is the second layer and not the boundary. A transaction that
+            # is never committed still permits `WAITFOR DELAY`, extended
+            # procedures and anything the login may already read; refusing those
+            # needs a least-privilege login, which only the operator can grant.
+            # See docs/database-hardening.md.
+            with engine.connect() as conn:
+                try:
+                    cursor_result = conn.execute(text(sql))
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    _truncated, _reason = False, None
+                    if cursor_result.returns_rows:
+                        columns = list(cursor_result.keys())
+                        rows, _truncated, _reason = collect(cursor_result, max_rows)
+                    else:
+                        columns, rows = [], []
+                    return QueryResult(
+                        columns=columns,
+                        rows=rows,
+                        row_count=len(rows),
+                        truncated=_truncated,
+                        truncation_reason=_reason,
+                        execution_time_ms=elapsed_ms,
+                        error=None,
+                    )
+                finally:
+                    # In `finally`, so it runs on the success path too: the point
+                    # is that a statement which succeeded is still not committed.
+                    # Rows have already been collected by here.
+                    #
+                    # The failure is logged and swallowed rather than raised. A
+                    # connection dropped after a cancelled or timed-out statement
+                    # is the realistic case, and letting it out of the `finally`
+                    # would report a successful query as an error, or replace the
+                    # driver's message -- the one the caller needs -- with the
+                    # rollback's. Nothing is committed either way: the connection
+                    # is reset when the pool takes it back, and an unreachable
+                    # connection has no transaction left to commit.
+                    try:
+                        conn.rollback()
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "%s: rollback after the query failed. Nothing was "
+                            "committed; the connection is reset on return to the "
+                            "pool.",
+                            "MSSQLConnector",
+                            exc_info=True,
+                        )
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.exception("MSSQLConnector.execute_query failed")

@@ -28,6 +28,22 @@ def _connect(tmp_path: Path) -> SQLAlchemyConnector:
     return c
 
 
+def _seed(c: SQLAlchemyConnector, *statements: str) -> None:
+    """Set up fixture data outside the answer path.
+
+    ``execute_query`` is the path an answer takes and never commits, so a write
+    sent through it is rolled back by design. Tests that need rows on disk have
+    to put them there themselves.
+    """
+    from sqlalchemy import text
+
+    engine = c._engine  # noqa: SLF001
+    assert engine is not None
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+
+
 def _mock_conn(dialect_name: str, *, is_mariadb: bool = False) -> MagicMock:
     conn = MagicMock()
     conn.engine.dialect.name = dialect_name
@@ -90,13 +106,14 @@ def test_test_connection_ok(tmp_path: Path) -> None:
 
 def test_reflects_columns_pk_and_fk(tmp_path: Path) -> None:
     c = _connect(tmp_path)
-    c.execute_query("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
-    c.execute_query(
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
         "CREATE TABLE orders ("
         "  id INTEGER PRIMARY KEY,"
         "  customer_id INTEGER REFERENCES customers(id),"
         "  total REAL"
-        ")"
+        ")",
     )
 
     schema = c.extract_schema()
@@ -110,10 +127,58 @@ def test_reflects_columns_pk_and_fk(tmp_path: Path) -> None:
     assert cols["total"].is_primary_key is False
 
 
+def test_ddl_through_the_answer_path_is_not_undone_on_sqlite(tmp_path: Path) -> None:
+    """The documented gap, asserted rather than relied upon.
+
+    `capabilities.py`, `docs/database-hardening.md` and `docs/connectors.md` all
+    now say the rollback does not reach DDL on every engine: MySQL, MariaDB and
+    Oracle commit implicitly around it, and pysqlite does not open a transaction
+    for it at all. Two fixtures in this file used to depend on that quietly, by
+    creating their tables through `execute_query` -- so the accident was load
+    bearing and the guarantee was not tested.
+
+    It is stated here instead, on the engine the suite can actually reach. This
+    is the case for which the database grant, not the connector, is the control.
+    """
+    c = _connect(tmp_path)
+
+    assert c.execute_query("CREATE TABLE ddl_survives (id INTEGER)").error is None
+
+    from sqlalchemy import inspect as _inspect
+
+    engine = c._engine  # noqa: SLF001
+    assert engine is not None
+    assert "ddl_survives" in _inspect(engine).get_table_names(), (
+        "SQLite DDL was undone by the rollback -- if this ever passes, the docs "
+        "claiming the connector cannot undo DDL have become too pessimistic"
+    )
+
+
+def test_a_write_through_the_answer_path_does_not_survive(tmp_path: Path) -> None:
+    """The point of the change: DML sent as an "answer" is rolled back.
+
+    The generic connector cannot know what its engine offers, so it cannot ask
+    for a read-only transaction. What it can do is never commit. A model that
+    emits `INSERT` -- or a `SELECT` calling a function that writes -- gets its
+    work undone whether the statement succeeded or failed.
+    """
+    c = _connect(tmp_path)
+    _seed(c, "CREATE TABLE t (a INTEGER)", "INSERT INTO t VALUES (1)")
+
+    # The write reports no error: it really did run, and was really undone.
+    assert c.execute_query("INSERT INTO t VALUES (99)").error is None
+
+    from sqlalchemy import text
+
+    engine = c._engine  # noqa: SLF001
+    assert engine is not None
+    with engine.connect() as conn:
+        assert [r[0] for r in conn.execute(text("SELECT a FROM t ORDER BY a"))] == [1]
+
+
 def test_execute_query_returns_rows_and_surfaces_errors(tmp_path: Path) -> None:
     c = _connect(tmp_path)
-    c.execute_query("CREATE TABLE t (a INTEGER, b TEXT)")
-    c.execute_query("INSERT INTO t VALUES (1, 'x'), (2, 'y')")
+    _seed(c, "CREATE TABLE t (a INTEGER, b TEXT)", "INSERT INTO t VALUES (1, 'x'), (2, 'y')")
 
     ok = c.execute_query("SELECT a, b FROM t ORDER BY a")
     assert ok.error is None

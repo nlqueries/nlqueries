@@ -179,10 +179,29 @@ def test_execute_query_applies_default_job_timeout(monkeypatch):
 
 
 def test_execute_query_no_job_timeout_when_disabled(monkeypatch):
+    """No timeout, asserted on the timeout rather than on the job config.
+
+    A job config is always sent now -- it carries `use_legacy_sql=False` and
+    `create_session=False` regardless of the timeout -- so "no job_config" no
+    longer means "no timeout". The property this test is about is unchanged.
+    """
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
     connector, client = _mock_client_for_timeout()
     connector.execute_query("SELECT 1")
-    assert "job_config" not in client.query.call_args.kwargs
+    assert client.query.call_args.kwargs["job_config"].job_timeout_ms is None
+
+
+def test_execute_query_pins_the_dialect_and_refuses_a_session(monkeypatch):
+    """BigQuery has no transaction to roll back, so the little that can be set
+    on the job is set: the SQL dialect every validator in front of this one
+    parsed, and no session for a later statement to join."""
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    connector, client = _mock_client_for_timeout()
+    connector.execute_query("SELECT 1")
+
+    job_config = client.query.call_args.kwargs["job_config"]
+    assert job_config.use_legacy_sql is False
+    assert job_config.create_session is False
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +287,10 @@ def test_execute_query_handles_statements_with_no_result_set():
     mock_job.result.return_value = mock_result
     mock_job.total_bytes_processed = 0
     mock_job.job_id = "job-ddl-1"
+    # Set explicitly. On a bare MagicMock this is an auto-created attribute that
+    # compares unequal to "SELECT", so the audit branch was entered by every
+    # test here and asserted by none.
+    mock_job.statement_type = "CREATE_TABLE"
     mock_client.query.return_value = mock_job
 
     result = connector.execute_query("CREATE TABLE foo (id INT64)")
@@ -276,6 +299,67 @@ def test_execute_query_handles_statements_with_no_result_set():
     assert result.columns == []
     assert result.rows == []
     assert result.row_count == 0
+
+
+def test_a_non_select_statement_type_is_logged(caplog):
+    """The only visibility an operator has that a write reached BigQuery.
+
+    BigQuery has no transaction to roll back, so this warning is not a control
+    and the connector's docs say so. That makes it the whole of the signal, and
+    `capabilities.py` and `docs/database-hardening.md` both point an operator at
+    it -- so it has to be asserted, not assumed. A renamed attribute or an
+    inverted comparison would otherwise leave it silent with the suite green.
+    """
+    import logging
+
+    connector, mock_client = _connector_with_mock_client()
+
+    mock_result = MagicMock()
+    mock_result.schema = []
+    mock_result.__iter__.return_value = iter([])
+
+    mock_job = MagicMock()
+    mock_job.result.return_value = mock_result
+    mock_job.total_bytes_processed = 0
+    mock_job.job_id = "job-audit-1"
+    mock_job.statement_type = "INSERT"
+    mock_client.query.return_value = mock_job
+
+    with caplog.at_level(logging.WARNING):
+        assert connector.execute_query("INSERT INTO t VALUES (1)").error is None
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "a non-SELECT statement type reached BigQuery and nothing was logged"
+    said = " ".join(r.getMessage() for r in warnings)
+    assert "INSERT" in said, f"the warning does not name the statement type: {said}"
+    assert "job-audit-1" in said, f"the warning does not name the job: {said}"
+
+
+def test_a_select_statement_type_is_not_logged(caplog):
+    """The negative control. Without it the assertion above is satisfied by
+    warning on everything, which would make the signal useless in exactly the
+    way that matters -- an operator who sees it constantly stops reading it."""
+    import logging
+
+    connector, mock_client = _connector_with_mock_client()
+
+    mock_result = MagicMock()
+    mock_result.schema = []
+    mock_result.__iter__.return_value = iter([])
+
+    mock_job = MagicMock()
+    mock_job.result.return_value = mock_result
+    mock_job.total_bytes_processed = 0
+    mock_job.job_id = "job-select-1"
+    mock_job.statement_type = "SELECT"
+    mock_client.query.return_value = mock_job
+
+    with caplog.at_level(logging.WARNING):
+        assert connector.execute_query("SELECT 1").error is None
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
+        "an ordinary SELECT produced a warning"
+    )
 
 
 def test_execute_query_captures_errors_without_raising():

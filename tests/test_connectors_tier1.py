@@ -285,10 +285,12 @@ class TestMSSQLConnector:
         """execute_query returns rows when cursor_result has data."""
         from nlqueries.connectors.mssql import MSSQLConnector
 
+        # `connect()`, not `begin()`: execution must never run inside a block
+        # that commits on the way out. See tests/test_connector_read_only.py.
         mock_engine = MagicMock()
         mock_conn = MagicMock()
-        mock_engine.begin.return_value.__enter__ = lambda s: mock_conn
-        mock_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+        mock_engine.connect.return_value.__enter__ = lambda s: mock_conn
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
 
         cursor_result = MagicMock()
         cursor_result.returns_rows = True
@@ -304,6 +306,8 @@ class TestMSSQLConnector:
         assert result.error is None
         assert result.columns == ["id", "name"]
         assert result.rows == [[1, "Alice"]]
+        mock_conn.commit.assert_not_called()
+        mock_conn.rollback.assert_called_once()
 
     def test_extract_query_history_empty_on_permission_error(self) -> None:
         """extract_query_history returns [] when the DMV is inaccessible."""

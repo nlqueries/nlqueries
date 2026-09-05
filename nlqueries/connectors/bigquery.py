@@ -336,13 +336,47 @@ class BigQueryConnector(DatabaseConnector):
         _truncated, _reason = False, None
         try:
             client = self._require_client()
+            # BigQuery has no transaction to roll back for a single job, so
+            # unlike every other connector here there is nothing to undo a write
+            # with. `create_session=False` at least keeps a job from opening a
+            # session that later statements could join, and `use_legacy_sql=False`
+            # keeps the dialect the one every validator in front of this parsed.
+            #
+            # The real control is IAM, and it is the operator's: a service
+            # account holding `roles/bigquery.dataViewer` and
+            # `roles/bigquery.jobUser` cannot write whatever SQL asks for. See
+            # docs/database-hardening.md.
+            job_config = bigquery.QueryJobConfig(
+                use_legacy_sql=False,
+                create_session=False,
+            )
+            # Set only when a timeout actually applies, rather than passing None
+            # to mean "no timeout". On the installed 3.41 the setter runs the
+            # value through `_int_or_none` and clears the property, so both forms
+            # work -- but the declared floor is `google-cloud-bigquery>=3.0` and
+            # this avoids depending on that detail holding across the whole range
+            # we say we support. Behaviour is identical either way.
             if effective_timeout is not None and effective_timeout > 0:
-                job_config = bigquery.QueryJobConfig(job_timeout_ms=int(effective_timeout * 1000))
-                query_job = client.query(sql, job_config=job_config)
-            else:
-                query_job = client.query(sql)
+                job_config.job_timeout_ms = int(effective_timeout * 1000)
+            query_job = client.query(sql, job_config=job_config)
             result = query_job.result()
             elapsed_ms = (time.perf_counter() - start) * 1000
+
+            # An audit signal, deliberately not a control: the job has already
+            # run by the time this is readable, so refusing here would refuse
+            # only the *results* of a write that already happened. It is logged
+            # at warning so that a statement type other than SELECT reaching a
+            # database is visible to whoever reads the logs, rather than being
+            # inferred later from the data.
+            statement_type = getattr(query_job, "statement_type", None)
+            if statement_type is not None and statement_type != "SELECT":
+                logger.warning(
+                    "BigQueryConnector executed a %s statement (job_id=%s). The SQL policy "
+                    "and the caller's IAM role are what prevent this; the job has already "
+                    "run by the time this is known.",
+                    statement_type,
+                    query_job.job_id,
+                )
 
             schema = result.schema or []
             columns = [field.name for field in schema]

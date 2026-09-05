@@ -57,10 +57,45 @@ def test_execute_real_query(connector: MSSQLConnector) -> None:
     assert result.rows == [[1]]
 
 
+def _seed(connector: MSSQLConnector, *statements: str) -> None:
+    """Set up fixture data outside the answer path.
+
+    `execute_query` is the path an answer takes and never commits, and T-SQL DDL
+    is transactional -- so a `CREATE TABLE` sent through it is rolled back with
+    everything else. Fixtures have to commit for themselves.
+    """
+    from sqlalchemy import text
+
+    engine = connector._engine  # noqa: SLF001
+    assert engine is not None
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+
+def test_a_write_through_the_answer_path_does_not_survive(connector: MSSQLConnector) -> None:
+    """The rollback, against a real SQL Server rather than a fake driver.
+
+    This is the only place in the suite that can make that assertion: every other
+    test of it uses a stub engine, which is why `capabilities.py` records
+    `verified_here=False` for this dialect. T-SQL DDL is transactional, so a
+    `CREATE TABLE` sent through the answer path should be observably absent
+    afterwards -- and unlike the unit tests, nothing here is pretending.
+    """
+    result = connector.execute_query("CREATE TABLE integration_rollback_probe (id INT PRIMARY KEY)")
+    assert result.error is None, f"the statement did not run at all: {result.error}"
+
+    tables = {t.name for t in connector.extract_schema().tables}
+    assert "integration_rollback_probe" not in tables, (
+        "a CREATE TABLE sent through execute_query survived, so the connection was committed"
+    )
+
+
 def test_extract_schema_from_real_table(connector: MSSQLConnector) -> None:
-    connector.execute_query(
+    _seed(
+        connector,
         "CREATE TABLE integration_test_products "
-        "(id INT PRIMARY KEY, name VARCHAR(100), price FLOAT)"
+        "(id INT PRIMARY KEY, name VARCHAR(100), price FLOAT)",
     )
 
     spec = connector.extract_schema()

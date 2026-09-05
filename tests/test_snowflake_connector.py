@@ -165,24 +165,59 @@ def _mock_cursor() -> tuple[SnowflakeConnector, MagicMock]:
     return connector, cursor
 
 
+def _query_call(cursor, sql="SELECT 1"):
+    """The execute call carrying *sql*, not simply the last one.
+
+    Execution is wrapped in `BEGIN` ... `ROLLBACK` now, so `call_args` is the
+    rollback. Selecting the call by its statement keeps these tests about the
+    timeout rather than about the position of the query in the sequence.
+    """
+    for call in cursor.execute.call_args_list:
+        if call.args and call.args[0] == sql:
+            return call
+    raise AssertionError(f"{sql!r} was never executed: {cursor.execute.call_args_list}")
+
+
 def test_execute_query_passes_explicit_timeout_to_cursor():
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1", timeout_seconds=30)
-    assert cursor.execute.call_args.kwargs.get("timeout") == 30
+    assert _query_call(cursor).kwargs.get("timeout") == 30
 
 
 def test_execute_query_applies_default_timeout(monkeypatch):
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 45)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
-    assert cursor.execute.call_args.kwargs.get("timeout") == 45
+    assert _query_call(cursor).kwargs.get("timeout") == 45
+
+
+def test_execution_is_wrapped_in_a_transaction_that_is_rolled_back():
+    """Snowflake autocommits each statement, so a write that reached the driver
+    was permanent the moment it ran. BEGIN turns that off for the query and the
+    ROLLBACK undoes it, on the success path as much as the failure one."""
+    connector, cursor = _mock_cursor()
+
+    connector.execute_query("SELECT 1")
+
+    statements = [c.args[0] for c in cursor.execute.call_args_list if c.args]
+    assert statements[0] == "BEGIN"
+    assert statements[-1] == "ROLLBACK"
+    assert "SELECT 1" in statements
+    assert not any(s == "COMMIT" for s in statements)
 
 
 def test_execute_query_no_timeout_when_disabled(monkeypatch):
+    """`_query_call`, not `call_args`.
+
+    Execution is wrapped in `BEGIN` ... `ROLLBACK`, so `call_args` is the
+    rollback, whose kwargs are always empty -- the assertion held whatever the
+    query carried, and would have stayed green against a connector that sent a
+    timeout unconditionally.
+    """
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
-    assert "timeout" not in cursor.execute.call_args.kwargs
+    assert "timeout" not in _query_call(cursor).kwargs
 
 
 def test_execute_query_handles_statements_with_no_result_set():
@@ -199,13 +234,56 @@ def test_execute_query_handles_statements_with_no_result_set():
     assert result.row_count == 0
 
 
-def test_execute_query_captures_errors_without_raising():
+def test_a_failing_begin_is_surfaced_and_nothing_is_committed():
+    """The path the old fixture was accidentally exercising, made deliberate.
+
+    Opening the transaction is itself a statement and can fail -- a dropped
+    session is the realistic case. It has to surface as an error rather than
+    fall through to run the query outside a transaction, which is the one
+    outcome this connector's guard exists to prevent.
+    """
     connector, mock_connection = _connector_with_mock_connection()
     mock_cursor = MagicMock()
-    mock_cursor.execute.side_effect = RuntimeError("SQL compilation error: table does not exist")
+
+    def _execute(sql, *args, **kwargs):
+        if sql == "BEGIN":
+            raise RuntimeError("connection is closed")
+        return None
+
+    mock_cursor.execute.side_effect = _execute
+    mock_connection.cursor.return_value = mock_cursor
+
+    result = connector.execute_query("SELECT 1")
+
+    assert result.error is not None
+    statements = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+    assert "SELECT 1" not in statements, (
+        "the query ran after BEGIN failed, so it ran outside a transaction"
+    )
+
+
+def test_execute_query_captures_errors_without_raising():
+    """The *query* fails, not the BEGIN in front of it.
+
+    A bare `side_effect` now fires on `BEGIN`, so this exercised a failing
+    transaction start and stopped covering the path it is named for. The driver
+    error a caller actually sees comes from the query.
+    """
+    connector, mock_connection = _connector_with_mock_connection()
+    mock_cursor = MagicMock()
+
+    def _execute(sql, *args, **kwargs):
+        if sql == "SELECT * FROM this_table_does_not_exist":
+            raise RuntimeError("SQL compilation error: table does not exist")
+        return None
+
+    mock_cursor.execute.side_effect = _execute
     mock_connection.cursor.return_value = mock_cursor
 
     result = connector.execute_query("SELECT * FROM this_table_does_not_exist")
+
+    statements = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+    assert statements[0] == "BEGIN", "the transaction never opened, so the query never ran"
 
     assert isinstance(result, QueryResult)
     assert result.error is not None
@@ -480,3 +558,160 @@ def test_list_security_policies_degrades_when_account_usage_unavailable(caplog):
     assert report.supported is True
     assert report.policies == []
     assert any("POLICY_REFERENCES unavailable" in r.message for r in caplog.records)
+
+
+def test_two_concurrent_queries_do_not_share_one_transaction():
+    """A Snowflake transaction belongs to the session, not the cursor.
+
+    This connector holds one connection for its lifetime, `loader.py` caches
+    connector instances, and callers arrive through `asyncio.to_thread` -- so two
+    `execute_query` calls really can overlap on one session. Unserialised they
+    interleave as BEGIN(A), BEGIN(B) (ignored, a transaction is already open),
+    query(A), ROLLBACK(A) -- which ends the transaction both were in, leaving B's
+    statement running under autocommit with nothing left to roll back and B's own
+    ROLLBACK a no-op.
+
+    The guard would disappear in exactly the situation `capabilities.py` and
+    `docs/database-hardening.md` tell an operator it holds, and silently: both
+    queries return results and no error is raised.
+
+    Asserted as a property of the emitted sequence rather than by racing threads,
+    which would pass or fail depending on the scheduler: every statement between
+    a BEGIN and its ROLLBACK must belong to the thread that opened it.
+    """
+    import threading
+
+    connector, mock_connection = _connector_with_mock_connection()
+
+    events: list[tuple[str, str]] = []
+    events_lock = threading.Lock()
+    both_inside = threading.Event()
+
+    def _make_cursor(name: str) -> MagicMock:
+        cur = MagicMock()
+        cur.description = None
+
+        def _execute(sql, *a, **kw):
+            with events_lock:
+                events.append((name, str(sql).split()[0].upper()))
+            # After BEGIN, give the other thread every chance to interleave.
+            if str(sql).upper().startswith("BEGIN"):
+                both_inside.wait(timeout=0.5)
+            return None
+
+        cur.execute.side_effect = _execute
+        return cur
+
+    cursors = {"A": _make_cursor("A"), "B": _make_cursor("B")}
+    order = iter(["A", "B"])
+    mock_connection.cursor.side_effect = lambda: cursors[next(order)]
+
+    def run(name: str) -> None:
+        connector.execute_query(f"SELECT {name}")
+
+    t1 = threading.Thread(target=run, args=("A",))
+    t2 = threading.Thread(target=run, args=("B",))
+    t1.start()
+    t2.start()
+    both_inside.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert not t1.is_alive() and not t2.is_alive(), "a query did not finish"
+
+    # Walk the sequence: between a BEGIN and the matching ROLLBACK, every
+    # statement must come from the same thread.
+    owner: str | None = None
+    for who, verb in events:
+        if verb == "BEGIN":
+            assert owner is None, (
+                f"{who} sent BEGIN while {owner}'s transaction was still open; "
+                f"Snowflake ignores it and {who} runs under autocommit. {events}"
+            )
+            owner = who
+        elif verb == "ROLLBACK":
+            assert owner == who, f"{who} rolled back {owner}'s transaction. {events}"
+            owner = None
+        else:
+            assert owner == who, f"{who} ran a statement inside {owner}'s transaction. {events}"
+
+
+def test_a_failing_rollback_is_logged_rather_than_swallowed(caplog):
+    """This connector cannot borrow the pool's justification.
+
+    `mssql.py` and `sqlalchemy_connector.py` catch a failing rollback on the
+    grounds that the connection is reset when the pool takes it back. That does
+    not transfer here: this connector holds one session for the life of the
+    object, so a rollback that fails can leave an explicit transaction open on
+    that session until some later query happens to end it.
+
+    Nothing is committed either way, so it is a visibility gap rather than an
+    exposure -- which is the kind that must not be silent.
+    """
+    import logging
+
+    connector, mock_connection = _connector_with_mock_connection()
+    mock_cursor = MagicMock()
+    mock_cursor.description = None
+
+    def _execute(sql, *args, **kwargs):
+        if sql == "ROLLBACK":
+            raise RuntimeError("session is gone")
+        return None
+
+    mock_cursor.execute.side_effect = _execute
+    mock_connection.cursor.return_value = mock_cursor
+
+    with caplog.at_level(logging.WARNING):
+        result = connector.execute_query("SELECT 1")
+
+    assert result.error is None, f"a failing rollback became the query's error: {result.error}"
+    assert any("ROLLBACK" in r.getMessage() for r in caplog.records), (
+        "the rollback failed and left no trace"
+    )
+    mock_cursor.close.assert_called_once()
+
+
+def test_a_held_lock_fails_the_query_instead_of_blocking_forever(monkeypatch):
+    """Serialising must not turn one stuck query into a stuck connector.
+
+    The lock is held across the whole span, including the row fetch, so a query
+    that never returns would block every later query on this connector. With
+    `CONNECTOR_STATEMENT_TIMEOUT_SECONDS = 0` -- documented and supported --
+    nothing bounds the holder, and because `loader.py` caches the connector and
+    callers arrive through `asyncio.to_thread`, the waiters occupy pool threads.
+
+    So the *waiter* is bounded even when the holder is not, and the wait ends in
+    an error a caller can read rather than in silence.
+    """
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("nlqueries.connectors.snowflake._LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS", 0.05)
+    connector, cursor = _mock_cursor()
+
+    connector._txn_lock.acquire()  # noqa: SLF001 - stand in for a query still running
+    try:
+        result = connector.execute_query("SELECT 1")
+    finally:
+        connector._txn_lock.release()  # noqa: SLF001
+
+    assert result.error is not None, "the query waited on the lock indefinitely"
+    assert "busy" in result.error.lower(), f"unhelpful error: {result.error}"
+    assert cursor.execute.call_count == 0, "the query ran without holding the lock"
+
+
+def test_the_lock_is_released_when_the_query_raises(monkeypatch):
+    """Otherwise one failure wedges the connector for every later caller.
+
+    The release is in a `finally` for this reason: a query that raises on the way
+    through must not leave the next caller to wait out its whole timeout.
+    """
+    monkeypatch.setattr("nlqueries.connectors.snowflake._LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS", 0.05)
+    connector, mock_connection = _connector_with_mock_connection()
+    mock_cursor = MagicMock()
+    mock_cursor.execute.side_effect = RuntimeError("boom")
+    mock_connection.cursor.return_value = mock_cursor
+
+    assert connector.execute_query("SELECT 1").error is not None
+
+    acquired = connector._txn_lock.acquire(timeout=0.5)  # noqa: SLF001
+    assert acquired, "the lock was not released after the query raised"
+    connector._txn_lock.release()  # noqa: SLF001

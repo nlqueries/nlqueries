@@ -14,9 +14,11 @@ each supported engine.
 
 ## What NLQueries already does, and what it does not
 
-The connector opens every query in a read-only transaction (`SET TRANSACTION
-READ ONLY`). PostgreSQL applies this to what a statement *does* rather than to
-how it is written, so it refuses DML and DDL anywhere in the call graph,
+The PostgreSQL connector opens every query in a read-only transaction
+(`SET TRANSACTION READ ONLY`); what the other engines do is not the same
+everywhere, and [What each connector enforces](#what-each-connector-enforces)
+below is the per-engine account. PostgreSQL applies this to what a statement
+*does* rather than to how it is written, so it refuses DML and DDL anywhere in the call graph,
 including within a function invoked by a `SELECT`, and refuses sequence
 functions by name.
 
@@ -36,6 +38,7 @@ you. The rest of this page is how.
 SQLite and DuckDB are the exceptions to "the rest is yours to configure". Their
 file access is reachable from any `SELECT` rather than granted by a DBA, so the
 connectors close it in code. See [SQLite](#sqlite) and [DuckDB](#duckdb) below.
+
 
 ---
 
@@ -387,29 +390,93 @@ worthwhile. The sandbox above is defence in depth and does not replace it.
 
 ## What each connector enforces
 
-The read-only transaction described above is a PostgreSQL mechanism. It is not
-available on every engine, and several connectors apply nothing equivalent. The
-table records what the connector does, not what the engine could support.
+The read-only transaction described above is a PostgreSQL mechanism, and it is
+not available on every engine. Where it is not, the connector does the next best
+thing its engine allows -- usually running the query in a transaction it never
+commits -- and the table records what the connector does, not what the engine
+could support.
+
+Those are not equivalent guarantees. Refusing a write and undoing one look the
+same from the outside and are not the same thing: a rollback still ran the
+statement, and anything it did outside the transaction stands.
 
 | dialect | read-only mechanism | statement timeout | verified in this repository |
 |---|---|---|---|
 | `postgres` | `SET TRANSACTION READ ONLY` | `SET LOCAL statement_timeout` | yes |
 | `sqlite` | `mode=ro` + authorizer | watchdog `interrupt()` | yes |
 | `duckdb` | `read_only=True` + locked sandbox | watchdog | yes |
-| `mssql` | **none** | **none per query** | no |
+| `mssql` | never committed; rolled back either way. T-SQL DDL is transactional, so a `DROP` is undone too | **none per query** | no — asserted against a fake driver |
 | `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
-| `snowflake` | **none** | `cursor.execute(timeout=…)` | no |
+| `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `cursor.execute(timeout=…)` | no — asserted against a fake driver |
 | `bigquery` | **none** | `job_timeout_ms` | no |
-| `sqlalchemy` | **none** | best-effort per dialect | no |
+| `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it and SQLite runs it outside the transaction, so a `CREATE` or `DROP` stands | best-effort per dialect | no — asserted against a fake driver |
 
 `nlqueries health` reports this per connector, so the row that applies to a
 deployment does not have to be looked up here.
 
 **Where the mechanism is "none", the only thing preventing a write is the
-privilege granted to the login.** For those dialects the sections above are not
-defence in depth — they are the whole defence.
+privilege granted to the login.** That is BigQuery, and for it the sections above
+are not defence in depth — they are the whole defence.
 
-Two entries deserve particular attention.
+Three entries deserve particular attention.
+
+**Snowflake queries on one connector run one at a time.** A Snowflake
+transaction belongs to the session rather than the cursor, and the connector
+holds a single connection for its lifetime while connector instances are cached
+and callers arrive on threads. Two overlapping queries would otherwise share one
+transaction, and the first `ROLLBACK` would end it for both — leaving the other
+running under autocommit with nothing left to undo. The `BEGIN` … `ROLLBACK`
+span is therefore serialised per connector. A shared session cannot offer both
+concurrency and a per-query transaction, and a guard that stops holding under
+load is worth less than the throughput it would buy.
+
+The wait is bounded, so serialising cannot turn one stuck query into a stuck
+connector: a caller waits for the statement timeout plus a margin, or five
+minutes where no statement timeout applies, and then fails with an error saying
+the connector was busy. `CONNECTOR_STATEMENT_TIMEOUT_SECONDS=0` bounds the
+*query* but not the *queue* behind it, and those waiters occupy pool threads.
+
+**Snowflake's DDL survives the rollback.** The transaction undoes an `INSERT`; it
+does not undo a `CREATE TABLE`. If the role can create objects, it can create them
+through a query, so the grant is carrying more of the boundary here than anywhere
+else.
+
+**BigQuery has nothing to undo with.** A single query job has no transaction. The
+connector pins the job to standard SQL with no session and logs a statement type
+other than `SELECT` at warning, but the job has already run by the time the type
+is readable — an audit signal, not a control.
+
+**MySQL and MariaDB get the rollback and nothing more.** Their read-only form is
+`SET SESSION TRANSACTION READ ONLY`, which configures *subsequent* transactions
+and is refused with error 1568 inside an open one; SQLAlchemy opens one on the
+first statement, so by the time the connector could send it the transaction
+exists. `START TRANSACTION READ ONLY` is the statement that would work and is not
+available to a caller while SQLAlchemy owns the transaction.
+
+**Nor does it reach a non-transactional storage engine.** An `INSERT` into a
+MyISAM or MEMORY table on MySQL or MariaDB survives the `ROLLBACK` outright --
+those engines have no transaction to undo, and the server reports warning 1196
+rather than an error, so nothing in the connector can even notice. If the schema
+NLQueries reads contains such tables, the grant is the only control over writes
+to them.
+
+**Oracle's gap looks closable.** It has a transaction-scoped
+`SET TRANSACTION READ ONLY` that must be the first statement of the transaction
+-- exactly where the connector applies one -- and refuses DML and DDL thereafter
+with ORA-01456. It is left out of `_apply_read_only` only because no test here
+can reach an Oracle instance, and adding a statement to the execution path of an
+untested engine is how every query against it becomes an error instead. Someone
+with an instance should try it and move Oracle out of the column below.
+
+**And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit
+implicitly around DDL, so a `CREATE` or `DROP` sent through this connector is
+permanent whatever the transaction does — the same limit Snowflake has, for the
+same reason, and it applies to any engine behind the generic SQLAlchemy
+connector that commits implicitly. SQLite is a third variant: pysqlite begins a
+transaction before DML but not before DDL, so a `CREATE TABLE` there runs
+outside the transaction entirely. On all of these the grant is the only thing
+standing between a generated statement and a schema change, which is why the
+role in this document is the boundary and the rollback is not.
 
 **Redshift enforces both, but no test here reaches a cluster.** CI cannot
 provision one, so the mechanisms were measured by hand against Redshift
@@ -419,12 +486,16 @@ and a WLM query-monitoring rule remain worth having — the read-only transactio
 restricts what a statement may do, not what the login may reach.
 
 **The generic `sqlalchemy` connector reaches any engine SQLAlchemy supports**,
-so no single statement about its behaviour holds. Nothing read-only is applied.
+so no single statement about its behaviour holds beyond the rollback, which does.
+It adds `SET TRANSACTION READ ONLY` when the URL turns out to be `postgresql` or
+`redshift`, and nothing further for a dialect it does not recognise.
 
 "Verified in this repository" means the mechanism is exercised by a test against
-a real engine. Snowflake, BigQuery and Redshift require accounts that a test run
-cannot provision, so they are recorded as unverified whatever their
-documentation says.
+a real engine. Snowflake, BigQuery, Redshift, SQL Server and MySQL require
+accounts or servers a test run cannot provision, so they are recorded as
+unverified whatever their documentation says — their tests assert the statements
+sent to a fake driver, which shows the connector asks for the right thing and not
+that the engine honours it.
 
 ### What to grant, per vendor
 

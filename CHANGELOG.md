@@ -47,6 +47,28 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   but the protection was two bugs cancelling out, and the obvious fix for the
   parsing failure above would have made it real. No advisory is warranted.
 
+- Every connector now runs the query in the most restrictive execution its
+  engine offers, rather than only the four that already did. SQL Server and the
+  generic SQLAlchemy connector no longer use `engine.begin()`, which commits on
+  exit; they run on a connection that is never committed and is rolled back
+  whether the statement succeeded or failed. The SQLAlchemy connector also
+  issues `SET TRANSACTION READ ONLY` on the dialects that have it. Snowflake
+  wraps the query in `BEGIN`/`ROLLBACK`. This matters because every validator in
+  front of a connector asks whether the root node is a `SELECT`, and
+  `SELECT some_volatile_function(...)` satisfies that while writing.
+
+  What the rollback does not cover is documented rather than implied. The gap is
+  mostly DDL, and on MySQL also the storage engine: an `INSERT` into a MyISAM or
+  MEMORY table survives the rollback outright, with only warning 1196. An engine that commits implicitly around DDL keeps a `CREATE` or
+  `DROP` whatever the transaction does -- Snowflake, and MySQL, MariaDB and
+  Oracle behind the generic connector -- and SQLite runs DDL outside the
+  transaction altogether. BigQuery has no transaction at all: its jobs are
+  pinned to standard SQL with no session, and a non-`SELECT` statement type is
+  logged after the fact as an audit signal, not prevented. On all of these the
+  database grant is doing work the connector cannot. MySQL additionally keeps
+  the rollback only, since `SET SESSION TRANSACTION READ ONLY` is refused inside
+  an open transaction and SQLAlchemy has already begun one.
+
 ## [0.2.0] — 2026-07-07
 
 ### Added

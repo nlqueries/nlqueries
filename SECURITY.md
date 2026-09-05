@@ -19,9 +19,11 @@ We aim to acknowledge reports within 5 business days. Once a fix is available, w
 ## Hardening the database you point it at
 
 NLQueries generates SQL with a language model and runs it against your database.
-The connector opens every query in a read-only transaction, but that is one
-layer, and it does not stop a role that can read files off the database host or
-tables you never meant to expose.
+Every connector runs the query in the most restrictive execution its engine
+offers -- a read-only transaction where one exists, an uncommitted transaction
+that is always rolled back where one does not -- but that is one layer, it is
+weaker on some engines than others, and it does not stop a role that can read
+files off the database host or tables you never meant to expose.
 
 The database's own permission system is the boundary that does not depend on
 this project being free of bugs. See
