@@ -646,6 +646,19 @@ def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) ->
 #: paid on every write. Process-local: several processes sharing a collection
 #: each sweep on their own schedule, which is harmless -- the delete is
 #: idempotent and matches by age, not by identity.
+#:
+#: It starts empty, so the first write in a process always sweeps. In a
+#: long-lived server that is what you want. Under the CLI, where a process
+#: answers one question and exits, it means one delete-by-filter per invocation.
+#:
+#: That is deliberate rather than overlooked. Seeding this so the first sweep
+#: waits out an interval would mean a CLI-only deployment never sweeps at all --
+#: no process lives long enough -- and those are the deployments whose
+#: collections still grow. The cost is bounded the other way instead: the delete
+#: is issued with `wait=False` so the caller never waits for it, and
+#: `created_at` is indexed as a datetime on every collection created from now
+#: on, so what Qdrant does with it is a range query rather than a scan. Only
+#: collections predating that change pay a scan, and only until they age out.
 _last_prune_at: dict[str, float] = {}
 
 

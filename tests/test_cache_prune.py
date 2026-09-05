@@ -334,3 +334,25 @@ def test_a_failed_index_creation_is_retried() -> None:
     assert "c:created_at:datetime" in qs._indexed_fields, (
         "a successful creation was not recorded, so every write will retry it"
     )
+
+
+def test_the_first_write_in_a_process_always_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deliberate, and the alternative is worse.
+
+    `_last_prune_at` starts empty, so the first write in a process sweeps. Under
+    the CLI, where a process answers one question and exits, that is one sweep
+    per invocation rather than one per hour.
+
+    Seeding it so the first sweep waited out an interval would mean a CLI-only
+    deployment never swept at all -- no process lives long enough -- and those
+    are exactly the deployments whose collections still grow. The cost is bounded
+    elsewhere instead: `wait=False`, and `created_at` indexed as a datetime.
+    """
+    monkeypatch.setattr("nlqueries.config.CACHE_PRUNE_INTERVAL_SECONDS", 3600)
+    client = _client()
+
+    assert _prune_expired(client, "cache_agent1", 24) is True, (
+        "a fresh process did not sweep, so a CLI-only deployment would never prune"
+    )

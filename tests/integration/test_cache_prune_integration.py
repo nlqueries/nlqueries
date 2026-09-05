@@ -58,8 +58,23 @@ def qdrant() -> object:
         container.stop()
 
 
-@pytest.fixture
-def client(qdrant: object) -> QdrantClient:
+@pytest.fixture(
+    params=[None, qm.PayloadSchemaType.DATETIME],
+    ids=["created_at-unindexed", "created_at-datetime-indexed"],
+)
+def client(qdrant: object, request: pytest.FixtureRequest) -> QdrantClient:
+    """A cache collection in each of the two shapes that exist in the field.
+
+    **Unindexed** is every collection created before this change: only `kind`
+    was ever indexed. **Datetime-indexed** is what `ensure_collection` builds
+    from now on, since `put()` passes `datetime_indexes=["created_at"]`.
+
+    Both are parameterised because the argument for this whole file is that the
+    filter's behaviour must be measured rather than inferred, and the outcome to
+    rule out is a delete matching live entries. Covering only the shape this
+    change moves *away* from would leave the shape every new deployment has
+    unmeasured.
+    """
     c = QdrantClient(
         host=qdrant.get_container_host_ip(),  # type: ignore[attr-defined]
         port=int(qdrant.get_exposed_port(6333)),  # type: ignore[attr-defined]
@@ -71,10 +86,9 @@ def client(qdrant: object) -> QdrantClient:
         COLLECTION,
         vectors_config=qm.VectorParams(size=4, distance=qm.Distance.COSINE),
     )
-    # Exactly what `ensure_collection` builds: an index on `kind` and nothing
-    # else. `created_at` is deliberately left unindexed, because that is the
-    # shape every collection already in the field has.
     c.create_payload_index(COLLECTION, field_name="kind", field_schema=qm.PayloadSchemaType.KEYWORD)
+    if request.param is not None:
+        c.create_payload_index(COLLECTION, field_name="created_at", field_schema=request.param)
     _last_prune_at.clear()
     return c
 
