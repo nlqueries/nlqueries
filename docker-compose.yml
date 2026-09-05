@@ -19,7 +19,22 @@
 services:
 
   qdrant:
-    image: qdrant/qdrant:v1.18.2
+    # v1.12.4, not the v1.18.2 enterprise pins, and the difference is the
+    # `qdrant-data` volume below. Measured, writing with v1.9.3 (what this file
+    # used to pin) and reopening the same volume:
+    #
+    #     v1.10.1 -> starts, data intact
+    #     v1.12.4 -> starts, data intact
+    #     v1.18.2 -> panics on startup and exits:
+    #                "Failed to deserialize segment.json: unknown variant
+    #                 `on_disk`, expected `mmap` or `in_ram_mmap`"
+    #
+    # So v1.18.2 would turn `docker compose pull && up` into a Qdrant that will
+    # not start for anyone already running this stack. v1.10 is the floor
+    # (`query_points` arrives there), v1.12.4 clears it and still reads the
+    # storage already on disk. Enterprise deployments were never created against
+    # v1.9.x, which is why they can pin further ahead.
+    image: qdrant/qdrant:v1.12.4
     container_name: nlqueries-qdrant
     restart: unless-stopped
     environment:

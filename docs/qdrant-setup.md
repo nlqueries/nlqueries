@@ -35,6 +35,32 @@ A `200 OK` means it's up, and the body carries the version:
 (`/healthz` also answers, but only with the plain text `healthz check passed` —
 it tells you the server is alive, not whether it is new enough.)
 
+### Upgrading an existing Qdrant
+
+Qdrant does not read its storage format arbitrarily far forward. Measured by
+writing a collection with v1.9.3 and reopening the same volume:
+
+| upgraded to | result |
+|---|---|
+| v1.10.1 | starts, data intact |
+| v1.12.4 | starts, data intact |
+| v1.18.2 | **panics on startup and exits** |
+
+The failure is loud — the container exits with `Failed to deserialize
+segment.json: unknown variant 'on_disk'` — so you will know. If it happens, the
+remedy is to remove the volume: everything NLQueries keeps in Qdrant is
+rebuildable. The semantic cache regenerates as questions are asked, schema and
+capsule vectors come back from `nlqueries process-history --embed`, and document
+chunks need their sources re-ingested. Nothing there is a system of record, but
+the last of those costs real time, so take the step-by-step route if that
+matters:
+
+```bash
+docker compose down
+# edit the pin one minor at a time, bringing the stack up between each
+docker compose up -d
+```
+
 Once it's up, skip to [Configure NLQueries](#configure-nlqueries-to-use-qdrant).
 
 ## Option A — Docker (recommended for local development)

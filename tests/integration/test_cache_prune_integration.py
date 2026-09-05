@@ -33,13 +33,16 @@ from qdrant_client import models as qm  # noqa: E402
 #: the versions actually run.
 #:
 #: v1.10 is the floor -- `query_points`, which every search here goes through,
-#: arrived then -- and v1.18.2 is what both `docker-compose.yml` and enterprise
-#: pin, so that is what this measures. The sweep's filter was checked on v1.9.3
+#: arrived then -- and v1.12.4 is what `docker-compose.yml` pins, so that is what
+#: this measures. (Enterprise pins v1.18.2; core stays lower because v1.18.2
+#: cannot open storage written by the v1.9.3 this file used to ship.)
+#:
+#: The sweep's filter was checked on v1.9.3
 #: too, but that server cannot serve the searches this project makes, so
 #: evidence from it says nothing about a deployment anyone can run.
 #:
 #: Bump this deliberately, alongside those compose files.
-QDRANT_IMAGE = "qdrant/qdrant:v1.18.2"
+QDRANT_IMAGE = "qdrant/qdrant:v1.12.4"
 
 COLLECTION = "cache_prune_probe"
 TTL_HOURS = 24

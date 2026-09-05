@@ -157,10 +157,10 @@ is an ISO string; a `DatetimeRange` that needed a datetime index it did not have
 would either match nothing or -- far worse -- match everything, and the
 difference between those is a cache that grows and a cache that is gone. It was
 measured on v1.9.3 and v1.18.2 and holds indexed, keyword-indexed and unindexed
-alike: correctness never depended on the index. Both `docker-compose.yml` and
-enterprise now pin v1.18.2 -- v1.9.3 predates the `query_points` API every search
-here goes through, so it was never a version this project could run against,
-only one it used to ship.
+alike: correctness never depended on the index. `docker-compose.yml` now pins
+v1.12.4 and enterprise pins v1.18.2 -- v1.9.3 predates the `query_points` API
+every search here goes through, so it was never a version this project could run
+against, only one it used to ship.
 
 Speed does, which is why the sweep is issued with `wait=False` and `created_at`
 is now indexed **as a datetime**. `ensure_collection`'s `payload_indexes`
