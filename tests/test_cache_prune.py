@@ -471,3 +471,44 @@ def test_forgetting_indexes_tolerates_a_concurrent_write() -> None:
         writer.join(timeout=2)
 
     assert not [k for k in qs._indexed_fields.copy() if k.startswith("cache_a:")]
+
+
+def test_a_failed_search_is_reported_rather_than_read_as_a_miss(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rejected request and an empty cache are the same `None` to the caller.
+
+    They mean opposite things: one is the cache working, the other is the cache
+    not being consulted at all. This was not hypothetical -- `query_points` is
+    Qdrant's Universal Query API, added in v1.10, and this repository's own
+    `docker-compose.yml` shipped v1.9.3, so every Tier 1 and Tier 2 lookup
+    returned 404 and was indistinguishable from having nothing to offer.
+
+    Reported once per collection and tier, because the condition persists: an
+    unreachable or too-old server fails identically on every request.
+    """
+    import logging
+
+    from nlqueries.cache.semantic_cache import _SEARCH_FAILURES_LOGGED
+
+    _SEARCH_FAILURES_LOGGED.clear()
+    client = _client()
+    client.retrieve.return_value = []  # Tier 0 miss, so the search is reached
+    client.query_points.side_effect = RuntimeError("Unexpected Response: 404 (Not Found)")
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+    ):
+        cache = SemanticCache("agent1", binding=TEST_BINDING)
+        for _ in range(3):
+            assert cache.get("how many orders") is None
+
+    warned = [r.getMessage() for r in caplog.records if "search on" in r.getMessage()]
+    assert warned, "a 404 from the server was reported to the caller as a cache miss"
+    assert len(warned) == 1, f"three lookups produced {len(warned)} warnings"
+    assert "v1.10" in warned[0], (
+        "the warning does not mention the version requirement, which is the "
+        "most likely cause of a 404 here"
+    )

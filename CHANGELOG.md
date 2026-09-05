@@ -4,6 +4,24 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Fixed
+
+- **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
+  vector search.** NLQueries searches through the Universal Query API
+  (`query_points`), which Qdrant added in v1.10; the compose file pinned v1.9.3
+  and the benchmarks compose v1.9.2, so every search returned `404`. The
+  semantic cache degraded to exact-match hits only, dynamic context injection
+  found nothing and document retrieval returned nothing — and because several of
+  those paths treat a failed search as an empty result, the symptom was a system
+  answering slowly and without context rather than reporting an error. Both
+  files now pin v1.18.2, matching what enterprise ships.
+
+- The semantic cache no longer reports a failed search as a cache miss. A
+  rejected request and an empty cache were the same `None` to the caller while
+  meaning opposite things. A failure is now logged once per collection and tier,
+  naming the version requirement, since a 404 from a pre-v1.10 server is its
+  most likely cause.
+
 ### Added
 
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic

@@ -19,7 +19,7 @@
 services:
 
   qdrant:
-    image: qdrant/qdrant:v1.9.3
+    image: qdrant/qdrant:v1.18.2
     container_name: nlqueries-qdrant
     restart: unless-stopped
     environment:
@@ -39,7 +39,8 @@ services:
     # No capabilities are needed to listen and read a volume, and a process that
     # cannot acquire new privileges cannot escalate through a setuid binary.
     #
-    # `read_only` is deliberately absent. Measured against qdrant/qdrant:v1.9.3:
+    # `read_only` is deliberately absent. Measured against qdrant/qdrant:v1.9.3,
+    # which is what this file pinned when the measurement was made:
     # the process panics at startup on a read-only root filesystem. The
     # container image is the vendor's, so the paths it writes are theirs to
     # change; applying the setting would trade a running service for a hardening

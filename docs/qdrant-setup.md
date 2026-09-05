@@ -17,6 +17,15 @@ curl http://localhost:6333/healthz
 # Windows PowerShell: Invoke-WebRequest http://localhost:6333/healthz
 ```
 
+> **Qdrant v1.10 or newer is required.** NLQueries searches through the
+> Universal Query API (`query_points`), which Qdrant added in v1.10. Against an
+> older server every vector search returns `404` — the semantic cache falls back
+> to exact-match hits only, dynamic context injection finds nothing, and document
+> retrieval returns nothing. Several of those paths treat a failed search as an
+> empty result, so the symptom is a system that answers, slowly and without
+> context, rather than one that reports an error. Check the `version` field in
+> the response below.
+
 A `200 OK` with `{"title":"qdrant","version":"..."}` means it's up — skip to [Configure NLQueries](#configure-nlqueries-to-use-qdrant).
 
 ## Option A — Docker (recommended for local development)
