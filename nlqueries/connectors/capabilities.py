@@ -177,8 +177,10 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     "sqlalchemy": DialectCapabilities(
         dialect="sqlalchemy",
         read_only_mechanism=(
-            "never committed, and rolled back either way; plus SET TRANSACTION READ ONLY "
-            "where the dialect is postgresql or redshift"
+            "DML is never committed and is rolled back either way; plus SET TRANSACTION "
+            "READ ONLY where the dialect is postgresql or redshift. DDL is NOT covered on "
+            "every engine: MySQL, MariaDB and Oracle commit implicitly around it, and "
+            "SQLite runs it outside the transaction, so a DROP or CREATE stands there"
         ),
         statement_timeout_mechanism="a best-effort per-dialect SET, where the dialect is known",
         verified_here=False,

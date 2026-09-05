@@ -220,3 +220,59 @@ def test_mssql_is_not_sent_a_read_only_statement() -> None:
 
     assert conn.statements == ["SELECT 1"]
     assert conn.rollbacks == 1
+
+
+class _RollbackFails(_Connection):
+    """A connection whose rollback raises, as one dropped mid-statement would."""
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+        raise RuntimeError("connection is closed")
+
+
+def _with_failing_rollback(
+    connector: MSSQLConnector | SQLAlchemyConnector, dialect_name: str
+) -> _Connection:
+    engine = _FakeEngine(dialect_name)
+    engine.conn = _RollbackFails(dialect_name)
+    connector._engine = engine  # noqa: SLF001
+    return engine.conn
+
+
+@pytest.mark.parametrize(
+    ("make", "dialect"),
+    [
+        (lambda: granted(MSSQLConnector()), "mssql"),
+        (lambda: granted(SQLAlchemyConnector()), "postgresql"),
+    ],
+    ids=["mssql", "sqlalchemy"],
+)
+def test_a_failing_rollback_does_not_become_the_result(
+    make: Any, dialect: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The rollback runs in a `finally`, so raising there would rewrite the outcome.
+
+    A connection dropped after a cancelled or timed-out statement is the case
+    that actually produces this. On the success path it would report a query
+    that worked as an error; on the failure path it would replace the driver's
+    message -- the one the caller needs to see -- with the rollback's.
+
+    Nothing is committed either way, which is why swallowing it is safe rather
+    than merely convenient: the connection is reset when the pool takes it back,
+    and a connection that cannot be reached has no transaction left to commit.
+    """
+    import logging
+
+    connector = make()
+    conn = _with_failing_rollback(connector, dialect)
+
+    with caplog.at_level(logging.WARNING):
+        result = connector.execute_query("SELECT 1")
+
+    assert conn.rollbacks == 1, "the rollback was not attempted"
+    assert result.error is None, (
+        f"a failing rollback was reported as the query's error: {result.error}"
+    )
+    assert any("rollback" in r.getMessage().lower() for r in caplog.records), (
+        "the rollback failure was swallowed without a trace"
+    )

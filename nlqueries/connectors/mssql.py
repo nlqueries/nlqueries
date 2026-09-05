@@ -409,9 +409,27 @@ class MSSQLConnector(DatabaseConnector):
                     )
                 finally:
                     # In `finally`, so it runs on the success path too: the point
-                    # is that a statement which *succeeded* is still not
-                    # committed. Rows have already been collected by here.
-                    conn.rollback()
+                    # is that a statement which succeeded is still not committed.
+                    # Rows have already been collected by here.
+                    #
+                    # The failure is logged and swallowed rather than raised. A
+                    # connection dropped after a cancelled or timed-out statement
+                    # is the realistic case, and letting it out of the `finally`
+                    # would report a successful query as an error, or replace the
+                    # driver's message -- the one the caller needs -- with the
+                    # rollback's. Nothing is committed either way: the connection
+                    # is reset when the pool takes it back, and an unreachable
+                    # connection has no transaction left to commit.
+                    try:
+                        conn.rollback()
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "%s: rollback after the query failed. Nothing was "
+                            "committed; the connection is reset on return to the "
+                            "pool.",
+                            "MSSQLConnector",
+                            exc_info=True,
+                        )
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.exception("MSSQLConnector.execute_query failed")

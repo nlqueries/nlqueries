@@ -11,11 +11,15 @@ in an answer. The connector requires TLS, and every engine that can express a
 read-only execution is asked for one, but neither limits *what* the role can
 read, and neither is a substitute for a least-privilege grant.
 
-How much the connector can enforce differs by engine, and on two it stops short
-of what you might assume: **Snowflake** rolls back DML but cannot undo DDL, which
-is not transactional there, and **BigQuery** has no transaction to roll back at
-all, so a non-`SELECT` statement type is logged after the job has run rather than
-prevented. On those two the grant is doing the work the connector cannot.
+How much the connector can enforce differs by engine, and the gap worth knowing
+is **DDL**. A rolled-back transaction undoes an `INSERT` everywhere; it does not
+undo a `CREATE` or `DROP` on an engine that commits implicitly around DDL. That
+is **Snowflake**, and also **MySQL, MariaDB and Oracle** behind the generic
+SQLAlchemy connector; **SQLite** is a third variant, running DDL outside the
+transaction altogether. **BigQuery** has no transaction to roll back at all, so a
+non-`SELECT` statement type is logged after the job has run rather than
+prevented. On all of these the grant is doing work the connector cannot, which is
+why the role matters more than the transaction does.
 
 [docs/database-hardening.md](database-hardening.md) has the SQL, per engine.
 

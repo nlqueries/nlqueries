@@ -409,7 +409,7 @@ statement, and anything it did outside the transaction stands.
 | `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
 | `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `cursor.execute(timeout=…)` | no — asserted against a fake driver |
 | `bigquery` | **none** | `job_timeout_ms` | no |
-| `sqlalchemy` | never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift` | best-effort per dialect | no — asserted against a fake driver |
+| `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it and SQLite runs it outside the transaction, so a `CREATE` or `DROP` stands | best-effort per dialect | no — asserted against a fake driver |
 
 `nlqueries health` reports this per connector, so the row that applies to a
 deployment does not have to be looked up here.
@@ -436,6 +436,16 @@ and is refused with error 1568 inside an open one; SQLAlchemy opens one on the
 first statement, so by the time the connector could send it the transaction
 exists. `START TRANSACTION READ ONLY` is the statement that would work and is not
 available to a caller while SQLAlchemy owns the transaction.
+
+**And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit
+implicitly around DDL, so a `CREATE` or `DROP` sent through this connector is
+permanent whatever the transaction does — the same limit Snowflake has, for the
+same reason, and it applies to any engine behind the generic SQLAlchemy
+connector that commits implicitly. SQLite is a third variant: pysqlite begins a
+transaction before DML but not before DDL, so a `CREATE TABLE` there runs
+outside the transaction entirely. On all of these the grant is the only thing
+standing between a generated statement and a schema change, which is why the
+role in this document is the boundary and the rollback is not.
 
 **Redshift enforces both, but no test here reaches a cluster.** CI cannot
 provision one, so the mechanisms were measured by hand against Redshift
