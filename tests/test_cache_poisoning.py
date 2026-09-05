@@ -274,12 +274,17 @@ def test_the_same_near_identical_question_is_a_hit_with_the_default_tiers(
 def test_with_tiers_one_and_two_an_exact_repeat_is_a_miss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The Tier 0 gate, which nothing else reaches.
+    """The Tier 0 gate, which nothing else reaches -- and the fall-through.
 
-    Every other case here leaves tier 0 enabled, so its gate never fires and
-    could be deleted without failing anything. `"1,2"` is an odd setting to
-    choose, but it is accepted, and a gate that is never exercised is a gate
-    nobody knows the state of.
+    The first version of this asserted only the miss and that `retrieve` was
+    never called. Both hold whether or not the remaining tiers still run, so it
+    passed against a gate that returned from `get()` outright and disabled the
+    entire read path for any setting omitting 0. It asserted the bug as though
+    it were the specification.
+
+    The tiers are independent, so skipping one has to mean skipping one. The
+    second half below is the part that matters: under `"1,2"` a Tier 1
+    neighbour must still be served.
     """
     monkeypatch.setattr("nlqueries.config.CACHE_ANSWER_TIERS", "1,2")
 
@@ -289,6 +294,9 @@ def test_with_tiers_one_and_two_an_exact_repeat_is_a_miss(
     point.payload = _signed_answer(question)
     point.id = _point_id_for_question(_normalize_question(question))
     client.retrieve.return_value = [point]
+    # The same entry also reachable as a Tier 1 neighbour, so the two halves
+    # below distinguish "tier 0 skipped" from "the read path stopped".
+    client.query_points.return_value = MagicMock(points=[_near_hit()])
 
     with (
         patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
@@ -296,8 +304,50 @@ def test_with_tiers_one_and_two_an_exact_repeat_is_a_miss(
     ):
         entry = SemanticCache("agent1", binding=TEST_BINDING).get(question)
 
-    assert entry is None, "an exact Tier 0 hit was served while tier 0 was disabled"
+    # Tier 0 itself is skipped: the exact entry is not served through it...
     client.retrieve.assert_not_called()
+    # ...but Tier 1 still ran and matched the same entry as a neighbour, which
+    # is what `"1,2"` asks for. The miss above is only half the statement.
+    assert entry is not None, "tiers 1 and 2 were disabled by omitting tier 0"
+    assert client.query_points.called
+
+
+def test_omitting_tier_zero_does_not_disable_the_other_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stated as a property over every setting, rather than one example.
+
+    A tier listed in the setting serves; a tier left out does not. Written this
+    way because the per-example form is what let a gate that returned instead of
+    skipping look correct.
+    """
+    from nlqueries.cache import semantic_cache as sc
+
+    for tiers, expected in [
+        ("0,1,2", True),
+        ("1,2", True),
+        ("1", True),
+        ("0", False),
+        ("2", False),
+        ("", False),
+    ]:
+        monkeypatch.setattr("nlqueries.config.CACHE_ANSWER_TIERS", tiers)
+        sc._known_collections.discard("cache_agent1")
+        sc._missing_collections.pop("cache_agent1", None)
+
+        client = _mock_client()
+        client.query_points.return_value = MagicMock(points=[_near_hit()])
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1", binding=TEST_BINDING).get("how many orders are there")
+
+        served = entry is not None
+        assert served is expected, (
+            f"tiers={tiers!r}: Tier 1 neighbour "
+            f"{'was not served but should be' if expected else 'was served but should not be'}"
+        )
 
 
 def test_with_tier_zero_only_the_same_question_is_still_a_hit(

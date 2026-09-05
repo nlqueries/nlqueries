@@ -801,27 +801,28 @@ class SemanticCache:
         enabled = _enabled_tiers()
 
         # --- Tier 0: exact-match hash lookup (zero embed calls on hit) ---
-        normalized = _normalize_question(question)
-        if 0 not in enabled:
-            return None
-        tier0_id = _point_id_for_question(normalized)
-        with contextlib.suppress(Exception):
-            tier0_hits = client.retrieve(
-                collection_name=self._collection,
-                ids=[tier0_id],
-                with_payload=True,
-            )
-            if tier0_hits:
-                payload = tier0_hits[0].payload or {}
-                # retrieve() is id-only, so enforce payload_filter here (Tier 1/2
-                # push it into the Qdrant query filter). A mismatch falls through
-                # to the cosine tiers rather than returning a foreign-context hit.
-                if _payload_matches(payload, payload_filter):
-                    entry = self._verified_entry(payload)
-                    if entry is not None:
-                        entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
-                        record_cache(hit=True, tier="exact")  # provenance (SYL-1.1)
-                        return entry
+        # Guards the lookup only. A disabled tier is skipped, not a return: the
+        # tiers are independent, and `"1,2"` has to leave 1 and 2 working.
+        if 0 in enabled:
+            tier0_id = _point_id_for_question(_normalize_question(question))
+            with contextlib.suppress(Exception):
+                tier0_hits = client.retrieve(
+                    collection_name=self._collection,
+                    ids=[tier0_id],
+                    with_payload=True,
+                )
+                if tier0_hits:
+                    payload = tier0_hits[0].payload or {}
+                    # retrieve() is id-only, so enforce payload_filter here (Tier
+                    # 1/2 push it into the Qdrant query filter). A mismatch falls
+                    # through to the cosine tiers rather than returning a foreign-
+                    # context hit.
+                    if _payload_matches(payload, payload_filter):
+                        entry = self._verified_entry(payload)
+                        if entry is not None:
+                            entry.hit_count = self._increment_hit_count(client, tier0_id, payload)
+                            record_cache(hit=True, tier="exact")  # provenance (SYL-1.1)
+                            return entry
 
         # --- Tier 1: answer cache (cosine similarity, kind=answer filter) ---
         # Tiers 1 and 2 are what let one user's answer reach another user's
