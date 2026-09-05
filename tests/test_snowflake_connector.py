@@ -207,10 +207,17 @@ def test_execution_is_wrapped_in_a_transaction_that_is_rolled_back():
 
 
 def test_execute_query_no_timeout_when_disabled(monkeypatch):
+    """`_query_call`, not `call_args`.
+
+    Execution is wrapped in `BEGIN` ... `ROLLBACK`, so `call_args` is the
+    rollback, whose kwargs are always empty -- the assertion held whatever the
+    query carried, and would have stayed green against a connector that sent a
+    timeout unconditionally.
+    """
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
-    assert "timeout" not in cursor.execute.call_args.kwargs
+    assert "timeout" not in _query_call(cursor).kwargs
 
 
 def test_execute_query_handles_statements_with_no_result_set():
@@ -227,13 +234,56 @@ def test_execute_query_handles_statements_with_no_result_set():
     assert result.row_count == 0
 
 
-def test_execute_query_captures_errors_without_raising():
+def test_a_failing_begin_is_surfaced_and_nothing_is_committed():
+    """The path the old fixture was accidentally exercising, made deliberate.
+
+    Opening the transaction is itself a statement and can fail -- a dropped
+    session is the realistic case. It has to surface as an error rather than
+    fall through to run the query outside a transaction, which is the one
+    outcome this connector's guard exists to prevent.
+    """
     connector, mock_connection = _connector_with_mock_connection()
     mock_cursor = MagicMock()
-    mock_cursor.execute.side_effect = RuntimeError("SQL compilation error: table does not exist")
+
+    def _execute(sql, *args, **kwargs):
+        if sql == "BEGIN":
+            raise RuntimeError("connection is closed")
+        return None
+
+    mock_cursor.execute.side_effect = _execute
+    mock_connection.cursor.return_value = mock_cursor
+
+    result = connector.execute_query("SELECT 1")
+
+    assert result.error is not None
+    statements = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+    assert "SELECT 1" not in statements, (
+        "the query ran after BEGIN failed, so it ran outside a transaction"
+    )
+
+
+def test_execute_query_captures_errors_without_raising():
+    """The *query* fails, not the BEGIN in front of it.
+
+    A bare `side_effect` now fires on `BEGIN`, so this exercised a failing
+    transaction start and stopped covering the path it is named for. The driver
+    error a caller actually sees comes from the query.
+    """
+    connector, mock_connection = _connector_with_mock_connection()
+    mock_cursor = MagicMock()
+
+    def _execute(sql, *args, **kwargs):
+        if sql == "SELECT * FROM this_table_does_not_exist":
+            raise RuntimeError("SQL compilation error: table does not exist")
+        return None
+
+    mock_cursor.execute.side_effect = _execute
     mock_connection.cursor.return_value = mock_cursor
 
     result = connector.execute_query("SELECT * FROM this_table_does_not_exist")
+
+    statements = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+    assert statements[0] == "BEGIN", "the transaction never opened, so the query never ran"
 
     assert isinstance(result, QueryResult)
     assert result.error is not None

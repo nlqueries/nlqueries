@@ -5,13 +5,23 @@ nlqueries.connectors.capabilities
 What each connector enforces, and what it leaves to the operator.
 
 The read-only transaction and sandbox settings applied by the PostgreSQL,
-SQLite and DuckDB connectors are not available on every engine, and five
-connectors apply nothing equivalent. Each entry states the mechanism used, or
-states that there is none.
+SQLite and DuckDB connectors are not available on every engine. Where they are
+not, a connector applies the most restrictive execution its engine offers --
+usually a transaction that is never committed and is rolled back either way.
+Only BigQuery records no mechanism at all, because a query job has no
+transaction to roll back. Each entry states the mechanism used, or states that
+there is none.
 
-``verified_here`` distinguishes a mechanism exercised by this repository's tests
-from one only documented by the vendor. Snowflake, BigQuery and Redshift require
-accounts a test run cannot provision and are recorded as unverified.
+Two of the recorded mechanisms stop short of covering DDL, and say so: DDL is
+not transactional on Snowflake, and behind the generic SQLAlchemy connector
+MySQL, MariaDB and Oracle commit implicitly around it while SQLite runs it
+outside the transaction.
+
+``verified_here`` distinguishes a mechanism exercised against a real engine by
+this repository's tests from one asserted against a fake driver or only
+documented by the vendor. Snowflake, BigQuery, Redshift, SQL Server and the
+generic SQLAlchemy connector all require engines a test run cannot provision and
+are recorded as unverified.
 """
 
 from __future__ import annotations
