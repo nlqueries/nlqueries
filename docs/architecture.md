@@ -153,10 +153,20 @@ look up, so only an age-based sweep can ever reclaim them.
 
 That the filter behaves correctly is established against a real Qdrant in
 `tests/integration/test_cache_prune_integration.py`, not inferred. `created_at`
-is an ISO string and collections in the field carry a payload index on `kind`
-alone; a `DatetimeRange` that needed a datetime index would either match nothing
-or -- far worse -- match everything, and the difference between those is a
-deleted cache and a destroyed one.
+is an ISO string; a `DatetimeRange` that needed a datetime index it did not have
+would either match nothing or -- far worse -- match everything, and the
+difference between those is a cache that grows and a cache that is gone. It was
+measured on both versions this project ships (`docker-compose.yml` pins v1.9.3,
+enterprise pins v1.18.2) and holds indexed, keyword-indexed and unindexed alike:
+correctness never depended on the index.
+
+Speed does, which is why the sweep is issued with `wait=False` and `created_at`
+is now indexed **as a datetime**. `ensure_collection`'s `payload_indexes`
+creates *keyword* indexes, which do nothing for a range query over a timestamp,
+so it grew a `datetime_indexes` argument rather than accepting an index that
+would have looked like a fix. Collections created before this keep their
+unindexed field and are swept by a scan; because the request does not wait, that
+scan is Qdrant's problem rather than the caller's.
 
 **What the candidate window bounds rather than eliminates.**
 `NLQ_CACHE_COSINE_CANDIDATES` defaults to five. A context-free read on an agent

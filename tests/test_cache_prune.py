@@ -173,6 +173,56 @@ def test_a_failing_sweep_still_leaves_the_entry_written(
     client.upsert.assert_called_once()
 
 
+def test_the_sweep_does_not_wait_for_the_delete_to_be_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`wait=False`, because the sweep sits on the write path.
+
+    The filter ranges over `created_at`, and on a collection created before this
+    change that field is unindexed -- so Qdrant scans to find the matches.
+    Waiting for that to be applied puts an unbounded server-side scan in front of
+    the caller, on precisely the collections large enough for the sweep to matter,
+    against qdrant-client's five-second default. Nothing here depends on the
+    delete having landed by the time `put()` returns.
+    """
+    monkeypatch.setattr("nlqueries.config.CACHE_PRUNE_INTERVAL_SECONDS", 3600)
+    client = _client()
+
+    _prune_expired(client, "cache_agent1", 24)
+
+    assert client.delete.call_args.kwargs["wait"] is False, (
+        "the sweep blocks the write until Qdrant has applied the delete"
+    )
+
+
+def test_the_collection_indexes_created_at_as_a_datetime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A keyword index does not accelerate a range query over a timestamp.
+
+    `ensure_collection`'s `payload_indexes` creates keyword indexes, so asking it
+    to index `created_at` that way would look like a fix and do nothing for the
+    scan the sweep provokes.
+    """
+    monkeypatch.setattr("nlqueries.config.CACHE_PRUNE_INTERVAL_SECONDS", 0)
+    client = _client()
+    seen: dict[str, object] = {}
+
+    def _capture(name: str, size: int, **kwargs: object) -> None:
+        seen.update(kwargs)
+
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        patch("nlqueries.cache.semantic_cache.ensure_collection", side_effect=_capture),
+    ):
+        SemanticCache("agent1", binding=TEST_BINDING).put("how many orders", _Result())
+
+    assert seen.get("datetime_indexes") == ["created_at"], (
+        f"created_at is not indexed as a datetime: {seen}"
+    )
+
+
 def test_the_cutoff_is_the_same_ttl_the_read_path_applies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

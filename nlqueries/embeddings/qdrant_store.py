@@ -107,6 +107,7 @@ def ensure_collection(
     vector_size: int = config.EMBED_DIMENSIONS,
     *,
     payload_indexes: list[str] | None = None,
+    datetime_indexes: list[str] | None = None,
     quantize: bool = True,
 ) -> None:
     """Create a Qdrant collection with cosine distance if it does not exist.
@@ -118,6 +119,10 @@ def ensure_collection(
         payload_indexes: Optional list of payload field names to index as
                          keyword fields.  Existing indexes are skipped via a
                          module-level cache, so repeated calls are cheap.
+        datetime_indexes: Optional list of payload field names to index as
+                         *datetime* fields.  A keyword index does not accelerate
+                         a range query over a timestamp, so a field filtered by
+                         ``DatetimeRange`` belongs here rather than above.
         quantize:        When ``True`` (default), enable INT8 scalar quantization
                          on new collections.  Reduces on-disk and RAM footprint
                          ~4× with <1% recall loss.  Pass ``False`` to disable
@@ -160,6 +165,17 @@ def ensure_collection(
                         field_schema=PayloadSchemaType.KEYWORD,
                     )
                 _indexed_fields.add(key)
+
+    for field in datetime_indexes or ():
+        key = f"{name}:{field}:datetime"
+        if key not in _indexed_fields:
+            with contextlib.suppress(Exception):
+                client.create_payload_index(
+                    collection_name=name,
+                    field_name=field,
+                    field_schema=PayloadSchemaType.DATETIME,
+                )
+            _indexed_fields.add(key)
 
 
 def upsert_capsules(

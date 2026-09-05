@@ -649,7 +649,7 @@ def _context_names_a_reserved_key(context: dict[str, str] | None, where: str) ->
 _last_prune_at: dict[str, float] = {}
 
 
-def _prune_expired(client: Any, collection: str, ttl_hours: int) -> bool:
+def _prune_expired(client: Any, collection: str, ttl_hours: int, *, wait: bool = False) -> bool:
     """Delete points past the TTL. True when a sweep ran and succeeded.
 
     `bool`, not a count: Qdrant's delete does not report how many points matched,
@@ -700,12 +700,14 @@ def _prune_expired(client: Any, collection: str, ttl_hours: int) -> bool:
                     must=[FieldCondition(key="created_at", range=DatetimeRange(lt=cutoff))]
                 )
             ),
-            wait=True,
+            wait=wait,
         )
     except Exception:  # noqa: BLE001 -- a failed sweep must not fail the write
         logger.warning(
-            "Cache sweep of %s failed; expired points remain and will be "
-            "retried on the next write after the interval.",
+            "Cache sweep of %s could not be issued; it will be retried on the "
+            "first write after the interval. Whether the delete reached Qdrant "
+            "is not knowable from here -- the request is sent without waiting "
+            "for it to be applied.",
             collection,
             exc_info=True,
         )
@@ -1224,7 +1226,16 @@ class SemanticCache:
             logger.debug("Cache write skipped: %s.", refusal)
             return
 
-        ensure_collection(self._collection, CACHE_VECTOR_SIZE, payload_indexes=["kind"])
+        # `created_at` is indexed as a datetime because the sweep filters on it
+        # with `DatetimeRange`. A keyword index would not accelerate that, and
+        # unindexed means Qdrant scans the collection -- on exactly the
+        # collections large enough for the sweep to matter.
+        ensure_collection(
+            self._collection,
+            CACHE_VECTOR_SIZE,
+            payload_indexes=["kind"],
+            datetime_indexes=["created_at"],
+        )
         # It exists as of now, so stop remembering that it did not — otherwise
         # the very process that just created it would keep reporting a miss for
         # up to the negative TTL.

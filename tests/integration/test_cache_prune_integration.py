@@ -28,6 +28,14 @@ from nlqueries.cache.semantic_cache import _last_prune_at, _prune_expired  # noq
 from qdrant_client import QdrantClient  # noqa: E402
 from qdrant_client import models as qm  # noqa: E402
 
+#: Pinned, not `latest`. This file exists to establish a version-dependent
+#: property of Qdrant's filtering, and evidence is only worth what it says about
+#: the versions actually deployed: `docker-compose.yml` here pins v1.9.3 and
+#: enterprise pins v1.18.2. Verified against both; the older is used, since a
+#: property that holds on the oldest supported server holds on the newer one.
+#: Bump this deliberately, alongside those files.
+QDRANT_IMAGE = "qdrant/qdrant:v1.9.3"
+
 COLLECTION = "cache_prune_probe"
 TTL_HOURS = 24
 
@@ -40,7 +48,7 @@ def qdrant() -> object:
         from testcontainers.qdrant import QdrantContainer  # type: ignore[no-redef]
 
     try:
-        container = QdrantContainer("qdrant/qdrant:latest")
+        container = QdrantContainer(QDRANT_IMAGE)
         container.start()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"Docker / Qdrant container unavailable: {exc}")
@@ -112,7 +120,7 @@ def test_the_sweep_deletes_only_what_a_read_would_have_discarded(
     _seed(client, {1: 100, 2: 25, 3: 23, 4: 0})
     assert _ids(client) == {1, 2, 3, 4}
 
-    _prune_expired(client, COLLECTION, TTL_HOURS)
+    _prune_expired(client, COLLECTION, TTL_HOURS, wait=True)
 
     assert _ids(client) == {3, 4}, (
         "the sweep did not delete exactly the points past the TTL -- if this is "
@@ -123,11 +131,11 @@ def test_the_sweep_deletes_only_what_a_read_would_have_discarded(
 def test_the_sweep_is_idempotent(client: QdrantClient) -> None:
     """Running it twice removes nothing further and does not error."""
     _seed(client, {1: 100, 2: 0})
-    _prune_expired(client, COLLECTION, TTL_HOURS)
+    _prune_expired(client, COLLECTION, TTL_HOURS, wait=True)
     after_first = _ids(client)
 
     _last_prune_at.clear()  # the interval gate is unit-tested; exercise the delete
-    _prune_expired(client, COLLECTION, TTL_HOURS)
+    _prune_expired(client, COLLECTION, TTL_HOURS, wait=True)
 
     assert _ids(client) == after_first == {2}
 
@@ -139,7 +147,7 @@ def test_an_entry_exactly_at_the_boundary_is_kept(client: QdrantClient) -> None:
     read could legitimately return, which is the one thing it must never do.
     """
     _seed(client, {1: TTL_HOURS - 1})
-    _prune_expired(client, COLLECTION, TTL_HOURS)
+    _prune_expired(client, COLLECTION, TTL_HOURS, wait=True)
     assert _ids(client) == {1}
 
 
@@ -152,5 +160,5 @@ def test_the_sweep_leaves_a_collection_of_only_fresh_points_alone(
     nothing at all.
     """
     _seed(client, {1: 0, 2: 1, 3: 2})
-    _prune_expired(client, COLLECTION, TTL_HOURS)
+    _prune_expired(client, COLLECTION, TTL_HOURS, wait=True)
     assert _ids(client) == {1, 2, 3}
