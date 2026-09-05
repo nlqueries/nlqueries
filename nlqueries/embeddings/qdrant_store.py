@@ -39,8 +39,8 @@ Public API
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +49,8 @@ from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
 from nlqueries.telemetry import chunk_search_latency, get_tracer
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from qdrant_client import QdrantClient as _QdrantClient
@@ -152,29 +154,37 @@ def ensure_collection(
             )
         client.create_collection(**create_kwargs)
 
-    if payload_indexes:
+    if payload_indexes or datetime_indexes:
+        # Imported for both loops. It used to be imported inside the keyword
+        # branch, which a caller passing only `datetime_indexes` never entered --
+        # and the `suppress(Exception)` below swallowed the resulting NameError,
+        # so the index was silently never created and the field was still marked
+        # done, so it was never retried either.
         from qdrant_client.models import PayloadSchemaType
 
-        for field in payload_indexes:
-            key = f"{name}:{field}"
-            if key not in _indexed_fields:
-                with contextlib.suppress(Exception):
-                    client.create_payload_index(
-                        collection_name=name,
-                        field_name=field,
-                        field_schema=PayloadSchemaType.KEYWORD,
-                    )
-                _indexed_fields.add(key)
+        wanted: list[tuple[str, str, Any]] = [
+            (field, f"{name}:{field}", PayloadSchemaType.KEYWORD) for field in payload_indexes or ()
+        ]
+        wanted += [
+            (field, f"{name}:{field}:datetime", PayloadSchemaType.DATETIME)
+            for field in datetime_indexes or ()
+        ]
 
-    for field in datetime_indexes or ():
-        key = f"{name}:{field}:datetime"
-        if key not in _indexed_fields:
-            with contextlib.suppress(Exception):
+        for field, key, schema in wanted:
+            if key in _indexed_fields:
+                continue
+            try:
                 client.create_payload_index(
                     collection_name=name,
                     field_name=field,
-                    field_schema=PayloadSchemaType.DATETIME,
+                    field_schema=schema,
                 )
+            except Exception:  # noqa: BLE001
+                # Logged rather than suppressed outright. An index that already
+                # exists lands here, which is why this is not an error -- but so
+                # does a programming mistake, and that is exactly what went
+                # unseen when the import was in the wrong scope.
+                logger.debug("Payload index %s on %s was not created.", field, name, exc_info=True)
             _indexed_fields.add(key)
 
 

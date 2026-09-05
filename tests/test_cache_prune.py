@@ -247,3 +247,54 @@ def test_the_cutoff_is_the_same_ttl_the_read_path_applies(
     assert before - timedelta(hours=6) <= cutoff <= after - timedelta(hours=6), (
         f"cutoff {cutoff} does not correspond to a 6-hour TTL"
     )
+
+
+def test_a_datetime_index_is_created_without_keyword_indexes() -> None:
+    """`ensure_collection` must not need `payload_indexes` to honour the other.
+
+    `PayloadSchemaType` was imported inside the keyword branch, which a caller
+    passing only `datetime_indexes` never entered -- and the `suppress(Exception)`
+    around index creation swallowed the resulting `NameError`. So the index was
+    never created, no error surfaced, and the field was still recorded as done,
+    so it was never retried either.
+
+    This asserts the index is **created**, not that `ensure_collection` was called
+    with the right argument. The earlier test asserted the latter, which is why
+    it stayed green through all of that.
+    """
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    client = MagicMock()
+    client.collection_exists.return_value = True
+
+    with patch.object(qs, "_get_client", return_value=client):
+        qs.ensure_collection("c", 4, datetime_indexes=["created_at"])
+
+    assert client.create_payload_index.call_count == 1, (
+        "a datetime index was silently not created when no keyword indexes were asked for"
+    )
+    call = client.create_payload_index.call_args
+    assert call.kwargs["field_name"] == "created_at"
+    assert "datetime" in str(call.kwargs["field_schema"]).lower()
+
+
+def test_both_kinds_of_index_are_created_with_the_right_schema() -> None:
+    """A keyword index does not accelerate a range query, so the schema matters."""
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    client = MagicMock()
+    client.collection_exists.return_value = True
+
+    with patch.object(qs, "_get_client", return_value=client):
+        qs.ensure_collection("c", 4, payload_indexes=["kind"], datetime_indexes=["created_at"])
+
+    got = {
+        c.kwargs["field_name"]: str(c.kwargs["field_schema"]).lower()
+        for c in client.create_payload_index.call_args_list
+    }
+    assert "keyword" in got["kind"]
+    assert "datetime" in got["created_at"], (
+        f"created_at was indexed as {got['created_at']}, which does nothing for a DatetimeRange"
+    )
