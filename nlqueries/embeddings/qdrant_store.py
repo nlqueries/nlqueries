@@ -216,8 +216,9 @@ def ensure_collection(
                 #
                 # Safe to retry because creating an index that already exists
                 # succeeds rather than raising. Measured on v1.9.3 and v1.18.2,
-                # the two versions this project ships, since the value of
-                # retrying rests entirely on that.
+                # since the value of retrying rests entirely on that. (v1.9.3 is
+                # no longer shipped -- it predates the query API -- but it is
+                # what the measurement was taken on, so it is what is recorded.)
                 _indexed_fields.add(key)
             except Exception:  # noqa: BLE001
                 # Logged rather than suppressed outright: a genuine failure and a

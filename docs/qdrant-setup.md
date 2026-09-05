@@ -32,36 +32,85 @@ A `200 OK` means it's up, and the body carries the version:
 > context, rather than one that reports an error. Check the `version` above
 > before assuming a quiet system is a working one.
 
+> **Keep the client within one minor of the server.** `qdrant-client` compares
+> the two and warns on every connection when the minor versions differ by more
+> than one — "Qdrant client version X is incompatible with server version Y". It
+> is a warning rather than a failure, and searches keep working, but it is easy
+> to mistake for the fault above. `requirements/core.lock` pins client 1.19.0,
+> which suits the v1.18.2 the compose file ships. If you run your own Qdrant at
+> an older version, install a client to match it — the `>=1.10` floor in
+> `pyproject.toml` is about the query API existing, not about which server you
+> point at.
+
 (`/healthz` also answers, but only with the plain text `healthz check passed` —
 it tells you the server is alive, not whether it is new enough.)
 
 ### Upgrading an existing Qdrant
 
-Qdrant does not read its storage format arbitrarily far forward. Measured by
-writing a collection with v1.9.3 and reopening the same volume:
+**If your `qdrant-data` volume was written by v1.9.x, it must be removed.** There
+is no data-preserving path forward. The failure is loud — the container exits on
+startup with:
+
+```
+Failed to deserialize segment.json: unknown variant `on_disk`,
+expected `mmap` or `in_ram_mmap`
+```
+
+Measured, by writing a collection with v1.9.3 and reopening the same volume:
 
 | upgraded to | result |
 |---|---|
 | v1.10.1 | starts, data intact |
 | v1.12.4 | starts, data intact |
 | v1.18.2 | **panics on startup and exits** |
+| v1.9.3 → v1.12.4 → v1.18.2 | **panics at the last hop, identically** |
 
-The failure is loud — the container exits with `Failed to deserialize
-segment.json: unknown variant 'on_disk'` — so you will know. If it happens, the
-remedy is to remove the volume: everything NLQueries keeps in Qdrant is
-rebuildable. The semantic cache regenerates as questions are asked, schema and
-capsule vectors come back from `nlqueries process-history --embed`, and document
-chunks need their sources re-ingested. Nothing there is a system of record, but
-the last of those costs real time, so take the step-by-step route if that
-matters:
+The last row is the one that matters: stepping one minor at a time does **not**
+carry the storage forward. Running an intermediate version postpones the reset
+rather than avoiding it, because nothing rewrites the old segment format on the
+way through.
+
+Nor is staying on an intermediate version a migration. `qdrant-client` 1.19.0,
+which this project locks, treats a server more than one minor behind as
+incompatible and warns on every client construction — so pinning v1.12.4 buys a
+warning rather than a working upgrade.
 
 ```bash
 docker compose down
-# edit the pin one minor at a time, bringing the stack up between each
+docker volume rm "$(basename "$PWD")_qdrant-data"   # this volume only
 docker compose up -d
 ```
 
-Once it's up, skip to [Configure NLQueries](#configure-nlqueries-to-use-qdrant).
+**Not `docker compose down -v`.** That removes *every* named volume in the
+stack, and this one also defines `nlqueries-data`, which holds knowledge bases,
+`connectors.yaml`, capsules and feedback — none of which the Qdrant version has
+anything to do with, and not all of which is regenerable. Name the volume.
+
+Compose prefixes volume names with the project name, which defaults to the
+directory the file sits in; `docker volume ls` will show the exact name if the
+command above does not match.
+
+The benchmarks stack in `benchmarks/docker-compose.yaml` keeps its own Qdrant and
+its own volume, and was pinned to v1.9.2 — so it fails the same way, and the
+command above will not match it. Started with `-f benchmarks/docker-compose.yaml`,
+Compose takes the project name from that file's directory, so the volume is
+created as `benchmarks_qdrant_bench_data` rather than the `qdrant_bench_data`
+written in the file:
+
+```bash
+docker compose -f benchmarks/docker-compose.yaml down
+docker volume rm benchmarks_qdrant_bench_data
+```
+
+Nothing in it is worth preserving — a benchmark run rebuilds its own fixtures.
+
+**What that costs.** Nothing in Qdrant here is a system of record, but the parts
+are not equally cheap to rebuild. The semantic cache regenerates on its own as
+questions are asked. Schema and capsule vectors come back from
+`nlqueries process-history --embed`. Document chunks need their sources
+re-ingested, which is the only part that costs real time — if you have ingested a
+large corpus, plan for it rather than discovering it afterwards.
+
 
 ## Option A — Docker (recommended for local development)
 

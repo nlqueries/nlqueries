@@ -15,20 +15,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   those paths treat a failed search as an empty result, the symptom was a system
   answering slowly and without context rather than reporting an error. Measured
   on the version this file pinned and the one it pins now: `v1.9.3 -> MISS`,
-  `v1.12.4 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
-  serve it. Both
-  files now pin v1.12.4, and the `qdrant-client` floor moves from `>=1.9` to
+  `v1.18.2 -> CACHED`, driving a Tier 1 paraphrase so only the cosine tier can
+  serve it (v1.12.4 was measured too, and also serves it). Both
+  files now pin v1.18.2, matching enterprise and the locked client, and the
+  `qdrant-client` floor moves from `>=1.9` to
   `>=1.10` — the client gained `query_points` at the same release, so a resolved
   1.9.x raised `AttributeError` at every call site and reached the same silent
   empty result.
 
-  **v1.12.4 rather than the v1.18.2 enterprise pins, because of the data
-  volume.** Measured by writing with v1.9.3 and reopening the same volume:
-  v1.10.1 and v1.12.4 start with the data intact, v1.18.2 panics on startup and
-  exits. Pinning v1.18.2 would have turned `docker compose pull && up` into a
-  Qdrant that will not start for anyone already running this stack. See
-  "Upgrading an existing Qdrant" in `docs/qdrant-setup.md` for the route to
-  newer versions and what a volume reset costs.
+  **An existing `qdrant-data` volume written by v1.9.x must be removed.**
+  v1.18.2 panics on startup against it, and there is no data-preserving path
+  forward: stepping v1.9.3 → v1.12.4 → v1.18.2 panics identically at the last
+  hop, and staying on v1.12.4 makes `qdrant-client` 1.19.0 report the server as
+  incompatible on every construction. The failure is loud — the container exits
+  — and `docs/qdrant-setup.md` records the measurements, the exact error, and
+  what rebuilding costs. The cache regenerates itself; document chunks need
+  re-ingesting.
 
 - The semantic cache no longer reports a failed search as a cache miss. A
   rejected request and an empty cache were the same `None` to the caller while

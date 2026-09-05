@@ -19,22 +19,26 @@
 services:
 
   qdrant:
-    # v1.12.4, not the v1.18.2 enterprise pins, and the difference is the
-    # `qdrant-data` volume below. Measured, writing with v1.9.3 (what this file
-    # used to pin) and reopening the same volume:
+    # v1.18.2, matching enterprise and the `qdrant-client` the lock pins.
     #
-    #     v1.10.1 -> starts, data intact
-    #     v1.12.4 -> starts, data intact
-    #     v1.18.2 -> panics on startup and exits:
-    #                "Failed to deserialize segment.json: unknown variant
-    #                 `on_disk`, expected `mmap` or `in_ram_mmap`"
+    # An existing `qdrant-data` volume written by the v1.9.3 this file used to
+    # pin will NOT open here -- v1.18.2 panics on startup and exits:
     #
-    # So v1.18.2 would turn `docker compose pull && up` into a Qdrant that will
-    # not start for anyone already running this stack. v1.10 is the floor
-    # (`query_points` arrives there), v1.12.4 clears it and still reads the
-    # storage already on disk. Enterprise deployments were never created against
-    # v1.9.x, which is why they can pin further ahead.
-    image: qdrant/qdrant:v1.12.4
+    #     Failed to deserialize segment.json: unknown variant `on_disk`,
+    #     expected `mmap` or `in_ram_mmap`
+    #
+    # v1.12.4 was tried as a kinder pin, since it opens that storage. It was
+    # abandoned for two measured reasons. Stepping v1.9.3 -> v1.12.4 -> v1.18.2
+    # panics identically at the last hop, so the intermediate version preserves
+    # nothing -- it only postpones the reset. And `qdrant-client` 1.19.0, which
+    # the lock pins, reports v1.12.4 as incompatible ("minor version difference
+    # must not exceed 1") and warns on every client construction, which reads
+    # exactly like the fault this pin exists to fix.
+    #
+    # So there is no data-preserving path off v1.9.x, and pinning short of
+    # v1.18.2 buys a warning rather than a migration. See "Upgrading an existing
+    # Qdrant" in docs/qdrant-setup.md.
+    image: qdrant/qdrant:v1.18.2
     container_name: nlqueries-qdrant
     restart: unless-stopped
     environment:
