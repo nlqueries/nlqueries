@@ -165,17 +165,45 @@ def _mock_cursor() -> tuple[SnowflakeConnector, MagicMock]:
     return connector, cursor
 
 
+def _query_call(cursor, sql="SELECT 1"):
+    """The execute call carrying *sql*, not simply the last one.
+
+    Execution is wrapped in `BEGIN` ... `ROLLBACK` now, so `call_args` is the
+    rollback. Selecting the call by its statement keeps these tests about the
+    timeout rather than about the position of the query in the sequence.
+    """
+    for call in cursor.execute.call_args_list:
+        if call.args and call.args[0] == sql:
+            return call
+    raise AssertionError(f"{sql!r} was never executed: {cursor.execute.call_args_list}")
+
+
 def test_execute_query_passes_explicit_timeout_to_cursor():
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1", timeout_seconds=30)
-    assert cursor.execute.call_args.kwargs.get("timeout") == 30
+    assert _query_call(cursor).kwargs.get("timeout") == 30
 
 
 def test_execute_query_applies_default_timeout(monkeypatch):
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 45)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
-    assert cursor.execute.call_args.kwargs.get("timeout") == 45
+    assert _query_call(cursor).kwargs.get("timeout") == 45
+
+
+def test_execution_is_wrapped_in_a_transaction_that_is_rolled_back():
+    """Snowflake autocommits each statement, so a write that reached the driver
+    was permanent the moment it ran. BEGIN turns that off for the query and the
+    ROLLBACK undoes it, on the success path as much as the failure one."""
+    connector, cursor = _mock_cursor()
+
+    connector.execute_query("SELECT 1")
+
+    statements = [c.args[0] for c in cursor.execute.call_args_list if c.args]
+    assert statements[0] == "BEGIN"
+    assert statements[-1] == "ROLLBACK"
+    assert "SELECT 1" in statements
+    assert not any(s == "COMMIT" for s in statements)
 
 
 def test_execute_query_no_timeout_when_disabled(monkeypatch):

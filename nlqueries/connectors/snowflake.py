@@ -9,6 +9,7 @@ part of the public OSS API and has no dependency on the enterprise layer.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from datetime import datetime, timezone
@@ -395,6 +396,23 @@ class SnowflakeConnector(DatabaseConnector):
             connection = self._require_connection()
             cursor = connection.cursor()
             try:
+                # An explicit transaction that is never committed.
+                #
+                # Snowflake has no read-only transaction mode to ask for, and by
+                # default each statement autocommits -- so a write that reached
+                # here was permanent the moment it ran. Every validator in front
+                # of this one asks only whether the root node is a Select, and
+                # `SELECT some_volatile_function(...)` satisfies that while still
+                # writing; an audit reproduced exactly that shape through another
+                # connector twice, eight weeks apart.
+                #
+                # BEGIN turns autocommit off for what follows, and the ROLLBACK in
+                # the `finally` below undoes it whether the statement succeeded or
+                # not. DDL is not transactional on Snowflake, so a `CREATE` or
+                # `DROP` still stands: the control for that is a role holding only
+                # USAGE and SELECT, which only the operator can grant. See
+                # docs/database-hardening.md.
+                cursor.execute("BEGIN")
                 if effective_timeout is not None and effective_timeout > 0:
                     cursor.execute(sql, timeout=max(1, int(effective_timeout)))
                 else:
@@ -419,6 +437,13 @@ class SnowflakeConnector(DatabaseConnector):
                     error=None,
                 )
             finally:
+                # Before the cursor closes, and on the success path too: the
+                # point is that a statement which *worked* is still undone.
+                # Suppressed because a failed rollback must not replace the
+                # query's own error, and the connection is about to be returned
+                # to the pool either way.
+                with contextlib.suppress(Exception):
+                    cursor.execute("ROLLBACK")
                 cursor.close()
         except Exception as exc:  # noqa: BLE001 — surfaced via QueryResult.error, not raised
             elapsed_ms = (time.perf_counter() - start) * 1000

@@ -44,6 +44,34 @@ from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_
 logger = logging.getLogger(__name__)
 
 
+def _apply_read_only(conn: Connection) -> None:
+    """Best-effort per-dialect read-only transaction on *conn*.
+
+    The counterpart to :func:`_apply_statement_timeout`, and a **no-op** on
+    dialects that cannot express it -- there the unconditional rollback in
+    ``_execute_query`` is the whole of the guard.
+
+    Postgres and Redshift take ``SET TRANSACTION READ ONLY``, which is
+    transaction-scoped and must be the first statement in the transaction, which
+    is where this is called from. It is broader than any validator can be,
+    because it applies to what a statement *does* rather than to how it is
+    spelled: DML and DDL anywhere in the call graph, and sequence functions,
+    refused by name.
+
+    MySQL and MariaDB are deliberately left to the rollback. Their form is
+    ``SET SESSION TRANSACTION READ ONLY``, which sets the mode for *subsequent*
+    transactions and is refused with error 1568 inside an open one -- and by the
+    time anything here can run, SQLAlchemy has already emitted ``BEGIN`` on the
+    first execute. ``START TRANSACTION READ ONLY`` would be the right statement
+    and is not something a caller can issue when SQLAlchemy owns the transaction.
+    Issuing the session form anyway would turn every MySQL query into an error,
+    which is a worse outcome than the rollback it would be layered on top of.
+    """
+    name = conn.engine.dialect.name
+    if name in ("postgresql", "redshift"):
+        conn.execute(text("SET TRANSACTION READ ONLY"))
+
+
 def _apply_statement_timeout(conn: Connection, seconds: float) -> None:
     """Best-effort per-dialect statement timeout on *conn*.
 
@@ -362,26 +390,43 @@ class SQLAlchemyConnector(DatabaseConnector):
         )
         start = time.perf_counter()
         try:
-            with self._require_engine().begin() as conn:
-                if effective_timeout is not None and effective_timeout > 0:
-                    _apply_statement_timeout(conn, effective_timeout)
-                cursor_result = conn.execute(text(sql))
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                _truncated, _reason = False, None
-                if cursor_result.returns_rows:
-                    columns = list(cursor_result.keys())
-                    rows, _truncated, _reason = collect(cursor_result, max_rows)
-                else:
-                    columns, rows = [], []
-                return QueryResult(
-                    columns=columns,
-                    rows=rows,
-                    row_count=len(rows),
-                    truncated=_truncated,
-                    truncation_reason=_reason,
-                    execution_time_ms=elapsed_ms,
-                    error=None,
-                )
+            # `connect()` with an unconditional rollback, never `begin()`, which
+            # commits on the way out. Every validator in front of this one asks
+            # only whether the root node is a Select, and
+            # `SELECT some_volatile_function(...)` satisfies that while still
+            # writing -- reproduced through the Postgres connector twice by audit,
+            # eight weeks apart, and committed by `begin()` both times. This
+            # connector serves MySQL and any URL nobody wrote a dedicated class
+            # for, so it had the same ending and no read-only layer at all.
+            with self._require_engine().connect() as conn:
+                try:
+                    # First statement in the transaction, which is where a
+                    # read-only mode has to be set if the dialect has one.
+                    _apply_read_only(conn)
+                    if effective_timeout is not None and effective_timeout > 0:
+                        _apply_statement_timeout(conn, effective_timeout)
+                    cursor_result = conn.execute(text(sql))
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    _truncated, _reason = False, None
+                    if cursor_result.returns_rows:
+                        columns = list(cursor_result.keys())
+                        rows, _truncated, _reason = collect(cursor_result, max_rows)
+                    else:
+                        columns, rows = [], []
+                    return QueryResult(
+                        columns=columns,
+                        rows=rows,
+                        row_count=len(rows),
+                        truncated=_truncated,
+                        truncation_reason=_reason,
+                        execution_time_ms=elapsed_ms,
+                        error=None,
+                    )
+                finally:
+                    # In `finally`, so it runs on success too: the point is that a
+                    # statement which succeeded is still not committed. Rows are
+                    # already collected by here.
+                    conn.rollback()
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.exception("SQLAlchemyConnector.execute_query failed")

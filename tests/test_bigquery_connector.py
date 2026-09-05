@@ -179,10 +179,29 @@ def test_execute_query_applies_default_job_timeout(monkeypatch):
 
 
 def test_execute_query_no_job_timeout_when_disabled(monkeypatch):
+    """No timeout, asserted on the timeout rather than on the job config.
+
+    A job config is always sent now -- it carries `use_legacy_sql=False` and
+    `create_session=False` regardless of the timeout -- so "no job_config" no
+    longer means "no timeout". The property this test is about is unchanged.
+    """
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
     connector, client = _mock_client_for_timeout()
     connector.execute_query("SELECT 1")
-    assert "job_config" not in client.query.call_args.kwargs
+    assert client.query.call_args.kwargs["job_config"].job_timeout_ms is None
+
+
+def test_execute_query_pins_the_dialect_and_refuses_a_session(monkeypatch):
+    """BigQuery has no transaction to roll back, so the little that can be set
+    on the job is set: the SQL dialect every validator in front of this one
+    parsed, and no session for a later statement to join."""
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    connector, client = _mock_client_for_timeout()
+    connector.execute_query("SELECT 1")
+
+    job_config = client.query.call_args.kwargs["job_config"]
+    assert job_config.use_legacy_sql is False
+    assert job_config.create_session is False
 
 
 # ---------------------------------------------------------------------------
