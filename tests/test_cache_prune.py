@@ -392,3 +392,48 @@ def test_dropping_a_collection_forgets_its_indexes() -> None:
         "the recreated collection was left without its indexes, because the "
         "process still believed they existed"
     )
+
+
+def test_forgetting_indexes_tolerates_a_concurrent_write() -> None:
+    """`_indexed_fields` is shared across threads, so it must not be iterated live.
+
+    Cache writes reach `ensure_collection` through `asyncio.to_thread`, so
+    another agent's first write can add a key while this is scanning. Iterating
+    the set directly raises "Set changed size during iteration" -- and
+    `invalidate()` calls this *before* the `suppress(Exception)` around the
+    delete, so that error would propagate and leave the collection undeleted by
+    a failure that has nothing to do with deleting it.
+
+    Reproduced against the live-iteration form before the fix; this pins the
+    snapshot so it cannot regress to it.
+    """
+    import threading
+
+    from nlqueries.embeddings import qdrant_store as qs
+
+    qs._indexed_fields.clear()
+    for i in range(2000):
+        qs._indexed_fields.add(f"other:{i}")
+    qs._indexed_fields.add("cache_a:kind")
+    qs._indexed_fields.add("cache_a:created_at:datetime")
+
+    stop = threading.Event()
+
+    def churn() -> None:
+        i = 0
+        while not stop.is_set():
+            key = f"live:{i % 500}"
+            qs._indexed_fields.add(key)
+            qs._indexed_fields.discard(key)
+            i += 1
+
+    writer = threading.Thread(target=churn, daemon=True)
+    writer.start()
+    try:
+        for _ in range(500):
+            qs.forget_collection_indexes("cache_a")
+    finally:
+        stop.set()
+        writer.join(timeout=2)
+
+    assert not [k for k in qs._indexed_fields.copy() if k.startswith("cache_a:")]

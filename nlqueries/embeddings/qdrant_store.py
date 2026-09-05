@@ -117,9 +117,20 @@ def forget_collection_indexes(name: str) -> None:
     The key format is this module's business, which is why the clearing lives
     here rather than at the call site.
     """
+    # A snapshot, not a live iteration. `_indexed_fields` is shared across
+    # threads -- cache writes reach `ensure_collection` through
+    # `asyncio.to_thread` -- so another agent's first write can add a key while
+    # this is scanning, and iterating the set directly raises "Set changed size
+    # during iteration". `set.copy()` is a single C-level operation, so the
+    # snapshot itself cannot tear.
+    #
+    # It would propagate, too: `invalidate()` calls this *before* the
+    # `suppress(Exception)` around the delete, so the collection would be left
+    # undeleted by a failure that has nothing to do with deleting it.
     prefix = f"{name}:"
-    for key in [k for k in _indexed_fields if k.startswith(prefix)]:
-        _indexed_fields.discard(key)
+    for key in _indexed_fields.copy():
+        if key.startswith(prefix):
+            _indexed_fields.discard(key)
 
 
 def ensure_collection(
