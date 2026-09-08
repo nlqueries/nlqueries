@@ -308,6 +308,8 @@ def test_get_llm_client_returns_anthropic_client_by_default():
         mock_ac_cfg.ANTHROPIC_API_KEY = "test-key"
         mock_ac_cfg.LLM_MODEL = "claude-sonnet-4-5"
         mock_llm_cfg.LLM_PROVIDER = "anthropic"
+        mock_llm_cfg.LLM_PROVIDER_IS_BEDROCK = False
+        mock_llm_cfg.LLM_MODEL = "claude-sonnet-4-5"
         client = get_llm_client()
 
     assert isinstance(client, AnthropicClient)
@@ -319,6 +321,8 @@ def test_get_llm_client_raises_on_unknown_provider():
         pytest.raises(ValueError, match="Unknown LLM provider"),
     ):
         mock_llm_cfg.LLM_PROVIDER = "unknown_provider"
+        mock_llm_cfg.LLM_PROVIDER_IS_BEDROCK = False
+        mock_llm_cfg.LLM_MODEL = "claude-sonnet-4-5"
         get_llm_client()
 
 
@@ -333,6 +337,7 @@ def test_get_llm_client_default_tier_uses_llm_model():
         mock_llm_cfg.LLM_PROVIDER = "anthropic"
         mock_llm_cfg.LLM_MODEL = "claude-sonnet-4-5"
         mock_llm_cfg.LLM_MODEL_FAST = "claude-haiku-4-5-20251001"
+        mock_llm_cfg.LLM_PROVIDER_IS_BEDROCK = False
         client = get_llm_client()
 
     assert isinstance(client, AnthropicClient)
@@ -350,6 +355,7 @@ def test_get_llm_client_fast_tier_uses_llm_model_fast():
         mock_llm_cfg.LLM_PROVIDER = "anthropic"
         mock_llm_cfg.LLM_MODEL = "claude-sonnet-4-5"
         mock_llm_cfg.LLM_MODEL_FAST = "claude-haiku-4-5-20251001"
+        mock_llm_cfg.LLM_PROVIDER_IS_BEDROCK = False
         client = get_llm_client(tier="fast")
 
     assert isinstance(client, AnthropicClient)

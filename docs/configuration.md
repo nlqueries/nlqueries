@@ -84,13 +84,25 @@ The IAM role needs `bedrock:InvokeModel` and
 `LLM_PROVIDER=bedrock` also resolves to LiteLLM, but it does **not** replace the
 model id: naming the provider does not choose a model, and the default
 `LLM_MODEL` is an Anthropic id that LiteLLM would route to Anthropic. So
-`LLM_PROVIDER=bedrock` requires an `LLM_MODEL` beginning `bedrock/` and raises at
-startup without one, rather than starting up and calling the wrong provider.
-Setting only the model works on its own and is the shorter path.
+`LLM_PROVIDER=bedrock` requires an `LLM_MODEL` beginning `bedrock/`, and without
+one the first LLM call fails with a message saying so. It fails there rather
+than at startup deliberately — `connect`, `extract-schema` and the diagnostics
+you would run to find the problem never touch an LLM, and should still work
+while you are fixing it. Setting only the model works on its own and is the
+shorter path.
 
-The `bedrock/` prefix is checked before `ANTHROPIC_API_KEY`, so a Bedrock
-deployment that still has an Anthropic key in its environment for something else
-keeps going to Bedrock.
+**The model decides, wherever it is set.** A `bedrock/` id selects Bedrock even
+when something else names a provider — before the request is built, not at the
+API. That matters because the Anthropic client does not reject a `bedrock/`
+model id: it would send the system prompt, the schema and the question to
+`api.anthropic.com` and only then report that the model does not exist. For a
+deployment that chose Bedrock to keep traffic inside its AWS account, the data
+would already have left. A provider explicitly naming something other than
+Bedrock alongside a `bedrock/` model is refused as the contradiction it is.
+
+The same ordering applies to key-based detection: the `bedrock/` prefix is
+checked before `ANTHROPIC_API_KEY`, so a Bedrock deployment that still has an
+Anthropic key in its environment for something else keeps going to Bedrock.
 
 ---
 

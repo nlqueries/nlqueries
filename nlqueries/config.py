@@ -94,6 +94,23 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 """Anthropic API key for Claude-based query generation and summarisation."""
 
 
+BEDROCK_PROVIDER = "bedrock"
+"""The provider name an administrator writes for Amazon Bedrock.
+
+Not a client of its own — it resolves to ``litellm`` — but people configure the
+service they are paying for, not the library that reaches it. Declared here so
+the environment path and the per-request override path recognise the same word.
+"""
+
+BEDROCK_MODEL_PREFIX = "bedrock/"
+"""The LiteLLM model-id prefix that selects Bedrock, and the surer signal.
+
+A deployment can reach Bedrock by naming the provider or by naming the model,
+and the model is the one that cannot be left implicit — so it is what both
+detection paths key on.
+"""
+
+
 def _configured_model() -> str:
     """The LLM_MODEL env value, read directly.
 
@@ -116,26 +133,15 @@ def _detect_provider() -> str:
         # own right, but nobody administering a Bedrock deployment thinks of
         # their provider as "litellm". Accept the name they would actually
         # write; without this it raises "Unknown LLM provider: 'bedrock'".
-        if explicit.lower() == "bedrock":
-            if not _configured_model().startswith("bedrock/"):
-                # Naming the provider is not enough, because the provider does
-                # not decide the model. With LLM_MODEL unset the default is
-                # `claude-sonnet-4-5`, a bare Anthropic id, and LiteLLM would
-                # route it to the Anthropic API — so a deployment that asked for
-                # Bedrock would quietly leave the AWS account and fail on an
-                # Anthropic key it never meant to use. There is no safe default
-                # to substitute: Bedrock model ids differ per region and are
-                # only callable once enabled for the account.
-                raise ValueError(
-                    "LLM_PROVIDER=bedrock requires LLM_MODEL to name a Bedrock "
-                    "model, e.g. "
-                    "LLM_MODEL=bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0. "
-                    f"The current value is {_configured_model() or '(unset)'!r}, "
-                    "which LiteLLM would route to another provider."
-                )
-            return "litellm"
-        return explicit
-    if _configured_model().startswith("bedrock/"):
+        #
+        # Naming it is not sufficient, though — the provider does not choose the
+        # model, and the default is an Anthropic id LiteLLM would route to
+        # Anthropic. That mismatch is refused in ``llm.get_llm_client`` rather
+        # than here, because this module is imported by every CLI command,
+        # including those that never touch an LLM and the diagnostics someone
+        # would run to find the problem in the first place.
+        return "litellm" if explicit.lower() == BEDROCK_PROVIDER else explicit
+    if _configured_model().startswith(BEDROCK_MODEL_PREFIX):
         # Deliberately ahead of the ANTHROPIC_API_KEY check. A Bedrock
         # deployment very often still has an Anthropic key in its environment
         # for something else, and routing a `bedrock/...` model id to the
@@ -166,6 +172,15 @@ def _detect_model(provider: str) -> str:
 
 LLM_PROVIDER: str = _detect_provider()
 """LLM provider to use. Auto-detected from available API keys if not set explicitly."""
+
+LLM_PROVIDER_IS_BEDROCK: bool = os.getenv("LLM_PROVIDER", "").strip().lower() == BEDROCK_PROVIDER
+"""Whether the operator named Bedrock, as opposed to LiteLLM generally.
+
+``LLM_PROVIDER`` above has already been normalised to ``litellm``, which loses
+the distinction — and the distinction matters: naming Bedrock and then leaving
+``LLM_MODEL`` at its Anthropic default is a misconfiguration worth refusing,
+whereas naming LiteLLM with that model is ordinary use.
+"""
 
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from nlqueries import config
+from nlqueries.config import BEDROCK_MODEL_PREFIX, BEDROCK_PROVIDER
 from nlqueries.llm.anthropic_client import AnthropicClient
 from nlqueries.llm.client import LLMClient
 from nlqueries.llm.litellm_client import LiteLLMClient
@@ -109,15 +110,55 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     """
     override = _override.get()
 
-    provider = override.provider if override and override.provider else config.LLM_PROVIDER
-    if provider not in _REGISTRY:
-        raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
+    named = override.provider if override and override.provider else config.LLM_PROVIDER
+    # "bedrock" is a name people configure, not a client. Normalised in the same
+    # place for both channels, so an override built from a settings store that
+    # holds the provider name behaves like the env var of the same value.
+    provider = "litellm" if named.lower() == BEDROCK_PROVIDER else named
+    named_bedrock = named.lower() == BEDROCK_PROVIDER or (
+        config.LLM_PROVIDER_IS_BEDROCK and not (override and override.provider)
+    )
 
     model: str | None = None
     if override is not None:
         model = (override.fast_model or override.model) if tier == "fast" else override.model
     if model is None:
         model = config.LLM_MODEL_FAST if tier == "fast" else config.LLM_MODEL
+
+    # Bedrock is decided by the model, not only by the provider field, and this
+    # has to happen before the client is built rather than at the API. An
+    # AnthropicClient holding a `bedrock/...` id does not refuse it: it sends the
+    # system prompt, the schema and the user's question to api.anthropic.com and
+    # only then fails with a model-not-found. For a deployment that adopted
+    # Bedrock to keep traffic inside its AWS account, the data has already left.
+    model_is_bedrock = bool(model and model.startswith(BEDROCK_MODEL_PREFIX))
+    if model_is_bedrock and provider != "litellm":
+        if override is not None and override.provider:
+            raise ValueError(
+                f"provider={override.provider!r} contradicts model={model!r}. A "
+                "bedrock/ model is reached through LiteLLM; naming another provider "
+                "would send the request there instead."
+            )
+        # No provider was named, so the model names it. This mirrors the model
+        # prefix check in ``config._detect_provider`` — the same rule, reached
+        # through the override rather than the environment. It is the documented
+        # IAM-role deployment: a model id, no credentials, nothing else.
+        provider = "litellm"
+    elif named_bedrock and not model_is_bedrock:
+        # Deferred to here rather than raised while ``config`` imports. It used to
+        # abort every CLI command, including `connect` and `extract-schema`, which
+        # never touch an LLM — and the diagnostics someone would reach for to find
+        # the misconfiguration. This is the first point where an LLM is actually
+        # about to be used, so nothing has been sent yet and nothing else breaks.
+        raise ValueError(
+            f"Bedrock is configured but model={model!r} is not a Bedrock model. Set "
+            "LLM_MODEL to a Bedrock id, e.g. "
+            "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0. Naming the provider "
+            "does not choose a model, and this one would be routed elsewhere."
+        )
+
+    if provider not in _REGISTRY:
+        raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
 
     api_key = override.api_key if override else None
     api_base = override.api_base if override else None

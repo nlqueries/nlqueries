@@ -36,11 +36,23 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   process-level key — the exact egress a deployment chose Bedrock to avoid, with
   a correct-looking answer and nothing to notice.
 
-- `LLM_PROVIDER=bedrock` now requires an `LLM_MODEL` beginning `bedrock/` and
-  raises at startup without one. Naming the provider does not choose a model,
-  and the default is an Anthropic id that LiteLLM routes to Anthropic; there is
-  no safe default to substitute, since Bedrock ids differ per region and only
-  work once enabled for the account.
+- `LLM_PROVIDER=bedrock` now requires an `LLM_MODEL` beginning `bedrock/`, and
+  the first LLM call raises without one. Naming the provider does not choose a
+  model, and the default is an Anthropic id that LiteLLM routes to Anthropic;
+  there is no safe default to substitute, since Bedrock ids differ per region
+  and only work once enabled for the account. The check sits at the client
+  rather than at import so that `connect`, `extract-schema` and the diagnostics
+  you would use to find the misconfiguration still run.
+
+- A `bedrock/` model id selects Bedrock even when the provider says otherwise —
+  when nothing names a provider it resolves to LiteLLM, and an explicit
+  contradiction is refused. Previously such an override built an
+  `AnthropicClient`, which does not reject a `bedrock/` id: it would transmit
+  the system prompt, the schema and the user's question to `api.anthropic.com`
+  before failing with a model-not-found. This was reachable from the deployment
+  the docs recommend most — an IAM role and no stored credentials, so no `extra`
+  to trigger the other guard. `LLMOverride(provider="bedrock", …)` is also
+  accepted now, matching what `LLM_PROVIDER=bedrock` already did.
 
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
   cache now sweeps points past the TTL on write, at most once per collection per

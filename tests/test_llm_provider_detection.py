@@ -47,33 +47,23 @@ def test_the_bedrock_provider_name_is_case_insensitive(monkeypatch: pytest.Monke
     assert config._detect_provider() == "litellm"
 
 
-def test_bedrock_provider_without_a_bedrock_model_refuses_to_start(
+def test_detection_never_raises_while_the_module_imports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Naming the provider does not choose the model, and the default is Anthropic.
+    """A misconfigured provider must not take the CLI down with it.
 
-    Left to resolve, `LLM_PROVIDER=bedrock` with no `LLM_MODEL` sends
-    `claude-sonnet-4-5` through LiteLLM to the public Anthropic API: a deployment
-    that asked for Bedrock silently leaves its AWS account. There is no safe
-    default to substitute, because Bedrock model ids differ per region and only
-    work once enabled for the account, so this fails where it can still be
-    understood.
+    `nlqueries.config` is imported by every command, including `connect` and
+    `extract-schema`, which never touch an LLM — and by the diagnostics someone
+    would run to find the misconfiguration. Refusing the bedrock/model mismatch
+    is right, but `get_llm_client` is where it belongs: the first point at which
+    an LLM is actually about to be used, so nothing has been sent yet.
     """
     monkeypatch.setenv("LLM_PROVIDER", "bedrock")
 
-    with pytest.raises(ValueError, match="requires LLM_MODEL"):
-        config._detect_provider()
+    assert config._detect_provider() == "litellm"
 
-
-def test_bedrock_provider_with_another_providers_model_also_refuses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The contradiction is the point: two settings naming different providers."""
-    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o")
-
-    with pytest.raises(ValueError, match="requires LLM_MODEL"):
-        config._detect_provider()
+    assert config._detect_provider() == "litellm"
 
 
 def test_another_explicit_provider_is_still_passed_through(

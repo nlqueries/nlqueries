@@ -163,17 +163,22 @@ def test_extra_left_unset_still_reaches_a_non_litellm_provider_normally() -> Non
 
 
 def test_an_override_with_extra_but_no_provider_raises_rather_than_defaulting() -> None:
-    """The case that prompted this: a partial override, which is a supported shape.
+    """A partial override is a supported shape, and it resolves the provider from config.
 
     `provider` falls back to `config.LLM_PROVIDER` — `anthropic` on a default
-    install — so an override built only from `model` and `extra` is precisely
-    how the silent-Anthropic path is reached.
+    install — so an override built only from `model` and `extra` would otherwise
+    hand a client that cannot use `extra` a request that depends on it.
+
+    The model here is deliberately *not* a `bedrock/` id: that case is now
+    resolved rather than refused, because the model names the provider (see
+    test_a_bedrock_model_with_no_provider_goes_to_litellm). This covers what is
+    left — an `extra` for some other provider, with nothing to say where it goes.
     """
     with (
         patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
         patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
         patch.object(config, "LLM_PROVIDER", "anthropic"),
-        use_llm_override(LLMOverride(model="bedrock/x", extra={"aws_region_name": "eu-west-1"})),
+        use_llm_override(LLMOverride(model="claude-x", extra={"vertex_project": "p"})),
         pytest.raises(ValueError, match="cannot accept it"),
     ):
         get_llm_client()
@@ -250,3 +255,86 @@ def test_the_reserved_names_are_exactly_what_the_client_passes() -> None:
         f"have diverged: extra={sorted(passed - module._RESERVED_COMPLETION_KWARGS)}, "
         f"missing={sorted(module._RESERVED_COMPLETION_KWARGS - passed)}"
     )
+
+
+# ----------------------------------------------------------------------
+# Bedrock is decided by the model, not only by the provider field
+# ----------------------------------------------------------------------
+
+
+def test_a_bedrock_model_with_no_provider_goes_to_litellm() -> None:
+    """The documented IAM deployment, and the third way it reached Anthropic.
+
+    On EC2, ECS or EKS the credentials come from the host role, so a host
+    application resolving per-tenant settings builds `LLMOverride(model=
+    "bedrock/...")` and leaves `provider` unset — no `extra` to trigger the other
+    guard. `provider` then fell back to `config.LLM_PROVIDER`, and
+    `AnthropicClient` does not refuse a `bedrock/` id: it sends the system
+    prompt, the schema and the question to api.anthropic.com and only then fails
+    with a model-not-found. For a deployment that adopted Bedrock to keep traffic
+    inside its account, the data has already left.
+    """
+    with (
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        use_llm_override(LLMOverride(model="bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0")),
+    ):
+        client = get_llm_client()
+
+    assert isinstance(client, LiteLLMClient)
+
+
+def test_a_bedrock_model_contradicting_a_named_provider_raises() -> None:
+    """Two settings naming different providers is a mistake, not a preference."""
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(LLMOverride(provider="anthropic", model="bedrock/x")),
+        pytest.raises(ValueError, match="contradicts model"),
+    ):
+        get_llm_client()
+
+
+def test_a_bedrock_provider_name_on_an_override_is_accepted() -> None:
+    """`LLM_PROVIDER=bedrock` was accepted; the override channel was not.
+
+    A host that stores a provider name per tenant — the caller `extra` exists for
+    — would have that word in its settings store and hit "Unknown LLM provider".
+    Both channels now normalise it in the same place.
+    """
+    with use_llm_override(LLMOverride(provider="bedrock", model="bedrock/x")):
+        assert isinstance(get_llm_client(), LiteLLMClient)
+
+
+def test_naming_bedrock_without_a_bedrock_model_raises_at_the_client() -> None:
+    """Deferred from import time, but not dropped: the egress is still refused."""
+    with (
+        use_llm_override(LLMOverride(provider="bedrock", model="claude-sonnet-4-5")),
+        pytest.raises(ValueError, match="not a Bedrock model"),
+    ):
+        get_llm_client()
+
+
+def test_the_env_naming_bedrock_is_also_refused_without_a_bedrock_model() -> None:
+    """The same rule through the environment channel rather than the override."""
+    with (
+        patch.object(config, "LLM_PROVIDER_IS_BEDROCK", True),
+        patch.object(config, "LLM_PROVIDER", "litellm"),
+        patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+        pytest.raises(ValueError, match="not a Bedrock model"),
+    ):
+        get_llm_client()
+
+
+def test_plain_litellm_with_an_anthropic_model_is_still_ordinary_use() -> None:
+    """The negative control that makes the flag necessary.
+
+    `config.LLM_PROVIDER` is normalised to "litellm" for Bedrock, which loses the
+    distinction — so without the separate flag this check would either miss the
+    Bedrock case or reject a perfectly normal LiteLLM deployment.
+    """
+    with (
+        patch.object(config, "LLM_PROVIDER_IS_BEDROCK", False),
+        patch.object(config, "LLM_PROVIDER", "litellm"),
+        patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+    ):
+        assert isinstance(get_llm_client(), LiteLLMClient)
