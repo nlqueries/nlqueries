@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
+from nlqueries import config
 from nlqueries.llm import (
     LLMOverride,
     current_llm_override,
@@ -124,12 +126,15 @@ def test_extra_reaches_the_client_through_an_override() -> None:
     }
 
 
-def test_extra_is_not_offered_to_a_provider_that_cannot_accept_it() -> None:
-    """AnthropicClient has a narrow constructor: passing extra would be a TypeError.
+def test_extra_with_a_provider_that_cannot_accept_it_raises() -> None:
+    """Dropping it silently is the dangerous outcome, not the safe one.
 
-    Dropping it is the intended outcome rather than a limitation. An override
-    carrying AWS credentials describes a Bedrock call, and must not quietly
-    become an Anthropic one because the provider field says so.
+    An override carrying AWS credentials describes a Bedrock call. If the
+    provider resolves to anthropic, those credentials are meaningless there and
+    the request would still go out — to the public Anthropic API, under the
+    process-level key, which is the exact egress a deployment chose Bedrock to
+    avoid. Nothing reports it, because the answer comes back correct from the
+    wrong place. So it fails instead, naming the fix.
     """
     with (
         patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
@@ -139,9 +144,36 @@ def test_extra_is_not_offered_to_a_provider_that_cannot_accept_it() -> None:
                 provider="anthropic", model="claude-x", extra={"aws_region_name": "eu-west-1"}
             )
         ),
+        pytest.raises(ValueError, match="cannot accept it"),
     ):
-        client = get_llm_client()
-    assert isinstance(client, AnthropicClient)
+        get_llm_client()
+
+
+def test_extra_left_unset_still_reaches_a_non_litellm_provider_normally() -> None:
+    """The negative control: only a populated extra is an error, not the field."""
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(LLMOverride(provider="anthropic", model="claude-x")),
+    ):
+        assert isinstance(get_llm_client(), AnthropicClient)
+
+
+def test_an_override_with_extra_but_no_provider_raises_rather_than_defaulting() -> None:
+    """The case that prompted this: a partial override, which is a supported shape.
+
+    `provider` falls back to `config.LLM_PROVIDER` — `anthropic` on a default
+    install — so an override built only from `model` and `extra` is precisely
+    how the silent-Anthropic path is reached.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        use_llm_override(LLMOverride(model="bedrock/x", extra={"aws_region_name": "eu-west-1"})),
+        pytest.raises(ValueError, match="cannot accept it"),
+    ):
+        get_llm_client()
 
 
 def test_a_None_inside_extra_is_forwarded_rather_than_dropped() -> None:

@@ -19,7 +19,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   This is how a host application supplies settings core has no model for — an
   AWS region and credentials, say — without core learning any one cloud's
   vocabulary. An explicit `api_key`/`api_base` still wins over the same name in
-  `extra`, and providers without a matching constructor are not offered it.
+  `extra`.
+
+  Supplying `extra` for a provider that cannot forward it now raises
+  `ValueError` rather than dropping it. Dropping was the dangerous outcome: with
+  no `provider` on the override it resolves to `LLM_PROVIDER`, so an override
+  built for Bedrock would go out to the public Anthropic API under the
+  process-level key — the exact egress a deployment chose Bedrock to avoid, with
+  a correct-looking answer and nothing to notice.
+
+- `LLM_PROVIDER=bedrock` now requires an `LLM_MODEL` beginning `bedrock/` and
+  raises at startup without one. Naming the provider does not choose a model,
+  and the default is an Anthropic id that LiteLLM routes to Anthropic; there is
+  no safe default to substitute, since Bedrock ids differ per region and only
+  work once enabled for the account.
 
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
   cache now sweeps points past the TTL on write, at most once per collection per

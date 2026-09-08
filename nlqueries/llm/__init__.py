@@ -124,9 +124,22 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     kwargs: dict[str, Any] = {"model": model, "api_key": api_key, "api_base": api_base}
     if provider == "litellm":
         # ``extra`` is only meaningful to the client that forwards it to a
-        # multi-provider SDK. Offering it to a client with a narrow constructor
-        # would be a TypeError, and dropping it there is the honest outcome:
-        # an override carrying AWS credentials describes a Bedrock call, and
-        # must not quietly become an Anthropic one because the provider changed.
+        # multi-provider SDK; a client with a narrow constructor would raise a
+        # TypeError on it.
         kwargs["extra"] = override.extra if override else None
+    elif override is not None and override.extra:
+        # Dropping it silently is the dangerous outcome, not the safe one. An
+        # override carrying AWS credentials describes a Bedrock call; with no
+        # ``provider`` set it resolves to ``config.LLM_PROVIDER`` — ``anthropic``
+        # on a default install — and the request would go out to the public
+        # Anthropic API under the process-level key, which is the exact egress a
+        # deployment chose Bedrock to avoid. Nothing would report it: the answer
+        # comes back correct, from the wrong place.
+        raise ValueError(
+            f"LLMOverride.extra was supplied, but provider {provider!r} cannot accept it. "
+            "extra carries provider-specific arguments (AWS region and credentials, "
+            'say) that only the LiteLLM client forwards. Set provider="litellm" on '
+            "the override, or drop extra — leaving both would send the request to "
+            f"{provider!r} without them."
+        )
     return cast(LLMClient, _REGISTRY[provider](**kwargs))

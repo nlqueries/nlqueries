@@ -50,6 +50,16 @@ LLM_MODEL=bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
 AWS_REGION=us-east-1
 ```
 
+**The region never fails loudly, so set it deliberately.** LiteLLM takes the
+first of these that it finds: a region passed in code, one embedded in a model
+ARN, `AWS_REGION_NAME`, `AWS_REGION`, then whatever a `boto3.Session()` resolves
+(`AWS_DEFAULT_REGION`, or a profile in `~/.aws/config`). If none of them
+produce a region it does **not** raise — it falls back to a built-in
+`us-west-2`. A deployment that forgot the region therefore calls a real region
+it never chose, where the model is very likely not enabled, and the error says
+the model was not found. `AWS_REGION` above is honoured; `AWS_REGION_NAME` beats
+it if both are set.
+
 Authentication is boto3's, not an API key. NLQueries passes no AWS credentials of
 its own, so the ordinary chain applies: `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary credentials) in
@@ -71,10 +81,16 @@ Three things to check when it does not work, because each fails differently:
 The IAM role needs `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream` on the model or inference-profile ARN.
 
-Setting `LLM_PROVIDER=bedrock` explicitly does the same thing as the `bedrock/`
-model prefix; both resolve to LiteLLM. The prefix is checked before
-`ANTHROPIC_API_KEY`, so a Bedrock deployment that still has an Anthropic key in
-its environment for something else keeps going to Bedrock.
+`LLM_PROVIDER=bedrock` also resolves to LiteLLM, but it does **not** replace the
+model id: naming the provider does not choose a model, and the default
+`LLM_MODEL` is an Anthropic id that LiteLLM would route to Anthropic. So
+`LLM_PROVIDER=bedrock` requires an `LLM_MODEL` beginning `bedrock/` and raises at
+startup without one, rather than starting up and calling the wrong provider.
+Setting only the model works on its own and is the shorter path.
+
+The `bedrock/` prefix is checked before `ANTHROPIC_API_KEY`, so a Bedrock
+deployment that still has an Anthropic key in its environment for something else
+keeps going to Bedrock.
 
 ---
 
