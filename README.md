@@ -28,7 +28,7 @@
 | **Conversational follow-ups** | Carries context across questions so a follow-up like "and by region?" resolves against the previous query — on by default in `nlqueries query`, reset with `--new-session` |
 | **Semantic cache** | Returns previously-answered similar questions in under 50 ms, no LLM or DB round-trip |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |
-| **LLM client** | Anthropic, OpenAI, or any LiteLLM-supported provider |
+| **LLM client** | Anthropic, OpenAI, Amazon Bedrock, or any LiteLLM-supported provider |
 | **MCP server** | Query execution and schema/knowledge lookup exposed as MCP tools for Claude, Cursor, etc. |
 | **CLI** | `nlqueries` (or the shorter `nlq` alias) — connect, build, query, and inspect from your terminal |
 

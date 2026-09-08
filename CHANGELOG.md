@@ -6,6 +6,21 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- Amazon Bedrock works as an LLM provider. An `LLM_MODEL` beginning `bedrock/`
+  (or `LLM_PROVIDER=bedrock`) routes through LiteLLM, which authenticates with
+  boto3 — so environment credentials, a shared profile, or the instance/task
+  role of the host are all usable, and no API key is involved. The model-prefix
+  check runs ahead of `ANTHROPIC_API_KEY`, which a Bedrock deployment often
+  still has set for something else. See
+  [docs/configuration.md](docs/configuration.md#amazon-bedrock).
+
+- `LLMOverride.extra`, a dict of provider-specific keyword arguments forwarded
+  verbatim to the completion call, and the matching `extra=` on `LiteLLMClient`.
+  This is how a host application supplies settings core has no model for — an
+  AWS region and credentials, say — without core learning any one cloud's
+  vocabulary. An explicit `api_key`/`api_base` still wins over the same name in
+  `extra`, and providers without a matching constructor are not offered it.
+
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
   cache now sweeps points past the TTL on write, at most once per collection per
   interval. Nothing previously deleted anything — the TTL is applied on read, and
@@ -22,6 +37,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   turning the cache off. Existing deployments are unaffected by the defaults.
 
 ### Changed
+
+- On Bedrock, `LLM_MODEL_FAST` now defaults to whatever `LLM_MODEL` is instead of
+  `claude-haiku-4-5-20251001`. That id does not exist on Bedrock, so the old
+  default failed every auxiliary call — the intent classifier and the follow-up
+  resolver — while the main model kept working, which reads as a broken product
+  rather than one unset variable. The fallback is correct but not cheap; set
+  `LLM_MODEL_FAST` to a Bedrock Haiku id to get the cheap tier back.
 
 - The caller's `cache_context` is now matched inside the Qdrant query rather than
   after it. `put()` writes a digest of the context under a reserved payload key

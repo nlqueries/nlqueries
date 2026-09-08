@@ -94,16 +94,36 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 """Anthropic API key for Claude-based query generation and summarisation."""
 
 
+def _configured_model() -> str:
+    """The LLM_MODEL env value, read directly.
+
+    Provider detection runs before the ``LLM_MODEL`` constant is assigned, so
+    the model-shaped decisions below cannot read it from the module.
+    """
+    return os.getenv("LLM_MODEL", "").strip()
+
+
 def _detect_provider() -> str:
     """Resolve the LLM provider from the environment.
 
-    Priority: explicit LLM_PROVIDER env var > key-based auto-detection.
-    If OPENAI_API_KEY is set (and LLM_PROVIDER is not), routes through
-    LiteLLM so the existing litellm client handles OpenAI calls.
+    Priority: explicit LLM_PROVIDER env var > model prefix > key-based
+    auto-detection. If OPENAI_API_KEY is set (and LLM_PROVIDER is not), routes
+    through LiteLLM so the existing litellm client handles OpenAI calls.
     """
     explicit = os.getenv("LLM_PROVIDER", "").strip()
     if explicit:
-        return explicit
+        # Bedrock is reached through LiteLLM rather than being a client in its
+        # own right, but nobody administering a Bedrock deployment thinks of
+        # their provider as "litellm". Accept the name they would actually
+        # write; without this it raises "Unknown LLM provider: 'bedrock'".
+        return "litellm" if explicit.lower() == "bedrock" else explicit
+    if _configured_model().startswith("bedrock/"):
+        # Deliberately ahead of the ANTHROPIC_API_KEY check. A Bedrock
+        # deployment very often still has an Anthropic key in its environment
+        # for something else, and routing a `bedrock/...` model id to the
+        # Anthropic SDK fails at the API with a model-not-found, a long way
+        # from the setting that caused it.
+        return "litellm"
     if os.getenv("ANTHROPIC_API_KEY"):
         return "anthropic"
     if os.getenv("OPENAI_API_KEY"):
@@ -143,6 +163,19 @@ def _detect_fast_model(provider: str) -> str:
     explicit = os.getenv("LLM_MODEL_FAST", "").strip()
     if explicit:
         return explicit
+    default_model = _configured_model()
+    if default_model.startswith("bedrock/"):
+        # Checked before the OpenAI branch, which a Bedrock deployment can
+        # otherwise fall into just by having an OpenAI key in its environment.
+        #
+        # There is no sensible cross-provider default here: `claude-haiku-...`
+        # is not a Bedrock model id, so leaving the old default in place breaks
+        # every fast call — the intent classifier and the follow-up resolver —
+        # while the main model keeps working. That reads as the product being
+        # broken rather than as one unset variable. Reusing the model we already
+        # know is valid costs more per fast call and always answers; set
+        # LLM_MODEL_FAST to a Bedrock Haiku id to get the cheap tier back.
+        return default_model
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
         return "openai/gpt-4o-mini"
     return "claude-haiku-4-5-20251001"

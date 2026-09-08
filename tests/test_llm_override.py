@@ -81,3 +81,74 @@ def test_litellm_auth_kwargs_omitted_when_unset() -> None:
     assert client._auth_kwargs() == {}
     client_with = LiteLLMClient(model="openai/gpt-4o", api_key="k", api_base="b")
     assert client_with._auth_kwargs() == {"api_key": "k", "api_base": "b"}
+
+
+# ----------------------------------------------------------------------
+# extra: provider-specific kwargs (Bedrock's AWS region and credentials)
+# ----------------------------------------------------------------------
+
+
+def test_extra_is_forwarded_as_completion_kwargs() -> None:
+    """The only path AWS settings have to the SDK; nothing else carries them."""
+    client = LiteLLMClient(model="bedrock/x", extra={"aws_region_name": "eu-west-1"})
+    assert client._auth_kwargs() == {"aws_region_name": "eu-west-1"}
+
+
+def test_an_explicit_api_key_wins_over_one_inside_extra() -> None:
+    """extra is applied first precisely so the named arguments can override it."""
+    client = LiteLLMClient(model="m", api_key="explicit", extra={"api_key": "from-extra"})
+    assert client._auth_kwargs()["api_key"] == "explicit"
+
+
+def test_auth_kwargs_does_not_mutate_the_caller_dict() -> None:
+    """One client serves many calls, and the dict belongs to whoever built it."""
+    extra = {"aws_region_name": "us-east-1"}
+    client = LiteLLMClient(model="m", api_key="k", api_base="b", extra=extra)
+    client._auth_kwargs()
+    client._auth_kwargs()
+    assert extra == {"aws_region_name": "us-east-1"}
+
+
+def test_extra_reaches_the_client_through_an_override() -> None:
+    override = LLMOverride(
+        provider="litellm",
+        model="bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        extra={"aws_region_name": "ap-south-1", "aws_access_key_id": "AKIA"},
+    )
+    with use_llm_override(override):
+        client = get_llm_client()
+    assert isinstance(client, LiteLLMClient)
+    assert client._auth_kwargs() == {
+        "aws_region_name": "ap-south-1",
+        "aws_access_key_id": "AKIA",
+    }
+
+
+def test_extra_is_not_offered_to_a_provider_that_cannot_accept_it() -> None:
+    """AnthropicClient has a narrow constructor: passing extra would be a TypeError.
+
+    Dropping it is the intended outcome rather than a limitation. An override
+    carrying AWS credentials describes a Bedrock call, and must not quietly
+    become an Anthropic one because the provider field says so.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(
+            LLMOverride(
+                provider="anthropic", model="claude-x", extra={"aws_region_name": "eu-west-1"}
+            )
+        ),
+    ):
+        client = get_llm_client()
+    assert isinstance(client, AnthropicClient)
+
+
+def test_a_None_inside_extra_is_forwarded_rather_than_dropped() -> None:
+    """LiteLLM reads a missing AWS credential as "use the boto3 chain".
+
+    Whether to send one is the caller's decision, so core carries the value it
+    was given instead of second-guessing it.
+    """
+    client = LiteLLMClient(model="bedrock/x", extra={"aws_session_token": None})
+    assert client._auth_kwargs() == {"aws_session_token": None}

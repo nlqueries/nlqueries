@@ -49,6 +49,14 @@ class LLMOverride:
     is fine. The host application (e.g. the enterprise layer resolving a
     per-tenant key from its settings store) sets one for the duration of a
     request via :func:`use_llm_override`; :func:`get_llm_client` reads it.
+
+    ``extra`` carries provider-specific keyword arguments that this package has
+    no opinion about — AWS region and credentials for a Bedrock deployment, for
+    instance. They are passed verbatim to the underlying completion call, which
+    keeps cloud-provider vocabulary out of core: the host application knows what
+    its provider needs, and core only has to carry it. Note that supplying it
+    makes the instance unhashable, as a dict field does to any frozen dataclass;
+    nothing hashes an override today.
     """
 
     provider: str | None = None
@@ -56,6 +64,7 @@ class LLMOverride:
     fast_model: str | None = None
     api_key: str | None = None
     api_base: str | None = None
+    extra: dict[str, Any] | None = None
 
 
 # Task-local so concurrent requests on one event loop never see each other's
@@ -112,4 +121,12 @@ def get_llm_client(tier: str = "default") -> LLMClient:
 
     api_key = override.api_key if override else None
     api_base = override.api_base if override else None
-    return cast(LLMClient, _REGISTRY[provider](model=model, api_key=api_key, api_base=api_base))
+    kwargs: dict[str, Any] = {"model": model, "api_key": api_key, "api_base": api_base}
+    if provider == "litellm":
+        # ``extra`` is only meaningful to the client that forwards it to a
+        # multi-provider SDK. Offering it to a client with a narrow constructor
+        # would be a TypeError, and dropping it there is the honest outcome:
+        # an override carrying AWS credentials describes a Bedrock call, and
+        # must not quietly become an Anthropic one because the provider changed.
+        kwargs["extra"] = override.extra if override else None
+    return cast(LLMClient, _REGISTRY[provider](**kwargs))

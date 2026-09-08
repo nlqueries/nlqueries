@@ -70,12 +70,19 @@ class LiteLLMClient(LLMClient):
         openai/gpt-4o
         gemini/gemini-1.5-pro
         ollama/llama3
+        bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
 
     API keys are read from environment variables automatically by LiteLLM
     (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.). An explicit
     ``api_key``/``api_base`` (e.g. a per-tenant key resolved by the host app)
     overrides the environment for this client's calls; when ``None`` LiteLLM's
     env-based resolution is used unchanged.
+
+    Some providers are not configured by an API key at all. Amazon Bedrock
+    authenticates through boto3, which needs a region and either explicit
+    credentials or the host's IAM role. Those arrive in ``extra`` and are
+    forwarded to LiteLLM untouched, so this class stays free of any one cloud's
+    vocabulary while still supporting it.
     """
 
     def __init__(
@@ -84,14 +91,28 @@ class LiteLLMClient(LLMClient):
         *,
         api_key: str | None = None,
         api_base: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         self._model = model if model is not None else config.LLM_MODEL
         self._api_key = api_key
         self._api_base = api_base
+        self._extra = extra
 
     def _auth_kwargs(self) -> dict[str, Any]:
-        """api_key/api_base kwargs when explicitly set, else empty (use env)."""
-        kwargs: dict[str, Any] = {}
+        """Per-call kwargs: ``extra`` first, then api_key/api_base when set.
+
+        ``extra`` holds whatever the caller's provider needs and core does not
+        model — ``aws_region_name`` and the AWS credential kwargs for Bedrock,
+        say. It is forwarded verbatim, including any ``None`` values: LiteLLM
+        reads a missing AWS credential as "use the boto3 chain", so it is the
+        caller's business whether to send one, not ours to second-guess.
+
+        ``api_key``/``api_base`` are applied last so an explicit key always wins
+        over one that happened to arrive in ``extra`` under the same name. The
+        copy matters: the dict belongs to the caller, and every call would
+        otherwise accumulate into it.
+        """
+        kwargs: dict[str, Any] = dict(self._extra) if self._extra else {}
         if self._api_key is not None:
             kwargs["api_key"] = self._api_key
         if self._api_base is not None:
