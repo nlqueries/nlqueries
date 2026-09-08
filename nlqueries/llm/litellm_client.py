@@ -60,6 +60,22 @@ def _record_estimated(model: str, prompt_text: str, output_text: str) -> None:
         )
 
 
+#: Names this class already passes to ``litellm.(a)completion``, and therefore
+#: the names ``extra`` may not carry.
+#:
+#: Rejected at construction because the collision is otherwise inconsistent and
+#: half of it is silent. ``_auth_kwargs()`` is spread into the call directly in
+#: the sync and streaming paths, where a duplicate keyword is a loud
+#: ``TypeError``; in ``acomplete`` it is merged into a dict literal *after* these
+#: keys, where it quietly wins. A host that put ``max_tokens`` in ``extra`` would
+#: get an exception from one method and a silently capped answer from the other.
+#: Core does not otherwise inspect ``extra`` — this is the one constraint it has
+#: to enforce, because it is the one it creates.
+_RESERVED_COMPLETION_KWARGS = frozenset(
+    {"model", "messages", "max_tokens", "stream", "temperature"}
+)
+
+
 class LiteLLMClient(LLMClient):
     """LLM client backed by LiteLLM — supports 100+ providers via a unified interface.
 
@@ -83,6 +99,11 @@ class LiteLLMClient(LLMClient):
     credentials or the host's IAM role. Those arrive in ``extra`` and are
     forwarded to LiteLLM untouched, so this class stays free of any one cloud's
     vocabulary while still supporting it.
+
+    ``extra`` may not carry the names this class passes itself —
+    ``model``, ``messages``, ``max_tokens``, ``stream``, ``temperature`` — and
+    the constructor rejects them rather than letting the collision through. See
+    :data:`_RESERVED_COMPLETION_KWARGS`.
     """
 
     def __init__(
@@ -93,6 +114,15 @@ class LiteLLMClient(LLMClient):
         api_base: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
+        if extra:
+            clashing = _RESERVED_COMPLETION_KWARGS & extra.keys()
+            if clashing:
+                raise ValueError(
+                    "LiteLLMClient.extra may not contain "
+                    f"{sorted(clashing)}: this class passes those to the completion "
+                    "call itself. Use the constructor arguments (model=, api_key=, "
+                    "api_base=) or the per-call arguments instead."
+                )
         self._model = model if model is not None else config.LLM_MODEL
         self._api_key = api_key
         self._api_base = api_base

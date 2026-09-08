@@ -21,6 +21,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   vocabulary. An explicit `api_key`/`api_base` still wins over the same name in
   `extra`.
 
+  `extra` may not carry a name the client already passes to LiteLLM (`model`,
+  `messages`, `max_tokens`, `stream`, `temperature`); the constructor rejects
+  those. Allowing them was inconsistent and half silent — a duplicate keyword
+  raised `TypeError` on the sync and streaming paths, but on `acomplete` the
+  same entry was merged after the caller's and quietly replaced it, so a host
+  that put `max_tokens` in `extra` would have capped every async completion
+  without an error.
+
   Supplying `extra` for a provider that cannot forward it now raises
   `ValueError` rather than dropping it. Dropping was the dangerous outcome: with
   no `provider` on the override it resolves to `LLM_PROVIDER`, so an override
