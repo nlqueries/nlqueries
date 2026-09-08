@@ -44,6 +44,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   rather than at import so that `connect`, `extract-schema` and the diagnostics
   you would use to find the misconfiguration still run.
 
+- The CLI no longer refuses a Bedrock host for having no API key. `doctor`,
+  `process-history --annotate` (the default) and `export-kb --describe-columns`
+  each gated on `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` being present, so the
+  deployment these notes recommend most — an IAM role and no key at all — was
+  rejected by commands that would have worked, `doctor` included: it reported the
+  LLM as misconfigured on a working host, in the command you run to find out why
+  something is wrong. They now ask `config.llm_credentials_available()`, which
+  counts a Bedrock configuration as a credential route because boto3 supplies
+  one.
+
+  `--describe-columns` was additionally checking `LLM_API_KEY`, a variable this
+  product does not define anywhere; it now accepts the same credentials as
+  everything else.
+
 - On a Bedrock deployment, a `LLM_MODEL_FAST` that is not a Bedrock id is now
   refused rather than routed elsewhere. The two tiers could previously disagree
   about which cloud they were talking to: with Bedrock selected by the model

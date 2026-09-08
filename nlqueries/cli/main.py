@@ -416,10 +416,17 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
 
 
 def _check_llm() -> _CheckResult:
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
-    if not has_key:
+    from nlqueries.config import llm_credentials_available  # noqa: PLC0415
+
+    # Not "is a key set": a Bedrock host authenticates through boto3 and
+    # legitimately has none, so a key check reports a working deployment as
+    # broken -- in the command someone runs precisely to find out.
+    if not llm_credentials_available():
         return _CheckResult(
-            "LLM provider", "fail", "no API key set (ANTHROPIC_API_KEY or OPENAI_API_KEY)"
+            "LLM provider",
+            "fail",
+            "no credentials (set ANTHROPIC_API_KEY or OPENAI_API_KEY, or "
+            "configure Bedrock with an LLM_MODEL beginning bedrock/)",
         )
 
     from nlqueries.config import LLM_MODEL, LLM_PROVIDER  # noqa: PLC0415
@@ -1365,12 +1372,13 @@ def process_history(
     cfg = _require_connector(connector_id)
 
     # Preflight: LLM API key required when --annotate is on (the default).
-    has_llm_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if annotate and not has_llm_key:
+    from nlqueries.config import llm_credentials_available as _llm_ok  # noqa: PLC0415
+
+    if annotate and not _llm_ok():
         err_console.print(
-            "[bold red]✗ --annotate requires an LLM API key.[/bold red]\n"
-            "  Set [bold]ANTHROPIC_API_KEY[/bold] or [bold]OPENAI_API_KEY[/bold] "
-            "before running this command.\n"
+            "[bold red]✗ --annotate requires an LLM credential.[/bold red]\n"
+            "  Set [bold]ANTHROPIC_API_KEY[/bold] or [bold]OPENAI_API_KEY[/bold], "
+            "or configure Bedrock, before running this command.\n"
             "  To skip annotation, run with [bold]--no-annotate[/bold]."
         )
         sys.exit(1)
@@ -1576,7 +1584,7 @@ def process_history(
         "Use the LLM to auto-populate column descriptions from sample data. "
         "Skips surrogate-key columns (PKs, FKs, *_id/*_uuid/*_key). "
         "Manually written descriptions in an existing KB always win. "
-        "Requires LLM_API_KEY to be set."
+        "Requires an LLM credential: ANTHROPIC_API_KEY, OPENAI_API_KEY, or Bedrock."
     ),
 )
 def export_kb(
@@ -1680,13 +1688,14 @@ def export_kb(
             # Optional: LLM-generated column descriptions from sample data
             llm_column_descriptions: dict[str, dict[str, str]] | None = None
             if describe_columns:
-                has_llm_key = bool(
-                    os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY")
+                from nlqueries.config import (  # noqa: PLC0415
+                    llm_credentials_available as _llm_ok,
                 )
-                if not has_llm_key:
+
+                if not _llm_ok():
                     console.print(
                         "  [yellow]⚠ --describe-columns skipped: "
-                        "LLM_API_KEY / ANTHROPIC_API_KEY not set.[/yellow]"
+                        "no LLM credentials (a key, or a Bedrock configuration).[/yellow]"
                     )
                 else:
                     from nlqueries.llm import get_llm_client

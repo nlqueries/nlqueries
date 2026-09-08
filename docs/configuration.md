@@ -81,6 +81,12 @@ Three things to check when it does not work, because each fails differently:
 The IAM role needs `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream` on the model or inference-profile ARN.
 
+The CLI understands this too: `doctor`, `process-history --annotate` and
+`export-kb --describe-columns` treat a Bedrock configuration as a credential and
+do not ask for an API key. `doctor` still makes a real call, so it reports
+whether the role can actually invoke the model rather than only whether one is
+configured.
+
 `LLM_PROVIDER=bedrock` also resolves to LiteLLM, but it does **not** replace the
 model id: naming the provider does not choose a model, and the default
 `LLM_MODEL` is an Anthropic id that LiteLLM would route to Anthropic. So
