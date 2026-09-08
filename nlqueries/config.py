@@ -94,16 +94,60 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 """Anthropic API key for Claude-based query generation and summarisation."""
 
 
+BEDROCK_PROVIDER = "bedrock"
+"""The provider name an administrator writes for Amazon Bedrock.
+
+Not a client of its own — it resolves to ``litellm`` — but people configure the
+service they are paying for, not the library that reaches it. Declared here so
+the environment path and the per-request override path recognise the same word.
+"""
+
+BEDROCK_MODEL_PREFIX = "bedrock/"
+"""The LiteLLM model-id prefix that selects Bedrock, and the surer signal.
+
+A deployment can reach Bedrock by naming the provider or by naming the model,
+and the model is the one that cannot be left implicit — so it is what both
+detection paths key on.
+"""
+
+
+def _configured_model() -> str:
+    """The LLM_MODEL env value, read directly.
+
+    Provider detection runs before the ``LLM_MODEL`` constant is assigned, so
+    the model-shaped decisions below cannot read it from the module.
+    """
+    return os.getenv("LLM_MODEL", "").strip()
+
+
 def _detect_provider() -> str:
     """Resolve the LLM provider from the environment.
 
-    Priority: explicit LLM_PROVIDER env var > key-based auto-detection.
-    If OPENAI_API_KEY is set (and LLM_PROVIDER is not), routes through
-    LiteLLM so the existing litellm client handles OpenAI calls.
+    Priority: explicit LLM_PROVIDER env var > model prefix > key-based
+    auto-detection. If OPENAI_API_KEY is set (and LLM_PROVIDER is not), routes
+    through LiteLLM so the existing litellm client handles OpenAI calls.
     """
     explicit = os.getenv("LLM_PROVIDER", "").strip()
     if explicit:
-        return explicit
+        # Bedrock is reached through LiteLLM rather than being a client in its
+        # own right, but nobody administering a Bedrock deployment thinks of
+        # their provider as "litellm". Accept the name they would actually
+        # write; without this it raises "Unknown LLM provider: 'bedrock'".
+        #
+        # Naming it is not sufficient, though — the provider does not choose the
+        # model, and the default is an Anthropic id LiteLLM would route to
+        # Anthropic. That mismatch is refused in ``llm.get_llm_client`` rather
+        # than here, because this module is imported by every CLI command,
+        # including those that never touch an LLM and the diagnostics someone
+        # would run to find the problem in the first place.
+        return "litellm" if explicit.lower() == BEDROCK_PROVIDER else explicit
+    if _configured_model().startswith(BEDROCK_MODEL_PREFIX):
+        # Deliberately ahead of the ANTHROPIC_API_KEY check. A Bedrock
+        # deployment very often still has an Anthropic key in its environment
+        # for something else, and routing a `bedrock/...` model id to the
+        # Anthropic SDK fails at the API with a model-not-found, a long way
+        # from the setting that caused it.
+        return "litellm"
     if os.getenv("ANTHROPIC_API_KEY"):
         return "anthropic"
     if os.getenv("OPENAI_API_KEY"):
@@ -129,8 +173,44 @@ def _detect_model(provider: str) -> str:
 LLM_PROVIDER: str = _detect_provider()
 """LLM provider to use. Auto-detected from available API keys if not set explicitly."""
 
+LLM_PROVIDER_CONFIGURED: str = os.getenv("LLM_PROVIDER", "").strip()
+"""What the operator actually wrote for ``LLM_PROVIDER``, empty if nothing.
+
+``LLM_PROVIDER`` above is the *resolved* provider: ``bedrock`` has become
+``litellm``, and an unset variable has become whatever detection chose. Both
+losses matter to :func:`nlqueries.llm.get_llm_client`, which has to tell apart
+three situations the resolved value renders identical — an operator who named
+Bedrock, one who named a different provider, and one who named nothing and left
+the model to decide. Only the middle case is a contradiction worth refusing.
+"""
+
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
+
+
+def llm_credentials_available() -> bool:
+    """Whether an LLM call has any way to authenticate.
+
+    Not the same question as "is an API key set", which is what the CLI
+    preflights used to ask. Amazon Bedrock authenticates through boto3 -- an
+    instance profile, an ECS task role, IRSA, or a shared profile -- so the
+    deployment the documentation recommends most has no API key at all, and a
+    key-name check rejects a host that works perfectly well.
+
+    Reads the constants above rather than ``os.environ``, per this module's
+    contract that it is the single source of truth. They are the same values in
+    a real process; where they differ is a caller that has replaced one, and
+    honouring that is the point.
+
+    This says a credential *route* exists, not that it is valid. Whether the
+    role can actually invoke the model is what the call itself answers, and
+    ``doctor`` makes that call.
+    """
+    if ANTHROPIC_API_KEY or os.getenv("OPENAI_API_KEY"):
+        return True
+    names_bedrock = LLM_PROVIDER_CONFIGURED.lower() == BEDROCK_PROVIDER
+    model_is_bedrock = LLM_MODEL.startswith(BEDROCK_MODEL_PREFIX)
+    return names_bedrock or model_is_bedrock
 
 
 def _detect_fast_model(provider: str) -> str:
@@ -143,6 +223,19 @@ def _detect_fast_model(provider: str) -> str:
     explicit = os.getenv("LLM_MODEL_FAST", "").strip()
     if explicit:
         return explicit
+    default_model = _configured_model()
+    if default_model.startswith("bedrock/"):
+        # Checked before the OpenAI branch, which a Bedrock deployment can
+        # otherwise fall into just by having an OpenAI key in its environment.
+        #
+        # There is no sensible cross-provider default here: `claude-haiku-...`
+        # is not a Bedrock model id, so leaving the old default in place breaks
+        # every fast call — the intent classifier and the follow-up resolver —
+        # while the main model keeps working. That reads as the product being
+        # broken rather than as one unset variable. Reusing the model we already
+        # know is valid costs more per fast call and always answers; set
+        # LLM_MODEL_FAST to a Bedrock Haiku id to get the cheap tier back.
+        return default_model
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
         return "openai/gpt-4o-mini"
     return "claude-haiku-4-5-20251001"

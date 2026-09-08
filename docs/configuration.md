@@ -7,7 +7,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `ANTHROPIC_API_KEY` | One of these two | — | Anthropic API key |
 | `OPENAI_API_KEY` | One of these two | — | OpenAI API key |
 | `LLM_MODEL` | No | `claude-sonnet-4-5` | LLM model identifier |
-| `LLM_PROVIDER` | No | Auto-detected | `anthropic`, `openai`, or any LiteLLM provider. **Setting `OPENAI_API_KEY` alone does not switch the provider** — also set `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/<model>` to use OpenAI. |
+| `LLM_PROVIDER` | No | Auto-detected | `anthropic`, `openai`, `bedrock`, or any LiteLLM provider. **Setting `OPENAI_API_KEY` alone does not switch the provider** — also set `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/<model>` to use OpenAI. An `LLM_MODEL` starting `bedrock/` selects Bedrock on its own; see [Amazon Bedrock](#amazon-bedrock). |
 | `DATABASE_URL` | No | — | Connection string for the database being queried, e.g. `postgresql+psycopg2://user:password@localhost:5432/mydb` |
 | `SSL_MODE` | No | `require` | TLS mode for the source database connection. `require` encrypts but verifies no certificate; use `verify-full` (with a CA) in production. `disable` restores plaintext, explicitly. |
 | `SSL_CA_CERT` | No | — | Path to an SSL CA certificate bundle (e.g. for AWS RDS/Aurora with `verify-full`) |
@@ -26,7 +26,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `EMBED_SERVER_PORT` | No | `8765` | Port the embedding daemon listens on |
 | `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | — | OTLP endpoint for traces (disabled if unset) |
-| `LLM_MODEL_FAST` | No | `claude-haiku-4-5-20251001` (Anthropic) / `openai/gpt-4o-mini` (OpenAI) | Smaller/cheaper model used for short-output auxiliary calls (intent classifier, follow-up resolver). Set to any LiteLLM-supported model string. |
+| `LLM_MODEL_FAST` | No | `claude-haiku-4-5-20251001` (Anthropic) / `openai/gpt-4o-mini` (OpenAI) / same as `LLM_MODEL` (Bedrock) | Smaller/cheaper model used for short-output auxiliary calls (intent classifier, follow-up resolver). Set to any LiteLLM-supported model string. On Bedrock it defaults to your `LLM_MODEL` rather than to a Haiku id that does not exist there — correct but not cheap, so set a Bedrock Haiku id to get the cheap tier back. |
 | `QUERY_HISTORY_LIMIT` | No | `500` | Maximum number of useful queries returned by `process-history` after filtering. Override per-run with `--max-queries`. |
 | `EMBED_BACKEND` | No | `torch` | Embedding backend for the embed-server daemon. `torch` uses sentence-transformers/PyTorch (no extra deps); `onnx` uses ONNX Runtime via `optimum[onnxruntime]` (faster cold start, no PyTorch). |
 | `NLQ_SCHEMA_FORMAT` | No | `compact` | Schema format injected into the system prompt. `compact` uses M-Schema (`【Table】 …`) — fewer tokens; `verbose` uses full Markdown (`### Table: …`) — backward compatible. |
@@ -39,6 +39,89 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` | No | `3600` | How often a cache collection is swept for points past the TTL; `0` disables it. Nothing else deletes from the cache — the TTL is applied on read — so without a sweep a collection grows for the life of the agent, and expired points go on consuming the `NLQ_CACHE_COSINE_CANDIDATES` slots a lookup scans. The sweep runs on write, at most once per collection per interval **per process** — so a long-lived server sweeps hourly, while a CLI invocation sweeps once. The delete is issued without waiting, and `created_at` is indexed as a datetime on collections created from now on, so the work is a range query rather than a scan. |
 | `NLQ_EXPLAIN_VALIDATION` | No | `false` | When `true`, runs `EXPLAIN` on the final generated SQL via the connector to validate query plans before returning an answer. |
 | `NLQ_GLOSSARY_QUESTION_SCOPED` | No | `false` | When `true`, glossary terms are injected **per question** — only terms the question mentions, plus their [hierarchy](cli-reference.md#glossary-hierarchy) ancestors and descendants (depth 3) — instead of the whole glossary in the cached static prompt. Business rules are always injected in full. Off by default (the full glossary ships in the static block, exactly as before). |
+
+### Amazon Bedrock
+
+Bedrock is reached through LiteLLM, so there is no separate provider to install.
+Set `LLM_MODEL` to a `bedrock/` model id and NLQueries routes there:
+
+```bash
+LLM_MODEL=bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+AWS_REGION=us-east-1
+```
+
+**The region never fails loudly, so set it deliberately.** LiteLLM takes the
+first of these that it finds: a region passed in code, one embedded in a model
+ARN, `AWS_REGION_NAME`, `AWS_REGION`, then whatever a `boto3.Session()` resolves
+(`AWS_DEFAULT_REGION`, or a profile in `~/.aws/config`). If none of them
+produce a region it does **not** raise — it falls back to a built-in
+`us-west-2`. A deployment that forgot the region therefore calls a real region
+it never chose, where the model is very likely not enabled, and the error says
+the model was not found. `AWS_REGION` above is honoured; `AWS_REGION_NAME` beats
+it if both are set.
+
+Authentication is boto3's, not an API key. NLQueries passes no AWS credentials of
+its own, so the ordinary chain applies: `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary credentials) in
+the environment, a shared `~/.aws/config` profile, or — on EC2, ECS or EKS — the
+instance profile, task role, or IRSA role of the host. On a machine that already
+has an AWS role, no credential settings are needed at all.
+
+Three things to check when it does not work, because each fails differently:
+
+- **The model must be enabled** for your account in that region, under Bedrock →
+  Model access in the AWS console. Until it is, every call returns AccessDenied
+  however correct the credentials are.
+- **The region must match** where the model is enabled. A model id from one
+  region simply does not exist in another.
+- **Newer Anthropic models require a cross-region inference profile**, which is
+  the `us.` or `eu.` prefix inside the id — `bedrock/us.anthropic.claude-…`, not
+  `bedrock/anthropic.claude-…`. The bare id is rejected as not found.
+
+The IAM role needs `bedrock:InvokeModel` and
+`bedrock:InvokeModelWithResponseStream` on the model or inference-profile ARN.
+
+The CLI understands this too: `doctor`, `process-history --annotate` and
+`export-kb --describe-columns` treat a Bedrock configuration as a credential and
+do not ask for an API key. `doctor` still makes a real call, so it reports
+whether the role can actually invoke the model rather than only whether one is
+configured.
+
+`LLM_PROVIDER=bedrock` also resolves to LiteLLM, but it does **not** replace the
+model id: naming the provider does not choose a model, and the default
+`LLM_MODEL` is an Anthropic id that LiteLLM would route to Anthropic. So
+`LLM_PROVIDER=bedrock` requires an `LLM_MODEL` beginning `bedrock/`, and without
+one the first LLM call fails with a message saying so. It fails there rather
+than at startup deliberately — `connect`, `extract-schema` and the diagnostics
+you would run to find the problem never touch an LLM, and should still work
+while you are fixing it. Setting only the model works on its own and is the
+shorter path.
+
+**The model decides, wherever it is set.** A `bedrock/` id selects Bedrock even
+when nothing names a provider — before the request is built, not at the API.
+That matters because the Anthropic client does not reject a `bedrock/` model id:
+it would send the system prompt, the schema and the question to
+`api.anthropic.com` and only then report that the model does not exist. For a
+deployment that chose Bedrock to keep traffic inside its AWS account, the data
+would already have left. Explicitly naming a provider *other* than Bedrock
+alongside a `bedrock/` model is refused as the contradiction it is, whether it
+was named in `LLM_PROVIDER` or by a host application.
+
+**Set `LLM_MODEL_FAST` too, or unset it.** Short auxiliary calls — intent
+classification and follow-up resolution — use the fast tier, and they carry the
+user's question and the conversation history. On a Bedrock deployment a
+`LLM_MODEL_FAST` that is not a `bedrock/` id is refused, because it would
+otherwise be routed to whichever provider it does name, sending exactly that
+content outside your AWS account while the main model kept working. A `.env`
+carrying `LLM_MODEL_FAST=claude-haiku-4-5-20251001` from a previous Anthropic
+setup is the usual way to arrive here. Leaving it unset is fine: it then follows
+`LLM_MODEL`.
+
+The same ordering applies to key-based detection: the `bedrock/` prefix is
+checked before `ANTHROPIC_API_KEY`, so a Bedrock deployment that still has an
+Anthropic key in its environment for something else keeps going to Bedrock.
+
+---
 
 **Windows note:** `~` in default paths resolves to `C:\Users\<YourUsername>` in PowerShell. To set a variable for the current session use `$env:VAR = "value"`; to persist it, use **System Properties → Environment Variables** or add it to your PowerShell profile.
 

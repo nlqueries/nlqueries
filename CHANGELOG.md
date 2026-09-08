@@ -6,6 +6,84 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- Amazon Bedrock works as an LLM provider. An `LLM_MODEL` beginning `bedrock/`
+  (or `LLM_PROVIDER=bedrock`) routes through LiteLLM, which authenticates with
+  boto3 — so environment credentials, a shared profile, or the instance/task
+  role of the host are all usable, and no API key is involved. The model-prefix
+  check runs ahead of `ANTHROPIC_API_KEY`, which a Bedrock deployment often
+  still has set for something else. See
+  [docs/configuration.md](docs/configuration.md#amazon-bedrock).
+
+- `LLMOverride.extra`, a dict of provider-specific keyword arguments forwarded
+  verbatim to the completion call, and the matching `extra=` on `LiteLLMClient`.
+  This is how a host application supplies settings core has no model for — an
+  AWS region and credentials, say — without core learning any one cloud's
+  vocabulary. An explicit `api_key`/`api_base` still wins over the same name in
+  `extra`.
+
+  `extra` may not carry a name the client already passes to LiteLLM (`model`,
+  `messages`, `max_tokens`, `stream`, `temperature`); the constructor rejects
+  those. Allowing them was inconsistent and half silent — a duplicate keyword
+  raised `TypeError` on the sync and streaming paths, but on `acomplete` the
+  same entry was merged after the caller's and quietly replaced it, so a host
+  that put `max_tokens` in `extra` would have capped every async completion
+  without an error.
+
+  Supplying `extra` for a provider that cannot forward it now raises
+  `ValueError` rather than dropping it. Dropping was the dangerous outcome: with
+  no `provider` on the override it resolves to `LLM_PROVIDER`, so an override
+  built for Bedrock would go out to the public Anthropic API under the
+  process-level key — the exact egress a deployment chose Bedrock to avoid, with
+  a correct-looking answer and nothing to notice.
+
+- `LLM_PROVIDER=bedrock` now requires an `LLM_MODEL` beginning `bedrock/`, and
+  the first LLM call raises without one. Naming the provider does not choose a
+  model, and the default is an Anthropic id that LiteLLM routes to Anthropic;
+  there is no safe default to substitute, since Bedrock ids differ per region
+  and only work once enabled for the account. The check sits at the client
+  rather than at import so that `connect`, `extract-schema` and the diagnostics
+  you would use to find the misconfiguration still run.
+
+- The CLI no longer refuses a Bedrock host for having no API key. `doctor`,
+  `process-history --annotate` (the default) and `export-kb --describe-columns`
+  each gated on `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` being present, so the
+  deployment these notes recommend most — an IAM role and no key at all — was
+  rejected by commands that would have worked, `doctor` included: it reported the
+  LLM as misconfigured on a working host, in the command you run to find out why
+  something is wrong. They now ask `config.llm_credentials_available()`, which
+  counts a Bedrock configuration as a credential route because boto3 supplies
+  one.
+
+  `--describe-columns` was additionally checking `LLM_API_KEY`, a variable this
+  product does not define anywhere; it now accepts the same credentials as
+  everything else.
+
+  `doctor`'s Config line and the MCP server's health check asked the same
+  question a third and fourth way, so `doctor` on a Bedrock host would have
+  printed a passing LLM line beside a Config line warning of a missing key. Both
+  now use the same helper. The MCP check was reporting "no ANTHROPIC_API_KEY set"
+  and was therefore already wrong for an OpenAI-only deployment.
+
+- On a Bedrock deployment, a `LLM_MODEL_FAST` that is not a Bedrock id is now
+  refused rather than routed elsewhere. The two tiers could previously disagree
+  about which cloud they were talking to: with Bedrock selected by the model
+  prefix, an `LLM_MODEL_FAST` left over from a previous Anthropic setup sent
+  every auxiliary call — intent classification and follow-up resolution, which
+  carry the question and the conversation history — to `api.anthropic.com` under
+  the leftover key, with no error, while the default tier stayed on Bedrock. The
+  check is made against the default model, so both ways of selecting Bedrock
+  agree, and the message names `LLM_MODEL_FAST` rather than `LLM_MODEL`.
+
+- A `bedrock/` model id selects Bedrock even when the provider says otherwise —
+  when nothing names a provider it resolves to LiteLLM, and an explicit
+  contradiction is refused. Previously such an override built an
+  `AnthropicClient`, which does not reject a `bedrock/` id: it would transmit
+  the system prompt, the schema and the user's question to `api.anthropic.com`
+  before failing with a model-not-found. This was reachable from the deployment
+  the docs recommend most — an IAM role and no stored credentials, so no `extra`
+  to trigger the other guard. `LLMOverride(provider="bedrock", …)` is also
+  accepted now, matching what `LLM_PROVIDER=bedrock` already did.
+
 - `NLQ_CACHE_PRUNE_INTERVAL_SECONDS` (default 3600; `0` disables). The semantic
   cache now sweeps points past the TTL on write, at most once per collection per
   interval. Nothing previously deleted anything — the TTL is applied on read, and
@@ -22,6 +100,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   turning the cache off. Existing deployments are unaffected by the defaults.
 
 ### Changed
+
+- On Bedrock, `LLM_MODEL_FAST` now defaults to whatever `LLM_MODEL` is instead of
+  `claude-haiku-4-5-20251001`. That id does not exist on Bedrock, so the old
+  default failed every auxiliary call — the intent classifier and the follow-up
+  resolver — while the main model kept working, which reads as a broken product
+  rather than one unset variable. The fallback is correct but not cheap; set
+  `LLM_MODEL_FAST` to a Bedrock Haiku id to get the cheap tier back.
 
 - The caller's `cache_context` is now matched inside the Qdrant query rather than
   after it. `put()` writes a digest of the context under a reserved payload key
