@@ -335,9 +335,13 @@ def health(probe_llm: bool = False) -> str:
     lines: list[str] = ["## NLQueries Health Check\n"]
 
     # LLM
-    llm_key = config.ANTHROPIC_API_KEY or ""
-    if not llm_key:
-        lines.append("❌ **LLM** — no ANTHROPIC_API_KEY set")
+    # Not the Anthropic key by name: that was already wrong for an
+    # OpenAI-only deployment, and Bedrock has no key at all.
+    if not config.llm_credentials_available():
+        lines.append(
+            "❌ **LLM** — no credentials (ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "or a Bedrock configuration)"
+        )
     elif not probe_llm:
         lines.append(
             f"✅ **LLM** — {config.LLM_PROVIDER} / {config.LLM_MODEL} "

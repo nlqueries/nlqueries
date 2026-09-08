@@ -962,3 +962,51 @@ class TestModuleEntryPoint:
             entry._port()
 
         assert "eight thousand" in str(excinfo.value)
+
+
+class TestHealthOnAHostWithoutAnApiKey:
+    """`health` reported "no ANTHROPIC_API_KEY set" from the key's name alone.
+
+    Wrong for two deployments. Amazon Bedrock authenticates through boto3 and has
+    no key at all, and an OpenAI-only deployment never had an Anthropic one — so
+    the check has been reporting a working OpenAI host as broken since before
+    Bedrock was on the list.
+    """
+
+    def _stack(self, **kwargs):
+        return TestHealth()._patches(**kwargs)
+
+    def test_a_bedrock_host_is_not_reported_as_missing_credentials(self) -> None:
+        from nlqueries.mcp_server.server import health
+
+        with (
+            self._stack(llm_key="", daemon_vec=[0.1] * 384),
+            patch("nlqueries.mcp_server.server.config.LLM_MODEL", "bedrock/us.anthropic.claude-x"),
+        ):
+            out = health()
+
+        assert "no credentials" not in out
+        assert "bedrock/us.anthropic.claude-x" in out
+
+    def test_an_openai_only_host_is_not_reported_as_missing_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from nlqueries.mcp_server.server import health
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        with self._stack(llm_key="", daemon_vec=[0.1] * 384):
+            out = health()
+
+        assert "no credentials" not in out
+
+    def test_a_host_with_nothing_configured_is_still_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The negative control: the check must still be able to say no."""
+        from nlqueries.mcp_server.server import health
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with self._stack(llm_key="", daemon_vec=[0.1] * 384):
+            out = health()
+
+        assert "no credentials" in out

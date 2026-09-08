@@ -155,29 +155,6 @@ def _detect_provider() -> str:
     return "anthropic"
 
 
-def llm_credentials_available() -> bool:
-    """Whether an LLM call has any way to authenticate.
-
-    Not the same question as "is an API key set", which is what the CLI
-    preflights used to ask. Amazon Bedrock authenticates through boto3 — an
-    instance profile, an ECS task role, IRSA, or a shared profile — so the
-    deployment the documentation recommends most has no API key at all, and a
-    key-name check rejects a host that works perfectly well.
-
-    Read at call time rather than resolved once, because the CLI's checks run
-    long after import and a test may have changed the environment.
-
-    This says a credential *route* exists, not that it is valid. Whether the
-    role can actually invoke the model is what the call itself answers, and
-    ``doctor`` makes that call.
-    """
-    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY"):
-        return True
-    names_bedrock = os.getenv("LLM_PROVIDER", "").strip().lower() == BEDROCK_PROVIDER
-    model_is_bedrock = _configured_model().startswith(BEDROCK_MODEL_PREFIX)
-    return names_bedrock or model_is_bedrock
-
-
 def _detect_model(provider: str) -> str:
     """Resolve the LLM model from the environment.
 
@@ -209,6 +186,31 @@ the model to decide. Only the middle case is a contradiction worth refusing.
 
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
+
+
+def llm_credentials_available() -> bool:
+    """Whether an LLM call has any way to authenticate.
+
+    Not the same question as "is an API key set", which is what the CLI
+    preflights used to ask. Amazon Bedrock authenticates through boto3 -- an
+    instance profile, an ECS task role, IRSA, or a shared profile -- so the
+    deployment the documentation recommends most has no API key at all, and a
+    key-name check rejects a host that works perfectly well.
+
+    Reads the constants above rather than ``os.environ``, per this module's
+    contract that it is the single source of truth. They are the same values in
+    a real process; where they differ is a caller that has replaced one, and
+    honouring that is the point.
+
+    This says a credential *route* exists, not that it is valid. Whether the
+    role can actually invoke the model is what the call itself answers, and
+    ``doctor`` makes that call.
+    """
+    if ANTHROPIC_API_KEY or os.getenv("OPENAI_API_KEY"):
+        return True
+    names_bedrock = LLM_PROVIDER_CONFIGURED.lower() == BEDROCK_PROVIDER
+    model_is_bedrock = LLM_MODEL.startswith(BEDROCK_MODEL_PREFIX)
+    return names_bedrock or model_is_bedrock
 
 
 def _detect_fast_model(provider: str) -> str:

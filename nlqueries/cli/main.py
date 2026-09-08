@@ -465,6 +465,8 @@ def _check_embedding() -> _CheckResult:
 
 
 def _check_config() -> _CheckResult:
+    from nlqueries.config import llm_credentials_available  # noqa: PLC0415
+
     issues: list[str] = []
     notes: list[str] = []
 
@@ -478,8 +480,10 @@ def _check_config() -> _CheckResult:
     else:
         notes.append("QDRANT_URL using default (localhost:6333)")
 
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")):
-        issues.append("no LLM API key set")
+    # The same question the LLM check asks, so `doctor` cannot report a
+    # working provider and a missing key in the same output.
+    if not llm_credentials_available():
+        issues.append("no LLM credentials set")
 
     if issues:
         return _CheckResult("Config", "warn", "; ".join(issues))

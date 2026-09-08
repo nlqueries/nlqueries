@@ -58,6 +58,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   product does not define anywhere; it now accepts the same credentials as
   everything else.
 
+  `doctor`'s Config line and the MCP server's health check asked the same
+  question a third and fourth way, so `doctor` on a Bedrock host would have
+  printed a passing LLM line beside a Config line warning of a missing key. Both
+  now use the same helper. The MCP check was reporting "no ANTHROPIC_API_KEY set"
+  and was therefore already wrong for an OpenAI-only deployment.
+
 - On a Bedrock deployment, a `LLM_MODEL_FAST` that is not a Bedrock id is now
   refused rather than routed elsewhere. The two tiers could previously disagree
   about which cloud they were talking to: with Bedrock selected by the model
