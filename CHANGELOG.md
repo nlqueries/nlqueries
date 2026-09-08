@@ -44,6 +44,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   rather than at import so that `connect`, `extract-schema` and the diagnostics
   you would use to find the misconfiguration still run.
 
+- On a Bedrock deployment, a `LLM_MODEL_FAST` that is not a Bedrock id is now
+  refused rather than routed elsewhere. The two tiers could previously disagree
+  about which cloud they were talking to: with Bedrock selected by the model
+  prefix, an `LLM_MODEL_FAST` left over from a previous Anthropic setup sent
+  every auxiliary call — intent classification and follow-up resolution, which
+  carry the question and the conversation history — to `api.anthropic.com` under
+  the leftover key, with no error, while the default tier stayed on Bedrock. The
+  check is made against the default model, so both ways of selecting Bedrock
+  agree, and the message names `LLM_MODEL_FAST` rather than `LLM_MODEL`.
+
 - A `bedrock/` model id selects Bedrock even when the provider says otherwise —
   when nothing names a provider it resolves to LiteLLM, and an explicit
   contradiction is refused. Previously such an override built an

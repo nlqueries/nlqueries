@@ -110,13 +110,19 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     """
     override = _override.get()
 
-    named = override.provider if override and override.provider else config.LLM_PROVIDER
+    # What, if anything, *named* a provider — the override first, then the raw
+    # LLM_PROVIDER. Empty means nothing did and detection chose, which is a
+    # different situation from an operator naming one, and the resolved
+    # ``config.LLM_PROVIDER`` cannot tell them apart.
+    named = override.provider if override and override.provider else config.LLM_PROVIDER_CONFIGURED
+    names_bedrock = named.lower() == BEDROCK_PROVIDER
     # "bedrock" is a name people configure, not a client. Normalised in the same
     # place for both channels, so an override built from a settings store that
     # holds the provider name behaves like the env var of the same value.
-    provider = "litellm" if named.lower() == BEDROCK_PROVIDER else named
-    named_bedrock = named.lower() == BEDROCK_PROVIDER or (
-        config.LLM_PROVIDER_IS_BEDROCK and not (override and override.provider)
+    provider = (
+        "litellm"
+        if names_bedrock
+        else (override.provider if override and override.provider else config.LLM_PROVIDER)
     )
 
     model: str | None = None
@@ -125,37 +131,51 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     if model is None:
         model = config.LLM_MODEL_FAST if tier == "fast" else config.LLM_MODEL
 
-    # Bedrock is decided by the model, not only by the provider field, and this
-    # has to happen before the client is built rather than at the API. An
-    # AnthropicClient holding a `bedrock/...` id does not refuse it: it sends the
-    # system prompt, the schema and the user's question to api.anthropic.com and
-    # only then fails with a model-not-found. For a deployment that adopted
-    # Bedrock to keep traffic inside its AWS account, the data has already left.
+    # Whether this *deployment* is on Bedrock, judged from the default model
+    # rather than from whichever model this tier happened to resolve. Judging per
+    # tier let the two tiers disagree: a `.env` still carrying
+    # LLM_MODEL_FAST=claude-haiku-... from a previous Anthropic setup left the
+    # default tier on Bedrock while every auxiliary call — intent classification
+    # and follow-up resolution, which carry the question and the conversation
+    # history — went to api.anthropic.com under the leftover key, with no error.
+    default_model = override.model if override and override.model else config.LLM_MODEL
+    on_bedrock = names_bedrock or default_model.startswith(BEDROCK_MODEL_PREFIX)
     model_is_bedrock = bool(model and model.startswith(BEDROCK_MODEL_PREFIX))
-    if model_is_bedrock and provider != "litellm":
-        if override is not None and override.provider:
-            raise ValueError(
-                f"provider={override.provider!r} contradicts model={model!r}. A "
-                "bedrock/ model is reached through LiteLLM; naming another provider "
-                "would send the request there instead."
-            )
-        # No provider was named, so the model names it. This mirrors the model
-        # prefix check in ``config._detect_provider`` — the same rule, reached
-        # through the override rather than the environment. It is the documented
-        # IAM-role deployment: a model id, no credentials, nothing else.
-        provider = "litellm"
-    elif named_bedrock and not model_is_bedrock:
-        # Deferred to here rather than raised while ``config`` imports. It used to
-        # abort every CLI command, including `connect` and `extract-schema`, which
-        # never touch an LLM — and the diagnostics someone would reach for to find
-        # the misconfiguration. This is the first point where an LLM is actually
-        # about to be used, so nothing has been sent yet and nothing else breaks.
+
+    if on_bedrock and not model_is_bedrock:
+        # Refused here rather than while ``config`` imports: this used to abort
+        # every CLI command, including `connect`, `extract-schema` and the
+        # diagnostics someone would reach for to find the misconfiguration. This
+        # is the first point at which an LLM is about to be used, so nothing has
+        # been sent yet and nothing else breaks.
+        setting = "LLM_MODEL_FAST" if tier == "fast" else "LLM_MODEL"
         raise ValueError(
-            f"Bedrock is configured but model={model!r} is not a Bedrock model. Set "
-            "LLM_MODEL to a Bedrock id, e.g. "
-            "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0. Naming the provider "
-            "does not choose a model, and this one would be routed elsewhere."
+            f"Bedrock is configured, but the {tier} model {model!r} is not a Bedrock "
+            f"model. Set {setting} to a Bedrock id, e.g. "
+            "bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0. A non-Bedrock model "
+            "here is routed to its own provider, which sends the request outside "
+            "your AWS account."
         )
+
+    if model_is_bedrock and named and not names_bedrock and named.lower() != "litellm":
+        # Two settings naming different providers. Refused through either
+        # channel: `LLM_PROVIDER=anthropic` alongside a `bedrock/` model is the
+        # same mistake as an override that says so, and previously only the
+        # override was caught.
+        raise ValueError(
+            f"provider={named!r} contradicts model={model!r}. A bedrock/ model is "
+            "reached through LiteLLM; naming another provider would send the "
+            "request there instead."
+        )
+
+    # Nothing named a provider, so the model names it — the same rule
+    # ``config._detect_provider`` applies to the environment, reached through the
+    # override. This is the documented IAM-role deployment: a model id, no
+    # credentials, nothing else. Without it an `AnthropicClient` is built, and it
+    # does not reject a `bedrock/` id — it transmits the prompt, the schema and
+    # the question to api.anthropic.com and only then reports the model missing.
+    if model_is_bedrock:
+        provider = "litellm"
 
     if provider not in _REGISTRY:
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")

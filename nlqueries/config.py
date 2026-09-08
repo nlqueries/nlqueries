@@ -173,13 +173,15 @@ def _detect_model(provider: str) -> str:
 LLM_PROVIDER: str = _detect_provider()
 """LLM provider to use. Auto-detected from available API keys if not set explicitly."""
 
-LLM_PROVIDER_IS_BEDROCK: bool = os.getenv("LLM_PROVIDER", "").strip().lower() == BEDROCK_PROVIDER
-"""Whether the operator named Bedrock, as opposed to LiteLLM generally.
+LLM_PROVIDER_CONFIGURED: str = os.getenv("LLM_PROVIDER", "").strip()
+"""What the operator actually wrote for ``LLM_PROVIDER``, empty if nothing.
 
-``LLM_PROVIDER`` above has already been normalised to ``litellm``, which loses
-the distinction — and the distinction matters: naming Bedrock and then leaving
-``LLM_MODEL`` at its Anthropic default is a misconfiguration worth refusing,
-whereas naming LiteLLM with that model is ordinary use.
+``LLM_PROVIDER`` above is the *resolved* provider: ``bedrock`` has become
+``litellm``, and an unset variable has become whatever detection chose. Both
+losses matter to :func:`nlqueries.llm.get_llm_client`, which has to tell apart
+three situations the resolved value renders identical — an operator who named
+Bedrock, one who named a different provider, and one who named nothing and left
+the model to decide. Only the middle case is a contradiction worth refusing.
 """
 
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)

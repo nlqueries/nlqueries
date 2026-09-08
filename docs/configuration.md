@@ -92,13 +92,24 @@ while you are fixing it. Setting only the model works on its own and is the
 shorter path.
 
 **The model decides, wherever it is set.** A `bedrock/` id selects Bedrock even
-when something else names a provider — before the request is built, not at the
-API. That matters because the Anthropic client does not reject a `bedrock/`
-model id: it would send the system prompt, the schema and the question to
+when nothing names a provider — before the request is built, not at the API.
+That matters because the Anthropic client does not reject a `bedrock/` model id:
+it would send the system prompt, the schema and the question to
 `api.anthropic.com` and only then report that the model does not exist. For a
 deployment that chose Bedrock to keep traffic inside its AWS account, the data
-would already have left. A provider explicitly naming something other than
-Bedrock alongside a `bedrock/` model is refused as the contradiction it is.
+would already have left. Explicitly naming a provider *other* than Bedrock
+alongside a `bedrock/` model is refused as the contradiction it is, whether it
+was named in `LLM_PROVIDER` or by a host application.
+
+**Set `LLM_MODEL_FAST` too, or unset it.** Short auxiliary calls — intent
+classification and follow-up resolution — use the fast tier, and they carry the
+user's question and the conversation history. On a Bedrock deployment a
+`LLM_MODEL_FAST` that is not a `bedrock/` id is refused, because it would
+otherwise be routed to whichever provider it does name, sending exactly that
+content outside your AWS account while the main model kept working. A `.env`
+carrying `LLM_MODEL_FAST=claude-haiku-4-5-20251001` from a previous Anthropic
+setup is the usual way to arrive here. Leaving it unset is fine: it then follows
+`LLM_MODEL`.
 
 The same ordering applies to key-based detection: the `bedrock/` prefix is
 checked before `ANTHROPIC_API_KEY`, so a Bedrock deployment that still has an

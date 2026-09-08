@@ -317,7 +317,7 @@ def test_naming_bedrock_without_a_bedrock_model_raises_at_the_client() -> None:
 def test_the_env_naming_bedrock_is_also_refused_without_a_bedrock_model() -> None:
     """The same rule through the environment channel rather than the override."""
     with (
-        patch.object(config, "LLM_PROVIDER_IS_BEDROCK", True),
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", "bedrock"),
         patch.object(config, "LLM_PROVIDER", "litellm"),
         patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
         pytest.raises(ValueError, match="not a Bedrock model"),
@@ -333,8 +333,123 @@ def test_plain_litellm_with_an_anthropic_model_is_still_ordinary_use() -> None:
     Bedrock case or reject a perfectly normal LiteLLM deployment.
     """
     with (
-        patch.object(config, "LLM_PROVIDER_IS_BEDROCK", False),
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", "litellm"),
         patch.object(config, "LLM_PROVIDER", "litellm"),
         patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+    ):
+        assert isinstance(get_llm_client(), LiteLLMClient)
+
+
+# ----------------------------------------------------------------------
+# The two tiers must agree about which cloud they are talking to
+# ----------------------------------------------------------------------
+
+
+def test_a_leftover_fast_model_is_refused_on_a_bedrock_deployment() -> None:
+    """The tiers disagreeing is worse than either being wrong on its own.
+
+    A `.env` still carrying `LLM_MODEL_FAST=claude-haiku-...` from a previous
+    Anthropic setup left the default tier on Bedrock while every auxiliary call
+    went to api.anthropic.com under the leftover key — and the auxiliary calls
+    are intent classification and follow-up resolution, which carry the user's
+    question and the conversation history. No error, because LiteLLM routes a
+    bare `claude-` id perfectly happily.
+
+    Judged from the *default* model, so both ways of selecting Bedrock agree.
+    """
+    with (
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", ""),
+        patch.object(config, "LLM_PROVIDER", "litellm"),
+        patch.object(config, "LLM_MODEL", "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"),
+        patch.object(config, "LLM_MODEL_FAST", "claude-haiku-4-5-20251001"),
+        pytest.raises(ValueError, match="fast model"),
+    ):
+        get_llm_client(tier="fast")
+
+
+def test_the_same_refusal_when_bedrock_was_named_rather_than_inferred() -> None:
+    """The other channel. Before, one raised and the other silently sent data out.
+
+    `LLM_MODEL` is deliberately *not* a Bedrock id here. With one, this passes
+    through the model-prefix branch and says nothing about the branch it is named
+    for — which is how the first version of this test survived deleting
+    `names_bedrock` from the check it exists to cover.
+    """
+    with (
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", "bedrock"),
+        patch.object(config, "LLM_PROVIDER", "litellm"),
+        patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+        patch.object(config, "LLM_MODEL_FAST", "claude-haiku-4-5-20251001"),
+        pytest.raises(ValueError, match="fast model"),
+    ):
+        get_llm_client(tier="fast")
+
+
+def test_the_refusal_names_the_setting_that_needs_changing() -> None:
+    """`LLM_MODEL` and `LLM_MODEL_FAST` fail identically otherwise."""
+    with (
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", "bedrock"),
+        patch.object(config, "LLM_PROVIDER", "litellm"),
+        patch.object(config, "LLM_MODEL", "bedrock/x"),
+        patch.object(config, "LLM_MODEL_FAST", "claude-haiku-4-5-20251001"),
+        pytest.raises(ValueError) as excinfo,
+    ):
+        get_llm_client(tier="fast")
+    assert "LLM_MODEL_FAST" in str(excinfo.value)
+
+
+def test_both_tiers_on_bedrock_are_accepted() -> None:
+    """The negative control: the guard must not refuse a correct deployment."""
+    with (
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", ""),
+        patch.object(config, "LLM_PROVIDER", "litellm"),
+        patch.object(config, "LLM_MODEL", "bedrock/sonnet"),
+        patch.object(config, "LLM_MODEL_FAST", "bedrock/haiku"),
+    ):
+        assert get_llm_client(tier="fast")._model == "bedrock/haiku"
+        assert get_llm_client()._model == "bedrock/sonnet"
+
+
+def test_a_non_bedrock_deployment_is_untouched_by_the_tier_rule() -> None:
+    """The other negative control, and the one that would bite everybody."""
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", "anthropic"),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+        patch.object(config, "LLM_MODEL_FAST", "claude-haiku-4-5-20251001"),
+    ):
+        assert get_llm_client(tier="fast")._model == "claude-haiku-4-5-20251001"
+
+
+def test_the_environment_contradiction_is_refused_like_the_override_one() -> None:
+    """`LLM_PROVIDER=anthropic` with a bedrock/ model is the same mistake.
+
+    It used to be resolved silently to LiteLLM while the identical override was
+    refused — and the documentation claimed both were refused.
+    """
+    with (
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", "anthropic"),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        patch.object(config, "LLM_MODEL", "bedrock/x"),
+        patch.object(config, "LLM_MODEL_FAST", "bedrock/x"),
+        pytest.raises(ValueError, match="contradicts model"),
+    ):
+        get_llm_client()
+
+
+def test_nothing_naming_a_provider_still_lets_the_model_decide() -> None:
+    """The distinction the contradiction rule turns on: named versus detected.
+
+    An unset LLM_PROVIDER resolves to `anthropic` by key detection, which must
+    not be read as the operator naming Anthropic — that is the IAM deployment,
+    and refusing it would break the documented setup.
+    """
+    with (
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", ""),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        patch.object(config, "LLM_MODEL", "bedrock/x"),
+        patch.object(config, "LLM_MODEL_FAST", "bedrock/x"),
     ):
         assert isinstance(get_llm_client(), LiteLLMClient)
