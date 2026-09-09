@@ -1,0 +1,47 @@
+name: Link check
+
+# Separate from CI on purpose.
+#
+# This job depends on the public internet, so it fails for reasons that have
+# nothing to do with the commit under test — a site being briefly down, a host
+# rate-limiting a runner. Wired into the CI workflow it would teach people that
+# a red check can be ignored, which is the most expensive thing a check can do.
+# Here it can go red on its own without blocking a merge.
+#
+# Weekly because that is how link rot arrives: not with a commit, but with
+# somebody else restructuring their site. The README is the front page of this
+# repository and what PyPI renders, so a dead link there is broken in the two
+# places people are most likely to meet the project.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  pull_request:
+    paths:
+      # "**.md", not "**/*.md": GitHub treats `**` as any run of characters,
+      # so the `/` stays literal and the pattern misses README.md at the root --
+      # the one file this check exists for. README.md is listed as well, so a
+      # change in that behaviour cannot quietly un-cover it.
+      - "**.md"
+      - "README.md"
+      - "scripts/check_links.py"
+      - ".github/workflows/links.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: External links resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      # No dependencies: the script is standard library only, so this job needs
+      # no install step and cannot be broken by a package it did not pin.
+      - name: Check links in README and docs
+        run: python scripts/check_links.py README.md docs
