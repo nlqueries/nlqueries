@@ -32,8 +32,15 @@ import time
 import urllib.error
 import urllib.request
 
-# Markdown inline links and bare angle-bracket autolinks.
-_LINK = re.compile(r"\[[^\]]*\]\((https://[^)\s]+)\)|<(https://[^>\s]+)>")
+# Any `](https://…)` target, plus bare angle-bracket autolinks.
+#
+# Deliberately not anchored on a preceding `[text]`: a badge is
+# `[![alt](image)](target)`, and a pattern requiring `[` with no `]` inside
+# consumes `[![alt](image)` and matches only the *image*, leaving the target
+# unchecked while the run still prints a count and says everything resolves.
+# Every badge at the top of the README reaches its destination through exactly
+# that shape.
+_LINK = re.compile(r"\]\((https://[^)\s]+)\)|<(https://[^>\s]+)>")
 
 _TIMEOUT_S = 20
 _ATTEMPTS = 3
@@ -89,14 +96,33 @@ def main() -> int:
     args = parser.parse_args()
 
     files: list[pathlib.Path] = []
+    missing: list[str] = []
     for raw in args.paths:
         path = pathlib.Path(raw)
         if path.is_dir():
             files.extend(sorted(path.rglob("*.md")))
         elif path.is_file():
             files.append(path)
+        else:
+            missing.append(raw)
+
+    # Refusing rather than skipping. A renamed directory, a mistyped name, or a
+    # run from the wrong working directory would otherwise produce
+    # "Checking 0 external links across 0 files. All links resolve." and exit 0
+    # — a green tick over nothing, which is the exact failure this script exists
+    # to prevent, wearing the costume of a pass.
+    if missing:
+        print(f"No such path: {', '.join(missing)}", file=sys.stderr)
+        return 1
 
     links = find_links(files)
+    if not links:
+        print(
+            f"Found no external links in {len(files)} file(s). That is almost "
+            "certainly wrong, so this is a failure rather than a pass.",
+            file=sys.stderr,
+        )
+        return 1
     skipped = [u for u in links if any(h in u for h in _SKIP_HOSTS)]
     to_check = sorted(u for u in links if u not in skipped)
 
