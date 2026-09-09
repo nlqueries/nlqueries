@@ -10,9 +10,16 @@
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Visitors](https://visitor-badge.laobi.icu/badge?page_id=nlqueries.nlqueries)](https://github.com/nlqueries/nlqueries)
 
-**NLQueries Core** turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Notion, Confluence) and can blend both in a single hybrid answer.
+**NLQueries Core** is an open-source natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Notion, Confluence) and can blend both in a single hybrid answer.
 
-**Website & docs:** [nlqueries.com](https://nlqueries.com)
+## Links
+
+- **Website** — [nlqueries.com](https://nlqueries.com)
+- **Documentation** — [nlqueries.com/docs/](https://nlqueries.com/docs/)
+- **Getting started** — [nlqueries.com/docs/getting-started.html](https://nlqueries.com/docs/getting-started.html)
+- **Supported databases** — [nlqueries.com/databases/](https://nlqueries.com/databases/)
+- **PyPI** — [nlqueries-core](https://pypi.org/project/nlqueries-core/)
+- **Docker Hub** — [nlqueries/core](https://hub.docker.com/r/nlqueries/core)
 
 ---
 
@@ -114,7 +121,7 @@ nlqueries query dev "and how many were returned?"   # follow-up — keeps prior 
 Follow-up context is on by default; pass `--new-session` to start fresh or
 `--no-session` to disable it for a one-off question.
 
-Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
+Full walkthrough: [docs/getting-started.md](docs/getting-started.md) · [online](https://nlqueries.com/docs/getting-started.html).
 
 ---
 
@@ -122,11 +129,11 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 
 | Doc | Covers |
 |---|---|
-| [docs/getting-started.md](docs/getting-started.md) | Step-by-step setup and your first query |
-| [docs/cli-reference.md](docs/cli-reference.md) | Every command and flag |
-| [docs/connectors.md](docs/connectors.md) | Database and document connector setup, per-connector notes and caveats |
-| [docs/configuration.md](docs/configuration.md) | Environment variables |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Common warnings and errors explained |
+| [docs/getting-started.md](docs/getting-started.md) · [online](https://nlqueries.com/docs/getting-started.html) | Step-by-step setup and your first query |
+| [docs/cli-reference.md](docs/cli-reference.md) · [online](https://nlqueries.com/docs/cli-reference.html) | Every command and flag |
+| [docs/connectors.md](docs/connectors.md) · [online](https://nlqueries.com/docs/connectors.html) | Database and document connector setup, per-connector notes and caveats |
+| [docs/configuration.md](docs/configuration.md) · [online](https://nlqueries.com/docs/configuration.html) | Environment variables |
+| [docs/troubleshooting.md](docs/troubleshooting.md) · [online](https://nlqueries.com/docs/troubleshooting.html) | Common warnings and errors explained |
 | [docs/qdrant-setup.md](docs/qdrant-setup.md) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
 | [docs/mcp-authentication.md](docs/mcp-authentication.md) | Authenticating the MCP server — required to serve it over a network |
 | [docs/architecture.md](docs/architecture.md) | Module layout and request flow |

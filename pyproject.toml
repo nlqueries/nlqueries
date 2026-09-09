@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nlqueries-core"
 version = "0.2.0"
-description = "Natural-language query engine — open-source core (CLI, connectors, MCP server)"
+description = "Open source natural language to SQL (NL2SQL) engine with schema validation and an MCP server for Claude and Cursor."
 readme = "README.md"
 license = { file = "LICENSE" }
 # Upper bound = the first version CI does not test. Keep it in step with the
@@ -129,9 +129,11 @@ nlq           = "nlqueries.cli.main:cli"
 nlqueries-mcp = "nlqueries.mcp_server.server:main"
 
 [project.urls]
-Homepage   = "https://github.com/nlqueries/nlqueries"
-Repository = "https://github.com/nlqueries/nlqueries"
-Issues     = "https://github.com/nlqueries/nlqueries/issues"
+Homepage      = "https://nlqueries.com"
+Documentation = "https://nlqueries.com/docs/"
+Repository    = "https://github.com/nlqueries/nlqueries"
+Changelog     = "https://github.com/nlqueries/nlqueries/blob/main/CHANGELOG.md"
+Issues        = "https://github.com/nlqueries/nlqueries/issues"
 
 # ---------------------------------------------------------------------------
 # Hatch
