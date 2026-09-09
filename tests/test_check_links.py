@@ -141,7 +141,7 @@ def test_finding_no_links_at_all_fails(
     monkeypatch.setattr(sys, "argv", ["check_links.py", str(doc)])
 
     assert check_links.main() == 1
-    assert "Found no external links" in capsys.readouterr().err
+    assert "No external links to check" in capsys.readouterr().err
 
 
 def test_a_file_with_links_is_actually_checked(
@@ -173,3 +173,69 @@ def test_a_login_wall_counts_as_reachable() -> None:
     assert 401 in check_links._REACHABLE
     assert 403 in check_links._REACHABLE
     assert 404 not in check_links._REACHABLE
+
+
+def test_a_file_of_only_skipped_links_fails(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same green tick over nothing, one filter further along.
+
+    The emptiness guard used to look at what was *found* rather than at what
+    would be *requested*, so a file whose every URL is on the skip list printed
+    "Checking 0 external links" and then "All links resolve".
+    """
+    doc = tmp_path / "d.md"
+    doc.write_text("[b](https://img.shields.io/x.svg)\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["check_links.py", str(doc)])
+
+    assert check_links.main() == 1
+    assert "No external links to check" in capsys.readouterr().err
+
+
+def test_the_skip_list_matches_the_host_not_the_whole_url(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As a substring test the list reaches further than it names.
+
+    A URL merely *mentioning* a skipped host — in a path or a query string —
+    would be exempted, so one short entry could quietly stop half the file being
+    checked while the run still reported success.
+    """
+    doc = tmp_path / "d.md"
+    doc.write_text(
+        "[x](https://nlqueries.com/go?ref=img.shields.io)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["check_links.py", str(doc)])
+    checked: list[str] = []
+
+    def _record(url: str) -> tuple[str, int, str]:
+        checked.append(url)
+        return url, 200, ""
+
+    monkeypatch.setattr(check_links, "check", _record)
+
+    assert check_links.main() == 0
+    assert checked == ["https://nlqueries.com/go?ref=img.shields.io"]
+
+
+def test_a_genuinely_skipped_host_is_still_skipped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative control: narrowing the match must not disable the list."""
+    doc = tmp_path / "d.md"
+    doc.write_text(
+        "[b](https://img.shields.io/x.svg) and [r](https://nlqueries.com)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["check_links.py", str(doc)])
+    checked: list[str] = []
+
+    def _record(url: str) -> tuple[str, int, str]:
+        checked.append(url)
+        return url, 200, ""
+
+    monkeypatch.setattr(check_links, "check", _record)
+
+    assert check_links.main() == 0
+    assert checked == ["https://nlqueries.com"]

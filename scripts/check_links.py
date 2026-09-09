@@ -30,6 +30,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # Any `](https://…)` target, plus bare angle-bracket autolinks.
@@ -52,7 +53,12 @@ _REACHABLE = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403}
 #: Hosts that rate-limit or block automated requests hard enough that a failure
 #: here says nothing about the link. Skipped rather than silently passed, and
 #: reported, so the list cannot quietly grow to cover a real problem.
-_SKIP_HOSTS = ("img.shields.io", "visitor-badge.laobi.icu")
+#:
+#: Compared against the parsed host, not searched for in the whole URL: as a
+#: substring test an entry like "github.com" would also skip
+#: "example.com/?ref=github.com", and one short entry could silently exempt
+#: half the file.
+_SKIP_HOSTS = frozenset({"img.shields.io", "visitor-badge.laobi.icu"})
 
 _UA = "nlqueries-link-check/1.0 (+https://github.com/nlqueries/nlqueries)"
 
@@ -116,15 +122,21 @@ def main() -> int:
         return 1
 
     links = find_links(files)
-    if not links:
+    skipped = [u for u in links if urllib.parse.urlparse(u).hostname in _SKIP_HOSTS]
+    to_check = sorted(u for u in links if u not in skipped)
+
+    # Checked against what will actually be requested, not against what was
+    # found. Guarding the found set left a file whose every URL is skipped
+    # printing "Checking 0 external links" and then "All links resolve" -- the
+    # same green tick over nothing, one filter further along.
+    if not to_check:
         print(
-            f"Found no external links in {len(files)} file(s). That is almost "
-            "certainly wrong, so this is a failure rather than a pass.",
+            f"No external links to check across {len(files)} file(s) "
+            f"({len(skipped)} skipped). That is almost certainly wrong, so this "
+            "is a failure rather than a pass.",
             file=sys.stderr,
         )
         return 1
-    skipped = [u for u in links if any(h in u for h in _SKIP_HOSTS)]
-    to_check = sorted(u for u in links if u not in skipped)
 
     print(f"Checking {len(to_check)} external links across {len(files)} files.")
     for url in sorted(skipped):

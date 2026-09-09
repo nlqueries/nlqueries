@@ -17,7 +17,12 @@ on:
     - cron: "0 6 * * 1"
   pull_request:
     paths:
-      - "**/*.md"
+      # "**.md", not "**/*.md": GitHub treats `**` as any run of characters,
+      # so the `/` stays literal and the pattern misses README.md at the root --
+      # the one file this check exists for. README.md is listed as well, so a
+      # change in that behaviour cannot quietly un-cover it.
+      - "**.md"
+      - "README.md"
       - "scripts/check_links.py"
       - ".github/workflows/links.yml"
   workflow_dispatch:
