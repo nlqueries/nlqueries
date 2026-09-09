@@ -39,7 +39,7 @@
 | **MCP server** | Query execution and schema/knowledge lookup exposed as MCP tools for Claude, Cursor, etc. |
 | **CLI** | `nlqueries` (or the shorter `nlq` alias) — connect, build, query, and inspect from your terminal |
 
-See [docs/architecture.md](docs/architecture.md) for how these pieces fit together.
+See [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture.html)) for how these pieces fit together.
 
 ---
 
@@ -121,7 +121,7 @@ nlqueries query dev "and how many were returned?"   # follow-up — keeps prior 
 Follow-up context is on by default; pass `--new-session` to start fresh or
 `--no-session` to disable it for a one-off question.
 
-Full walkthrough: [docs/getting-started.md](docs/getting-started.md) · [online](https://nlqueries.com/docs/getting-started.html).
+Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read online](https://nlqueries.com/docs/getting-started.html)).
 
 ---
 
@@ -129,14 +129,14 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md) · [online]
 
 | Doc | Covers |
 |---|---|
-| [docs/getting-started.md](docs/getting-started.md) · [online](https://nlqueries.com/docs/getting-started.html) | Step-by-step setup and your first query |
-| [docs/cli-reference.md](docs/cli-reference.md) · [online](https://nlqueries.com/docs/cli-reference.html) | Every command and flag |
-| [docs/connectors.md](docs/connectors.md) · [online](https://nlqueries.com/docs/connectors.html) | Database and document connector setup, per-connector notes and caveats |
-| [docs/configuration.md](docs/configuration.md) · [online](https://nlqueries.com/docs/configuration.html) | Environment variables |
-| [docs/troubleshooting.md](docs/troubleshooting.md) · [online](https://nlqueries.com/docs/troubleshooting.html) | Common warnings and errors explained |
-| [docs/qdrant-setup.md](docs/qdrant-setup.md) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
-| [docs/mcp-authentication.md](docs/mcp-authentication.md) | Authenticating the MCP server — required to serve it over a network |
-| [docs/architecture.md](docs/architecture.md) | Module layout and request flow |
+| [docs/getting-started.md](docs/getting-started.md) (or [read online](https://nlqueries.com/docs/getting-started.html)) | Step-by-step setup and your first query |
+| [docs/cli-reference.md](docs/cli-reference.md) (or [read online](https://nlqueries.com/docs/cli-reference.html)) | Every command and flag |
+| [docs/connectors.md](docs/connectors.md) (or [read online](https://nlqueries.com/docs/connectors.html)) | Database and document connector setup, per-connector notes and caveats |
+| [docs/configuration.md](docs/configuration.md) (or [read online](https://nlqueries.com/docs/configuration.html)) | Environment variables |
+| [docs/troubleshooting.md](docs/troubleshooting.md) (or [read online](https://nlqueries.com/docs/troubleshooting.html)) | Common warnings and errors explained |
+| [docs/qdrant-setup.md](docs/qdrant-setup.md) (or [read online](https://nlqueries.com/docs/qdrant-setup.html)) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
+| [docs/mcp-authentication.md](docs/mcp-authentication.md) (or [read online](https://nlqueries.com/docs/mcp-authentication.html)) | Authenticating the MCP server — required to serve it over a network |
+| [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture.html)) | Module layout and request flow |
 
 ---
 
