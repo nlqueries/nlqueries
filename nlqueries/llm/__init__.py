@@ -6,7 +6,7 @@ from typing import Any, cast
 from nlqueries import config
 from nlqueries.config import BEDROCK_MODEL_PREFIX, BEDROCK_PROVIDER
 from nlqueries.llm.anthropic_client import AnthropicClient
-from nlqueries.llm.client import LLMClient
+from nlqueries.llm.client import LLMClient, OutputBudgetExhausted
 from nlqueries.llm.litellm_client import LiteLLMClient
 from nlqueries.llm.override import (
     LLMOverride,
@@ -27,6 +27,7 @@ __all__ = [
     "AnthropicClient",
     "LLMClient",
     "LLMOverride",
+    "OutputBudgetExhausted",
     "LiteLLMClient",
     "UsageRecord",
     "current_llm_override",

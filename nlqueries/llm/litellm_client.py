@@ -8,7 +8,12 @@ from typing import Any
 import litellm
 
 from nlqueries import config
-from nlqueries.llm.client import LLMClient, SystemParam
+from nlqueries.llm.client import (
+    LLMClient,
+    OutputBudgetExhausted,
+    SystemParam,
+    exhausted,
+)
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
 
@@ -155,13 +160,14 @@ class LiteLLMClient(LLMClient):
     # ------------------------------------------------------------------
 
     def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
+        budget = max_tokens or output_budget("answer")
         response = litellm.completion(
             model=self._model,
             messages=[
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            max_tokens=max_tokens or output_budget("answer"),
+            max_tokens=budget,
             **self._auth_kwargs(),
         )
         content = response.choices[0].message.content or ""
@@ -170,27 +176,40 @@ class LiteLLMClient(LLMClient):
             _record_litellm_usage(self._model, usage)
         else:
             _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", content)
+        # Usage is recorded first: the tokens were spent whether or not anything
+        # came back, and a deployment tracking cost should see them.
+        if exhausted(getattr(response.choices[0], "finish_reason", None), content):
+            raise OutputBudgetExhausted(self._model, budget)
         return content
 
     def stream(self, system: SystemParam, user: str) -> Iterator[str]:
+        budget = output_budget("answer")
         response = litellm.completion(
             model=self._model,
             messages=[
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            max_tokens=output_budget("answer"),
+            max_tokens=budget,
             stream=True,
             **self._auth_kwargs(),
         )
         collected: list[str] = []
+        finish: object = None
         for chunk in response:
+            finish = getattr(chunk.choices[0], "finish_reason", None) or finish
             delta = chunk.choices[0].delta.content
             if delta:
                 collected.append(delta)
                 yield delta
         # Streaming usage is provider-dependent in LiteLLM; record an estimate.
         _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", "".join(collected))
+        # The finish reason arrives on the last chunk, so this can only be
+        # decided once the stream is done -- and only when nothing was
+        # yielded. A caller that already has text has an answer, however
+        # short, and taking it away to raise would be the worse outcome.
+        if exhausted(finish, "".join(collected)):
+            raise OutputBudgetExhausted(self._model, budget)
 
     # ------------------------------------------------------------------
     # Native async API
@@ -204,13 +223,14 @@ class LiteLLMClient(LLMClient):
         *,
         temperature: float | None = None,
     ) -> str:
+        budget = max_tokens or output_budget("answer")
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            "max_tokens": max_tokens or output_budget("answer"),
+            "max_tokens": budget,
             **self._auth_kwargs(),
         }
         if temperature is not None:
@@ -222,23 +242,30 @@ class LiteLLMClient(LLMClient):
             _record_litellm_usage(self._model, usage)
         else:
             _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", content)
+        if exhausted(getattr(response.choices[0], "finish_reason", None), content):
+            raise OutputBudgetExhausted(self._model, budget)
         return content
 
     async def astream(self, system: SystemParam, user: str) -> AsyncIterator[str]:
+        budget = output_budget("answer")
         response = await litellm.acompletion(
             model=self._model,
             messages=[
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            max_tokens=output_budget("answer"),
+            max_tokens=budget,
             stream=True,
             **self._auth_kwargs(),
         )
         collected: list[str] = []
+        finish: object = None
         async for chunk in response:
+            finish = getattr(chunk.choices[0], "finish_reason", None) or finish
             delta = chunk.choices[0].delta.content
             if delta:
                 collected.append(delta)
                 yield delta
         _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", "".join(collected))
+        if exhausted(finish, "".join(collected)):
+            raise OutputBudgetExhausted(self._model, budget)

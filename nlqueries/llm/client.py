@@ -8,6 +8,53 @@ from typing import Any
 
 from nlqueries.llm.override import output_budget
 
+#: Finish reasons meaning "stopped because it ran out of room", across providers.
+#: LiteLLM normalises to ``length``; the Anthropic SDK reports ``max_tokens``.
+TRUNCATED = frozenset({"length", "max_tokens"})
+
+
+class OutputBudgetExhausted(RuntimeError):
+    """The model used its whole output allowance without writing an answer.
+
+    Raised rather than returning ``""`` because an empty string is
+    indistinguishable from a model that had nothing to say, and the two want
+    opposite responses from the caller: one is a configuration problem with a
+    named fix, the other is not.
+
+    This is the failure a reasoning model produces. Reasoning is billed from the
+    same allowance as the answer and spent first, so a budget sized for the
+    answer alone returns a truncated answer -- or, when the allowance is small
+    enough, nothing at all. Measured on `deepseek-v4-pro`: at 5 tokens, all five
+    went to reasoning and the content came back empty with
+    ``finish_reason=length``.
+
+    Only raised when NOTHING was produced. A truncated answer is still an
+    answer, and is left to the caller.
+    """
+
+    def __init__(self, model: str, budget: int) -> None:
+        self.model = model
+        self.budget = budget
+        super().__init__(
+            f"{model} used its entire {budget}-token output budget without "
+            f"producing an answer. Raise the output-token limit -- a reasoning "
+            f"model spends this allowance before it writes anything."
+        )
+
+
+def exhausted(finish_reason: object, content: str) -> bool:
+    """Whether a reply is an exhausted budget rather than a short answer.
+
+    ``finish_reason`` is read with ``getattr(..., None)`` at every call site, and
+    ``None`` answers False here. LiteLLM normalises a hundred-odd providers and
+    does not promise the field on all of them, so reading it directly would turn
+    a missing attribute into an AttributeError on every call -- which is how the
+    existing usage tests caught this, their fakes not carrying the field either.
+    A reply whose finish reason is unknown is treated as an ordinary reply.
+    """
+    return str(finish_reason) in TRUNCATED and not content.strip()
+
+
 # System parameter type: plain string OR a list of typed blocks (Anthropic format).
 # List form is only meaningful for providers that support prompt caching
 # (see `supports_prompt_caching` on each client class).
