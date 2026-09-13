@@ -9,6 +9,7 @@ import litellm
 
 from nlqueries import config
 from nlqueries.llm.client import LLMClient, SystemParam
+from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
 
 
@@ -153,14 +154,14 @@ class LiteLLMClient(LLMClient):
     # Sync API
     # ------------------------------------------------------------------
 
-    def complete(self, system: SystemParam, user: str, max_tokens: int = 1024) -> str:
+    def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         response = litellm.completion(
             model=self._model,
             messages=[
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            max_tokens=max_tokens,
+            max_tokens=max_tokens or output_budget("answer"),
             **self._auth_kwargs(),
         )
         content = response.choices[0].message.content or ""
@@ -178,7 +179,7 @@ class LiteLLMClient(LLMClient):
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            max_tokens=1024,
+            max_tokens=output_budget("answer"),
             stream=True,
             **self._auth_kwargs(),
         )
@@ -199,7 +200,7 @@ class LiteLLMClient(LLMClient):
         self,
         system: SystemParam,
         user: str,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         *,
         temperature: float | None = None,
     ) -> str:
@@ -209,7 +210,7 @@ class LiteLLMClient(LLMClient):
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens or output_budget("answer"),
             **self._auth_kwargs(),
         }
         if temperature is not None:
@@ -230,7 +231,7 @@ class LiteLLMClient(LLMClient):
                 {"role": "system", "content": _flatten_system(system)},
                 {"role": "user", "content": user},
             ],
-            max_tokens=1024,
+            max_tokens=output_budget("answer"),
             stream=True,
             **self._auth_kwargs(),
         )

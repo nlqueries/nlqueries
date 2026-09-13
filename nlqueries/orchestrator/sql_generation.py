@@ -28,7 +28,7 @@ import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
 
-from nlqueries.llm import get_llm_client
+from nlqueries.llm import get_llm_client, output_budget
 from nlqueries.sql_policy import evaluate
 
 if TYPE_CHECKING:
@@ -155,10 +155,12 @@ async def validate_and_repair(
         if candidates:
             repaired_sql = select_best(candidates, knowledge_base, dialect)
         else:
-            raw = await llm.acomplete(system, correction_user, max_tokens=512)
+            raw = await llm.acomplete(
+                system, correction_user, max_tokens=output_budget("correction")
+            )
             repaired_sql = _extract_sql(raw)
     else:
-        raw = await llm.acomplete(system, correction_user, max_tokens=512)
+        raw = await llm.acomplete(system, correction_user, max_tokens=output_budget("correction"))
         repaired_sql = _extract_sql(raw)
 
     repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)

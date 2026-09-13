@@ -25,6 +25,8 @@ import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 
+from nlqueries.llm import output_budget
+
 if TYPE_CHECKING:
     from nlqueries.llm.client import LLMClient
 
@@ -99,7 +101,9 @@ async def generate_candidates(
 
     async def _one(temperature: float | None) -> str:
         try:
-            raw = await llm.acomplete(system, user, max_tokens=512, temperature=temperature)
+            raw = await llm.acomplete(
+                system, user, max_tokens=output_budget("correction"), temperature=temperature
+            )
             return _extract_sql(raw)
         except Exception:  # noqa: BLE001
             return ""

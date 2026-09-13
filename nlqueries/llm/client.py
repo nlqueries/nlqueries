@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
+from nlqueries.llm.override import output_budget
+
 # System parameter type: plain string OR a list of typed blocks (Anthropic format).
 # List form is only meaningful for providers that support prompt caching
 # (see `supports_prompt_caching` on each client class).
@@ -18,7 +20,7 @@ class LLMClient(ABC):
     supports_prompt_caching: bool = False
 
     @abstractmethod
-    def complete(self, system: SystemParam, user: str, max_tokens: int = 1024) -> str:
+    def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         """Return the full response string for a single-turn completion."""
 
     @abstractmethod
@@ -36,7 +38,7 @@ class LLMClient(ABC):
         self,
         system: SystemParam,
         user: str,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         *,
         temperature: float | None = None,
     ) -> str:
@@ -45,13 +47,24 @@ class LLMClient(ABC):
         Args:
             system:      System prompt (string or list of typed blocks).
             user:        User message.
-            max_tokens:  Maximum tokens to generate.
+            max_tokens:  Maximum tokens to generate. ``None`` means the
+                         configured answer budget, resolved per call -- not a
+                         literal default, because a default is bound at import
+                         and the budget is a runtime value from
+                         ``LLM_MAX_OUTPUT_TOKENS`` or the bound ``LLMOverride``.
             temperature: Sampling temperature (0.0–1.0).  ``None`` uses the
                          provider default.  Passed through on provider clients
                          that override this method; ignored by the default
                          thread-bridge implementation.
         """
-        return await asyncio.to_thread(self.complete, system, user, max_tokens)
+        # Resolved here, not forwarded as ``None``. This bridge used to hand a
+        # subclass the literal 1024, and an out-of-tree ``LLMClient`` typed the
+        # way the in-repo doubles are -- ``max_tokens: int = 1024`` -- would take
+        # a ``None`` straight to its SDK, which rejects it. Widening the base
+        # signature is our business; changing what a subclass is handed is not.
+        return await asyncio.to_thread(
+            self.complete, system, user, max_tokens or output_budget("answer")
+        )
 
     async def astream(self, system: SystemParam, user: str) -> AsyncIterator[str]:
         """Async token stream.  Default: collects sync stream() in a thread, then yields.

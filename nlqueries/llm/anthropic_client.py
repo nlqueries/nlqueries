@@ -11,6 +11,7 @@ import anthropic
 
 from nlqueries import config
 from nlqueries.llm.client import LLMClient, SystemParam
+from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, record_usage
 
 _MAX_RETRIES = 3
@@ -72,13 +73,13 @@ class AnthropicClient(LLMClient):
     # Sync API
     # ------------------------------------------------------------------
 
-    def complete(self, system: SystemParam, user: str, max_tokens: int = 1024) -> str:
+    def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         sys_blocks = self._system_param(system)
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = self._client.messages.create(
                     model=self._model,
-                    max_tokens=max_tokens,
+                    max_tokens=max_tokens or output_budget("answer"),
                     system=cast(Any, sys_blocks),
                     messages=[{"role": "user", "content": user}],
                 )
@@ -95,7 +96,7 @@ class AnthropicClient(LLMClient):
         sys_blocks = self._system_param(system)
         with self._client.messages.stream(
             model=self._model,
-            max_tokens=1024,
+            max_tokens=output_budget("answer"),
             system=cast(Any, sys_blocks),
             messages=[{"role": "user", "content": user}],
         ) as stream:
@@ -113,14 +114,14 @@ class AnthropicClient(LLMClient):
         self,
         system: SystemParam,
         user: str,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         *,
         temperature: float | None = None,
     ) -> str:
         sys_blocks = self._system_param(system)
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens or output_budget("answer"),
             "system": cast(Any, sys_blocks),
             "messages": [{"role": "user", "content": user}],
         }
@@ -142,7 +143,7 @@ class AnthropicClient(LLMClient):
         sys_blocks = self._system_param(system)
         async with self._aclient.messages.stream(
             model=self._model,
-            max_tokens=1024,
+            max_tokens=output_budget("answer"),
             system=cast(Any, sys_blocks),
             messages=[{"role": "user", "content": user}],
         ) as stream:

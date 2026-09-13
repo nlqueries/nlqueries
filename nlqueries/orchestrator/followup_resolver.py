@@ -19,7 +19,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from nlqueries.llm import get_llm_client
+from nlqueries.llm import get_llm_client, output_budget
 from nlqueries.orchestrator.conversation import ConversationTurn
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,11 @@ def resolve_followup(
 
     try:
         llm = get_llm_client(tier="fast")
-        raw = llm.complete(_SYSTEM_PROMPT, _build_user_prompt(question, history), max_tokens=200)
+        raw = llm.complete(
+            _SYSTEM_PROMPT,
+            _build_user_prompt(question, history),
+            max_tokens=output_budget("classification"),
+        )
     except Exception:
         logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)
         return _unresolved(question)
@@ -154,7 +158,9 @@ async def aresolve_followup(
     try:
         llm = get_llm_client(tier="fast")
         raw = await llm.acomplete(
-            _SYSTEM_PROMPT, _build_user_prompt(question, history), max_tokens=200
+            _SYSTEM_PROMPT,
+            _build_user_prompt(question, history),
+            max_tokens=output_budget("classification"),
         )
     except Exception:
         logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)

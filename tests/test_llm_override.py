@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib
 import inspect
+import logging
+import os
 import textwrap
 from unittest.mock import MagicMock, patch
 
@@ -14,9 +17,12 @@ from nlqueries.llm import (
     LLMOverride,
     current_llm_override,
     get_llm_client,
+    output_budget,
     use_llm_override,
 )
+from nlqueries.llm import override as override_mod
 from nlqueries.llm.anthropic_client import AnthropicClient
+from nlqueries.llm.client import LLMClient
 from nlqueries.llm.litellm_client import LiteLLMClient
 
 
@@ -453,3 +459,261 @@ def test_nothing_naming_a_provider_still_lets_the_model_decide() -> None:
         patch.object(config, "LLM_MODEL_FAST", "bedrock/x"),
     ):
         assert isinstance(get_llm_client(), LiteLLMClient)
+
+
+# ---------------------------------------------------------------------------
+# Output budget
+# ---------------------------------------------------------------------------
+
+
+def test_budget_defaults_are_what_the_call_sites_used_to_hard_code() -> None:
+    """The default must be a no-op, or this change moves every deployment's bill.
+
+    1024 / 512 / 200 are the numbers that were written at the call sites before
+    the budget was configurable. At the default they are what comes back, so an
+    operator who sets nothing sees exactly the behaviour they had.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024):
+        assert output_budget("answer") == 1024
+        assert output_budget("correction") == 512
+        assert output_budget("classification") == 200
+
+
+def test_raising_the_budget_raises_the_short_calls_too() -> None:
+    """The whole point of one number.
+
+    A reasoning model bills its reasoning from the same allowance and spends it
+    first, so raising only the answer leaves classification starved at 200 --
+    and that is the tier that returns an EMPTY string rather than a short one.
+    Measured on `deepseek-v4-pro`: 52 of 56 tokens went to reasoning.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 8192):
+        assert output_budget("answer") == 8192
+        assert output_budget("correction") == 4096
+        assert output_budget("classification") == 1024
+
+
+def test_lowering_the_budget_never_goes_under_the_floors() -> None:
+    """A budget below the floors would make the short calls useless.
+
+    `classification` has to fit a label; `correction` has to fit a SQL
+    statement. Those are what the floors are, and they hold whatever the
+    operator sets.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 100):
+        assert output_budget("answer") == 100
+        assert output_budget("correction") == 512
+        assert output_budget("classification") == 200
+
+
+def test_a_nonsense_budget_cannot_reach_the_provider() -> None:
+    """0 is what an operator writes meaning "no limit". It means the opposite.
+
+    Both SDKs reject a non-positive `max_tokens`, so an unclamped 0 would fail
+    every LLM call in the process with an error naming `max_tokens` rather than
+    the setting behind it. The literal 1024 this replaced made the value
+    unreachable, so this failure mode is one the change introduced.
+
+    Two channels, and both have to hold: the environment, clamped where it is
+    read, and an `LLMOverride` from a settings store, which arrives unclamped.
+    """
+    for bad in (0, -1, -9999):
+        with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", bad):
+            assert output_budget("answer") >= 1
+            assert output_budget("correction") >= 1
+            assert output_budget("classification") >= 1
+            with use_llm_override(LLMOverride(max_tokens=bad)):
+                assert output_budget("answer") >= 1
+
+
+def test_a_nonpositive_environment_value_is_ignored_not_clamped() -> None:
+    """The documented default, not 1. A one-token answer is not a recovery.
+
+    `try`/`finally` because the reload is process-wide state: without it a
+    failing assertion skips the restore and leaves `LLM_MAX_OUTPUT_TOKENS`
+    pinned at 1 for every test after this one, turning one real failure into a
+    cascade of unrelated ones. `test_redshift_guards.py` guards the same shape
+    the same way.
+    """
+    try:
+        with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
+            importlib.reload(config)
+            assert config.LLM_MAX_OUTPUT_TOKENS == 1024
+    finally:
+        importlib.reload(config)
+
+
+def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type: ignore[no-untyped-def]
+    """Clamping quietly is worse than not clamping at all.
+
+    Uncorrected, a 0 reached the SDK and failed every call with an error that at
+    least said `max_tokens`. Corrected in silence it does something subtler: the
+    derived tiers sit on their floors, so classification and SQL repair keep
+    working and only the ANSWER collapses to one token. The user sees a
+    truncated answer and nothing names the cause. The log is the fix; the clamp
+    is just what keeps the process running.
+    """
+    # `try` OUTSIDE `patch.dict`, so the restoring reload sees the real
+    # environment. Nested the other way -- which is how this was written -- the
+    # reload still saw `LLM_MAX_OUTPUT_TOKENS=0` and left the module pinned at
+    # the default, so on a machine whose `.env` raises the budget every test
+    # after this one ran against 1024. Exactly the cascade the sibling test's
+    # docstring is about, introduced by the test written to describe it.
+    try:
+        with (
+            patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}),
+            caplog.at_level(logging.WARNING),
+        ):
+            importlib.reload(config)
+            assert config.LLM_MAX_OUTPUT_TOKENS == 1024
+            assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text
+            # The message has to describe what actually happens. The first
+            # version said "using the tier floor ... answers will be a single
+            # token", which was true of a negative and false of the 0 a person
+            # actually types -- 0 was falsy, so it fell back to the default and
+            # the answer budget was never touched.
+            assert "ignored" in caplog.text
+    finally:
+        importlib.reload(config)
+
+
+def test_a_non_numeric_budget_does_not_abort_the_import(caplog) -> None:  # type: ignore[no-untyped-def]
+    """`LLM_MAX_OUTPUT_TOKENS=` is how people disable a setting, and it is a typo.
+
+    `int("")` raises, and an unhandled ValueError while `nlqueries.config` is
+    importing takes down every CLI command with it -- including `doctor`, the one
+    an operator would run to find out why nothing works. Tolerating 0 and
+    negatives while falling over on a blank is the wrong way round: the blank is
+    the likelier mistake.
+    """
+    for written in ("", "  ", "1024.5", "lots"):
+        try:
+            with (
+                patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": written}),
+                caplog.at_level(logging.WARNING),
+            ):
+                caplog.clear()
+                importlib.reload(config)
+                assert config.LLM_MAX_OUTPUT_TOKENS == 1024, written
+                assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text, written
+        finally:
+            importlib.reload(config)
+
+
+def test_a_clamped_override_names_itself_once(caplog) -> None:  # type: ignore[no-untyped-def]
+    """Same for the channel `config` never sees, without flooding the log.
+
+    `output_budget` runs on every LLM call, so a warning per call is a warning
+    nobody reads.
+    """
+    override_mod._WARNED_BUDGETS.clear()
+    for bad in (0, -5):
+        override_mod._WARNED_BUDGETS.clear()
+        caplog.clear()
+        with (
+            patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 4096),
+            caplog.at_level(logging.WARNING),
+            use_llm_override(LLMOverride(max_tokens=bad)),
+        ):
+            # Ignored, so the configured budget stands -- both for 0 and for a
+            # negative. They used to behave differently: 0 was falsy and fell
+            # through, a negative was clamped to the tier floor, and the warning
+            # described only the second.
+            assert output_budget("answer") == 4096
+            assert output_budget("answer") == 4096
+        assert caplog.text.count("LLMOverride.max_tokens") == 1, caplog.text
+        assert "ignored" in caplog.text
+
+
+def test_the_override_wins_over_the_environment() -> None:
+    """A per-request budget is the channel the enterprise settings store uses."""
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024):
+        assert output_budget("answer") == 1024
+        with use_llm_override(LLMOverride(max_tokens=4096)):
+            assert output_budget("answer") == 4096
+            assert output_budget("correction") == 2048
+        assert output_budget("answer") == 1024
+
+
+def test_an_override_without_a_budget_leaves_the_environment_alone() -> None:
+    """Every field of an override is optional; an unset one must not read as 0."""
+    with (
+        patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 2048),
+        use_llm_override(LLMOverride(provider="litellm", model="m")),
+    ):
+        assert output_budget("answer") == 2048
+
+
+def test_an_unknown_tier_is_refused_rather_than_silently_defaulted() -> None:
+    """A typo that resolved to the answer budget would be invisible and expensive."""
+    with pytest.raises(ValueError, match="Unknown budget tier"):
+        output_budget("clasification")
+
+
+def test_the_answer_tier_actually_reaches_the_call() -> None:
+    """The tier the setting is named for must reach a request, not just exist.
+
+    The first revision of this change defined an `answer` tier and wired nothing
+    to it: the clients still carried `max_tokens: int = 1024` as a literal
+    default, so `LLM_MAX_OUTPUT_TOKENS` moved the two derived tiers and left the
+    answer -- the thing an operator raises it FOR -- pinned at the old value.
+    Every other test here passed.
+
+    A literal default cannot work: it is bound at import, and the budget is a
+    runtime value. Hence `None`, resolved per call.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 7000):
+        client = LiteLLMClient(model="m", api_key="k")
+        with patch("litellm.completion") as completion:
+            completion.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="hi"))], usage=None
+            )
+            client.complete("sys", "user")
+        assert completion.call_args.kwargs["max_tokens"] == 7000
+
+
+def test_an_explicit_budget_still_wins_over_the_tier() -> None:
+    """A caller that names a number gets it; the tier is only the default."""
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 7000):
+        client = LiteLLMClient(model="m", api_key="k")
+        with patch("litellm.completion") as completion:
+            completion.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="hi"))], usage=None
+            )
+            client.complete("sys", "user", max_tokens=42)
+        assert completion.call_args.kwargs["max_tokens"] == 42
+
+
+def test_the_async_bridge_never_hands_a_subclass_none() -> None:
+    """Widening the base signature is ours to do; changing the contract is not.
+
+    `LLMClient.acomplete`'s default implementation forwards to `complete` in a
+    thread. It used to forward the literal 1024. An out-of-tree client typed the
+    way the in-repo doubles are -- `max_tokens: int = 1024` -- would take a
+    forwarded `None` straight to its SDK, which rejects it.
+    """
+    seen: list[int | None] = []
+
+    class OutOfTreeClient(LLMClient):
+        def complete(self, system: object, user: str, max_tokens: int = 1024) -> str:  # type: ignore[override]
+            seen.append(max_tokens)
+            return "ok"
+
+        def stream(self, system: object, user: str):  # type: ignore[override]
+            yield "ok"
+
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 3333):
+        asyncio.run(OutOfTreeClient().acomplete("sys", "user"))
+
+    assert seen == [3333], f"the bridge forwarded {seen[0]!r}"
+
+
+def test_extra_still_refuses_max_tokens() -> None:
+    """The field exists precisely because `extra` may not carry it.
+
+    `LiteLLMClient` rejects `max_tokens` in `extra` because the sync and async
+    paths disagree about which value wins and one of them loses silently. Adding
+    a first-class field must not have quietly reopened that door.
+    """
+    with pytest.raises(ValueError, match="max_tokens"):
+        LiteLLMClient(model="m", extra={"max_tokens": 50})

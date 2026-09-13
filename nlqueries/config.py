@@ -10,6 +10,7 @@ os.environ directly, so the source of truth is a single place.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -186,6 +187,68 @@ the model to decide. Only the middle case is a contradiction worth refusing.
 
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
+
+
+def _output_budget() -> int:
+    """``LLM_MAX_OUTPUT_TOKENS``, clamped, and loud about it when it clamps.
+
+    Correcting alone trades a loud misconfiguration for a quiet one. A ``0`` --
+    which reads as "no limit" and means the opposite -- used to reach the SDK
+    and fail every call with an error that at least named ``max_tokens``.
+    Corrected in silence it does something worse: only the answer shrinks, while
+    the derived tiers sit on their floors and keep working, so the user sees a
+    truncated answer and nothing names the cause. Hence the log.
+
+    Ignored rather than clamped to 1, because a one-token answer is useless and
+    the documented default is the behaviour the deployment already had.
+    """
+    default = 1024
+    written = os.getenv("LLM_MAX_OUTPUT_TOKENS", str(default))
+    try:
+        raw = int(written)
+    except ValueError:
+        # `LLM_MAX_OUTPUT_TOKENS=` -- blanking a value is how people disable one
+        # -- gives `int("")`, and an unhandled ValueError here aborts the import
+        # of this module. That takes down every CLI command with it, including
+        # `doctor`, which is the one an operator reaches for to find out why.
+        logging.getLogger(__name__).warning(
+            "LLM_MAX_OUTPUT_TOKENS=%r is not a number and is being ignored; "
+            "using the default of %d.",
+            written,
+            default,
+        )
+        return default
+    if raw < 1:
+        logging.getLogger(__name__).warning(
+            "LLM_MAX_OUTPUT_TOKENS=%d is not a usable token budget and is being "
+            "ignored; using the default of %d. A reasoning model wants more than "
+            "that, not less.",
+            raw,
+            default,
+        )
+        return default
+    return raw
+
+
+LLM_MAX_OUTPUT_TOKENS: int = _output_budget()
+"""Tokens an answer may generate. The one budget; every other one derives from it.
+
+1024 is what the answer path was hard-coded to, so an unset variable behaves
+exactly as before.
+
+It is a budget, not a length. A **reasoning** model bills its private reasoning
+from the same allowance, and spends it first: measured on `deepseek-v4-pro`, a
+question classification asked for 200 tokens, used 56, and 52 of those were
+reasoning. At 5 tokens -- what the CLI and MCP health checks ask for -- all five
+went to reasoning and the content came back empty with `finish_reason=length`.
+Over a thousand of the models LiteLLM knows are flagged as reasoning models, so
+this is the common case now rather than an exotic one. A deployment on one of
+them needs this raised, and :func:`nlqueries.llm.output_budget` is how that
+reaches the calls that ask for less than an answer.
+
+A non-positive value is ignored, with a warning naming this setting -- see
+:func:`_output_budget` for why the warning matters more than the correction.
+"""
 
 
 def llm_credentials_available() -> bool:
