@@ -526,8 +526,8 @@ def test_a_nonsense_budget_cannot_reach_the_provider() -> None:
                 assert output_budget("answer") >= 1
 
 
-def test_the_environment_value_is_clamped_where_it_is_read() -> None:
-    """As `CACHE_COSINE_CANDIDATES` is, so the constant itself is never absurd.
+def test_a_nonpositive_environment_value_is_ignored_not_clamped() -> None:
+    """The documented default, not 1. A one-token answer is not a recovery.
 
     `try`/`finally` because the reload is process-wide state: without it a
     failing assertion skips the restore and leaves `LLM_MAX_OUTPUT_TOKENS`
@@ -538,7 +538,7 @@ def test_the_environment_value_is_clamped_where_it_is_read() -> None:
     try:
         with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
             importlib.reload(config)
-            assert config.LLM_MAX_OUTPUT_TOKENS == 1
+            assert config.LLM_MAX_OUTPUT_TOKENS == 1024
     finally:
         importlib.reload(config)
 
@@ -557,8 +557,14 @@ def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type:
         try:
             with caplog.at_level(logging.WARNING):
                 importlib.reload(config)
-            assert config.LLM_MAX_OUTPUT_TOKENS == 1
+            assert config.LLM_MAX_OUTPUT_TOKENS == 1024
             assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text
+            # The message has to describe what actually happens. The first
+            # version said "using the tier floor ... answers will be a single
+            # token", which was true of a negative and false of the 0 a person
+            # actually types -- 0 was falsy, so it fell back to the default and
+            # the answer budget was never touched.
+            assert "ignored" in caplog.text
         finally:
             importlib.reload(config)
 
@@ -570,14 +576,22 @@ def test_a_clamped_override_names_itself_once(caplog) -> None:  # type: ignore[n
     nobody reads.
     """
     override_mod._WARNED_BUDGETS.clear()
-    with (
-        patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024),
-        caplog.at_level(logging.WARNING),
-        use_llm_override(LLMOverride(max_tokens=-5)),
-    ):
-        assert output_budget("answer") >= 1
-        assert output_budget("answer") >= 1
-    assert caplog.text.count("LLMOverride.max_tokens") == 1, caplog.text
+    for bad in (0, -5):
+        override_mod._WARNED_BUDGETS.clear()
+        caplog.clear()
+        with (
+            patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 4096),
+            caplog.at_level(logging.WARNING),
+            use_llm_override(LLMOverride(max_tokens=bad)),
+        ):
+            # Ignored, so the configured budget stands -- both for 0 and for a
+            # negative. They used to behave differently: 0 was falsy and fell
+            # through, a negative was clamped to the tier floor, and the warning
+            # described only the second.
+            assert output_budget("answer") == 4096
+            assert output_budget("answer") == 4096
+        assert caplog.text.count("LLMOverride.max_tokens") == 1, caplog.text
+        assert "ignored" in caplog.text
 
 
 def test_the_override_wins_over_the_environment() -> None:

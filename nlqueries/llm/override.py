@@ -132,21 +132,31 @@ def output_budget(tier: str = "answer") -> int:
     if tier not in _BUDGET_TIERS:
         raise ValueError(f"Unknown budget tier: {tier!r}. Available: {sorted(_BUDGET_TIERS)}")
     override = _override.get()
-    # The other channel, and the one `config` never sees: an override comes from
-    # a host's settings store, where a person can type 0 into a form. Warned
-    # once per value rather than per call -- this runs on every LLM request, and
-    # a warning that floods is a warning nobody reads.
-    bad = override.max_tokens if override else None
-    if bad is not None and bad < 1 and bad not in _WARNED_BUDGETS:
-        _WARNED_BUDGETS.add(bad)
+    # A non-positive budget is not a budget, so it is IGNORED and the configured
+    # value stands. One rule for 0 and for negatives, which the first version
+    # did not have: it resolved with `or`, so 0 was falsy and fell back to the
+    # configured value while a negative passed through to be clamped at the tier
+    # floor -- two different behaviours, and a warning that described only the
+    # second. 0 is the one a person actually types into a settings form.
+    #
+    # Ignoring beats clamping here. Clamping a bad value to the floor yields a
+    # one-token answer, which is useless; falling back to the configured budget
+    # is the behaviour the deployment already had.
+    #
+    # Warned once per value rather than per call: this runs on every LLM
+    # request, and a warning that floods is a warning nobody reads.
+    total = config.LLM_MAX_OUTPUT_TOKENS
+    requested = override.max_tokens if override else None
+    if requested is not None and requested >= 1:
+        total = requested
+    elif requested is not None and requested not in _WARNED_BUDGETS:
+        _WARNED_BUDGETS.add(requested)
         logging.getLogger(__name__).warning(
-            "LLMOverride.max_tokens=%d is not a usable token budget; using the "
-            "tier floor. Answers will be a single token until the host sets a "
-            "positive value.",
-            bad,
+            "LLMOverride.max_tokens=%d is not a usable token budget and is being "
+            "ignored; using LLM_MAX_OUTPUT_TOKENS=%d. Set a positive value to "
+            "override it.",
+            requested,
+            total,
         )
-    total = (
-        override.max_tokens if override and override.max_tokens else config.LLM_MAX_OUTPUT_TOKENS
-    )
     share, floor = _BUDGET_TIERS[tier]
     return max(floor, int(total * share))

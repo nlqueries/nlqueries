@@ -192,23 +192,27 @@ LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 def _output_budget() -> int:
     """``LLM_MAX_OUTPUT_TOKENS``, clamped, and loud about it when it clamps.
 
-    Clamping alone trades a loud misconfiguration for a quiet one. A ``0`` --
+    Correcting alone trades a loud misconfiguration for a quiet one. A ``0`` --
     which reads as "no limit" and means the opposite -- used to reach the SDK
     and fail every call with an error that at least named ``max_tokens``.
-    Silently corrected to 1 it does something worse: the derived tiers sit on
-    their floors so classification and SQL repair keep working, and only the
-    answer collapses to a single token. The user sees a truncated answer, and
-    nothing anywhere names the setting that caused it.
+    Corrected in silence it does something worse: only the answer shrinks, while
+    the derived tiers sit on their floors and keep working, so the user sees a
+    truncated answer and nothing names the cause. Hence the log.
+
+    Ignored rather than clamped to 1, because a one-token answer is useless and
+    the documented default is the behaviour the deployment already had.
     """
-    raw = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
+    default = 1024
+    raw = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", str(default)))
     if raw < 1:
         logging.getLogger(__name__).warning(
-            "LLM_MAX_OUTPUT_TOKENS=%d is not a usable token budget; using 1. "
-            "Answers will be a single token until this is set to a positive "
-            "value -- 1024 is the default, and a reasoning model wants more.",
+            "LLM_MAX_OUTPUT_TOKENS=%d is not a usable token budget and is being "
+            "ignored; using the default of %d. A reasoning model wants more than "
+            "that, not less.",
             raw,
+            default,
         )
-        return 1
+        return default
     return raw
 
 
@@ -228,8 +232,8 @@ this is the common case now rather than an exotic one. A deployment on one of
 them needs this raised, and :func:`nlqueries.llm.output_budget` is how that
 reaches the calls that ask for less than an answer.
 
-Clamped to at least 1, and logged when it clamps -- see :func:`_output_budget`
-for why the log matters more than the clamp.
+A non-positive value is ignored, with a warning naming this setting -- see
+:func:`_output_budget` for why the warning matters more than the correction.
 """
 
 
