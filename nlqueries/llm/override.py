@@ -97,9 +97,14 @@ def current_llm_override() -> LLMOverride | None:
 #: approximation -- a first attempt used 0.2 for classification, which is 204 at
 #: the default, and the test written to assert "the default changes nothing"
 #: caught it. A fifth is not a no-op; an eighth is.
+#: The floors are also the lower bound on a nonsense budget. ``config`` clamps
+#: what it reads from the environment, but an ``LLMOverride`` is the other
+#: channel and arrives unclamped -- from a settings store, where a person can
+#: type 0 into a form. Both converge here, so this is the one place that has to
+#: hold.
 _BUDGET_TIERS: dict[str, tuple[float, int]] = {
-    # The answer itself: the whole budget.
-    "answer": (1.0, 0),
+    # The answer itself: the whole budget, and never less than a token.
+    "answer": (1.0, 1),
     # A retry that rewrites SQL, or a candidate set. Structured, bounded output.
     "correction": (0.5, 512),
     # A label or a short JSON object: intent, and follow-up resolution.

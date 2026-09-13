@@ -14,6 +14,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   still has set for something else. See
   [docs/configuration.md](docs/configuration.md#amazon-bedrock).
 
+- `LLM_MAX_OUTPUT_TOKENS` (default `1024`), the one number every token budget
+  derives from, with `LLMOverride.max_tokens` as the per-request equivalent for
+  a host application. The correction tier takes half of it (floor 512) and the
+  classification tier an eighth (floor 200), so the defaults are exactly the
+  numbers the call sites hard-coded before, and raising one setting raises the
+  whole pipeline. This matters on a **reasoning** model, which bills its private
+  reasoning from the same allowance and spends it first: measured on one, a
+  200-token classification used 52 tokens reasoning with four to spare, and a
+  5-token health check returned an empty string with `finish_reason=length`.
+  See [docs/configuration.md](docs/configuration.md).
+
 - `LLMOverride.extra`, a dict of provider-specific keyword arguments forwarded
   verbatim to the completion call, and the matching `extra=` on `LiteLLMClient`.
   This is how a host application supplies settings core has no model for — an

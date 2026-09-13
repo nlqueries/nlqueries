@@ -187,7 +187,7 @@ the model to decide. Only the middle case is a contradiction worth refusing.
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
 
-LLM_MAX_OUTPUT_TOKENS: int = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
+LLM_MAX_OUTPUT_TOKENS: int = max(1, int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024")))
 """Tokens an answer may generate. The one budget; every other one derives from it.
 
 1024 is what the answer path was hard-coded to, so an unset variable behaves
@@ -202,6 +202,13 @@ Over a thousand of the models LiteLLM knows are flagged as reasoning models, so
 this is the common case now rather than an exotic one. A deployment on one of
 them needs this raised, and :func:`nlqueries.llm.output_budget` is how that
 reaches the calls that ask for less than an answer.
+
+Clamped to at least 1, as ``CACHE_COSINE_CANDIDATES`` is. ``0`` is the value an
+operator would reasonably write meaning "no limit", and it means the opposite:
+both SDKs reject a non-positive ``max_tokens``, so every LLM call in the process
+would fail with an error naming ``max_tokens`` rather than the setting that
+caused it. The literal 1024 this replaced made the value unreachable, so the
+failure mode is new -- introduced by making the number configurable.
 """
 
 

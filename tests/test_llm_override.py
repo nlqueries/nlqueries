@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib
 import inspect
+import os
 import textwrap
 from unittest.mock import MagicMock, patch
 
@@ -499,6 +501,34 @@ def test_lowering_the_budget_never_goes_under_the_floors() -> None:
         assert output_budget("answer") == 100
         assert output_budget("correction") == 512
         assert output_budget("classification") == 200
+
+
+def test_a_nonsense_budget_cannot_reach_the_provider() -> None:
+    """0 is what an operator writes meaning "no limit". It means the opposite.
+
+    Both SDKs reject a non-positive `max_tokens`, so an unclamped 0 would fail
+    every LLM call in the process with an error naming `max_tokens` rather than
+    the setting behind it. The literal 1024 this replaced made the value
+    unreachable, so this failure mode is one the change introduced.
+
+    Two channels, and both have to hold: the environment, clamped where it is
+    read, and an `LLMOverride` from a settings store, which arrives unclamped.
+    """
+    for bad in (0, -1, -9999):
+        with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", bad):
+            assert output_budget("answer") >= 1
+            assert output_budget("correction") >= 1
+            assert output_budget("classification") >= 1
+            with use_llm_override(LLMOverride(max_tokens=bad)):
+                assert output_budget("answer") >= 1
+
+
+def test_the_environment_value_is_clamped_where_it_is_read() -> None:
+    """As `CACHE_COSINE_CANDIDATES` is, so the constant itself is never absurd."""
+    with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
+        importlib.reload(config)
+        assert config.LLM_MAX_OUTPUT_TOKENS == 1
+    importlib.reload(config)
 
 
 def test_the_override_wins_over_the_environment() -> None:
