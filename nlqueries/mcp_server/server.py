@@ -25,6 +25,7 @@ get_cache_stats     Return cache size and collection info for an agent.
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import logging
 import os
@@ -349,10 +350,17 @@ def health(probe_llm: bool = False) -> str:
         )
     else:
         try:
-            from nlqueries.llm import get_llm_client  # noqa: PLC0415
+            from nlqueries.llm import (  # noqa: PLC0415
+                OutputBudgetExhausted,
+                get_llm_client,
+            )
 
             t0 = time.monotonic()
-            get_llm_client().complete("You are a health check.", "Reply OK.", max_tokens=5)
+            # See the CLI doctor: the probe asks for five tokens to stay cheap,
+            # and a reasoning model spends them all reasoning. The round trip
+            # succeeded, which is what is being checked.
+            with contextlib.suppress(OutputBudgetExhausted):
+                get_llm_client().complete("You are a health check.", "Reply OK.", max_tokens=5)
             ms = int((time.monotonic() - t0) * 1000)
             lines.append(f"✅ **LLM** — {config.LLM_PROVIDER} / {config.LLM_MODEL} ({ms} ms)")
         except Exception as exc:  # noqa: BLE001

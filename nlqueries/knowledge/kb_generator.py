@@ -12,6 +12,7 @@ import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
 from nlqueries.knowledge.description_dates import stamp_descriptions
+from nlqueries.llm import OutputBudgetExhausted
 from nlqueries.processing.parameterizer import QueryCapsule
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,13 @@ def describe_columns(
     budget = _description_token_budget(len(eligible))
     try:
         raw = llm.complete(system, user, max_tokens=budget)
+    except OutputBudgetExhausted as exc:
+        # Its own message, not "the LLM call failed". This budget is computed
+        # from the column count and is NOT `LLM_MAX_OUTPUT_TOKENS`, so an
+        # operator who has already raised that setting has to be told which
+        # call ran out rather than left to assume it was the one they fixed.
+        logger.warning("describe_columns: %r: %s No descriptions written.", table.name, exc)
+        return {}
     except Exception:  # noqa: BLE001
         logger.warning(
             "describe_columns: the LLM call for %r failed; no descriptions written.",

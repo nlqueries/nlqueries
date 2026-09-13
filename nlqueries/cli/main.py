@@ -15,6 +15,7 @@ Commands
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -432,11 +433,19 @@ def _check_llm() -> _CheckResult:
     from nlqueries.config import LLM_MODEL, LLM_PROVIDER  # noqa: PLC0415
 
     try:
-        from nlqueries.llm import get_llm_client  # noqa: PLC0415
+        from nlqueries.llm import OutputBudgetExhausted, get_llm_client  # noqa: PLC0415
 
         llm = get_llm_client()
         t0 = time.monotonic()
-        llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
+        # A round trip that reached the provider, authenticated and came back is
+        # the entire question this probe asks. It asks for five tokens to keep
+        # the check cheap, and a reasoning model spends all five reasoning
+        # before it writes anything, so an exhausted budget is the ORDINARY
+        # result on such a deployment rather than a fault. Reporting it as a
+        # failure would tell the operator to raise a limit that has no bearing
+        # on a hard-coded probe budget.
+        with contextlib.suppress(OutputBudgetExhausted):
+            llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
         ms = int((time.monotonic() - t0) * 1000)
         return _CheckResult(
             "LLM provider", "ok", f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"

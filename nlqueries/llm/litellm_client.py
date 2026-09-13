@@ -9,6 +9,7 @@ import litellm
 
 from nlqueries import config
 from nlqueries.llm.client import (
+    TRUNCATED,
     LLMClient,
     OutputBudgetExhausted,
     SystemParam,
@@ -205,10 +206,14 @@ class LiteLLMClient(LLMClient):
         # Streaming usage is provider-dependent in LiteLLM; record an estimate.
         _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", "".join(collected))
         # The finish reason arrives on the last chunk, so this can only be
-        # decided once the stream is done -- and only when nothing was
-        # yielded. A caller that already has text has an answer, however
-        # short, and taking it away to raise would be the worse outcome.
-        if exhausted(finish, "".join(collected)):
+        # decided once the stream is done -- and only when nothing at all was
+        # yielded. `collected` empty, not blank: `exhausted` treats whitespace
+        # as nothing, which is right for a reply returned whole and wrong here.
+        # A reasoning model can emit a leading newline before it hits the cap,
+        # and raising then would land mid-stream on a caller that has already
+        # begun writing a response body and cannot unwrite it. Whitespace is
+        # delivered as-is; a blank answer beats a broken stream.
+        if not collected and str(finish) in TRUNCATED:
             raise OutputBudgetExhausted(self._model, budget)
 
     # ------------------------------------------------------------------
@@ -267,5 +272,6 @@ class LiteLLMClient(LLMClient):
                 collected.append(delta)
                 yield delta
         _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", "".join(collected))
-        if exhausted(finish, "".join(collected)):
+        # See the sync path: empty, not blank.
+        if not collected and str(finish) in TRUNCATED:
             raise OutputBudgetExhausted(self._model, budget)

@@ -11,6 +11,7 @@ import anthropic
 
 from nlqueries import config
 from nlqueries.llm.client import (
+    TRUNCATED,
     LLMClient,
     OutputBudgetExhausted,
     SystemParam,
@@ -135,7 +136,11 @@ class AnthropicClient(LLMClient):
         # Outside the suppress, deliberately: raising inside it would be
         # swallowed by the block that exists to make usage recording
         # best-effort, and the caller would get an empty stream and no reason.
-        if final is not None and exhausted(getattr(final, "stop_reason", None), "".join(collected)):
+        if (
+            final is not None
+            and not collected
+            and str(getattr(final, "stop_reason", None)) in TRUNCATED
+        ):
             raise OutputBudgetExhausted(self._model, budget)
 
     # ------------------------------------------------------------------
@@ -193,5 +198,9 @@ class AnthropicClient(LLMClient):
                 final = await stream.get_final_message()
                 _record_anthropic_usage(self._model, final.usage)
         # See the sync path: outside the suppress, or the raise is eaten.
-        if final is not None and exhausted(getattr(final, "stop_reason", None), "".join(collected)):
+        if (
+            final is not None
+            and not collected
+            and str(getattr(final, "stop_reason", None)) in TRUNCATED
+        ):
             raise OutputBudgetExhausted(self._model, budget)
