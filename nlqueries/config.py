@@ -10,6 +10,7 @@ os.environ directly, so the source of truth is a single place.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -187,7 +188,31 @@ the model to decide. Only the middle case is a contradiction worth refusing.
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
 
-LLM_MAX_OUTPUT_TOKENS: int = max(1, int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024")))
+
+def _output_budget() -> int:
+    """``LLM_MAX_OUTPUT_TOKENS``, clamped, and loud about it when it clamps.
+
+    Clamping alone trades a loud misconfiguration for a quiet one. A ``0`` --
+    which reads as "no limit" and means the opposite -- used to reach the SDK
+    and fail every call with an error that at least named ``max_tokens``.
+    Silently corrected to 1 it does something worse: the derived tiers sit on
+    their floors so classification and SQL repair keep working, and only the
+    answer collapses to a single token. The user sees a truncated answer, and
+    nothing anywhere names the setting that caused it.
+    """
+    raw = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
+    if raw < 1:
+        logging.getLogger(__name__).warning(
+            "LLM_MAX_OUTPUT_TOKENS=%d is not a usable token budget; using 1. "
+            "Answers will be a single token until this is set to a positive "
+            "value -- 1024 is the default, and a reasoning model wants more.",
+            raw,
+        )
+        return 1
+    return raw
+
+
+LLM_MAX_OUTPUT_TOKENS: int = _output_budget()
 """Tokens an answer may generate. The one budget; every other one derives from it.
 
 1024 is what the answer path was hard-coded to, so an unset variable behaves
@@ -203,12 +228,8 @@ this is the common case now rather than an exotic one. A deployment on one of
 them needs this raised, and :func:`nlqueries.llm.output_budget` is how that
 reaches the calls that ask for less than an answer.
 
-Clamped to at least 1, as ``CACHE_COSINE_CANDIDATES`` is. ``0`` is the value an
-operator would reasonably write meaning "no limit", and it means the opposite:
-both SDKs reject a non-positive ``max_tokens``, so every LLM call in the process
-would fail with an error naming ``max_tokens`` rather than the setting that
-caused it. The literal 1024 this replaced made the value unreachable, so the
-failure mode is new -- introduced by making the number configurable.
+Clamped to at least 1, and logged when it clamps -- see :func:`_output_budget`
+for why the log matters more than the clamp.
 """
 
 

@@ -14,10 +14,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   still has set for something else. See
   [docs/configuration.md](docs/configuration.md#amazon-bedrock).
 
-- `LLM_MAX_OUTPUT_TOKENS` (default `1024`), the one number every token budget
-  derives from, with `LLMOverride.max_tokens` as the per-request equivalent for
-  a host application. The correction tier takes half of it (floor 512) and the
-  classification tier an eighth (floor 200), so the defaults are exactly the
+- `LLM_MAX_OUTPUT_TOKENS` (default `1024`), the answer budget and the two
+  budgets derived from it, with `LLMOverride.max_tokens` as the per-request
+  equivalent for a host application. The correction tier takes half of it
+  (floor 512) and the classification tier an eighth (floor 200), so the
+  defaults are exactly the
   numbers the call sites hard-coded before, and raising one setting raises the
   whole pipeline. This matters on a **reasoning** model, which bills its private
   reasoning from the same allowance and spends it first: measured on one, a

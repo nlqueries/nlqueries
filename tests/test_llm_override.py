@@ -6,6 +6,7 @@ import ast
 import asyncio
 import importlib
 import inspect
+import logging
 import os
 import textwrap
 from unittest.mock import MagicMock, patch
@@ -19,6 +20,7 @@ from nlqueries.llm import (
     output_budget,
     use_llm_override,
 )
+from nlqueries.llm import override as override_mod
 from nlqueries.llm.anthropic_client import AnthropicClient
 from nlqueries.llm.client import LLMClient
 from nlqueries.llm.litellm_client import LiteLLMClient
@@ -539,6 +541,43 @@ def test_the_environment_value_is_clamped_where_it_is_read() -> None:
             assert config.LLM_MAX_OUTPUT_TOKENS == 1
     finally:
         importlib.reload(config)
+
+
+def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type: ignore[no-untyped-def]
+    """Clamping quietly is worse than not clamping at all.
+
+    Uncorrected, a 0 reached the SDK and failed every call with an error that at
+    least said `max_tokens`. Corrected in silence it does something subtler: the
+    derived tiers sit on their floors, so classification and SQL repair keep
+    working and only the ANSWER collapses to one token. The user sees a
+    truncated answer and nothing names the cause. The log is the fix; the clamp
+    is just what keeps the process running.
+    """
+    with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
+        try:
+            with caplog.at_level(logging.WARNING):
+                importlib.reload(config)
+            assert config.LLM_MAX_OUTPUT_TOKENS == 1
+            assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text
+        finally:
+            importlib.reload(config)
+
+
+def test_a_clamped_override_names_itself_once(caplog) -> None:  # type: ignore[no-untyped-def]
+    """Same for the channel `config` never sees, without flooding the log.
+
+    `output_budget` runs on every LLM call, so a warning per call is a warning
+    nobody reads.
+    """
+    override_mod._WARNED_BUDGETS.clear()
+    with (
+        patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024),
+        caplog.at_level(logging.WARNING),
+        use_llm_override(LLMOverride(max_tokens=-5)),
+    ):
+        assert output_budget("answer") >= 1
+        assert output_budget("answer") >= 1
+    assert caplog.text.count("LLMOverride.max_tokens") == 1, caplog.text
 
 
 def test_the_override_wins_over_the_environment() -> None:

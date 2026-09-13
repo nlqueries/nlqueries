@@ -13,6 +13,7 @@ here is re-exported from `nlqueries.llm`, so the public import path is unchanged
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -102,6 +103,10 @@ def current_llm_override() -> LLMOverride | None:
 #: channel and arrives unclamped -- from a settings store, where a person can
 #: type 0 into a form. Both converge here, so this is the one place that has to
 #: hold.
+#: Bad override budgets already warned about, so a per-request code path does
+#: not emit the same line on every question.
+_WARNED_BUDGETS: set[int] = set()
+
 _BUDGET_TIERS: dict[str, tuple[float, int]] = {
     # The answer itself: the whole budget, and never less than a token.
     "answer": (1.0, 1),
@@ -127,6 +132,19 @@ def output_budget(tier: str = "answer") -> int:
     if tier not in _BUDGET_TIERS:
         raise ValueError(f"Unknown budget tier: {tier!r}. Available: {sorted(_BUDGET_TIERS)}")
     override = _override.get()
+    # The other channel, and the one `config` never sees: an override comes from
+    # a host's settings store, where a person can type 0 into a form. Warned
+    # once per value rather than per call -- this runs on every LLM request, and
+    # a warning that floods is a warning nobody reads.
+    bad = override.max_tokens if override else None
+    if bad is not None and bad < 1 and bad not in _WARNED_BUDGETS:
+        _WARNED_BUDGETS.add(bad)
+        logging.getLogger(__name__).warning(
+            "LLMOverride.max_tokens=%d is not a usable token budget; using the "
+            "tier floor. Answers will be a single token until the host sets a "
+            "positive value.",
+            bad,
+        )
     total = (
         override.max_tokens if override and override.max_tokens else config.LLM_MAX_OUTPUT_TOKENS
     )
