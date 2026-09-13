@@ -526,6 +526,40 @@ def test_an_unknown_tier_is_refused_rather_than_silently_defaulted() -> None:
         output_budget("clasification")
 
 
+def test_the_answer_tier_actually_reaches_the_call() -> None:
+    """The tier the setting is named for must reach a request, not just exist.
+
+    The first revision of this change defined an `answer` tier and wired nothing
+    to it: the clients still carried `max_tokens: int = 1024` as a literal
+    default, so `LLM_MAX_OUTPUT_TOKENS` moved the two derived tiers and left the
+    answer -- the thing an operator raises it FOR -- pinned at the old value.
+    Every other test here passed.
+
+    A literal default cannot work: it is bound at import, and the budget is a
+    runtime value. Hence `None`, resolved per call.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 7000):
+        client = LiteLLMClient(model="m", api_key="k")
+        with patch("litellm.completion") as completion:
+            completion.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="hi"))], usage=None
+            )
+            client.complete("sys", "user")
+        assert completion.call_args.kwargs["max_tokens"] == 7000
+
+
+def test_an_explicit_budget_still_wins_over_the_tier() -> None:
+    """A caller that names a number gets it; the tier is only the default."""
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 7000):
+        client = LiteLLMClient(model="m", api_key="k")
+        with patch("litellm.completion") as completion:
+            completion.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="hi"))], usage=None
+            )
+            client.complete("sys", "user", max_tokens=42)
+        assert completion.call_args.kwargs["max_tokens"] == 42
+
+
 def test_extra_still_refuses_max_tokens() -> None:
     """The field exists precisely because `extra` may not carry it.
 

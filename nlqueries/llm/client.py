@@ -18,7 +18,7 @@ class LLMClient(ABC):
     supports_prompt_caching: bool = False
 
     @abstractmethod
-    def complete(self, system: SystemParam, user: str, max_tokens: int = 1024) -> str:
+    def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         """Return the full response string for a single-turn completion."""
 
     @abstractmethod
@@ -36,7 +36,7 @@ class LLMClient(ABC):
         self,
         system: SystemParam,
         user: str,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         *,
         temperature: float | None = None,
     ) -> str:
@@ -45,7 +45,11 @@ class LLMClient(ABC):
         Args:
             system:      System prompt (string or list of typed blocks).
             user:        User message.
-            max_tokens:  Maximum tokens to generate.
+            max_tokens:  Maximum tokens to generate. ``None`` means the
+                         configured answer budget, resolved per call -- not a
+                         literal default, because a default is bound at import
+                         and the budget is a runtime value from
+                         ``LLM_MAX_OUTPUT_TOKENS`` or the bound ``LLMOverride``.
             temperature: Sampling temperature (0.0–1.0).  ``None`` uses the
                          provider default.  Passed through on provider clients
                          that override this method; ignored by the default
