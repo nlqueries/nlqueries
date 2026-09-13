@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from nlqueries import config
 from nlqueries.orchestrator.intent_classifier import (
     IntentClassificationResult,
     IntentType,
@@ -290,11 +291,22 @@ class TestClassifyIntentExtra:
         mock_get_client.assert_called_once_with(tier="fast")
 
     def test_complete_called_with_max_tokens_200(self) -> None:
-        """classify_intent must cap the completion at 200 tokens."""
+        """classify_intent must cap the completion at the classification tier.
+
+        The budget is pinned because it is configurable now. Without this the
+        assertion reads the ambient `LLM_MAX_OUTPUT_TOKENS`: it holds while that
+        is at or below 1600, where the tier's floor of 200 binds, and fails above
+        it -- so a developer whose `.env` raises the setting, which is exactly
+        what the documentation recommends on a reasoning model, would see this
+        fail for a reason that has nothing to do with the classifier.
+        """
         mock_llm = _mock_llm({"intent": "sql", "confidence": 0.9, "reasoning": "DB query."})
-        with patch(
-            "nlqueries.orchestrator.intent_classifier.get_llm_client",
-            return_value=mock_llm,
+        with (
+            patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024),
+            patch(
+                "nlqueries.orchestrator.intent_classifier.get_llm_client",
+                return_value=mock_llm,
+            ),
         ):
             classify_intent("How many orders?", available_agent_types=["sql"])
 

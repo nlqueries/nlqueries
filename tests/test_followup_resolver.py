@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from nlqueries import config
 from nlqueries.orchestrator.conversation import ConversationTurn, create_session
 from nlqueries.orchestrator.followup_resolver import (
     ResolvedQuestion,
@@ -174,9 +175,15 @@ def test_complete_called_with_max_tokens_200() -> None:
         {"resolved": "Filter orders by region to North America", "reasoning": "resolved."}
     )
 
-    with patch(
-        "nlqueries.orchestrator.followup_resolver.get_llm_client",
-        return_value=mock_llm,
+    # Pinned: the budget is configurable now, and the assertion below would
+    # otherwise read the ambient `LLM_MAX_OUTPUT_TOKENS` -- holding while it is
+    # at or below 1600, where the tier floor binds, and failing above it.
+    with (
+        patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024),
+        patch(
+            "nlqueries.orchestrator.followup_resolver.get_llm_client",
+            return_value=mock_llm,
+        ),
     ):
         resolve_followup("filter those to North America", history)
 

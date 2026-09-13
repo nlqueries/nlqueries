@@ -92,12 +92,19 @@ def current_llm_override() -> LLMOverride | None:
 #: -- and that is the tier that returns an EMPTY string rather than a short one,
 #: because the reasoning is billed first.
 #:
-#: Both shares are exact at the default of 1024, so an operator who sets nothing
-#: gets 1024 / 512 / 200: precisely the numbers these call sites hard-coded
-#: before this was configurable. That is worth arithmetic rather than
-#: approximation -- a first attempt used 0.2 for classification, which is 204 at
-#: the default, and the test written to assert "the default changes nothing"
-#: caught it. A fifth is not a no-op; an eighth is.
+#: At the default of 1024 an operator gets 1024 / 512 / 200 -- precisely the
+#: numbers these call sites hard-coded before this was configurable -- but the
+#: two tiers get there differently, and the difference matters.
+#:
+#: `correction` is exactly its share: half of 1024 is 512, equal to its floor.
+#: `classification` is NOT: an eighth of 1024 is 128, so the FLOOR is what
+#: yields 200, and the share does not take over until the total passes 1600.
+#:
+#: So an operator who raises the budget modestly for a reasoning model -- 1024 to
+#: 1536, say -- moves the answer and correction tiers and leaves classification
+#: at exactly 200, which is the tier this whole change exists to relieve. It is
+#: the tier that returns an EMPTY string rather than a short one when reasoning
+#: eats the allowance. Raising past 1600 is what moves it; 4096 gives it 512.
 #: The floors are also the lower bound on a nonsense budget. ``config`` clamps
 #: what it reads from the environment, but an ``LLMOverride`` is the other
 #: channel and arrives unclamped -- from a settings store, where a person can
