@@ -14,6 +14,7 @@ from nlqueries.llm import (
     LLMOverride,
     current_llm_override,
     get_llm_client,
+    output_budget,
     use_llm_override,
 )
 from nlqueries.llm.anthropic_client import AnthropicClient
@@ -453,3 +454,84 @@ def test_nothing_naming_a_provider_still_lets_the_model_decide() -> None:
         patch.object(config, "LLM_MODEL_FAST", "bedrock/x"),
     ):
         assert isinstance(get_llm_client(), LiteLLMClient)
+
+
+# ---------------------------------------------------------------------------
+# Output budget
+# ---------------------------------------------------------------------------
+
+
+def test_budget_defaults_are_what_the_call_sites_used_to_hard_code() -> None:
+    """The default must be a no-op, or this change moves every deployment's bill.
+
+    1024 / 512 / 200 are the numbers that were written at the call sites before
+    the budget was configurable. At the default they are what comes back, so an
+    operator who sets nothing sees exactly the behaviour they had.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024):
+        assert output_budget("answer") == 1024
+        assert output_budget("correction") == 512
+        assert output_budget("classification") == 200
+
+
+def test_raising_the_budget_raises_the_short_calls_too() -> None:
+    """The whole point of one number.
+
+    A reasoning model bills its reasoning from the same allowance and spends it
+    first, so raising only the answer leaves classification starved at 200 --
+    and that is the tier that returns an EMPTY string rather than a short one.
+    Measured on `deepseek-v4-pro`: 52 of 56 tokens went to reasoning.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 8192):
+        assert output_budget("answer") == 8192
+        assert output_budget("correction") == 4096
+        assert output_budget("classification") == 1024
+
+
+def test_lowering_the_budget_never_goes_under_the_floors() -> None:
+    """A budget below the floors would make the short calls useless.
+
+    `classification` has to fit a label; `correction` has to fit a SQL
+    statement. Those are what the floors are, and they hold whatever the
+    operator sets.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 100):
+        assert output_budget("answer") == 100
+        assert output_budget("correction") == 512
+        assert output_budget("classification") == 200
+
+
+def test_the_override_wins_over_the_environment() -> None:
+    """A per-request budget is the channel the enterprise settings store uses."""
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024):
+        assert output_budget("answer") == 1024
+        with use_llm_override(LLMOverride(max_tokens=4096)):
+            assert output_budget("answer") == 4096
+            assert output_budget("correction") == 2048
+        assert output_budget("answer") == 1024
+
+
+def test_an_override_without_a_budget_leaves_the_environment_alone() -> None:
+    """Every field of an override is optional; an unset one must not read as 0."""
+    with (
+        patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 2048),
+        use_llm_override(LLMOverride(provider="litellm", model="m")),
+    ):
+        assert output_budget("answer") == 2048
+
+
+def test_an_unknown_tier_is_refused_rather_than_silently_defaulted() -> None:
+    """A typo that resolved to the answer budget would be invisible and expensive."""
+    with pytest.raises(ValueError, match="Unknown budget tier"):
+        output_budget("clasification")
+
+
+def test_extra_still_refuses_max_tokens() -> None:
+    """The field exists precisely because `extra` may not carry it.
+
+    `LiteLLMClient` rejects `max_tokens` in `extra` because the sync and async
+    paths disagree about which value wins and one of them loses silently. Adding
+    a first-class field must not have quietly reopened that door.
+    """
+    with pytest.raises(ValueError, match="max_tokens"):
+        LiteLLMClient(model="m", extra={"max_tokens": 50})

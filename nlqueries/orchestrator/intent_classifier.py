@@ -18,7 +18,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nlqueries.llm import get_llm_client
+from nlqueries.llm import get_llm_client, output_budget
 
 
 class IntentType(StrEnum):
@@ -136,7 +136,7 @@ def classify_intent(
     """
     llm = get_llm_client(tier="fast")
     user_prompt = _build_user_prompt(question, available_agent_types)
-    raw = llm.complete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
+    raw = llm.complete(_SYSTEM_PROMPT, user_prompt, max_tokens=output_budget("classification"))
     return _parse_classification(raw, available_agent_types)
 
 
@@ -155,7 +155,9 @@ async def aclassify_intent(
     """
     llm = get_llm_client(tier="fast")
     user_prompt = _build_user_prompt(question, available_agent_types)
-    raw = await llm.acomplete(_SYSTEM_PROMPT, user_prompt, max_tokens=200)
+    raw = await llm.acomplete(
+        _SYSTEM_PROMPT, user_prompt, max_tokens=output_budget("classification")
+    )
     return _parse_classification(raw, available_agent_types)
 
 

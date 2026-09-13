@@ -66,6 +66,14 @@ class LLMOverride:
     api_key: str | None = None
     api_base: str | None = None
     extra: dict[str, Any] | None = None
+    #: Tokens an answer may generate, overriding ``config.LLM_MAX_OUTPUT_TOKENS``.
+    #:
+    #: A first-class field rather than a key in ``extra`` because ``extra`` may
+    #: not carry it: ``LiteLLMClient`` rejects ``max_tokens`` there, since the
+    #: two code paths disagree about which value wins and one of them loses
+    #: silently. That refusal is right, and it left a host with no way at all to
+    #: set a budget -- which is what this field is for.
+    max_tokens: int | None = None
 
 
 # Task-local so concurrent requests on one event loop never see each other's
@@ -92,6 +100,53 @@ def use_llm_override(override: LLMOverride | None) -> Iterator[None]:
 def current_llm_override() -> LLMOverride | None:
     """Return the override bound in the current context, if any."""
     return _override.get()
+
+
+#: What each kind of call gets, as a share of the answer budget and a floor.
+#:
+#: One configurable number, several call sites that need less than an answer.
+#: The shares take over as an operator raises the budget; the floors are what
+#: hold at and below the default. Without the shares, raising the budget for a
+#: reasoning model would fix the answer and leave classification starved at 200
+#: -- and that is the tier that returns an EMPTY string rather than a short one,
+#: because the reasoning is billed first.
+#:
+#: Both shares are exact at the default of 1024, so an operator who sets nothing
+#: gets 1024 / 512 / 200: precisely the numbers these call sites hard-coded
+#: before this was configurable. That is worth arithmetic rather than
+#: approximation -- a first attempt used 0.2 for classification, which is 204 at
+#: the default, and the test written to assert "the default changes nothing"
+#: caught it. A fifth is not a no-op; an eighth is.
+_BUDGET_TIERS: dict[str, tuple[float, int]] = {
+    # The answer itself: the whole budget.
+    "answer": (1.0, 0),
+    # A retry that rewrites SQL, or a candidate set. Structured, bounded output.
+    "correction": (0.5, 512),
+    # A label or a short JSON object: intent, and follow-up resolution.
+    "classification": (0.125, 200),
+}
+
+
+def output_budget(tier: str = "answer") -> int:
+    """Tokens this kind of call may generate.
+
+    Resolved from the bound :class:`LLMOverride` when it names a budget, else
+    from ``config.LLM_MAX_OUTPUT_TOKENS``.
+
+    Callers pass a tier rather than a number so the policy lives here. The
+    numbers they used to pass -- 1024, 512, 200 -- were chosen against models
+    that emit only the answer; a reasoning model spends the same allowance on
+    reasoning first, and the smallest budgets are the ones that then return
+    nothing at all.
+    """
+    if tier not in _BUDGET_TIERS:
+        raise ValueError(f"Unknown budget tier: {tier!r}. Available: {sorted(_BUDGET_TIERS)}")
+    override = _override.get()
+    total = (
+        override.max_tokens if override and override.max_tokens else config.LLM_MAX_OUTPUT_TOKENS
+    )
+    share, floor = _BUDGET_TIERS[tier]
+    return max(floor, int(total * share))
 
 
 def get_llm_client(tier: str = "default") -> LLMClient:

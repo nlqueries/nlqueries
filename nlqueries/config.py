@@ -187,6 +187,23 @@ the model to decide. Only the middle case is a contradiction worth refusing.
 LLM_MODEL: str = _detect_model(LLM_PROVIDER)
 """LLM model identifier. Defaults based on detected provider if not set explicitly."""
 
+LLM_MAX_OUTPUT_TOKENS: int = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1024"))
+"""Tokens an answer may generate. The one budget; every other one derives from it.
+
+1024 is what the answer path was hard-coded to, so an unset variable behaves
+exactly as before.
+
+It is a budget, not a length. A **reasoning** model bills its private reasoning
+from the same allowance, and spends it first: measured on `deepseek-v4-pro`, a
+question classification asked for 200 tokens, used 56, and 52 of those were
+reasoning. At 5 tokens -- what the CLI and MCP health checks ask for -- all five
+went to reasoning and the content came back empty with `finish_reason=length`.
+Over a thousand of the models LiteLLM knows are flagged as reasoning models, so
+this is the common case now rather than an exotic one. A deployment on one of
+them needs this raised, and :func:`nlqueries.llm.output_budget` is how that
+reaches the calls that ask for less than an answer.
+"""
+
 
 def llm_credentials_available() -> bool:
     """Whether an LLM call has any way to authenticate.
