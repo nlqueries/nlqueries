@@ -20,6 +20,7 @@ from nlqueries.llm import (
     use_llm_override,
 )
 from nlqueries.llm.anthropic_client import AnthropicClient
+from nlqueries.llm.client import LLMClient
 from nlqueries.llm.litellm_client import LiteLLMClient
 
 
@@ -524,11 +525,20 @@ def test_a_nonsense_budget_cannot_reach_the_provider() -> None:
 
 
 def test_the_environment_value_is_clamped_where_it_is_read() -> None:
-    """As `CACHE_COSINE_CANDIDATES` is, so the constant itself is never absurd."""
-    with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
+    """As `CACHE_COSINE_CANDIDATES` is, so the constant itself is never absurd.
+
+    `try`/`finally` because the reload is process-wide state: without it a
+    failing assertion skips the restore and leaves `LLM_MAX_OUTPUT_TOKENS`
+    pinned at 1 for every test after this one, turning one real failure into a
+    cascade of unrelated ones. `test_redshift_guards.py` guards the same shape
+    the same way.
+    """
+    try:
+        with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
+            importlib.reload(config)
+            assert config.LLM_MAX_OUTPUT_TOKENS == 1
+    finally:
         importlib.reload(config)
-        assert config.LLM_MAX_OUTPUT_TOKENS == 1
-    importlib.reload(config)
 
 
 def test_the_override_wins_over_the_environment() -> None:
@@ -588,6 +598,30 @@ def test_an_explicit_budget_still_wins_over_the_tier() -> None:
             )
             client.complete("sys", "user", max_tokens=42)
         assert completion.call_args.kwargs["max_tokens"] == 42
+
+
+def test_the_async_bridge_never_hands_a_subclass_none() -> None:
+    """Widening the base signature is ours to do; changing the contract is not.
+
+    `LLMClient.acomplete`'s default implementation forwards to `complete` in a
+    thread. It used to forward the literal 1024. An out-of-tree client typed the
+    way the in-repo doubles are -- `max_tokens: int = 1024` -- would take a
+    forwarded `None` straight to its SDK, which rejects it.
+    """
+    seen: list[int | None] = []
+
+    class OutOfTreeClient(LLMClient):
+        def complete(self, system: object, user: str, max_tokens: int = 1024) -> str:  # type: ignore[override]
+            seen.append(max_tokens)
+            return "ok"
+
+        def stream(self, system: object, user: str):  # type: ignore[override]
+            yield "ok"
+
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 3333):
+        asyncio.run(OutOfTreeClient().acomplete("sys", "user"))
+
+    assert seen == [3333], f"the bridge forwarded {seen[0]!r}"
 
 
 def test_extra_still_refuses_max_tokens() -> None:
