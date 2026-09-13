@@ -553,10 +553,18 @@ def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type:
     truncated answer and nothing names the cause. The log is the fix; the clamp
     is just what keeps the process running.
     """
-    with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
-        try:
-            with caplog.at_level(logging.WARNING):
-                importlib.reload(config)
+    # `try` OUTSIDE `patch.dict`, so the restoring reload sees the real
+    # environment. Nested the other way -- which is how this was written -- the
+    # reload still saw `LLM_MAX_OUTPUT_TOKENS=0` and left the module pinned at
+    # the default, so on a machine whose `.env` raises the budget every test
+    # after this one ran against 1024. Exactly the cascade the sibling test's
+    # docstring is about, introduced by the test written to describe it.
+    try:
+        with (
+            patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}),
+            caplog.at_level(logging.WARNING),
+        ):
+            importlib.reload(config)
             assert config.LLM_MAX_OUTPUT_TOKENS == 1024
             assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text
             # The message has to describe what actually happens. The first
@@ -565,6 +573,29 @@ def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type:
             # actually types -- 0 was falsy, so it fell back to the default and
             # the answer budget was never touched.
             assert "ignored" in caplog.text
+    finally:
+        importlib.reload(config)
+
+
+def test_a_non_numeric_budget_does_not_abort_the_import(caplog) -> None:  # type: ignore[no-untyped-def]
+    """`LLM_MAX_OUTPUT_TOKENS=` is how people disable a setting, and it is a typo.
+
+    `int("")` raises, and an unhandled ValueError while `nlqueries.config` is
+    importing takes down every CLI command with it -- including `doctor`, the one
+    an operator would run to find out why nothing works. Tolerating 0 and
+    negatives while falling over on a blank is the wrong way round: the blank is
+    the likelier mistake.
+    """
+    for written in ("", "  ", "1024.5", "lots"):
+        try:
+            with (
+                patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": written}),
+                caplog.at_level(logging.WARNING),
+            ):
+                caplog.clear()
+                importlib.reload(config)
+                assert config.LLM_MAX_OUTPUT_TOKENS == 1024, written
+                assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text, written
         finally:
             importlib.reload(config)
 

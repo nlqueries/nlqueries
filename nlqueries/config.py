@@ -203,7 +203,21 @@ def _output_budget() -> int:
     the documented default is the behaviour the deployment already had.
     """
     default = 1024
-    raw = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", str(default)))
+    written = os.getenv("LLM_MAX_OUTPUT_TOKENS", str(default))
+    try:
+        raw = int(written)
+    except ValueError:
+        # `LLM_MAX_OUTPUT_TOKENS=` -- blanking a value is how people disable one
+        # -- gives `int("")`, and an unhandled ValueError here aborts the import
+        # of this module. That takes down every CLI command with it, including
+        # `doctor`, which is the one an operator reaches for to find out why.
+        logging.getLogger(__name__).warning(
+            "LLM_MAX_OUTPUT_TOKENS=%r is not a number and is being ignored; "
+            "using the default of %d.",
+            written,
+            default,
+        )
+        return default
     if raw < 1:
         logging.getLogger(__name__).warning(
             "LLM_MAX_OUTPUT_TOKENS=%d is not a usable token budget and is being "

@@ -83,6 +83,10 @@ def current_llm_override() -> LLMOverride | None:
     return _override.get()
 
 
+#: Bad override budgets already warned about, so a per-request code path does
+#: not emit the same line on every question.
+_WARNED_BUDGETS: set[int] = set()
+
 #: What each kind of call gets, as a share of the answer budget and a floor.
 #:
 #: One configurable number, several call sites that need less than an answer.
@@ -110,10 +114,6 @@ def current_llm_override() -> LLMOverride | None:
 #: channel and arrives unclamped -- from a settings store, where a person can
 #: type 0 into a form. Both converge here, so this is the one place that has to
 #: hold.
-#: Bad override budgets already warned about, so a per-request code path does
-#: not emit the same line on every question.
-_WARNED_BUDGETS: set[int] = set()
-
 _BUDGET_TIERS: dict[str, tuple[float, int]] = {
     # The answer itself: the whole budget, and never less than a token.
     "answer": (1.0, 1),
