@@ -296,6 +296,27 @@ def test_the_deadline_does_not_swallow_the_connect_phase(
         assert sdk.timeout.read == 180.0
 
 
+def test_a_timeout_from_another_httpx_is_still_a_timeout() -> None:
+    """The version split CI found, in the shape that would not have been caught.
+
+    Which httpx the Anthropic SDK raises from depends on its version -- newer
+    builds are against `httpx2` -- so an `isinstance` against the httpx
+    imported here is true in one environment and false in another with nothing
+    in this repository having changed. CI caught the matching split on the
+    constructor argument (`httpx._config.Timeout` rejected where
+    `httpx2._config.Timeout` was expected) while the local run passed, because
+    locally the two are the same object.
+    """
+    from nlqueries.llm.anthropic_client import _is_timeout
+
+    # Not a subclass of anything this module imported: a stand-in for the same
+    # class arriving from a different httpx distribution.
+    other_httpx_read_timeout = type("ReadTimeout", (Exception,), {})
+
+    assert _is_timeout(other_httpx_read_timeout("stalled")) is True
+    assert _is_timeout(RuntimeError("401 unauthorized")) is False
+
+
 def test_anthropic_timeout_becomes_LLMTimeout(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _anthropic(monkeypatch, 33.0)
     client._client = MagicMock()

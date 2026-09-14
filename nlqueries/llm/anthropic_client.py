@@ -60,6 +60,27 @@ def _text_of(response: Any) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
 
+#: Exception class names every httpx-shaped transport uses for a deadline.
+#: Compared by name because the SDK's httpx is not necessarily the one imported
+#: here; see ``_deadline``.
+_TIMEOUT_NAMES = frozenset(
+    {
+        "TimeoutException",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+    }
+)
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Whether *exc* is a deadline, whichever httpx the SDK was built against."""
+    if isinstance(exc, (anthropic.APITimeoutError, httpx.TimeoutException)):
+        return True
+    return any(t.__name__ in _TIMEOUT_NAMES for t in type(exc).__mro__)
+
+
 @contextlib.contextmanager
 def _deadline(model: str, seconds: object) -> Iterator[None]:
     """A timed-out call -> :class:`LLMTimeout`.
@@ -68,19 +89,29 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     type whichever client it ended up with. Narrow on purpose: every other
     Anthropic error keeps its own type and message.
 
-    ``httpx.TimeoutException`` as well as the SDK's own type, because the SDK
+    The transport's own exception as well as the SDK's, because the SDK
     converts one into the other only around ``self._client.send(...)`` in
     ``_base_client._request``. With ``stream=True`` that call returns as soon
     as the headers arrive and the body is read lazily afterwards, outside the
     ``try`` -- and neither ``_streaming`` nor ``lib/streaming/_messages``
     handles a timeout at all. So a provider that accepts the request and then
-    stalls raises a raw ``httpx.ReadTimeout`` while ``text_stream`` is being
-    drained, which is exactly the hang this exists for and exactly the shape
+    stalls raises a raw read timeout while ``text_stream`` is being drained,
+    which is exactly the hang this exists for and exactly the shape
     ``APITimeoutError`` alone would miss.
+
+    Matched by name as well as by class, and that is not laziness. Which httpx
+    the SDK raises from depends on its version -- newer anthropic builds
+    against ``httpx2`` -- so ``isinstance(exc, httpx.TimeoutException)`` is
+    true here and false in an environment that resolves the other one, with
+    nothing in this repository having changed. CI found the matching version
+    split on the constructor argument. The name check costs nothing and does
+    not depend on which package won.
     """
     try:
         yield
-    except (anthropic.APITimeoutError, httpx.TimeoutException) as exc:
+    except Exception as exc:
+        if not _is_timeout(exc):
+            raise
         raise LLMTimeout(model, seconds) from exc
 
 
@@ -103,7 +134,13 @@ class AnthropicClient(LLMClient):
         # to every request made through it, including the ones inside a stream,
         # so there is no path that can be added later and quietly miss it.
         self._timeout = config.LLM_TIMEOUT_SECONDS
-        # An `httpx.Timeout`, not the bare float: a float sets EVERY phase,
+        # `anthropic.Timeout`, not `httpx.Timeout`: the SDK re-exports the type
+        # it accepts, and which httpx that is depends on the version -- newer
+        # anthropic builds against `httpx2`, and CI caught `httpx._config.Timeout`
+        # being rejected where `httpx2._config.Timeout` was expected. Locally the
+        # two are the same object, which is exactly why the local run did not.
+        #
+        # Not the bare float either: a float sets EVERY phase,
         # connect included, and the SDK's own default is
         # `Timeout(connect=5.0, read=600, write=600, pool=600)`. Handing it
         # 180.0 would have moved connect from 5s to 180s, so an unreachable
@@ -111,7 +148,7 @@ class AnthropicClient(LLMClient):
         # three minutes instead of five seconds, three times over for a
         # question that classifies, generates and corrects. The read deadline
         # is what this change is for; the connect one was already right.
-        self._httpx_timeout = httpx.Timeout(self._timeout, connect=5.0)
+        self._httpx_timeout = anthropic.Timeout(self._timeout, connect=5.0)
         # Disable SDK-level retries so our own retry loop has full control.
         self._client = anthropic.Anthropic(
             api_key=key, max_retries=0, timeout=self._httpx_timeout, **base_kwargs
