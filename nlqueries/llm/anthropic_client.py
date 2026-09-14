@@ -60,7 +60,7 @@ def _text_of(response: Any) -> str:
 
 
 @contextlib.contextmanager
-def _deadline(model: str, seconds: float) -> Iterator[None]:
+def _deadline(model: str, seconds: object) -> Iterator[None]:
     """``anthropic.APITimeoutError`` -> :class:`LLMTimeout`.
 
     The mirror of the one in ``litellm_client``, so a host catches a single

@@ -55,11 +55,19 @@ class LLMTimeout(RuntimeError):
     third-party imports, and importing it must stay cheap.
     """
 
-    def __init__(self, model: str, seconds: float) -> None:
+    def __init__(self, model: str, seconds: object) -> None:
         self.model = model
         self.seconds = seconds
+        # `seconds` is whatever the deadline was configured as, and a host can
+        # put something other than a number there: litellm's `timeout` accepts
+        # `str` and `httpx.Timeout` as well as a float, and `extra` forwards it
+        # untouched. `:g` raises on both -- `ValueError` for a string,
+        # `TypeError` for an object -- so formatting it blindly would replace
+        # the provider's timeout with a formatting error, in the constructor
+        # that exists to report the timeout clearly.
+        shown = f"{seconds:g}" if isinstance(seconds, (int, float)) else str(seconds)
         super().__init__(
-            f"{model} did not respond within {seconds:g}s. Raise "
+            f"{model} did not respond within {shown}s. Raise "
             f"LLM_TIMEOUT_SECONDS if this model is legitimately slow, or check "
             f"whether the provider is reachable."
         )

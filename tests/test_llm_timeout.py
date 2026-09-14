@@ -44,6 +44,23 @@ def test_a_deployment_can_set_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _timeout(monkeypatch, "12.5") == 12.5
 
 
+@pytest.mark.parametrize("written", ["inf", "-inf", "Infinity", "nan", "1e400"])
+def test_a_non_finite_deadline_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, written: str
+) -> None:
+    """`float()` parses all of these; `int()` -- the sibling setting -- cannot.
+
+    Each one passes a `<= 0` test, reaches the SDK, and produces a deadline
+    that never fires, because every comparison against `inf` or `nan` is false.
+    That is the unbounded wait this setting exists to end, arrived at through
+    the setting itself. `1e400` is the one that needs no ill intent: it
+    overflows to `inf` silently.
+    """
+    with caplog.at_level(logging.WARNING):
+        assert _timeout(monkeypatch, written) == 180.0
+    assert "LLM_TIMEOUT_SECONDS" in caplog.text
+
+
 @pytest.mark.parametrize("written", ["0", "-1", "-0.5"])
 def test_a_non_positive_deadline_is_ignored(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, written: str
@@ -190,6 +207,26 @@ def test_a_host_that_disables_the_deadline_gets_the_providers_own_error(
         client.complete("sys", "user")
 
 
+def test_a_non_numeric_deadline_still_reports_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """litellm's `timeout` accepts a `str` too, and `extra` forwards it untouched.
+
+    `:g` raises on a string, so formatting it blindly would replace the
+    provider's timeout with a `ValueError` -- thrown from the constructor whose
+    whole job is to report that timeout clearly.
+    """
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 42.0)
+    client = LiteLLMClient(model="m", api_key="k", extra={"timeout": "30s"})
+
+    boom = litellm.exceptions.Timeout(message="slow", model="m", llm_provider="openai")
+    with patch("litellm.completion", side_effect=boom), pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.seconds == "30s"
+    assert "30s" in str(caught.value)
+
+
 # ---------------------------------------------------------------------------
 # Anthropic
 # ---------------------------------------------------------------------------
@@ -269,3 +306,79 @@ def test_another_anthropic_error_keeps_its_own_type(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="401"):
         client.complete("sys", "user")
+
+
+# ---------------------------------------------------------------------------
+# The async drains
+#
+# `astream` is the only streaming path this repository calls --
+# `orchestrator.py:202` and `document_orchestrator.py:94` both use it, and
+# nothing outside the base-class shim in `client.py` calls `stream`. The sync
+# drain tests above were therefore covering the paths that carry no traffic:
+# removing `with _deadline(...)` from either `astream`, leaving it around the
+# opening call only, left the suite green.
+# ---------------------------------------------------------------------------
+
+
+def _adrain(client: object) -> list[str]:
+    async def go() -> list[str]:
+        return [t async for t in client.astream("sys", "user")]  # type: ignore[attr-defined]
+
+    return asyncio.run(go())
+
+
+def test_litellm_astream_that_stalls_after_it_opens_still_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 9.0)
+    client = LiteLLMClient(model="m", api_key="k")
+
+    class Stalling:
+        def __aiter__(self) -> Stalling:
+            self._sent = False
+            return self
+
+        async def __anext__(self) -> SimpleNamespace:
+            if self._sent:
+                raise litellm.exceptions.Timeout(
+                    message="stalled", model="m", llm_provider="openai"
+                )
+            self._sent = True
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="half "), finish_reason=None)
+                ]
+            )
+
+    async def opened(**_kwargs: object) -> Stalling:
+        return Stalling()
+
+    with patch("litellm.acompletion", side_effect=opened), pytest.raises(LLMTimeout):
+        _adrain(client)
+
+
+def test_anthropic_astream_that_stalls_mid_drain_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _anthropic(monkeypatch, 33.0)
+
+    class Stalling:
+        async def __aenter__(self) -> Stalling:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        @property
+        def text_stream(self):  # noqa: ANN202
+            async def gen():  # noqa: ANN202
+                yield "half "
+                raise anthropic.APITimeoutError(request=MagicMock())
+
+            return gen()
+
+    client._aclient = MagicMock()
+    client._aclient.messages.stream.return_value = Stalling()
+
+    with pytest.raises(LLMTimeout):
+        _adrain(client)

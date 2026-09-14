@@ -11,6 +11,7 @@ os.environ directly, so the source of truth is a single place.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -275,7 +276,15 @@ def _llm_timeout() -> float:
             default,
         )
         return default
-    if raw <= 0:
+    # `isfinite` before the sign test, and this is the one place this differs
+    # from `_output_budget`. `int()` has no literal for infinity; `float()`
+    # parses `inf`, `infinity`, `nan`, and anything that overflows to them --
+    # `1e400` is `inf`. All of those pass a `<= 0` test, reach the SDK, and
+    # produce a deadline that never fires, because every comparison against
+    # `inf` or `nan` is false. That is precisely the unbounded wait this
+    # setting exists to end, arrived at through the setting itself and with
+    # nothing logged.
+    if not math.isfinite(raw) or raw <= 0:
         logging.getLogger(__name__).warning(
             "LLM_TIMEOUT_SECONDS=%s is not a usable deadline and is being ignored; "
             "using the default of %.0f seconds. There is no value that means "
@@ -308,8 +317,9 @@ the worst case. The connector-side equivalent is
 ``QUERY_STATEMENT_TIMEOUT_SECONDS``, which is a separate budget for the SQL, not
 for the model.
 
-A non-positive or unparseable value is ignored with a warning -- see
-:func:`_llm_timeout`.
+A non-positive, non-finite or unparseable value is ignored with a warning --
+see :func:`_llm_timeout`. ``inf`` is rejected like the rest: it parses, and it
+would reinstate the unbounded wait rather than configure one.
 """
 
 

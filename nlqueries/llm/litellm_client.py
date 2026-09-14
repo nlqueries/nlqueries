@@ -22,18 +22,23 @@ from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
 
 
 @contextlib.contextmanager
-def _deadline(model: str, seconds: float | None) -> Iterator[None]:
+def _deadline(model: str, seconds: object) -> Iterator[None]:
     """``litellm.Timeout`` -> :class:`LLMTimeout`.
 
     So a host catches one thing rather than one type per SDK. Narrow on
     purpose: every other litellm error keeps its own type and its own message,
     which are more informative than anything this could substitute.
 
-    ``seconds`` is ``None`` when a host passed ``timeout=None`` in ``extra`` --
-    a supported way of saying "no deadline", since ``extra`` forwards ``None``
-    rather than dropping it. Then there is no deadline of ours to name, so the
-    provider's own error goes through untouched: renaming it would claim a
-    limit that was never set.
+    ``seconds`` is typed ``object`` because it is whatever ``_call_kwargs``
+    resolved, and a host may have put a ``str`` or an ``httpx.Timeout`` in
+    ``extra`` -- litellm accepts both. :class:`LLMTimeout` renders it
+    accordingly rather than assuming a number.
+
+    ``None`` is the one value handled here rather than there: it is a supported
+    way of saying "no deadline", since ``extra`` forwards ``None`` rather than
+    dropping it. Then there is no deadline of ours to name, so the provider's
+    own error goes through untouched -- renaming it would claim a limit that
+    was never set.
     """
     try:
         yield
