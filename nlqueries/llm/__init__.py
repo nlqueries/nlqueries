@@ -1,6 +1,7 @@
 # nlqueries-core — OSS (BSL 1.1)
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 
 from nlqueries import config
@@ -143,9 +144,17 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     # Mistral's prefixed -- and placing one needs that registry, which core
     # deliberately does not consult at this point. The enterprise settings
     # layer does; see `services/llm_config.py`.
-    if provider == "anthropic" and model and "/" in model:
-        prefix = model.split("/", 1)[0].lower()
-        if prefix != "anthropic":
+    #
+    # Skipped when an `api_base` is set, through either channel. The premise is
+    # that the request reaches api.anthropic.com; pointed at a gateway it does
+    # not, and prefixed ids may well be what that gateway expects. The SDK also
+    # honours ANTHROPIC_BASE_URL, so both are checked.
+    endpoint_overridden = bool(
+        (override.api_base if override else None) or os.getenv("ANTHROPIC_BASE_URL", "").strip()
+    )
+    if provider == "anthropic" and model and "/" in model and not endpoint_overridden:
+        prefix, rest = model.split("/", 1)
+        if prefix.lower() != "anthropic":
             raise ValueError(
                 f"model={model!r} names provider {prefix!r}, but the configured "
                 f"provider is 'anthropic'. AnthropicClient does not check the "
@@ -153,6 +162,13 @@ def get_llm_client(tier: str = "default") -> LLMClient:
                 f"api.anthropic.com. Set LLM_PROVIDER to litellm to route "
                 f"{prefix!r} models, or choose an Anthropic model."
             )
+        # `anthropic/claude-...` is a natural thing to write -- it is the form
+        # LiteLLM documents -- and passing it through is its own version of the
+        # bug this guard exists for: the SDK stores the id verbatim, no
+        # Anthropic model id contains a slash, and the not-found arrives after
+        # the prompt and schema have been sent. Normalised so the two spellings
+        # behave identically rather than one of them leaking and failing.
+        model = rest
 
     if provider not in _REGISTRY:
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")

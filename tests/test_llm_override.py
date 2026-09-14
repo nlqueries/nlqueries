@@ -340,12 +340,62 @@ def test_a_non_anthropic_model_under_the_anthropic_provider_raises() -> None:
         get_llm_client()
 
 
-def test_an_anthropic_prefixed_model_is_not_refused() -> None:
-    """The prefix agreeing with the provider is not the mistake being caught."""
+def test_an_anthropic_prefixed_model_is_normalised_not_passed_through() -> None:
+    """Allowing it through was its own version of the bug being guarded.
+
+    The SDK stores the id verbatim and no Anthropic model id contains a slash,
+    so `anthropic/claude-sonnet-4-5` reaches api.anthropic.com, is rejected as
+    not found, and the prompt and schema have already been sent by then --
+    which is the sequence this guard exists to prevent. It is also a natural
+    thing for an operator to write, being the form LiteLLM documents.
+
+    Both spellings therefore produce the same client and the same id.
+    """
     with (
         patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
         patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
         use_llm_override(LLMOverride(provider="anthropic", model="anthropic/claude-sonnet-4-5")),
+    ):
+        client = get_llm_client()
+
+    assert isinstance(client, AnthropicClient)
+    assert client._model == "claude-sonnet-4-5"
+
+
+def test_a_gateway_endpoint_is_left_to_decide_its_own_model_ids() -> None:
+    """The guard's premise is that the request reaches api.anthropic.com.
+
+    With an `api_base` it does not, and a gateway may well expect prefixed
+    ids -- so refusing one there would block a working deployment with no way
+    to opt out.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(
+            LLMOverride(
+                provider="anthropic",
+                model="deepseek/deepseek-chat",
+                api_base="https://gateway.internal/v1",
+            )
+        ),
+    ):
+        client = get_llm_client()
+
+    assert isinstance(client, AnthropicClient)
+    # Not normalised either: the gateway was given exactly what was configured.
+    assert client._model == "deepseek/deepseek-chat"
+
+
+def test_the_sdk_base_url_env_var_counts_as_a_gateway_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ANTHROPIC_BASE_URL` is honoured by the SDK, so it moves the endpoint."""
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.internal/v1")
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(LLMOverride(provider="anthropic", model="deepseek/deepseek-chat")),
     ):
         assert isinstance(get_llm_client(), AnthropicClient)
 
