@@ -166,6 +166,33 @@ def test_litellm_timeout_becomes_LLMTimeout(monkeypatch: pytest.MonkeyPatch) -> 
     assert isinstance(caught.value.__cause__, litellm.exceptions.Timeout)
 
 
+def test_a_litellm_stall_from_another_httpx_is_still_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same version split, on the client that had a plain isinstance.
+
+    The Anthropic client matched by name; this one did not, so in an
+    environment where litellm resolves a different httpx a mid-stream stall
+    would have escaped untranslated -- a raw transport error reaching a host
+    that had been asked to catch `LLMTimeout`. The silent half of the split.
+    """
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 9.0)
+    client = LiteLLMClient(model="m", api_key="k")
+
+    # Subclasses nothing this module imported: the same class arriving from a
+    # different httpx distribution.
+    other_read_timeout = type("ReadTimeout", (Exception,), {})
+
+    def chunks():  # noqa: ANN202
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="half "), finish_reason=None)]
+        )
+        raise other_read_timeout("stalled")
+
+    with patch("litellm.completion", return_value=chunks()), pytest.raises(LLMTimeout):
+        list(client.stream("sys", "user"))
+
+
 def test_another_litellm_error_keeps_its_own_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """The translation is narrow. An auth failure is not a deadline."""
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 42.0)

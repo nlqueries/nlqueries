@@ -17,6 +17,7 @@ from nlqueries.llm.client import (
     OutputBudgetExhausted,
     SystemParam,
     exhausted,
+    looks_like_timeout,
 )
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
@@ -35,10 +36,16 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     ``extra`` -- litellm accepts both. :class:`LLMTimeout` renders it
     accordingly rather than assuming a number.
 
-    ``httpx.TimeoutException`` is caught alongside litellm's own type for the
-    same reason the Anthropic client does it: a stall part-way through a stream
-    is raised by the transport, and only some of those paths are mapped on the
-    way out. Catching both costs nothing and does not depend on which.
+    litellm's own type, ``httpx.TimeoutException``, and anything else
+    httpx-shaped by class name -- the same three-way check the Anthropic client
+    makes and for the same reason. A stall part-way through a stream is raised
+    by the transport rather than mapped on the way out, and which httpx
+    distribution that is depends on what the environment resolved.
+
+    An earlier revision said catching the first two "does not depend on which".
+    It did, and the half that failed would have been the silent one: a raw
+    transport error reaching a host that had been asked to catch
+    :class:`LLMTimeout`.
 
     ``None`` is the one value handled here rather than there: it is a supported
     way of saying "no deadline", since ``extra`` forwards ``None`` rather than
@@ -48,7 +55,12 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     """
     try:
         yield
-    except (litellm.exceptions.Timeout, httpx.TimeoutException) as exc:
+    except Exception as exc:
+        if not (
+            isinstance(exc, (litellm.exceptions.Timeout, httpx.TimeoutException))
+            or looks_like_timeout(exc)
+        ):
+            raise
         if seconds is None:
             raise
         raise LLMTimeout(model, seconds) from exc

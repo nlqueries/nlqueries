@@ -18,6 +18,7 @@ from nlqueries.llm.client import (
     OutputBudgetExhausted,
     SystemParam,
     exhausted,
+    looks_like_timeout,
 )
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, record_usage
@@ -60,20 +61,6 @@ def _text_of(response: Any) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
 
-#: Exception class names every httpx-shaped transport uses for a deadline.
-#: Compared by name because the SDK's httpx is not necessarily the one imported
-#: here; see ``_deadline``.
-_TIMEOUT_NAMES = frozenset(
-    {
-        "TimeoutException",
-        "ConnectTimeout",
-        "ReadTimeout",
-        "WriteTimeout",
-        "PoolTimeout",
-    }
-)
-
-
 #: Which phase each transport exception name belongs to. Read is the default
 #: and is what ``LLM_TIMEOUT_SECONDS`` sets; the others are the short fixed
 #: ones, and an operator told to raise the wrong setting is worse off than one
@@ -87,10 +74,16 @@ _PHASE_OF = {
 
 
 def _is_timeout(exc: BaseException) -> bool:
-    """Whether *exc* is a deadline, whichever httpx the SDK was built against."""
+    """Whether *exc* is a deadline, whichever httpx the SDK was built against.
+
+    The SDK's own types by identity, anything else httpx-shaped by name. The
+    name list lives in ``client`` now rather than here, because the litellm
+    client needs the same judgement and had a plain ``isinstance`` -- see
+    :func:`~nlqueries.llm.client.looks_like_timeout`.
+    """
     if isinstance(exc, (anthropic.APITimeoutError, httpx.TimeoutException)):
         return True
-    return any(t.__name__ in _TIMEOUT_NAMES for t in type(exc).__mro__)
+    return looks_like_timeout(exc)
 
 
 def _phase_of(exc: BaseException) -> str:

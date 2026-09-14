@@ -108,6 +108,36 @@ class LLMTimeout(RuntimeError):
             )
 
 
+#: Exception class names every httpx-shaped transport uses for a deadline.
+#:
+#: Matched by name because the httpx an SDK raises from is not necessarily the
+#: one imported alongside it: newer `anthropic` builds against `httpx2`, and CI
+#: found the matching split on a constructor argument while the local run
+#: passed, the two being the same object there. An `isinstance` check is
+#: therefore true in one environment and false in another with nothing in this
+#: repository having changed -- and the half that fails is the silent one, a
+#: mid-stream stall escaping untranslated.
+TIMEOUT_NAMES = frozenset(
+    {
+        "TimeoutException",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+    }
+)
+
+
+def looks_like_timeout(exc: BaseException) -> bool:
+    """Whether *exc* is a transport deadline, judged by class name.
+
+    The name-based half of each client's check. Each adds the SDK types it
+    knows by identity; this covers the ones it cannot name because they come
+    from a distribution it did not import.
+    """
+    return any(t.__name__ in TIMEOUT_NAMES for t in type(exc).__mro__)
+
+
 def exhausted(finish_reason: object, content: str) -> bool:
     """Whether a reply is an exhausted budget rather than a short answer.
 
