@@ -329,6 +329,63 @@ def test_anthropic_timeout_becomes_LLMTimeout(monkeypatch: pytest.MonkeyPatch) -
     assert isinstance(caught.value.__cause__, anthropic.APITimeoutError)
 
 
+def test_a_connect_failure_reports_the_connect_limit_not_the_read_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Holding connect at 5s while read is 180 made the message wrong by 36x.
+
+    Blocked egress or a mistyped `api_base` expires the connect phase after
+    five seconds. Reporting "did not respond within 180s. Raise
+    LLM_TIMEOUT_SECONDS" would be wrong about the number and useless about the
+    fix, since that setting does not touch connect -- and it is the message an
+    operator gets precisely when they have the endpoint wrong.
+    """
+    client = _anthropic(monkeypatch, 180.0)
+    client._client = MagicMock()
+    client._client.messages.create.side_effect = httpx.ConnectTimeout("no route")
+
+    with pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.phase == "connect"
+    assert caught.value.seconds == 5.0
+    assert "5s" in str(caught.value)
+    assert "180" not in str(caught.value)
+    assert "will not help" in str(caught.value)
+
+
+def test_the_sdk_wrapper_does_not_hide_which_phase_expired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`APITimeoutError` is what the SDK raises; the cause says which phase."""
+    client = _anthropic(monkeypatch, 180.0)
+    client._client = MagicMock()
+    wrapped = anthropic.APITimeoutError(request=MagicMock())
+    wrapped.__cause__ = httpx.ConnectTimeout("no route")
+    client._client.messages.create.side_effect = wrapped
+
+    with pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.phase == "connect"
+    assert caught.value.seconds == 5.0
+
+
+def test_a_read_timeout_still_names_the_setting_that_fixes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _anthropic(monkeypatch, 180.0)
+    client._client = MagicMock()
+    client._client.messages.create.side_effect = httpx.ReadTimeout("slow")
+
+    with pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.phase == "read"
+    assert caught.value.seconds == 180.0
+    assert "LLM_TIMEOUT_SECONDS if this model is legitimately slow" in str(caught.value)
+
+
 def test_anthropic_acomplete_translates_too(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _anthropic(monkeypatch, 33.0)
 

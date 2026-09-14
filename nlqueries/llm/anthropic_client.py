@@ -74,6 +74,18 @@ _TIMEOUT_NAMES = frozenset(
 )
 
 
+#: Which phase each transport exception name belongs to. Read is the default
+#: and is what ``LLM_TIMEOUT_SECONDS`` sets; the others are the short fixed
+#: ones, and an operator told to raise the wrong setting is worse off than one
+#: told nothing.
+_PHASE_OF = {
+    "ConnectTimeout": "connect",
+    "PoolTimeout": "pool",
+    "WriteTimeout": "write",
+    "ReadTimeout": "read",
+}
+
+
 def _is_timeout(exc: BaseException) -> bool:
     """Whether *exc* is a deadline, whichever httpx the SDK was built against."""
     if isinstance(exc, (anthropic.APITimeoutError, httpx.TimeoutException)):
@@ -81,8 +93,25 @@ def _is_timeout(exc: BaseException) -> bool:
     return any(t.__name__ in _TIMEOUT_NAMES for t in type(exc).__mro__)
 
 
+def _phase_of(exc: BaseException) -> str:
+    """Which phase expired, read through the SDK's wrapper if there is one.
+
+    ``APITimeoutError`` is what the SDK raises around its own request call, and
+    it keeps the transport exception as ``__cause__`` -- which is the only
+    thing that says whether the connect phase or the read phase ran out.
+    """
+    for candidate in (exc, exc.__cause__):
+        if candidate is None:
+            continue
+        for cls in type(candidate).__mro__:
+            phase = _PHASE_OF.get(cls.__name__)
+            if phase is not None:
+                return phase
+    return "read"
+
+
 @contextlib.contextmanager
-def _deadline(model: str, seconds: object) -> Iterator[None]:
+def _deadline(model: str, deadline: object) -> Iterator[None]:
     """A timed-out call -> :class:`LLMTimeout`.
 
     The mirror of the one in ``litellm_client``, so a host catches a single
@@ -112,7 +141,14 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     except Exception as exc:
         if not _is_timeout(exc):
             raise
-        raise LLMTimeout(model, seconds) from exc
+        phase = _phase_of(exc)
+        # The value for the phase that expired, not the read deadline for all
+        # of them: connect is held at 5s while read is 180, so reporting the
+        # latter for a connect failure is wrong by a factor of thirty-six.
+        seconds_for_phase = getattr(deadline, phase, None)
+        raise LLMTimeout(
+            model, seconds_for_phase if seconds_for_phase is not None else deadline, phase
+        ) from exc
 
 
 class AnthropicClient(LLMClient):
@@ -176,7 +212,7 @@ class AnthropicClient(LLMClient):
         budget = max_tokens or output_budget("answer")
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                with _deadline(self._model, self._timeout):
+                with _deadline(self._model, self._httpx_timeout):
                     response = self._client.messages.create(
                         model=self._model,
                         max_tokens=budget,
@@ -204,7 +240,7 @@ class AnthropicClient(LLMClient):
         # stream: a provider that accepts the request and then stalls is the
         # hang this exists for, and it surfaces while draining `text_stream`.
         with (
-            _deadline(self._model, self._timeout),
+            _deadline(self._model, self._httpx_timeout),
             self._client.messages.stream(
                 model=self._model,
                 max_tokens=budget,
@@ -254,7 +290,7 @@ class AnthropicClient(LLMClient):
             kwargs["temperature"] = temperature
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                with _deadline(self._model, self._timeout):
+                with _deadline(self._model, self._httpx_timeout):
                     response = await self._aclient.messages.create(**kwargs)
                 _record_anthropic_usage(self._model, response.usage)
                 text = _text_of(response)
@@ -274,7 +310,7 @@ class AnthropicClient(LLMClient):
         collected: list[str] = []
         final: Any = None
         # See the sync path: the drain is inside the deadline too.
-        with _deadline(self._model, self._timeout):
+        with _deadline(self._model, self._httpx_timeout):
             async with self._aclient.messages.stream(
                 model=self._model,
                 max_tokens=budget,

@@ -43,7 +43,12 @@ class OutputBudgetExhausted(RuntimeError):
 
 
 class LLMTimeout(RuntimeError):
-    """A single LLM call did not finish inside ``LLM_TIMEOUT_SECONDS``.
+    """A single LLM call did not finish inside its deadline.
+
+    ``phase`` names which deadline: ``read`` (the default, and what
+    ``LLM_TIMEOUT_SECONDS`` sets), or ``connect``/``pool``, which are held at a
+    short fixed value so an unreachable endpoint fails fast. The message
+    changes with it, because the remedy does.
 
     Both clients raise this in place of their SDK's own timeout type, so a host
     has one thing to catch and one message to render. The alternative is asking
@@ -55,9 +60,10 @@ class LLMTimeout(RuntimeError):
     third-party imports, and importing it must stay cheap.
     """
 
-    def __init__(self, model: str, seconds: object) -> None:
+    def __init__(self, model: str, seconds: object, phase: str = "read") -> None:
         self.model = model
         self.seconds = seconds
+        self.phase = phase
         # `seconds` is whatever the deadline was configured as, and a host can
         # put something other than a number there: litellm's `timeout` accepts
         # `str` and `httpx.Timeout` as well as a float, and `extra` forwards it
@@ -66,11 +72,26 @@ class LLMTimeout(RuntimeError):
         # the provider's timeout with a formatting error, in the constructor
         # that exists to report the timeout clearly.
         shown = f"{seconds:g}" if isinstance(seconds, (int, float)) else str(seconds)
-        super().__init__(
-            f"{model} did not respond within {shown}s. Raise "
-            f"LLM_TIMEOUT_SECONDS if this model is legitimately slow, or check "
-            f"whether the provider is reachable."
-        )
+        # The advice has to match the phase that expired, or it sends the
+        # operator to the wrong setting. Connect is deliberately held at a few
+        # seconds while the read deadline is minutes, so a blocked egress or a
+        # mistyped endpoint fails fast -- and reporting that as "did not respond
+        # within 180s, raise LLM_TIMEOUT_SECONDS" would be wrong about the
+        # number and useless about the fix, since raising it does not touch
+        # connect.
+        if phase in ("connect", "pool"):
+            super().__init__(
+                f"{model} could not be reached within {shown}s ({phase} timeout). "
+                f"Check the endpoint and whether outbound access to the provider "
+                f"is allowed. Raising LLM_TIMEOUT_SECONDS will not help: it sets "
+                f"the response deadline, not this one."
+            )
+        else:
+            super().__init__(
+                f"{model} did not respond within {shown}s. Raise "
+                f"LLM_TIMEOUT_SECONDS if this model is legitimately slow, or check "
+                f"whether the provider is reachable."
+            )
 
 
 def exhausted(finish_reason: object, content: str) -> bool:
