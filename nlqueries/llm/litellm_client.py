@@ -47,11 +47,17 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     transport error reaching a host that had been asked to catch
     :class:`LLMTimeout`.
 
-    ``None`` is the one value handled here rather than there: it is a supported
-    way of saying "no deadline", since ``extra`` forwards ``None`` rather than
-    dropping it. Then there is no deadline of ours to name, so the provider's
-    own error goes through untouched -- renaming it would claim a limit that
-    was never set.
+    ``None`` is the one value handled here rather than there. ``extra``
+    forwards it rather than dropping it, and then there is no deadline of
+    *ours* to name, so the provider's own error goes through untouched:
+    renaming it would claim a limit this process never set.
+
+    It does not mean "no deadline", which an earlier revision of this said.
+    litellm resolves a ``None`` through ``CompletionTimeout.resolve``, which
+    takes the first non-``None`` of the call argument, ``kwargs["timeout"]``,
+    ``kwargs["request_timeout"]`` and finally
+    ``COMPLETION_HTTP_FALLBACK_SECONDS`` -- 600.0. So such a host gets
+    litellm's own ten-minute bound, not an unbounded call.
     """
     try:
         yield

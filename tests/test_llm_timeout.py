@@ -251,12 +251,18 @@ def test_a_stream_that_stalls_after_it_opens_still_times_out(
 def test_a_host_that_disables_the_deadline_gets_the_providers_own_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`extra={"timeout": None}` is a supported way to say "no deadline".
+    """`extra={"timeout": None}` switches OURS off, not the deadline.
 
-    `extra` forwards `None` rather than dropping it, so a host can switch ours
-    off. There is then no deadline of ours to name, and translating the error
-    anyway would claim a limit nobody set -- with `seconds=None` in a message
-    that formats it.
+    `extra` forwards `None` rather than dropping it, so a host can decline the
+    value this process sets. Translating the provider's error anyway would
+    claim a limit nobody set -- with `seconds=None` in a message that formats
+    it -- so it goes through untouched.
+
+    What such a host gets is litellm's own bound rather than an unbounded call:
+    `CompletionTimeout.resolve` takes the first non-`None` of the call
+    argument, `kwargs["timeout"]`, `kwargs["request_timeout"]` and finally
+    `COMPLETION_HTTP_FALLBACK_SECONDS`, 600.0. An earlier revision of this
+    docstring said "no deadline", which was wrong.
     """
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 42.0)
     client = LiteLLMClient(model="m", api_key="k", extra={"timeout": None})
