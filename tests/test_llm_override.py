@@ -340,6 +340,84 @@ def test_a_non_anthropic_model_under_the_anthropic_provider_raises() -> None:
         get_llm_client()
 
 
+def test_the_fast_tier_is_refused_when_the_default_model_names_another_provider() -> None:
+    """The tiers disagreeing, for providers the Bedrock guard does not cover.
+
+    `LLM_MODEL=deepseek/deepseek-chat` with a leftover `ANTHROPIC_API_KEY` and
+    nothing else set: `_detect_provider` returns 'anthropic', and
+    `_detect_fast_model` falls through to a bare `claude-haiku-...`. No slash,
+    so a check that judged only this tier's model passed it and built the
+    client -- and `aresolve_followup` and `aclassify_intent` both run on the
+    fast tier *before* any default-tier call, carrying the question and the
+    conversation history to api.anthropic.com. The default tier did raise, by
+    which time the data had gone.
+
+    So the prefix is judged from the default model too, exactly as `on_bedrock`
+    is.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", ""),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        patch.object(config, "LLM_MODEL", "deepseek/deepseek-chat"),
+        patch.object(config, "LLM_MODEL_FAST", "claude-haiku-4-5-20251001"),
+        pytest.raises(ValueError, match="LLM_MODEL='deepseek/deepseek-chat'"),
+    ):
+        get_llm_client(tier="fast")
+
+
+def test_the_fast_tier_is_still_built_when_the_deployment_is_consistent() -> None:
+    """The refusal above must not cost a working Anthropic deployment its fast tier."""
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", ""),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+        patch.object(config, "LLM_MODEL_FAST", "claude-haiku-4-5-20251001"),
+    ):
+        client = get_llm_client(tier="fast")
+
+    assert isinstance(client, AnthropicClient)
+    assert client._model == "claude-haiku-4-5-20251001"
+
+
+def test_a_prefixed_fast_model_is_refused_on_its_own_account() -> None:
+    """Either setting alone is enough; the error names the one at fault."""
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        patch.object(config, "LLM_PROVIDER_CONFIGURED", ""),
+        patch.object(config, "LLM_PROVIDER", "anthropic"),
+        patch.object(config, "LLM_MODEL", "claude-sonnet-4-5"),
+        patch.object(config, "LLM_MODEL_FAST", "deepseek/deepseek-chat"),
+        pytest.raises(ValueError, match="LLM_MODEL_FAST='deepseek/deepseek-chat'"),
+    ):
+        get_llm_client(tier="fast")
+
+
+def test_a_gateway_still_exempts_the_default_model_check() -> None:
+    """The premise is that the request reaches api.anthropic.com.
+
+    An `api_base` means it does not, for the default model as much as for this
+    tier's -- so widening the check must not narrow the exemption.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        patch.object(config, "LLM_MODEL", "deepseek/deepseek-chat"),
+        use_llm_override(
+            LLMOverride(
+                provider="anthropic",
+                model="claude-sonnet-4-5",
+                api_base="https://gateway.internal/v1",
+            )
+        ),
+    ):
+        assert isinstance(get_llm_client(), AnthropicClient)
+
+
 def test_an_anthropic_prefixed_model_is_normalised_not_passed_through() -> None:
     """Allowing it through was its own version of the bug being guarded.
 

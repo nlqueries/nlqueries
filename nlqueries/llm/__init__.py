@@ -152,23 +152,46 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     endpoint_overridden = bool(
         (override.api_base if override else None) or os.getenv("ANTHROPIC_BASE_URL", "").strip()
     )
-    if provider == "anthropic" and model and "/" in model and not endpoint_overridden:
-        prefix, rest = model.split("/", 1)
-        if prefix.lower() != "anthropic":
-            raise ValueError(
-                f"model={model!r} names provider {prefix!r}, but the configured "
-                f"provider is 'anthropic'. AnthropicClient does not check the "
-                f"model id, so this would send the prompt and schema to "
-                f"api.anthropic.com. Set LLM_PROVIDER to litellm to route "
-                f"{prefix!r} models, or choose an Anthropic model."
-            )
+    if provider == "anthropic" and not endpoint_overridden:
+        # Judged from the deployment's default model as well as from whichever
+        # model this tier resolved -- the same thing `on_bedrock` above does,
+        # for the same reason, and it was missing here.
+        #
+        # `LLM_MODEL=deepseek/deepseek-chat` with a leftover ANTHROPIC_API_KEY
+        # and nothing else set is the motivating configuration. `_detect_provider`
+        # returns 'anthropic', and `_detect_fast_model` returns a bare
+        # `claude-haiku-...`: no slash, so a per-tier check passes it and the
+        # client is built. `aresolve_followup` and `aclassify_intent` both run
+        # on that tier, and both run *before* any default-tier call, carrying
+        # the question and the conversation history to api.anthropic.com. The
+        # default tier does raise -- once the data has gone, which is the
+        # sequence this guard exists to prevent.
+        #
+        # It costs nothing legitimate. A deployment whose default model names
+        # another provider while its provider still resolves to 'anthropic' is
+        # refused on its main call anyway; this only moves the refusal to the
+        # first call instead of the first *default-tier* call.
+        tier_setting = "LLM_MODEL_FAST" if tier == "fast" else "LLM_MODEL"
+        for candidate, setting in ((default_model, "LLM_MODEL"), (model, tier_setting)):
+            if not candidate or "/" not in candidate:
+                continue
+            prefix = candidate.split("/", 1)[0]
+            if prefix.lower() != "anthropic":
+                raise ValueError(
+                    f"{setting}={candidate!r} names provider {prefix!r}, but the "
+                    f"configured provider is 'anthropic'. AnthropicClient does not "
+                    f"check the model id, so this would send the prompt and schema "
+                    f"to api.anthropic.com. Set LLM_PROVIDER to litellm to route "
+                    f"{prefix!r} models, or choose an Anthropic model."
+                )
         # `anthropic/claude-...` is a natural thing to write -- it is the form
         # LiteLLM documents -- and passing it through is its own version of the
         # bug this guard exists for: the SDK stores the id verbatim, no
         # Anthropic model id contains a slash, and the not-found arrives after
         # the prompt and schema have been sent. Normalised so the two spellings
         # behave identically rather than one of them leaking and failing.
-        model = rest
+        if model and "/" in model:
+            model = model.split("/", 1)[1]
 
     if provider not in _REGISTRY:
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
