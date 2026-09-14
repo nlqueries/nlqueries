@@ -434,3 +434,118 @@ def test_explain_analyze_of_a_select_still_works(connector, marker_table):
     )
 
     assert result.error is None
+
+
+# ---------------------------------------------------------------------------
+# Query-history extraction: what the bounded budget is spent on
+# ---------------------------------------------------------------------------
+
+#: (statement, is it a read the extraction should keep)
+_HISTORY_STATEMENTS: list[tuple[str, bool]] = [
+    ("SELECT a FROM t", True),
+    ("select a from t", True),
+    ("WITH x AS (SELECT 1) SELECT * FROM x", True),
+    # The SQL Console tags every run with its cancellation marker, so this is
+    # the shape of our own traffic. Anchoring on the first character discarded
+    # all of it.
+    ("/* nlq-console:2a2e3031-f2d4-4d30-841b-1c355affb0dd */ select * from web_sales", True),
+    ("  \n\t SELECT a FROM t", True),
+    ("-- a note\nSELECT a FROM t", True),
+    ("/* one */ /* two */ SELECT a FROM t", True),
+    ("/* spans\nlines */ SELECT a FROM t", True),
+    # Comments *after* the keyword. The first version of this list had none,
+    # which is why it passed while the pattern was wrong: with `/*.*?*/` the
+    # strip ran to the LAST `*/` in the statement and took the query with it.
+    # Every one of these was being dropped -- ordinary reads, discarded by the
+    # filter whose whole purpose is to stop discarding them.
+    ("/* a */ SELECT x FROM t /* b */", True),
+    ("SELECT x FROM t /* b */", True),
+    ("/* a */ SELECT '*/' FROM t", True),
+    ("/* nlq-console:abc */ SELECT x FROM t /* end */", True),
+    ("/* a */ SELECT x\n-- note\nFROM t", True),
+    ("/** a **/ SELECT x FROM t", True),
+    ("INSERT INTO t VALUES (1)", False),
+    ("UPDATE t SET a = 1", False),
+    ("DELETE FROM t", False),
+    ("CREATE TABLE t (a int)", False),
+    # Each streamed read leaves these three behind under a name SQLAlchemy
+    # generates fresh every time, so they never normalise and they accumulate
+    # without bound. On the deployment that prompted this, 3,750 of a
+    # database's 3,782 entries were exactly these.
+    ('FETCH FORWARD 1000 FROM "c_7f1449704a10_76"', False),
+    ('CLOSE "c_7f1449704a10_76"', False),
+    ("DECLARE c CURSOR FOR SELECT 1", False),
+    ("/* a comment */ INSERT INTO t VALUES (1)", False),
+    # A word that merely begins with the keyword is not the keyword.
+    ("selectivity_check()", False),
+    ("withdraw_funds()", False),
+]
+
+
+def test_the_history_filter_keeps_reads_and_drops_the_rest(connector) -> None:
+    """The predicate that ships, run by Postgres over known statements.
+
+    Asserted against the real regex engine rather than the text of the query
+    around it. The defect being fixed was a Postgres-side anchoring detail:
+    `query ILIKE 'select%'` reads as "is this a SELECT" and actually means "does
+    the character at position one begin one", which is false for every statement
+    carrying a leading comment. No amount of reading the Python would surface
+    that; only Postgres can answer it.
+    """
+    from nlqueries.connectors.postgres import STATEMENT_IS_A_READ
+
+    engine = connector._require_engine()
+    with engine.connect() as conn:
+        for statement, expected in _HISTORY_STATEMENTS:
+            got = conn.execute(
+                sa_text(
+                    f"SELECT {STATEMENT_IS_A_READ} AS matched "  # noqa: S608 — module constant
+                    "FROM (SELECT CAST(:q AS text) AS query) s"
+                ),
+                {"q": statement},
+            ).scalar()
+            assert got is expected, f"{statement!r}: expected {expected}, got {got}"
+
+
+def test_history_extraction_is_scoped_to_the_connected_database(seeded_connector) -> None:
+    """pg_stat_statements is cluster-wide; one connector must not read another's SQL.
+
+    Without the dbid filter this returned every database's statements on the
+    same server — 6,076 of 9,880 entries on the deployment that prompted it,
+    which is both noise competing for a bounded budget and somebody else's
+    queries. The extension is absent from the throwaway container, so what is
+    checked here is that the statement the connector builds really is scoped;
+    the empty-result path is covered by the warning test above.
+    """
+    engine = seeded_connector._require_engine()
+    with engine.connect() as conn:
+        # The same subselect the extraction uses, against this container.
+        current = conn.execute(
+            sa_text("SELECT (SELECT oid FROM pg_database WHERE datname = current_database())")
+        ).scalar()
+        others = conn.execute(
+            sa_text("SELECT count(*) FROM pg_database WHERE oid <> :oid"), {"oid": current}
+        ).scalar()
+
+    assert current is not None
+    # A cluster always has other databases (template0, template1, postgres), so
+    # the filter is doing real work rather than being a no-op here.
+    assert others and others > 0
+
+
+def test_both_history_queries_carry_both_filters() -> None:
+    """The Postgres<13 fallback is a second copy of the statement.
+
+    It was added for a renamed column and is easy to forget when the WHERE
+    clause changes — so a filter added to one and not the other would leave the
+    old behaviour reachable on exactly the deployments least likely to notice.
+    """
+    import inspect
+
+    from nlqueries.connectors.postgres import PostgresConnector as _PC
+
+    source = inspect.getsource(_PC.extract_query_history)
+    body = source.split('"""', 2)[-1]  # assertions belong to the code, not the docstring
+    assert body.count("mean_exec_time\n") >= 1
+    assert body.count("dbid = (") == 2
+    assert body.count("{STATEMENT_IS_A_READ}") == 2

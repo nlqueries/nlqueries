@@ -55,6 +55,28 @@ def _returns_rows(sql: str) -> bool:
 # Schemas that are part of Postgres / the catalog itself, never user data.
 _SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
 
+#: Leading whitespace, block comments and line comments, as one prefix run.
+#:
+#: The block-comment branch is the classic non-nesting C-comment pattern, not
+#: ``/\*.*?\*/``. Postgres fixes the length of the whole match from the overall
+#: RE's greediness and only then lets each subexpression divide that length up,
+#: so a non-greedy ``.*?`` inside a greedy total still ran from the first ``/*``
+#: to the **last** ``*/`` in the statement: ``/* a */ SELECT x FROM t /* b */``
+#: stripped to nothing and was rejected as not a read. ``([^*]|\*+[^*/])*``
+#: cannot pass a ``*/``, so the match ends where the comment does.
+_LEADING_NOISE = r"^(\s+|/\*([^*]|\*+[^*/])*\*+/|--[^\n]*)+"
+
+#: Whether a ``pg_stat_statements`` row is a read, as an expression over a
+#: column named ``query`` -- so a test can bind statements to it and let
+#: Postgres answer. Spelled with ``[^a-z]`` rather than a word boundary because
+#: ``\b`` is a *backspace* in Postgres' regex flavour, not ``\y``.
+#:
+#: Loose on purpose. It exists to keep DDL, DML and transaction control out of a
+#: bounded result; whatever survives is still parsed and filtered downstream. The
+#: cost of being slightly generous is a parse. The cost of being slightly strict
+#: is a query nobody ever sees again.
+STATEMENT_IS_A_READ = f"regexp_replace(query, '{_LEADING_NOISE}', '') ~* '^(select|with)[^a-z]'"
+
 
 class PostgresConnector(DatabaseConnector):
     """Connector for PostgreSQL databases.
@@ -384,7 +406,7 @@ class PostgresConnector(DatabaseConnector):
     # ------------------------------------------------------------------
 
     def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
-        """Return the top ``pg_stat_statements`` queries by execution count.
+        """Return the top ``pg_stat_statements`` reads for *this* database.
 
         ``pg_stat_statements`` accumulates statistics since the extension's
         last reset rather than tracking individual execution timestamps, so
@@ -392,6 +414,33 @@ class PostgresConnector(DatabaseConnector):
         interface compatibility and to size logging/messaging. Up to
         ``limit`` queries are returned, ordered by execution count
         (``calls``) descending.
+
+        Two filters decide what that budget is spent on, and both were added
+        after measuring a live deployment where it was spent on neither.
+
+        **This database only.** ``pg_stat_statements`` is cluster-wide. Without
+        the ``dbid`` filter, extracting one connector's history returns every
+        other database's SQL on the same server — 6,076 of 9,880 entries, in the
+        case that prompted this — which is both noise and somebody else's
+        queries. ``LIMIT`` is applied before any caller can tell them apart.
+
+        **Reads only.** The view records utility statements too, and each
+        streamed read declares a server-side cursor under a name SQLAlchemy
+        generates fresh every time (``c_7f1449704a10_76``), so ``DECLARE``,
+        ``FETCH`` and ``CLOSE`` each take a permanent entry that never
+        normalises. On that same deployment 3,750 of this database's 3,782
+        entries were exactly that, and only **75** entries cluster-wide had
+        eight calls or more — so 425 of a 500-row budget went on cursor
+        bookkeeping and transaction control before any real query was reached.
+        Operators who want those out of the view entirely can set
+        ``pg_stat_statements.track_utility = off``; this makes the extraction
+        immune either way.
+
+        The prefix test skips leading whitespace and comments rather than
+        anchoring on the first character. Our own SQL Console tags every
+        statement it runs with ``/* nlq-console:<uuid> */``, and any tool that
+        annotates its SQL does the same — anchoring would discard precisely the
+        queries someone ran deliberately.
 
         If the ``pg_stat_statements`` extension is not installed, this logs
         a warning and returns an empty list rather than raising.
@@ -416,9 +465,13 @@ class PostgresConnector(DatabaseConnector):
             try:
                 rows = conn.execute(
                     text(
-                        """
+                        f"""
                         SELECT query, calls, mean_exec_time
                         FROM pg_stat_statements
+                        WHERE dbid = (
+                            SELECT oid FROM pg_database WHERE datname = current_database()
+                        )
+                          AND {STATEMENT_IS_A_READ}
                         ORDER BY calls DESC
                         LIMIT :limit
                         """
@@ -429,9 +482,13 @@ class PostgresConnector(DatabaseConnector):
                 # Postgres < 13 named the column `mean_time` instead of `mean_exec_time`.
                 rows = conn.execute(
                     text(
-                        """
+                        f"""
                         SELECT query, calls, mean_time AS mean_exec_time
                         FROM pg_stat_statements
+                        WHERE dbid = (
+                            SELECT oid FROM pg_database WHERE datname = current_database()
+                        )
+                          AND {STATEMENT_IS_A_READ}
                         ORDER BY calls DESC
                         LIMIT :limit
                         """
