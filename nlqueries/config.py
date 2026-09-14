@@ -11,6 +11,7 @@ os.environ directly, so the source of truth is a single place.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -248,6 +249,86 @@ reaches the calls that ask for less than an answer.
 
 A non-positive value is ignored, with a warning naming this setting -- see
 :func:`_output_budget` for why the warning matters more than the correction.
+"""
+
+
+def _llm_timeout() -> float:
+    """``LLM_TIMEOUT_SECONDS``, validated, and loud about it when it rejects.
+
+    Same shape as :func:`_output_budget`, and for the same reason: a corrected
+    value that nobody is told about turns a loud misconfiguration into a quiet
+    one. A ``0`` here reads as "no timeout" and would mean the opposite to the
+    SDKs -- litellm treats it as an immediate deadline -- so it is ignored
+    rather than passed through or clamped to something arbitrary.
+    """
+    default = 180.0
+    written = os.getenv("LLM_TIMEOUT_SECONDS", str(default))
+    try:
+        raw = float(written)
+    except ValueError:
+        # See `_output_budget`: `LLM_TIMEOUT_SECONDS=` is how people disable a
+        # setting, and an unhandled ValueError at import takes down every CLI
+        # command including `doctor`.
+        logging.getLogger(__name__).warning(
+            "LLM_TIMEOUT_SECONDS=%r is not a number and is being ignored; "
+            "using the default of %.0f seconds.",
+            written,
+            default,
+        )
+        return default
+    # `isfinite` before the sign test, and this is the one place this differs
+    # from `_output_budget`. `int()` has no literal for infinity; `float()`
+    # parses `inf`, `infinity`, `nan`, and anything that overflows to them --
+    # `1e400` is `inf`. All of those pass a `<= 0` test, reach the SDK, and
+    # produce a deadline that never fires, because every comparison against
+    # `inf` or `nan` is false. That is precisely the unbounded wait this
+    # setting exists to end, arrived at through the setting itself and with
+    # nothing logged.
+    if not math.isfinite(raw) or raw <= 0:
+        logging.getLogger(__name__).warning(
+            "LLM_TIMEOUT_SECONDS=%s is not a usable deadline and is being ignored; "
+            "using the default of %.0f seconds. There is no value that means "
+            "'wait forever' -- that was the behaviour this setting exists to end.",
+            written,
+            default,
+        )
+        return default
+    return raw
+
+
+LLM_TIMEOUT_SECONDS: float = _llm_timeout()
+"""How long an LLM call may go without producing data, in seconds.
+
+Both SDKs already impose 600s of their own -- ``anthropic``'s default client
+timeout and litellm's ``COMPLETION_HTTP_FALLBACK_SECONDS`` -- so this is not a
+rescue from an unbounded wait. What it buys is a default of 180 rather than
+600, configurable per deployment, and one exception type
+(:class:`nlqueries.llm.LLMTimeout`) a host can catch instead of
+``litellm.Timeout``, ``anthropic.APITimeoutError`` and whatever a new provider
+brings.
+
+**It is a read deadline, not a bound on the call.** httpx applies it to each
+read, so it fires after this many seconds of *silence* rather than after this
+much elapsed time. On the streaming paths -- the ones ``orchestrator`` and
+``document_orchestrator`` use -- that is the difference that matters: the
+Anthropic Messages API emits periodic ``ping`` events during a stream and every
+one of them resets the clock, so a stream that keeps trickling can run far
+past this value. Do not size an upstream budget on it as though it capped a
+question.
+
+180 is chosen to be longer than a legitimately slow answer rather than tight.
+A reasoning model on a long schema can take a minute or more before the first
+token, and a deadline that fires on those trades a hang for a broken
+deployment, which is not an improvement. Lower it if your models are fast and
+you would rather fail early.
+
+The connector-side equivalent is ``QUERY_STATEMENT_TIMEOUT_SECONDS``, which is
+a separate budget for the SQL, not for the model.
+
+A non-positive, non-finite or unparseable value is ignored with a warning --
+see :func:`_llm_timeout`. ``inf`` is rejected with the rest: it parses, and a
+deadline that never fires is worse than the 600 the SDKs would apply on their
+own.
 """
 
 

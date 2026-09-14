@@ -8,14 +8,17 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, cast
 
 import anthropic
+import httpx
 
 from nlqueries import config
 from nlqueries.llm.client import (
     TRUNCATED,
     LLMClient,
+    LLMTimeout,
     OutputBudgetExhausted,
     SystemParam,
     exhausted,
+    looks_like_timeout,
 )
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, record_usage
@@ -58,6 +61,87 @@ def _text_of(response: Any) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
 
+#: Which phase each transport exception name belongs to. Read is the default
+#: and is what ``LLM_TIMEOUT_SECONDS`` sets; the others are the short fixed
+#: ones, and an operator told to raise the wrong setting is worse off than one
+#: told nothing.
+_PHASE_OF = {
+    "ConnectTimeout": "connect",
+    "PoolTimeout": "pool",
+    "WriteTimeout": "write",
+    "ReadTimeout": "read",
+}
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Whether *exc* is a deadline, whichever httpx the SDK was built against.
+
+    The SDK's own types by identity, anything else httpx-shaped by name. The
+    name list lives in ``client`` now rather than here, because the litellm
+    client needs the same judgement and had a plain ``isinstance`` -- see
+    :func:`~nlqueries.llm.client.looks_like_timeout`.
+    """
+    if isinstance(exc, (anthropic.APITimeoutError, httpx.TimeoutException)):
+        return True
+    return looks_like_timeout(exc)
+
+
+def _phase_of(exc: BaseException) -> str:
+    """Which phase expired, read through the SDK's wrapper if there is one.
+
+    ``APITimeoutError`` is what the SDK raises around its own request call, and
+    it keeps the transport exception as ``__cause__`` -- which is the only
+    thing that says whether the connect phase or the read phase ran out.
+    """
+    for candidate in (exc, exc.__cause__):
+        if candidate is None:
+            continue
+        for cls in type(candidate).__mro__:
+            phase = _PHASE_OF.get(cls.__name__)
+            if phase is not None:
+                return phase
+    return "read"
+
+
+@contextlib.contextmanager
+def _deadline(model: str, deadline: object) -> Iterator[None]:
+    """A timed-out call -> :class:`LLMTimeout`.
+
+    The mirror of the one in ``litellm_client``, so a host catches a single
+    type whichever client it ended up with. Narrow on purpose: every other
+    Anthropic error keeps its own type and message.
+
+    The transport's own exception as well as the SDK's, because the SDK
+    converts one into the other only around ``self._client.send(...)`` in
+    ``_base_client._request``. With ``stream=True`` that call returns as soon
+    as the headers arrive and the body is read lazily afterwards, outside the
+    ``try`` -- and neither ``_streaming`` nor ``lib/streaming/_messages``
+    handles a timeout at all. So a provider that accepts the request and then
+    stalls raises a raw read timeout while ``text_stream`` is being drained,
+    which is exactly the hang this exists for and exactly the shape
+    ``APITimeoutError`` alone would miss.
+
+    Matched by name as well as by class. Which httpx the SDK raises from
+    depends on its version -- newer anthropic builds against ``httpx2`` -- so
+    an ``isinstance`` against the one imported here is true in some
+    environments and false in others, with nothing in this repository having
+    changed.
+    """
+    try:
+        yield
+    except Exception as exc:
+        if not _is_timeout(exc):
+            raise
+        phase = _phase_of(exc)
+        # The value for the phase that expired, not the read deadline for all
+        # of them: connect is held at 5s while read is 180, so reporting the
+        # latter for a connect failure is wrong by a factor of thirty-six.
+        seconds_for_phase = getattr(deadline, phase, None)
+        raise LLMTimeout(
+            model, seconds_for_phase if seconds_for_phase is not None else deadline, phase
+        ) from exc
+
+
 class AnthropicClient(LLMClient):
     supports_prompt_caching = True
 
@@ -73,9 +157,31 @@ class AnthropicClient(LLMClient):
         # env-derived config default; api_base overrides the endpoint when given.
         key = api_key if api_key is not None else config.ANTHROPIC_API_KEY
         base_kwargs: dict[str, Any] = {"base_url": api_base} if api_base is not None else {}
+        # On the SDK client rather than per call: the Anthropic SDK applies it
+        # to every request made through it, including the ones inside a stream,
+        # so there is no path that can be added later and quietly miss it.
+        self._timeout = config.LLM_TIMEOUT_SECONDS
+        # `anthropic.Timeout`, not `httpx.Timeout`: the SDK re-exports the type
+        # it accepts, and which httpx that is depends on its version -- newer
+        # builds are against `httpx2`. Naming the SDK's own alias keeps this
+        # correct whichever it resolved.
+        #
+        # Not the bare float either: a float sets EVERY phase,
+        # connect included, and the SDK's own default is
+        # `Timeout(connect=5.0, read=600, write=600, pool=600)`. Handing it
+        # 180.0 would have moved connect from 5s to 180s, so an unreachable
+        # endpoint -- blocked egress, a mistyped api_base -- would sit for
+        # three minutes instead of five seconds, three times over for a
+        # question that classifies, generates and corrects. The read deadline
+        # is what this change is for; the connect one was already right.
+        self._httpx_timeout = anthropic.Timeout(self._timeout, connect=5.0)
         # Disable SDK-level retries so our own retry loop has full control.
-        self._client = anthropic.Anthropic(api_key=key, max_retries=0, **base_kwargs)
-        self._aclient = anthropic.AsyncAnthropic(api_key=key, max_retries=0, **base_kwargs)
+        self._client = anthropic.Anthropic(
+            api_key=key, max_retries=0, timeout=self._httpx_timeout, **base_kwargs
+        )
+        self._aclient = anthropic.AsyncAnthropic(
+            api_key=key, max_retries=0, timeout=self._httpx_timeout, **base_kwargs
+        )
 
     # ------------------------------------------------------------------
     # Helper: normalise system param into the list-of-blocks form that
@@ -96,12 +202,13 @@ class AnthropicClient(LLMClient):
         budget = max_tokens or output_budget("answer")
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=budget,
-                    system=cast(Any, sys_blocks),
-                    messages=[{"role": "user", "content": user}],
-                )
+                with _deadline(self._model, self._httpx_timeout):
+                    response = self._client.messages.create(
+                        model=self._model,
+                        max_tokens=budget,
+                        system=cast(Any, sys_blocks),
+                        messages=[{"role": "user", "content": user}],
+                    )
                 _record_anthropic_usage(self._model, response.usage)
                 text = _text_of(response)
                 if exhausted(getattr(response, "stop_reason", None), text):
@@ -119,12 +226,18 @@ class AnthropicClient(LLMClient):
         budget = output_budget("answer")
         collected: list[str] = []
         final: Any = None
-        with self._client.messages.stream(
-            model=self._model,
-            max_tokens=budget,
-            system=cast(Any, sys_blocks),
-            messages=[{"role": "user", "content": user}],
-        ) as stream:
+        # The deadline wraps the iteration, not just the call that opens the
+        # stream: a provider that accepts the request and then stalls is the
+        # hang this exists for, and it surfaces while draining `text_stream`.
+        with (
+            _deadline(self._model, self._httpx_timeout),
+            self._client.messages.stream(
+                model=self._model,
+                max_tokens=budget,
+                system=cast(Any, sys_blocks),
+                messages=[{"role": "user", "content": user}],
+            ) as stream,
+        ):
             for text in stream.text_stream:
                 collected.append(text)
                 yield text
@@ -167,7 +280,8 @@ class AnthropicClient(LLMClient):
             kwargs["temperature"] = temperature
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = await self._aclient.messages.create(**kwargs)
+                with _deadline(self._model, self._httpx_timeout):
+                    response = await self._aclient.messages.create(**kwargs)
                 _record_anthropic_usage(self._model, response.usage)
                 text = _text_of(response)
                 if exhausted(getattr(response, "stop_reason", None), text):
@@ -185,18 +299,20 @@ class AnthropicClient(LLMClient):
         budget = output_budget("answer")
         collected: list[str] = []
         final: Any = None
-        async with self._aclient.messages.stream(
-            model=self._model,
-            max_tokens=budget,
-            system=cast(Any, sys_blocks),
-            messages=[{"role": "user", "content": user}],
-        ) as stream:
-            async for text in stream.text_stream:
-                collected.append(text)
-                yield text
-            with contextlib.suppress(Exception):
-                final = await stream.get_final_message()
-                _record_anthropic_usage(self._model, final.usage)
+        # See the sync path: the drain is inside the deadline too.
+        with _deadline(self._model, self._httpx_timeout):
+            async with self._aclient.messages.stream(
+                model=self._model,
+                max_tokens=budget,
+                system=cast(Any, sys_blocks),
+                messages=[{"role": "user", "content": user}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    collected.append(text)
+                    yield text
+                with contextlib.suppress(Exception):
+                    final = await stream.get_final_message()
+                    _record_anthropic_usage(self._model, final.usage)
         # See the sync path: outside the suppress, or the raise is eaten.
         if (
             final is not None
