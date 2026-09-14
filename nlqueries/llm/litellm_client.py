@@ -23,6 +23,25 @@ from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
 
 
+def _configured_deadline(kwargs: dict[str, Any]) -> object:
+    """The deadline litellm will apply, in litellm's own resolution order.
+
+    ``timeout`` then ``request_timeout``, first non-``None`` winning, which is
+    what ``CompletionTimeout.resolve`` does with them. Both are read because a
+    host may set either in ``extra``, and reading only the first leaves the
+    host who chose the other spelling with an untranslated provider error --
+    the one configuration where a number was available to name.
+
+    ``None`` therefore means what the docstring below says it means: this
+    process set no deadline.
+    """
+    for key in ("timeout", "request_timeout"):
+        value = kwargs.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 @contextlib.contextmanager
 def _deadline(model: str, seconds: object) -> Iterator[None]:
     """A timed-out call -> :class:`LLMTimeout`, so a host catches one type.
@@ -242,7 +261,7 @@ class LiteLLMClient(LLMClient):
     def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         budget = max_tokens or output_budget("answer")
         auth = self._call_kwargs()
-        with _deadline(self._model, auth.get("timeout")):
+        with _deadline(self._model, _configured_deadline(auth)):
             response = litellm.completion(
                 model=self._model,
                 messages=[
@@ -272,7 +291,7 @@ class LiteLLMClient(LLMClient):
         # that accepts the request and then stalls raises here -- which is the
         # shape of the hang this exists for, and the one a wrapper around the
         # opening call alone would miss.
-        with _deadline(self._model, auth.get("timeout")):
+        with _deadline(self._model, _configured_deadline(auth)):
             response = litellm.completion(
                 model=self._model,
                 messages=[
@@ -328,7 +347,7 @@ class LiteLLMClient(LLMClient):
         }
         if temperature is not None:
             kwargs["temperature"] = temperature
-        with _deadline(self._model, kwargs.get("timeout")):
+        with _deadline(self._model, _configured_deadline(kwargs)):
             response = await litellm.acompletion(**kwargs)
         content = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)
@@ -344,7 +363,7 @@ class LiteLLMClient(LLMClient):
         budget = output_budget("answer")
         auth = self._call_kwargs()
         # See the sync path: the iteration is inside the deadline as well.
-        with _deadline(self._model, auth.get("timeout")):
+        with _deadline(self._model, _configured_deadline(auth)):
             response = await litellm.acompletion(
                 model=self._model,
                 messages=[

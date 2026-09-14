@@ -289,6 +289,48 @@ def test_a_litellm_stall_from_another_httpx_is_still_a_timeout(
         list(client.stream("sys", "user"))
 
 
+def test_a_request_timeout_deadline_is_still_named_in_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host who chose litellm's other spelling gets the same promise.
+
+    Standing the default down for `request_timeout` left that host with no
+    `timeout` key at all, so the deadline lookup found nothing and the
+    provider's error went through untranslated -- in the one configuration
+    where a number was available to name, and against the docstring's promise
+    that a caller catches one type whichever client it got.
+    """
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 180.0)
+    client = LiteLLMClient(model="m", api_key="k", extra={"request_timeout": 30})
+
+    boom = litellm.exceptions.Timeout(message="slow", model="m", llm_provider="openai")
+    with patch("litellm.completion", side_effect=boom), pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.seconds == 30
+    assert "30s" in str(caught.value)
+
+
+def test_the_deadline_lookup_follows_litellms_own_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`timeout` before `request_timeout`, because that is what litellm does.
+
+    `CompletionTimeout.resolve` takes the first non-None of the call argument,
+    `kwargs["timeout"]` and `kwargs["request_timeout"]`. A host that sets both
+    gets the first, so naming the second in the error would report a limit that
+    did not expire.
+    """
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 180.0)
+    client = LiteLLMClient(model="m", api_key="k", extra={"timeout": 45, "request_timeout": 30})
+
+    boom = litellm.exceptions.Timeout(message="slow", model="m", llm_provider="openai")
+    with patch("litellm.completion", side_effect=boom), pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.seconds == 45
+
+
 def test_another_litellm_error_keeps_its_own_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """The translation is narrow. An auth failure is not a deadline."""
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 42.0)
