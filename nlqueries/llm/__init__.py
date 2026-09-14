@@ -130,6 +130,30 @@ def get_llm_client(tier: str = "default") -> LLMClient:
     if model_is_bedrock:
         provider = "litellm"
 
+    # The same reasoning, for every other provider.
+    #
+    # The two guards above are Bedrock-specific, and the consequence they
+    # describe is not: `AnthropicClient` does not inspect the model id at all,
+    # so `LLM_MODEL=deepseek/deepseek-chat` with an Anthropic key transmits the
+    # prompt, the schema and the question to api.anthropic.com and only then
+    # reports the model missing. The data has left by the time anything says so.
+    #
+    # Only a prefixed model can be judged here. A bare name is not evidence of
+    # a provider -- LiteLLM's own registry spells DeepSeek's keys bare and
+    # Mistral's prefixed -- and placing one needs that registry, which core
+    # deliberately does not consult at this point. The enterprise settings
+    # layer does; see `services/llm_config.py`.
+    if provider == "anthropic" and model and "/" in model:
+        prefix = model.split("/", 1)[0].lower()
+        if prefix != "anthropic":
+            raise ValueError(
+                f"model={model!r} names provider {prefix!r}, but the configured "
+                f"provider is 'anthropic'. AnthropicClient does not check the "
+                f"model id, so this would send the prompt and schema to "
+                f"api.anthropic.com. Set LLM_PROVIDER to litellm to route "
+                f"{prefix!r} models, or choose an Anthropic model."
+            )
+
     if provider not in _REGISTRY:
         raise ValueError(f"Unknown LLM provider: {provider!r}. Available: {list(_REGISTRY)}")
 

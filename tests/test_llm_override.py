@@ -322,6 +322,58 @@ def test_a_bedrock_model_contradicting_a_named_provider_raises() -> None:
         get_llm_client()
 
 
+def test_a_non_anthropic_model_under_the_anthropic_provider_raises() -> None:
+    """The Bedrock guards' reasoning, for the providers they do not cover.
+
+    `AnthropicClient` does not inspect the model id, so a `deepseek/` model
+    under `provider="anthropic"` transmits the prompt, the schema and the
+    question to api.anthropic.com and only then reports the model missing --
+    the data has left by the time anything says so. That was refused for
+    `bedrock/` alone and is the same mistake for every other prefix.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(LLMOverride(provider="anthropic", model="deepseek/deepseek-chat")),
+        pytest.raises(ValueError, match="names provider 'deepseek'"),
+    ):
+        get_llm_client()
+
+
+def test_an_anthropic_prefixed_model_is_not_refused() -> None:
+    """The prefix agreeing with the provider is not the mistake being caught."""
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(LLMOverride(provider="anthropic", model="anthropic/claude-sonnet-4-5")),
+    ):
+        assert isinstance(get_llm_client(), AnthropicClient)
+
+
+def test_a_bare_model_under_the_anthropic_provider_is_left_alone() -> None:
+    """Deliberately unjudged here.
+
+    A bare name is not evidence of a provider: LiteLLM's own registry spells
+    DeepSeek's keys bare (`deepseek-chat`) and Mistral's prefixed
+    (`mistral/codestral-2405`), so placing one needs that registry. Core does
+    not consult it at this point; the enterprise settings layer does.
+    """
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic"),
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic"),
+        use_llm_override(LLMOverride(provider="anthropic", model="deepseek-chat")),
+    ):
+        assert isinstance(get_llm_client(), AnthropicClient)
+
+
+def test_a_prefixed_model_through_litellm_is_unaffected() -> None:
+    """The guard is about the native client, which is the one that cannot tell."""
+    with use_llm_override(
+        LLMOverride(provider="litellm", model="deepseek/deepseek-chat", api_key="k")
+    ):
+        assert isinstance(get_llm_client(), LiteLLMClient)
+
+
 def test_a_bedrock_provider_name_on_an_override_is_accepted() -> None:
     """`LLM_PROVIDER=bedrock` was accepted; the override channel was not.
 
