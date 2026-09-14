@@ -4,6 +4,29 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Changed
+
+- A model whose prefix names a provider other than Anthropic is refused when
+  the provider resolves to the native Anthropic client, rather than being sent
+  to api.anthropic.com and failing there. `AnthropicClient` does not inspect
+  the model id, so `LLM_MODEL=deepseek/deepseek-chat` alongside an Anthropic
+  key used to transmit the system prompt, the schema and the question before
+  the provider reported the model missing. The equivalent check already existed
+  for `bedrock/` only.
+
+  An `anthropic/`-prefixed id is normalised to the bare form rather than
+  refused, so `anthropic/claude-sonnet-4-5` and `claude-sonnet-4-5` behave
+  identically; passing it through had the same leak-then-fail shape, since no
+  Anthropic model id contains a slash.
+
+  Two cases are deliberately left alone. A **bare** model name is not judged:
+  LiteLLM's registry spells DeepSeek's keys bare and Mistral's prefixed, so
+  placing one needs that registry, which this path does not consult. And the
+  check is skipped when `api_base` or `ANTHROPIC_BASE_URL` points the client at
+  a gateway, because the request does not reach api.anthropic.com and prefixed
+  ids may be exactly what that gateway expects. See
+  [docs/configuration.md](docs/configuration.md#provider-and-model-must-agree).
+
 ### Added
 
 - Amazon Bedrock works as an LLM provider. An `LLM_MODEL` beginning `bedrock/`

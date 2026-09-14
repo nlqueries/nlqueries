@@ -42,6 +42,35 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `NLQ_EXPLAIN_VALIDATION` | No | `false` | When `true`, runs `EXPLAIN` on the final generated SQL via the connector to validate query plans before returning an answer. |
 | `NLQ_GLOSSARY_QUESTION_SCOPED` | No | `false` | When `true`, glossary terms are injected **per question** — only terms the question mentions, plus their [hierarchy](cli-reference.md#glossary-hierarchy) ancestors and descendants (depth 3) — instead of the whole glossary in the cached static prompt. Business rules are always injected in full. Off by default (the full glossary ships in the static block, exactly as before). |
 
+### Provider and model must agree
+
+`LLM_PROVIDER` selects a client and `LLM_MODEL` names a model, and the two can
+disagree. Where they do and the request would leave for the wrong vendor, it is
+refused before anything is sent.
+
+`AnthropicClient` does not inspect the model id, so an Anthropic provider with
+`LLM_MODEL=deepseek/deepseek-chat` would transmit the system prompt, the schema
+and the question to api.anthropic.com and only then report the model missing —
+the data has gone by the time the error arrives. That combination now raises at
+the first LLM call, naming both settings. The same applies to a `bedrock/`
+model reached through any other provider.
+
+`anthropic/claude-sonnet-4-5` is accepted and treated as `claude-sonnet-4-5`.
+The prefixed spelling is the form LiteLLM documents and a reasonable thing to
+write; passing it through unchanged had the same shape of failure, since no
+Anthropic model id contains a slash.
+
+Two cases are deliberately not refused:
+
+- **A bare model name.** `deepseek-chat` names no provider in its own text, and
+  deciding which one it belongs to needs LiteLLM's model registry — DeepSeek's
+  keys are spelled bare there, Mistral's prefixed. This path does not consult
+  it. If you are running a non-Anthropic model, either give it its provider
+  prefix or set `LLM_PROVIDER=litellm`.
+- **A gateway.** When `api_base` or `ANTHROPIC_BASE_URL` points the client
+  somewhere other than api.anthropic.com, the check is skipped: the premise no
+  longer holds and your gateway may expect prefixed ids.
+
 ### Amazon Bedrock
 
 Bedrock is reached through LiteLLM, so there is no separate provider to install.
