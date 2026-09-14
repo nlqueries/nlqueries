@@ -207,9 +207,26 @@ def describe_columns(
     )
     user = "\n".join(lines)
 
+    # Function-local, and `llm.client` rather than `llm`. Importing ANY submodule
+    # of `nlqueries.llm` executes the package __init__, which imports both
+    # concrete clients and therefore litellm and anthropic -- so at module level
+    # either spelling would put those two behind every `import
+    # nlqueries.knowledge`, which `knowledge/__init__` makes unavoidable.
+    # Measured: before this line moved, that import pulled both; after, neither.
+    # Here it costs nothing: `describe_columns` is handed a live client, so
+    # `nlqueries.llm` is in sys.modules long before this runs.
+    from nlqueries.llm.client import OutputBudgetExhausted  # noqa: PLC0415
+
     budget = _description_token_budget(len(eligible))
     try:
         raw = llm.complete(system, user, max_tokens=budget)
+    except OutputBudgetExhausted as exc:
+        # Its own message, not "the LLM call failed". This budget is computed
+        # from the column count and is NOT `LLM_MAX_OUTPUT_TOKENS`, so an
+        # operator who has already raised that setting has to be told which
+        # call ran out rather than left to assume it was the one they fixed.
+        logger.warning("describe_columns: %r: %s No descriptions written.", table.name, exc)
+        return {}
     except Exception:  # noqa: BLE001
         logger.warning(
             "describe_columns: the LLM call for %r failed; no descriptions written.",

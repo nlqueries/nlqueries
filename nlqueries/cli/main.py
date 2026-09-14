@@ -432,15 +432,35 @@ def _check_llm() -> _CheckResult:
     from nlqueries.config import LLM_MODEL, LLM_PROVIDER  # noqa: PLC0415
 
     try:
-        from nlqueries.llm import get_llm_client  # noqa: PLC0415
+        from nlqueries.llm import OutputBudgetExhausted, get_llm_client  # noqa: PLC0415
 
         llm = get_llm_client()
         t0 = time.monotonic()
-        llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
+        # A round trip that reached the provider, authenticated and came back is
+        # the entire question this probe asks. It asks for five tokens to keep
+        # the check cheap, and a reasoning model spends all five reasoning
+        # before it writes anything, so an exhausted budget is the ORDINARY
+        # result on such a deployment rather than a fault. Reporting it as a
+        # failure would tell the operator to raise a limit that has no bearing
+        # on a hard-coded probe budget.
+        spent_on_reasoning = False
+        try:
+            llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
+        except OutputBudgetExhausted:
+            spent_on_reasoning = True
         ms = int((time.monotonic() - t0) * 1000)
-        return _CheckResult(
-            "LLM provider", "ok", f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
-        )
+        detail = f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
+        if spent_on_reasoning:
+            # Said out loud, because this is the command an operator runs when
+            # answers are coming back empty, and a bare "ok ... responds" would
+            # send them to look somewhere else. Still `ok`: the provider is
+            # reachable, which is what was asked.
+            detail += (
+                " — spent the 5-token probe budget before writing anything, "
+                "which is normal for a reasoning model; if answers are coming "
+                "back empty, raise LLM_MAX_OUTPUT_TOKENS"
+            )
+        return _CheckResult("LLM provider", "ok", detail)
     except Exception as exc:  # noqa: BLE001
         return _CheckResult(
             "LLM provider", "fail", f"{LLM_PROVIDER} — {LLM_MODEL}: {exc}", str(exc)

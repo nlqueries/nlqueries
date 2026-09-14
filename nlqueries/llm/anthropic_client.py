@@ -10,7 +10,13 @@ from typing import Any, cast
 import anthropic
 
 from nlqueries import config
-from nlqueries.llm.client import LLMClient, SystemParam
+from nlqueries.llm.client import (
+    TRUNCATED,
+    LLMClient,
+    OutputBudgetExhausted,
+    SystemParam,
+    exhausted,
+)
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, record_usage
 
@@ -38,6 +44,18 @@ def _record_anthropic_usage(model: str, usage: Any) -> None:
                 estimated=False,
             )
         )
+
+
+def _text_of(response: Any) -> str:
+    """The reply's text, or ``""`` when it produced none.
+
+    `next(b.text for b in response.content if b.type == "text")` was here, and a
+    response with no text block made it raise `StopIteration` -- which is what a
+    reasoning model returns when the whole allowance went to reasoning. Inside a
+    generator that is worse than an error: PEP 479 turns it into a
+    `RuntimeError` with nothing in it about budgets.
+    """
+    return "".join(b.text for b in response.content if b.type == "text")
 
 
 class AnthropicClient(LLMClient):
@@ -75,16 +93,20 @@ class AnthropicClient(LLMClient):
 
     def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         sys_blocks = self._system_param(system)
+        budget = max_tokens or output_budget("answer")
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = self._client.messages.create(
                     model=self._model,
-                    max_tokens=max_tokens or output_budget("answer"),
+                    max_tokens=budget,
                     system=cast(Any, sys_blocks),
                     messages=[{"role": "user", "content": user}],
                 )
                 _record_anthropic_usage(self._model, response.usage)
-                return str(next(b.text for b in response.content if b.type == "text"))
+                text = _text_of(response)
+                if exhausted(getattr(response, "stop_reason", None), text):
+                    raise OutputBudgetExhausted(self._model, budget)
+                return text
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
                     time.sleep(_BASE_DELAY * (2**attempt))
@@ -94,17 +116,32 @@ class AnthropicClient(LLMClient):
 
     def stream(self, system: SystemParam, user: str) -> Iterator[str]:
         sys_blocks = self._system_param(system)
+        budget = output_budget("answer")
+        collected: list[str] = []
+        final: Any = None
         with self._client.messages.stream(
             model=self._model,
-            max_tokens=output_budget("answer"),
+            max_tokens=budget,
             system=cast(Any, sys_blocks),
             messages=[{"role": "user", "content": user}],
         ) as stream:
-            yield from stream.text_stream
+            for text in stream.text_stream:
+                collected.append(text)
+                yield text
             # After the caller drains the token stream, the final message carries
             # the authoritative usage (input/output + cache tokens).
             with contextlib.suppress(Exception):
-                _record_anthropic_usage(self._model, stream.get_final_message().usage)
+                final = stream.get_final_message()
+                _record_anthropic_usage(self._model, final.usage)
+        # Outside the suppress, deliberately: raising inside it would be
+        # swallowed by the block that exists to make usage recording
+        # best-effort, and the caller would get an empty stream and no reason.
+        if (
+            final is not None
+            and not collected
+            and str(getattr(final, "stop_reason", None)) in TRUNCATED
+        ):
+            raise OutputBudgetExhausted(self._model, budget)
 
     # ------------------------------------------------------------------
     # Native async API — no thread overhead, no event-loop blocking.
@@ -119,9 +156,10 @@ class AnthropicClient(LLMClient):
         temperature: float | None = None,
     ) -> str:
         sys_blocks = self._system_param(system)
+        budget = max_tokens or output_budget("answer")
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": max_tokens or output_budget("answer"),
+            "max_tokens": budget,
             "system": cast(Any, sys_blocks),
             "messages": [{"role": "user", "content": user}],
         }
@@ -131,7 +169,10 @@ class AnthropicClient(LLMClient):
             try:
                 response = await self._aclient.messages.create(**kwargs)
                 _record_anthropic_usage(self._model, response.usage)
-                return str(next(b.text for b in response.content if b.type == "text"))
+                text = _text_of(response)
+                if exhausted(getattr(response, "stop_reason", None), text):
+                    raise OutputBudgetExhausted(self._model, budget)
+                return text
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_BASE_DELAY * (2**attempt))
@@ -141,14 +182,25 @@ class AnthropicClient(LLMClient):
 
     async def astream(self, system: SystemParam, user: str) -> AsyncIterator[str]:
         sys_blocks = self._system_param(system)
+        budget = output_budget("answer")
+        collected: list[str] = []
+        final: Any = None
         async with self._aclient.messages.stream(
             model=self._model,
-            max_tokens=output_budget("answer"),
+            max_tokens=budget,
             system=cast(Any, sys_blocks),
             messages=[{"role": "user", "content": user}],
         ) as stream:
             async for text in stream.text_stream:
+                collected.append(text)
                 yield text
             with contextlib.suppress(Exception):
                 final = await stream.get_final_message()
                 _record_anthropic_usage(self._model, final.usage)
+        # See the sync path: outside the suppress, or the raise is eaten.
+        if (
+            final is not None
+            and not collected
+            and str(getattr(final, "stop_reason", None)) in TRUNCATED
+        ):
+            raise OutputBudgetExhausted(self._model, budget)

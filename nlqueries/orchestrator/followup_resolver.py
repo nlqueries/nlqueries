@@ -19,7 +19,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from nlqueries.llm import get_llm_client, output_budget
+from nlqueries.llm import OutputBudgetExhausted, get_llm_client, output_budget
 from nlqueries.orchestrator.conversation import ConversationTurn
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,16 @@ def resolve_followup(
             _build_user_prompt(question, history),
             max_tokens=output_budget("classification"),
         )
+    except OutputBudgetExhausted as exc:
+        # Named, at WARNING, rather than lost in the generic debug line below.
+        # This tier asks for the smallest budget of any call, so it is the
+        # likeliest place for this to fire -- and a debug log is not somewhere
+        # an operator looks. It still degrades: the question is used as asked,
+        # and the answer path hits the same budget and raises properly, so the
+        # user is told. Failing hard here would turn a degradable path into an
+        # outage without telling anyone anything extra.
+        logger.warning("Follow-up resolution: %s Using the question as asked.", exc)
+        return _unresolved(question)
     except Exception:
         logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)
         return _unresolved(question)
@@ -162,6 +172,16 @@ async def aresolve_followup(
             _build_user_prompt(question, history),
             max_tokens=output_budget("classification"),
         )
+    except OutputBudgetExhausted as exc:
+        # Named, at WARNING, rather than lost in the generic debug line below.
+        # This tier asks for the smallest budget of any call, so it is the
+        # likeliest place for this to fire -- and a debug log is not somewhere
+        # an operator looks. It still degrades: the question is used as asked,
+        # and the answer path hits the same budget and raises properly, so the
+        # user is told. Failing hard here would turn a degradable path into an
+        # outage without telling anyone anything extra.
+        logger.warning("Follow-up resolution: %s Using the question as asked.", exc)
+        return _unresolved(question)
     except Exception:
         logger.debug("Follow-up resolution failed; returning original question.", exc_info=True)
         return _unresolved(question)
