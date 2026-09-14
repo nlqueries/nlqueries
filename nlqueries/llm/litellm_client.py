@@ -244,10 +244,10 @@ class LiteLLMClient(LLMClient):
         one from.
 
         Deliberate. litellm types this argument ``float | str |
-        openai.Timeout | None``: *openai's* re-export, not the ``httpx``
-        imported here, and core declares neither package. Passing a rich object
-        would tie this line to which distribution the environment resolved, to
-        buy a faster failure on a misconfiguration.
+        openai.Timeout | None``, and whether that re-export is the same class
+        as the ``httpx`` imported here depends on what the environment
+        resolved -- the SDKs do not all build against one distribution. Passing
+        a rich object ties this line to that resolution; a float does not.
         """
         kwargs = self._auth_kwargs()
         if "request_timeout" not in kwargs:
