@@ -297,29 +297,45 @@ def _llm_timeout() -> float:
 
 
 LLM_TIMEOUT_SECONDS: float = _llm_timeout()
-"""How long a single LLM call may take before it fails, in seconds.
+"""How long an LLM call may go without producing data, in seconds.
 
-Until this existed there was no deadline anywhere: a slow or stuck model hung
-the request indefinitely. A server log showed a **seven-minute gap** between
-calls on one question, and a later question that made two calls and then simply
-stopped -- no error, no completion, no answer, because nothing was ever going to
-arrive and nothing was watching for that.
+**Not previously unbounded**, which an earlier revision of this docstring
+claimed. Both SDKs already carry a deadline of their own:
+``anthropic._constants.DEFAULT_TIMEOUT`` is ``httpx.Timeout(timeout=600,
+connect=5.0)``, and litellm falls back to ``COMPLETION_HTTP_FALLBACK_SECONDS``,
+600.0, when no ``timeout`` is passed. So the behaviour this replaces was a
+ten-minute bound, and the server log that prompted it -- a **seven-minute gap**
+between calls on one question, and a later question that made two calls and
+then stopped with no error and no answer -- sat inside that.
+
+What this setting buys is therefore two things, not a rescue from an infinite
+hang: a default of 180 rather than 600, configurable per deployment, and one
+exception type (:class:`nlqueries.llm.LLMTimeout`) a host can catch instead of
+``litellm.Timeout``, ``anthropic.APITimeoutError`` and whatever a new provider
+brings.
+
+**It is a read deadline, not a bound on the call.** httpx applies it to each
+read, so it fires after this many seconds of *silence* rather than after this
+much elapsed time. On the streaming paths -- the ones ``orchestrator`` and
+``document_orchestrator`` use -- that is the difference that matters: the
+Anthropic Messages API emits periodic ``ping`` events during a stream and every
+one of them resets the clock, so a stream that keeps trickling can run far
+past this value. Do not size an upstream budget on it as though it capped a
+question.
 
 180 is chosen to be longer than a legitimately slow answer rather than tight.
 A reasoning model on a long schema can take a minute or more before the first
-token, and a timeout that fires on those trades a hang for a broken deployment,
-which is not an improvement. Lower it if your models are fast and you would
-rather fail early.
+token, and a deadline that fires on those trades a hang for a broken
+deployment, which is not an improvement. Lower it if your models are fast and
+you would rather fail early.
 
-It bounds a **call**, not a question. A question that runs classification, SQL
-generation and a correction makes three calls and may take three times this in
-the worst case. The connector-side equivalent is
-``QUERY_STATEMENT_TIMEOUT_SECONDS``, which is a separate budget for the SQL, not
-for the model.
+The connector-side equivalent is ``QUERY_STATEMENT_TIMEOUT_SECONDS``, which is
+a separate budget for the SQL, not for the model.
 
 A non-positive, non-finite or unparseable value is ignored with a warning --
 see :func:`_llm_timeout`. ``inf`` is rejected like the rest: it parses, and it
-would reinstate the unbounded wait rather than configure one.
+would hand the SDKs a deadline that never fires, which is worse than the 600
+they would have applied on their own.
 """
 
 

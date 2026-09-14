@@ -86,6 +86,32 @@ def test_an_unparseable_deadline_is_ignored_rather_than_fatal(
     assert "LLM_TIMEOUT_SECONDS" in caplog.text
 
 
+def test_the_documented_sdk_defaults_are_still_what_the_sdks_do() -> None:
+    """`config.py` and `docs/configuration.md` both name these numbers.
+
+    They say this setting replaces a 600s bound rather than an unbounded wait
+    -- an earlier revision claimed the latter and was wrong. That claim is only
+    true while the pinned SDKs still default the way they do, and a number in
+    prose is the first thing to go stale, so it is asserted rather than
+    trusted. If this fails after an SDK bump the fix is to update both
+    documents, not to delete the test.
+    """
+    from litellm.constants import COMPLETION_HTTP_FALLBACK_SECONDS
+
+    assert anthropic._constants.DEFAULT_TIMEOUT.read == 600, (
+        "docs say the Anthropic SDK already bounds a read at 600s; it is now "
+        f"{anthropic._constants.DEFAULT_TIMEOUT.read}"
+    )
+    assert anthropic._constants.DEFAULT_TIMEOUT.connect == 5.0, (
+        "the 5s connect this change preserves is the SDK's own default; it is now "
+        f"{anthropic._constants.DEFAULT_TIMEOUT.connect}"
+    )
+    assert COMPLETION_HTTP_FALLBACK_SECONDS == 600.0, (
+        "docs say litellm falls back to 600s with no timeout passed; it is now "
+        f"{COMPLETION_HTTP_FALLBACK_SECONDS}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # LiteLLM
 # ---------------------------------------------------------------------------
