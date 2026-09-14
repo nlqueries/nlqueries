@@ -371,6 +371,33 @@ def test_the_sdk_wrapper_does_not_hide_which_phase_expired(
     assert caught.value.seconds == 5.0
 
 
+def test_a_pool_timeout_points_at_the_setting_that_really_set_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pool` is not `connect`, and grouping them made this wrong both ways.
+
+    `anthropic.Timeout(seconds, connect=5.0)` sets read, write AND pool to the
+    configured value -- only connect is held short. So a pool timeout expires
+    at LLM_TIMEOUT_SECONDS, and telling the operator that raising it "will not
+    help" sends them away from the one control that would. It also means every
+    pooled connection was busy, which is concurrency, not an unreachable
+    endpoint.
+    """
+    client = _anthropic(monkeypatch, 180.0)
+    client._client = MagicMock()
+    client._client.messages.create.side_effect = httpx.PoolTimeout("all busy")
+
+    with pytest.raises(LLMTimeout) as caught:
+        client.complete("sys", "user")
+
+    assert caught.value.phase == "pool"
+    assert caught.value.seconds == 180.0
+    message = str(caught.value)
+    assert "will not help" not in message
+    assert "Raise LLM_TIMEOUT_SECONDS" in message
+    assert "connection" in message
+
+
 def test_a_read_timeout_still_names_the_setting_that_fixes_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

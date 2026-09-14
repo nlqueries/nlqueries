@@ -45,10 +45,13 @@ class OutputBudgetExhausted(RuntimeError):
 class LLMTimeout(RuntimeError):
     """A single LLM call did not finish inside its deadline.
 
-    ``phase`` names which deadline: ``read`` (the default, and what
-    ``LLM_TIMEOUT_SECONDS`` sets), or ``connect``/``pool``, which are held at a
-    short fixed value so an unreachable endpoint fails fast. The message
-    changes with it, because the remedy does.
+    ``phase`` names which deadline ran out, and the message changes with it
+    because the remedy does. ``read``, ``write`` and ``pool`` are all set from
+    ``LLM_TIMEOUT_SECONDS``; ``connect`` alone is held at a short fixed value
+    so an unreachable endpoint fails fast, and is the only one raising that
+    setting does not affect. ``pool`` gets its own message: it means every
+    pooled connection was busy, which is neither a slow model nor an
+    unreachable endpoint.
 
     Both clients raise this in place of their SDK's own timeout type, so a host
     has one thing to catch and one message to render. The alternative is asking
@@ -73,18 +76,29 @@ class LLMTimeout(RuntimeError):
         # that exists to report the timeout clearly.
         shown = f"{seconds:g}" if isinstance(seconds, (int, float)) else str(seconds)
         # The advice has to match the phase that expired, or it sends the
-        # operator to the wrong setting. Connect is deliberately held at a few
-        # seconds while the read deadline is minutes, so a blocked egress or a
-        # mistyped endpoint fails fast -- and reporting that as "did not respond
-        # within 180s, raise LLM_TIMEOUT_SECONDS" would be wrong about the
-        # number and useless about the fix, since raising it does not touch
-        # connect.
-        if phase in ("connect", "pool"):
+        # operator to the wrong setting.
+        #
+        # `connect` ONLY, not `connect`/`pool`. Connect is held at a few seconds
+        # while the rest of the deadline is minutes, so a blocked egress or a
+        # mistyped endpoint fails fast and raising LLM_TIMEOUT_SECONDS does not
+        # touch it. `pool` is different on both counts: it IS set from that
+        # setting, so saying otherwise sends the operator away from the one
+        # control that would help, and it means every pooled connection was
+        # busy rather than that the endpoint was unreachable.
+        if phase == "connect":
             super().__init__(
-                f"{model} could not be reached within {shown}s ({phase} timeout). "
+                f"{model} could not be reached within {shown}s (connect timeout). "
                 f"Check the endpoint and whether outbound access to the provider "
                 f"is allowed. Raising LLM_TIMEOUT_SECONDS will not help: it sets "
                 f"the response deadline, not this one."
+            )
+        elif phase == "pool":
+            super().__init__(
+                f"{model} waited {shown}s for a free connection and did not get "
+                f"one (pool timeout). Every pooled connection was busy, so this "
+                f"is concurrency rather than a slow or unreachable model. Raise "
+                f"LLM_TIMEOUT_SECONDS to wait longer, or reduce how many "
+                f"questions run at once."
             )
         else:
             super().__init__(
