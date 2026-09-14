@@ -42,6 +42,29 @@ class OutputBudgetExhausted(RuntimeError):
         )
 
 
+class LLMTimeout(RuntimeError):
+    """A single LLM call did not finish inside ``LLM_TIMEOUT_SECONDS``.
+
+    Both clients raise this in place of their SDK's own timeout type, so a host
+    has one thing to catch and one message to render. The alternative is asking
+    every caller to know both ``litellm.Timeout`` and
+    ``anthropic.APITimeoutError``, and to keep knowing them as providers are
+    added.
+
+    Defined here rather than beside either client because this module has no
+    third-party imports, and importing it must stay cheap.
+    """
+
+    def __init__(self, model: str, seconds: float) -> None:
+        self.model = model
+        self.seconds = seconds
+        super().__init__(
+            f"{model} did not respond within {seconds:g}s. Raise "
+            f"LLM_TIMEOUT_SECONDS if this model is legitimately slow, or check "
+            f"whether the provider is reachable."
+        )
+
+
 def exhausted(finish_reason: object, content: str) -> bool:
     """Whether a reply is an exhausted budget rather than a short answer.
 

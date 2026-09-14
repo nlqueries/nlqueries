@@ -251,6 +251,68 @@ A non-positive value is ignored, with a warning naming this setting -- see
 """
 
 
+def _llm_timeout() -> float:
+    """``LLM_TIMEOUT_SECONDS``, validated, and loud about it when it rejects.
+
+    Same shape as :func:`_output_budget`, and for the same reason: a corrected
+    value that nobody is told about turns a loud misconfiguration into a quiet
+    one. A ``0`` here reads as "no timeout" and would mean the opposite to the
+    SDKs -- litellm treats it as an immediate deadline -- so it is ignored
+    rather than passed through or clamped to something arbitrary.
+    """
+    default = 180.0
+    written = os.getenv("LLM_TIMEOUT_SECONDS", str(default))
+    try:
+        raw = float(written)
+    except ValueError:
+        # See `_output_budget`: `LLM_TIMEOUT_SECONDS=` is how people disable a
+        # setting, and an unhandled ValueError at import takes down every CLI
+        # command including `doctor`.
+        logging.getLogger(__name__).warning(
+            "LLM_TIMEOUT_SECONDS=%r is not a number and is being ignored; "
+            "using the default of %.0f seconds.",
+            written,
+            default,
+        )
+        return default
+    if raw <= 0:
+        logging.getLogger(__name__).warning(
+            "LLM_TIMEOUT_SECONDS=%s is not a usable deadline and is being ignored; "
+            "using the default of %.0f seconds. There is no value that means "
+            "'wait forever' -- that was the behaviour this setting exists to end.",
+            written,
+            default,
+        )
+        return default
+    return raw
+
+
+LLM_TIMEOUT_SECONDS: float = _llm_timeout()
+"""How long a single LLM call may take before it fails, in seconds.
+
+Until this existed there was no deadline anywhere: a slow or stuck model hung
+the request indefinitely. A server log showed a **seven-minute gap** between
+calls on one question, and a later question that made two calls and then simply
+stopped -- no error, no completion, no answer, because nothing was ever going to
+arrive and nothing was watching for that.
+
+180 is chosen to be longer than a legitimately slow answer rather than tight.
+A reasoning model on a long schema can take a minute or more before the first
+token, and a timeout that fires on those trades a hang for a broken deployment,
+which is not an improvement. Lower it if your models are fast and you would
+rather fail early.
+
+It bounds a **call**, not a question. A question that runs classification, SQL
+generation and a correction makes three calls and may take three times this in
+the worst case. The connector-side equivalent is
+``QUERY_STATEMENT_TIMEOUT_SECONDS``, which is a separate budget for the SQL, not
+for the model.
+
+A non-positive or unparseable value is ignored with a warning -- see
+:func:`_llm_timeout`.
+"""
+
+
 def llm_credentials_available() -> bool:
     """Whether an LLM call has any way to authenticate.
 

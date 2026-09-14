@@ -13,6 +13,7 @@ from nlqueries import config
 from nlqueries.llm.client import (
     TRUNCATED,
     LLMClient,
+    LLMTimeout,
     OutputBudgetExhausted,
     SystemParam,
     exhausted,
@@ -58,6 +59,20 @@ def _text_of(response: Any) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
 
+@contextlib.contextmanager
+def _deadline(model: str, seconds: float) -> Iterator[None]:
+    """``anthropic.APITimeoutError`` -> :class:`LLMTimeout`.
+
+    The mirror of the one in ``litellm_client``, so a host catches a single
+    type whichever client it ended up with. Narrow on purpose: every other
+    Anthropic error keeps its own type and message.
+    """
+    try:
+        yield
+    except anthropic.APITimeoutError as exc:
+        raise LLMTimeout(model, seconds) from exc
+
+
 class AnthropicClient(LLMClient):
     supports_prompt_caching = True
 
@@ -73,9 +88,17 @@ class AnthropicClient(LLMClient):
         # env-derived config default; api_base overrides the endpoint when given.
         key = api_key if api_key is not None else config.ANTHROPIC_API_KEY
         base_kwargs: dict[str, Any] = {"base_url": api_base} if api_base is not None else {}
+        # On the SDK client rather than per call: the Anthropic SDK applies it
+        # to every request made through it, including the ones inside a stream,
+        # so there is no path that can be added later and quietly miss it.
+        self._timeout = config.LLM_TIMEOUT_SECONDS
         # Disable SDK-level retries so our own retry loop has full control.
-        self._client = anthropic.Anthropic(api_key=key, max_retries=0, **base_kwargs)
-        self._aclient = anthropic.AsyncAnthropic(api_key=key, max_retries=0, **base_kwargs)
+        self._client = anthropic.Anthropic(
+            api_key=key, max_retries=0, timeout=self._timeout, **base_kwargs
+        )
+        self._aclient = anthropic.AsyncAnthropic(
+            api_key=key, max_retries=0, timeout=self._timeout, **base_kwargs
+        )
 
     # ------------------------------------------------------------------
     # Helper: normalise system param into the list-of-blocks form that
@@ -96,12 +119,13 @@ class AnthropicClient(LLMClient):
         budget = max_tokens or output_budget("answer")
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=budget,
-                    system=cast(Any, sys_blocks),
-                    messages=[{"role": "user", "content": user}],
-                )
+                with _deadline(self._model, self._timeout):
+                    response = self._client.messages.create(
+                        model=self._model,
+                        max_tokens=budget,
+                        system=cast(Any, sys_blocks),
+                        messages=[{"role": "user", "content": user}],
+                    )
                 _record_anthropic_usage(self._model, response.usage)
                 text = _text_of(response)
                 if exhausted(getattr(response, "stop_reason", None), text):
@@ -119,12 +143,18 @@ class AnthropicClient(LLMClient):
         budget = output_budget("answer")
         collected: list[str] = []
         final: Any = None
-        with self._client.messages.stream(
-            model=self._model,
-            max_tokens=budget,
-            system=cast(Any, sys_blocks),
-            messages=[{"role": "user", "content": user}],
-        ) as stream:
+        # The deadline wraps the iteration, not just the call that opens the
+        # stream: a provider that accepts the request and then stalls is the
+        # hang this exists for, and it surfaces while draining `text_stream`.
+        with (
+            _deadline(self._model, self._timeout),
+            self._client.messages.stream(
+                model=self._model,
+                max_tokens=budget,
+                system=cast(Any, sys_blocks),
+                messages=[{"role": "user", "content": user}],
+            ) as stream,
+        ):
             for text in stream.text_stream:
                 collected.append(text)
                 yield text
@@ -167,7 +197,8 @@ class AnthropicClient(LLMClient):
             kwargs["temperature"] = temperature
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = await self._aclient.messages.create(**kwargs)
+                with _deadline(self._model, self._timeout):
+                    response = await self._aclient.messages.create(**kwargs)
                 _record_anthropic_usage(self._model, response.usage)
                 text = _text_of(response)
                 if exhausted(getattr(response, "stop_reason", None), text):
@@ -185,18 +216,20 @@ class AnthropicClient(LLMClient):
         budget = output_budget("answer")
         collected: list[str] = []
         final: Any = None
-        async with self._aclient.messages.stream(
-            model=self._model,
-            max_tokens=budget,
-            system=cast(Any, sys_blocks),
-            messages=[{"role": "user", "content": user}],
-        ) as stream:
-            async for text in stream.text_stream:
-                collected.append(text)
-                yield text
-            with contextlib.suppress(Exception):
-                final = await stream.get_final_message()
-                _record_anthropic_usage(self._model, final.usage)
+        # See the sync path: the drain is inside the deadline too.
+        with _deadline(self._model, self._timeout):
+            async with self._aclient.messages.stream(
+                model=self._model,
+                max_tokens=budget,
+                system=cast(Any, sys_blocks),
+                messages=[{"role": "user", "content": user}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    collected.append(text)
+                    yield text
+                with contextlib.suppress(Exception):
+                    final = await stream.get_final_message()
+                    _record_anthropic_usage(self._model, final.usage)
         # See the sync path: outside the suppress, or the raise is eaten.
         if (
             final is not None
