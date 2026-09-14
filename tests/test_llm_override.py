@@ -231,10 +231,25 @@ def test_the_reserved_names_are_exactly_what_the_client_passes() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(module.LiteLLMClient)))
     passed: set[str] = set()
     for node in ast.walk(tree):
-        # `litellm.completion(model=..., stream=True, ...)`
+        # Both attribute-call shapes in ONE branch, not two.
+        #
+        # An `elif` for `setdefault` after this cannot be reached: a
+        # `kwargs.setdefault(...)` node is an `ast.Call` with an
+        # `ast.Attribute` func, so it enters the branch below, fails the inner
+        # `completion` test, and falls out of the chain entirely. Written that
+        # way first, and both mutations proving the guard passed unchanged.
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            # `litellm.completion(model=..., stream=True, ...)`
             if node.func.attr in {"completion", "acompletion"}:
                 passed |= {kw.arg for kw in node.keywords if kw.arg is not None}
+            # `kwargs.setdefault("timeout", ...)` in `_call_kwargs`.
+            elif (
+                node.func.attr == "setdefault"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                passed.add(node.args[0].value)
         # the kwargs dict built in `acomplete`
         elif isinstance(node, ast.Dict):
             keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
@@ -255,6 +270,13 @@ def test_the_reserved_names_are_exactly_what_the_client_passes() -> None:
     # constructor arguments are applied afterwards so they win. That is asserted
     # by test_an_explicit_api_key_wins_over_one_inside_extra.
     passed -= {"api_key", "api_base"}
+
+    # `timeout` likewise: `_call_kwargs` sets it with `setdefault` precisely so
+    # a host's own value in `extra` survives, which is the opposite of
+    # reserving the name. Subtracted here rather than left unseen, so that the
+    # exemption is a decision in this file instead of a consequence of how the
+    # line happens to be written.
+    passed -= {"timeout"}
 
     assert passed == module._RESERVED_COMPLETION_KWARGS, (
         "the names this class passes to litellm and the names extra is refused "

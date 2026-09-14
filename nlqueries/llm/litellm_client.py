@@ -219,6 +219,26 @@ class LiteLLMClient(LLMClient):
         default. ``timeout`` is deliberately NOT in
         ``_RESERVED_COMPLETION_KWARGS``, because rejecting it would break any
         host already setting one.
+
+        **A bare float, unlike the Anthropic client**, which builds
+        ``anthropic.Timeout(seconds, connect=5.0)`` so a blocked egress or a
+        mistyped ``api_base`` fails in five seconds rather than three minutes.
+        litellm turns a float into a timeout with every phase set, so that
+        fast-fail is absent here -- on the path that carries OpenAI, Gemini,
+        Bedrock and Ollama. It is still an improvement on litellm's own 600s
+        fallback rather than a regression, and ``_deadline`` below reports
+        ``phase="read"`` for the same reason: without a per-phase object there
+        is nothing to read a phase from.
+
+        Not changed to match, deliberately. litellm types this argument
+        ``float | str | openai.Timeout | None`` -- *openai's* re-export, not
+        the ``httpx`` imported here, and core declares neither package. This
+        change has already been bitten once by assuming two httpx
+        distributions are the same class: CI rejected ``httpx._config.Timeout``
+        where ``httpx2._config.Timeout`` was expected while the local run
+        passed, because locally they are the same object. Handing litellm a
+        rich object reopens exactly that, to buy a faster failure on a
+        misconfiguration. The asymmetry is written down instead.
         """
         kwargs = self._auth_kwargs()
         kwargs.setdefault("timeout", config.LLM_TIMEOUT_SECONDS)
