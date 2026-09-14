@@ -121,13 +121,11 @@ def _deadline(model: str, deadline: object) -> Iterator[None]:
     which is exactly the hang this exists for and exactly the shape
     ``APITimeoutError`` alone would miss.
 
-    Matched by name as well as by class, and that is not laziness. Which httpx
-    the SDK raises from depends on its version -- newer anthropic builds
-    against ``httpx2`` -- so ``isinstance(exc, httpx.TimeoutException)`` is
-    true here and false in an environment that resolves the other one, with
-    nothing in this repository having changed. CI found the matching version
-    split on the constructor argument. The name check costs nothing and does
-    not depend on which package won.
+    Matched by name as well as by class. Which httpx the SDK raises from
+    depends on its version -- newer anthropic builds against ``httpx2`` -- so
+    an ``isinstance`` against the one imported here is true in some
+    environments and false in others, with nothing in this repository having
+    changed.
     """
     try:
         yield
@@ -164,10 +162,9 @@ class AnthropicClient(LLMClient):
         # so there is no path that can be added later and quietly miss it.
         self._timeout = config.LLM_TIMEOUT_SECONDS
         # `anthropic.Timeout`, not `httpx.Timeout`: the SDK re-exports the type
-        # it accepts, and which httpx that is depends on the version -- newer
-        # anthropic builds against `httpx2`, and CI caught `httpx._config.Timeout`
-        # being rejected where `httpx2._config.Timeout` was expected. Locally the
-        # two are the same object, which is exactly why the local run did not.
+        # it accepts, and which httpx that is depends on its version -- newer
+        # builds are against `httpx2`. Naming the SDK's own alias keeps this
+        # correct whichever it resolved.
         #
         # Not the bare float either: a float sets EVERY phase,
         # connect included, and the SDK's own default is

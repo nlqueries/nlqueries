@@ -25,39 +25,27 @@ from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
 
 @contextlib.contextmanager
 def _deadline(model: str, seconds: object) -> Iterator[None]:
-    """``litellm.Timeout`` -> :class:`LLMTimeout`.
+    """A timed-out call -> :class:`LLMTimeout`, so a host catches one type.
 
-    So a host catches one thing rather than one type per SDK. Narrow on
-    purpose: every other litellm error keeps its own type and its own message,
+    Matched three ways: litellm's own ``Timeout``, ``httpx.TimeoutException``,
+    and anything else httpx-shaped by class name. The name check is not
+    redundant -- a stall part-way through a stream is raised by the transport
+    rather than mapped on the way out, and which httpx distribution that is
+    depends on what the environment resolved, so an ``isinstance`` against the
+    one imported here is true in some environments and false in others.
+
+    Narrow otherwise: every other litellm error keeps its own type and message,
     which are more informative than anything this could substitute.
 
     ``seconds`` is typed ``object`` because it is whatever ``_call_kwargs``
     resolved, and a host may have put a ``str`` or an ``httpx.Timeout`` in
-    ``extra`` -- litellm accepts both. :class:`LLMTimeout` renders it
-    accordingly rather than assuming a number.
+    ``extra``. :class:`LLMTimeout` renders it accordingly rather than assuming
+    a number.
 
-    litellm's own type, ``httpx.TimeoutException``, and anything else
-    httpx-shaped by class name -- the same three-way check the Anthropic client
-    makes and for the same reason. A stall part-way through a stream is raised
-    by the transport rather than mapped on the way out, and which httpx
-    distribution that is depends on what the environment resolved.
-
-    An earlier revision said catching the first two "does not depend on which".
-    It did, and the half that failed would have been the silent one: a raw
-    transport error reaching a host that had been asked to catch
-    :class:`LLMTimeout`.
-
-    ``None`` is the one value handled here rather than there. ``extra``
-    forwards it rather than dropping it, and then there is no deadline of
-    *ours* to name, so the provider's own error goes through untouched:
-    renaming it would claim a limit this process never set.
-
-    It does not mean "no deadline", which an earlier revision of this said.
-    litellm resolves a ``None`` through ``CompletionTimeout.resolve``, which
-    takes the first non-``None`` of the call argument, ``kwargs["timeout"]``,
-    ``kwargs["request_timeout"]`` and finally
-    ``COMPLETION_HTTP_FALLBACK_SECONDS`` -- 600.0. So such a host gets
-    litellm's own ten-minute bound, not an unbounded call.
+    ``None`` means this process set no deadline -- not that there is none.
+    litellm then falls back to ``COMPLETION_HTTP_FALLBACK_SECONDS`` (600.0).
+    With no limit of ours to name, the provider's own error goes through
+    untouched rather than being relabelled with one nobody set.
     """
     try:
         yield
@@ -220,34 +208,31 @@ class LiteLLMClient(LLMClient):
         and that method's contract -- asserted by exact equality in
         ``test_llm_override.py`` -- is the auth-related keys and nothing else.
 
-        ``setdefault``, so a host that passes its own ``timeout`` in ``extra``
-        keeps it: that is a per-client decision and it outranks a process-wide
-        default. ``timeout`` is deliberately NOT in
-        ``_RESERVED_COMPLETION_KWARGS``, because rejecting it would break any
+        A host's own deadline in ``extra`` wins, under either of litellm's two
+        spellings: ``timeout``, via ``setdefault``, and ``request_timeout``,
+        which ``CompletionTimeout.resolve`` consults after it. Supplying
+        ``timeout`` unconditionally would silently override a host that
+        configured the other name. Neither is in
+        ``_RESERVED_COMPLETION_KWARGS``, because rejecting them would break a
         host already setting one.
 
         **A bare float, unlike the Anthropic client**, which builds
-        ``anthropic.Timeout(seconds, connect=5.0)`` so a blocked egress or a
-        mistyped ``api_base`` fails in five seconds rather than three minutes.
-        litellm turns a float into a timeout with every phase set, so that
-        fast-fail is absent here -- on the path that carries OpenAI, Gemini,
-        Bedrock and Ollama. It is still an improvement on litellm's own 600s
-        fallback rather than a regression, and ``_deadline`` below reports
-        ``phase="read"`` for the same reason: without a per-phase object there
-        is nothing to read a phase from.
+        ``anthropic.Timeout(seconds, connect=5.0)`` so an unreachable endpoint
+        fails in five seconds rather than three minutes. litellm applies a
+        float to every phase, so that fast-fail is absent here -- on the path
+        carrying OpenAI, Gemini, Bedrock and Ollama -- and ``_deadline``
+        reports ``phase="read"`` because there is no per-phase object to read
+        one from.
 
-        Not changed to match, deliberately. litellm types this argument
-        ``float | str | openai.Timeout | None`` -- *openai's* re-export, not
-        the ``httpx`` imported here, and core declares neither package. This
-        change has already been bitten once by assuming two httpx
-        distributions are the same class: CI rejected ``httpx._config.Timeout``
-        where ``httpx2._config.Timeout`` was expected while the local run
-        passed, because locally they are the same object. Handing litellm a
-        rich object reopens exactly that, to buy a faster failure on a
-        misconfiguration. The asymmetry is written down instead.
+        Deliberate. litellm types this argument ``float | str |
+        openai.Timeout | None``: *openai's* re-export, not the ``httpx``
+        imported here, and core declares neither package. Passing a rich object
+        would tie this line to which distribution the environment resolved, to
+        buy a faster failure on a misconfiguration.
         """
         kwargs = self._auth_kwargs()
-        kwargs.setdefault("timeout", config.LLM_TIMEOUT_SECONDS)
+        if "request_timeout" not in kwargs:
+            kwargs.setdefault("timeout", config.LLM_TIMEOUT_SECONDS)
         return kwargs
 
     # ------------------------------------------------------------------

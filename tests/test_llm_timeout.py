@@ -137,14 +137,102 @@ def _reply(content: str) -> MagicMock:
     )
 
 
-def test_litellm_passes_the_deadline_on_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def _one_chunk() -> list[SimpleNamespace]:
+    """A single stream chunk that finishes normally."""
+    return [
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"), finish_reason="stop")]
+        )
+    ]
+
+
+def _drive(client: LiteLLMClient, path: str) -> None:
+    """Run one entry point far enough for its request kwargs to be recorded."""
+    if path == "complete":
+        client.complete("sys", "user")
+    elif path == "stream":
+        list(client.stream("sys", "user"))
+    elif path == "acomplete":
+        asyncio.run(client.acomplete("sys", "user"))
+    else:
+
+        async def drain() -> list[str]:
+            return [t async for t in client.astream("sys", "user")]
+
+        asyncio.run(drain())
+
+
+@pytest.mark.parametrize("path", ["complete", "stream", "acomplete", "astream"])
+def test_litellm_passes_the_deadline_on_every_call(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """All four, because the name says every call and one of them is the one used.
+
+    This asserted `complete` alone. Swapping `_call_kwargs()` for
+    `_auth_kwargs()` in `astream` -- the path the orchestrators actually run --
+    left the suite green, which is the same shape of gap this branch has
+    already had to close once elsewhere.
+    """
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 42.0)
     client = LiteLLMClient(model="m", api_key="k")
+
+    streaming = path in ("stream", "astream")
+    target = "litellm.acompletion" if path.startswith("a") else "litellm.completion"
+
+    if path == "acomplete":
+        recorded: dict[str, object] = {}
+
+        async def capture(**kwargs: object) -> MagicMock:
+            recorded.update(kwargs)
+            return _reply("hi")
+
+        with patch(target, side_effect=capture):
+            _drive(client, path)
+        assert recorded["timeout"] == 42.0
+        return
+
+    if path == "astream":
+        recorded = {}
+
+        class Empty:
+            def __aiter__(self) -> Empty:
+                return self
+
+            async def __anext__(self) -> SimpleNamespace:
+                raise StopAsyncIteration
+
+        async def capture(**kwargs: object) -> Empty:
+            recorded.update(kwargs)
+            return Empty()
+
+        with patch(target, side_effect=capture):
+            _drive(client, path)
+        assert recorded["timeout"] == 42.0
+        return
+
+    value = _one_chunk() if streaming else _reply("hi")
+    with patch(target, return_value=value) as call:
+        _drive(client, path)
+
+    assert call.call_args.kwargs["timeout"] == 42.0
+
+
+def test_a_host_request_timeout_is_not_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """litellm's other spelling for the same thing.
+
+    `CompletionTimeout.resolve` consults `request_timeout` after `timeout`, so
+    supplying `timeout` unconditionally would silently replace a host's
+    `extra={"request_timeout": 30}` with this process's default -- nothing
+    logged, and the name is not reserved.
+    """
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 180.0)
+    client = LiteLLMClient(model="m", api_key="k", extra={"request_timeout": 30})
 
     with patch("litellm.completion", return_value=_reply("hi")) as call:
         client.complete("sys", "user")
 
-    assert call.call_args.kwargs["timeout"] == 42.0
+    assert call.call_args.kwargs["request_timeout"] == 30
+    assert "timeout" not in call.call_args.kwargs
 
 
 def test_a_hosts_own_timeout_wins(monkeypatch: pytest.MonkeyPatch) -> None:
