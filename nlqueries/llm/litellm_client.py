@@ -5,6 +5,7 @@ import contextlib
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
+import httpx
 import litellm
 import litellm.exceptions
 
@@ -34,6 +35,11 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     ``extra`` -- litellm accepts both. :class:`LLMTimeout` renders it
     accordingly rather than assuming a number.
 
+    ``httpx.TimeoutException`` is caught alongside litellm's own type for the
+    same reason the Anthropic client does it: a stall part-way through a stream
+    is raised by the transport, and only some of those paths are mapped on the
+    way out. Catching both costs nothing and does not depend on which.
+
     ``None`` is the one value handled here rather than there: it is a supported
     way of saying "no deadline", since ``extra`` forwards ``None`` rather than
     dropping it. Then there is no deadline of ours to name, so the provider's
@@ -42,7 +48,7 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
     """
     try:
         yield
-    except litellm.exceptions.Timeout as exc:
+    except (litellm.exceptions.Timeout, httpx.TimeoutException) as exc:
         if seconds is None:
             raise
         raise LLMTimeout(model, seconds) from exc

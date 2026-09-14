@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, cast
 
 import anthropic
+import httpx
 
 from nlqueries import config
 from nlqueries.llm.client import (
@@ -61,15 +62,25 @@ def _text_of(response: Any) -> str:
 
 @contextlib.contextmanager
 def _deadline(model: str, seconds: object) -> Iterator[None]:
-    """``anthropic.APITimeoutError`` -> :class:`LLMTimeout`.
+    """A timed-out call -> :class:`LLMTimeout`.
 
     The mirror of the one in ``litellm_client``, so a host catches a single
     type whichever client it ended up with. Narrow on purpose: every other
     Anthropic error keeps its own type and message.
+
+    ``httpx.TimeoutException`` as well as the SDK's own type, because the SDK
+    converts one into the other only around ``self._client.send(...)`` in
+    ``_base_client._request``. With ``stream=True`` that call returns as soon
+    as the headers arrive and the body is read lazily afterwards, outside the
+    ``try`` -- and neither ``_streaming`` nor ``lib/streaming/_messages``
+    handles a timeout at all. So a provider that accepts the request and then
+    stalls raises a raw ``httpx.ReadTimeout`` while ``text_stream`` is being
+    drained, which is exactly the hang this exists for and exactly the shape
+    ``APITimeoutError`` alone would miss.
     """
     try:
         yield
-    except anthropic.APITimeoutError as exc:
+    except (anthropic.APITimeoutError, httpx.TimeoutException) as exc:
         raise LLMTimeout(model, seconds) from exc
 
 
@@ -92,12 +103,21 @@ class AnthropicClient(LLMClient):
         # to every request made through it, including the ones inside a stream,
         # so there is no path that can be added later and quietly miss it.
         self._timeout = config.LLM_TIMEOUT_SECONDS
+        # An `httpx.Timeout`, not the bare float: a float sets EVERY phase,
+        # connect included, and the SDK's own default is
+        # `Timeout(connect=5.0, read=600, write=600, pool=600)`. Handing it
+        # 180.0 would have moved connect from 5s to 180s, so an unreachable
+        # endpoint -- blocked egress, a mistyped api_base -- would sit for
+        # three minutes instead of five seconds, three times over for a
+        # question that classifies, generates and corrects. The read deadline
+        # is what this change is for; the connect one was already right.
+        self._httpx_timeout = httpx.Timeout(self._timeout, connect=5.0)
         # Disable SDK-level retries so our own retry loop has full control.
         self._client = anthropic.Anthropic(
-            api_key=key, max_retries=0, timeout=self._timeout, **base_kwargs
+            api_key=key, max_retries=0, timeout=self._httpx_timeout, **base_kwargs
         )
         self._aclient = anthropic.AsyncAnthropic(
-            api_key=key, max_retries=0, timeout=self._timeout, **base_kwargs
+            api_key=key, max_retries=0, timeout=self._httpx_timeout, **base_kwargs
         )
 
     # ------------------------------------------------------------------

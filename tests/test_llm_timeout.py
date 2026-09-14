@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import anthropic
+import httpx
 import litellm.exceptions
 import pytest
 from nlqueries import config
@@ -178,7 +179,9 @@ def test_a_stream_that_stalls_after_it_opens_still_times_out(
         yield SimpleNamespace(
             choices=[SimpleNamespace(delta=SimpleNamespace(content="half "), finish_reason=None)]
         )
-        raise litellm.exceptions.Timeout(message="stalled", model="m", llm_provider="openai")
+        # The transport type, not litellm's: a stall part-way through a stream
+        # is raised by httpx, and only some paths are mapped on the way out.
+        raise httpx.ReadTimeout("stalled")
 
     with patch("litellm.completion", return_value=chunks()), pytest.raises(LLMTimeout):
         list(client.stream("sys", "user"))
@@ -243,8 +246,28 @@ def test_anthropic_builds_its_sdk_clients_with_the_deadline(
 ) -> None:
     """On the SDK client, so no request made through it can miss it."""
     client = _anthropic(monkeypatch, 33.0)
-    assert client._client.timeout == 33.0
-    assert client._aclient.timeout == 33.0
+    for sdk in (client._client, client._aclient):
+        assert sdk.timeout.read == 33.0
+        assert sdk.timeout.write == 33.0
+        assert sdk.timeout.pool == 33.0
+
+
+def test_the_deadline_does_not_swallow_the_connect_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare float sets EVERY phase, connect included.
+
+    The SDK's own default is `Timeout(connect=5.0, read=600, write=600,
+    pool=600)`. Handing it 180.0 would move connect from 5s to 180s, so an
+    unreachable endpoint -- blocked egress, a mistyped `api_base` -- would sit
+    for three minutes rather than five seconds, and three times over for a
+    question that classifies, generates and corrects. The read deadline is what
+    this change is for; connect was already right.
+    """
+    client = _anthropic(monkeypatch, 180.0)
+    for sdk in (client._client, client._aclient):
+        assert sdk.timeout.connect == 5.0
+        assert sdk.timeout.read == 180.0
 
 
 def test_anthropic_timeout_becomes_LLMTimeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,7 +311,17 @@ def test_anthropic_stream_that_stalls_mid_drain_times_out(
         def text_stream(self):  # noqa: ANN202
             def gen():  # noqa: ANN202
                 yield "half "
-                raise anthropic.APITimeoutError(request=MagicMock())
+                # `httpx.ReadTimeout`, NOT `anthropic.APITimeoutError`. The SDK
+                # converts one into the other only around
+                # `self._client.send(...)` in `_base_client._request`; with
+                # `stream=True` that returns once the headers arrive and the
+                # body is read lazily afterwards, outside the `try`. Neither
+                # `_streaming` nor `lib/streaming/_messages` handles a timeout
+                # at all. Injecting the SDK type here would be injecting an
+                # error the SDK cannot raise at this point -- which is what the
+                # first version of this test did, and it passed while
+                # exercising nothing.
+                raise httpx.ReadTimeout("stalled")
 
             return gen()
 
@@ -340,9 +373,8 @@ def test_litellm_astream_that_stalls_after_it_opens_still_times_out(
 
         async def __anext__(self) -> SimpleNamespace:
             if self._sent:
-                raise litellm.exceptions.Timeout(
-                    message="stalled", model="m", llm_provider="openai"
-                )
+                # See the sync path: httpx, not litellm.
+                raise httpx.ReadTimeout("stalled")
             self._sent = True
             return SimpleNamespace(
                 choices=[
@@ -373,7 +405,8 @@ def test_anthropic_astream_that_stalls_mid_drain_times_out(
         def text_stream(self):  # noqa: ANN202
             async def gen():  # noqa: ANN202
                 yield "half "
-                raise anthropic.APITimeoutError(request=MagicMock())
+                # See the sync path: the transport raises, not the SDK.
+                raise httpx.ReadTimeout("stalled")
 
             return gen()
 
