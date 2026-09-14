@@ -98,13 +98,21 @@ def test_the_documented_sdk_defaults_are_still_what_the_sdks_do() -> None:
     """
     from litellm.constants import COMPLETION_HTTP_FALLBACK_SECONDS
 
-    assert anthropic._constants.DEFAULT_TIMEOUT.read == 600, (
-        "docs say the Anthropic SDK already bounds a read at 600s; it is now "
-        f"{anthropic._constants.DEFAULT_TIMEOUT.read}"
+    # The public surface, not `anthropic._constants`. That module is private and
+    # only importable as an attribute because `_client.py` happens to pull it
+    # in, so an SDK reshuffle would land here as an `AttributeError` on
+    # whichever unrelated pull request ran next, rather than as the "the
+    # documented number has changed" signal this exists to give. A default
+    # client reports the same two values; no request is made by constructing
+    # one.
+    defaults = anthropic.Anthropic(api_key="unused-no-request-is-made").timeout
+
+    assert defaults.read == 600, (
+        f"docs say the Anthropic SDK already bounds a read at 600s; it is now {defaults.read}"
     )
-    assert anthropic._constants.DEFAULT_TIMEOUT.connect == 5.0, (
+    assert defaults.connect == 5.0, (
         "the 5s connect this change preserves is the SDK's own default; it is now "
-        f"{anthropic._constants.DEFAULT_TIMEOUT.connect}"
+        f"{defaults.connect}"
     )
     assert COMPLETION_HTTP_FALLBACK_SECONDS == 600.0, (
         "docs say litellm falls back to 600s with no timeout passed; it is now "
