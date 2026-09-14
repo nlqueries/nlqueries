@@ -312,6 +312,27 @@ def test_doctor_reports_ok_when_the_probe_budget_is_exhausted() -> None:
         result = _check_llm()
 
     assert result.status == "ok"
+    # And says so. `doctor` is what an operator runs when answers come back
+    # empty; a bare "responds" would send them to look somewhere else.
+    assert "LLM_MAX_OUTPUT_TOKENS" in result.detail
+    assert "probe budget" in result.detail
+
+
+def test_doctor_says_nothing_extra_when_the_model_answers() -> None:
+    """The note is a signal, so it must not appear on every run."""
+    from nlqueries.cli.main import _check_llm
+
+    fine = MagicMock()
+    fine.complete.return_value = "OK"
+
+    with (
+        patch("nlqueries.config.llm_credentials_available", return_value=True),
+        patch("nlqueries.llm.get_llm_client", return_value=fine),
+    ):
+        result = _check_llm()
+
+    assert result.status == "ok"
+    assert "LLM_MAX_OUTPUT_TOKENS" not in result.detail
 
 
 def test_doctor_still_reports_a_real_failure() -> None:
@@ -347,6 +368,16 @@ def _health(client: MagicMock) -> str:
 def test_mcp_health_reports_ok_when_the_probe_budget_is_exhausted() -> None:
     llm_line = next(ln for ln in _health(_exhausting_client()).splitlines() if "**LLM**" in ln)
     assert llm_line.startswith("✅")
+    assert "LLM_MAX_OUTPUT_TOKENS" in llm_line
+
+
+def test_mcp_health_says_nothing_extra_when_the_model_answers() -> None:
+    fine = MagicMock()
+    fine.complete.return_value = "OK"
+
+    llm_line = next(ln for ln in _health(fine).splitlines() if "**LLM**" in ln)
+    assert llm_line.startswith("✅")
+    assert "LLM_MAX_OUTPUT_TOKENS" not in llm_line
 
 
 def test_mcp_health_still_reports_a_real_failure() -> None:
@@ -356,3 +387,142 @@ def test_mcp_health_still_reports_a_real_failure() -> None:
     llm_line = next(ln for ln in _health(broken).splitlines() if "**LLM**" in ln)
     assert llm_line.startswith("❌")
     assert "401 unauthorized" in llm_line
+
+
+# ---------------------------------------------------------------------------
+# Anthropic, async
+#
+# These two are what a default deployment actually runs: `get_llm_client`
+# returns `AnthropicClient` for provider="anthropic", `Orchestrator` and
+# `document_orchestrator` consume `astream`, and `aclassify_intent`,
+# `aresolve_followup`, `sql_generation` and `candidates` consume `acomplete`.
+# The `astream` guard is a hand-copy of the sync one, so a dropped clause or a
+# mistyped attribute would disable the exception with nothing failing: the
+# MagicMock fakes elsewhere never match TRUNCATED, because `str(MagicMock())`
+# is a repr.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAsyncStream:
+    """The async SDK streaming context manager, as the client uses it."""
+
+    def __init__(self, texts: list[str], stop_reason: str) -> None:
+        self._texts = texts
+        self._stop = stop_reason
+
+    async def __aenter__(self) -> _FakeAsyncStream:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    @property
+    def text_stream(self):  # noqa: ANN202
+        async def gen():  # noqa: ANN202
+            for t in self._texts:
+                yield t
+
+        return gen()
+
+    async def get_final_message(self) -> SimpleNamespace:
+        return _message([], self._stop)
+
+
+def test_anthropic_acomplete_raises_on_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _anthropic(monkeypatch)
+
+    async def create(**_kwargs: object) -> SimpleNamespace:
+        return _message([], "max_tokens")
+
+    client._aclient = MagicMock()
+    client._aclient.messages.create = create
+
+    with pytest.raises(OutputBudgetExhausted) as caught:
+        asyncio.run(client.acomplete("sys", "user", max_tokens=11))
+    assert caught.value.budget == 11
+
+
+def test_anthropic_acomplete_returns_a_truncated_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Truncated is still an answer. Only nothing at all is an error."""
+    client = _anthropic(monkeypatch)
+
+    async def create(**_kwargs: object) -> SimpleNamespace:
+        return _message([_block("half")], "max_tokens")
+
+    client._aclient = MagicMock()
+    client._aclient.messages.create = create
+
+    assert asyncio.run(client.acomplete("sys", "user")) == "half"
+
+
+def test_anthropic_acomplete_survives_a_reply_with_no_text_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The async half of the StopIteration `_text_of` replaced."""
+    client = _anthropic(monkeypatch)
+
+    async def create(**_kwargs: object) -> SimpleNamespace:
+        return _message([], "end_turn")
+
+    client._aclient = MagicMock()
+    client._aclient.messages.create = create
+
+    assert asyncio.run(client.acomplete("sys", "user")) == ""
+
+
+def _adrain(client: AnthropicClient) -> list[str]:
+    async def go() -> list[str]:
+        return [t async for t in client.astream("sys", "user")]
+
+    return asyncio.run(go())
+
+
+def test_anthropic_astream_raises_after_yielding_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _anthropic(monkeypatch)
+    client._aclient = MagicMock()
+    client._aclient.messages.stream.return_value = _FakeAsyncStream([], "max_tokens")
+
+    with pytest.raises(OutputBudgetExhausted):
+        _adrain(client)
+
+
+def test_anthropic_astream_keeps_what_it_yielded(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _anthropic(monkeypatch)
+    client._aclient = MagicMock()
+    client._aclient.messages.stream.return_value = _FakeAsyncStream(["some ", "text"], "max_tokens")
+
+    assert _adrain(client) == ["some ", "text"]
+
+
+def test_anthropic_astream_does_not_raise_after_yielding_only_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty, not blank -- the distinction the guard turns on.
+
+    `exhausted()` treats whitespace as no answer, which is right for a reply
+    returned whole and wrong here: a reasoning model that emits a leading
+    newline and then hits the cap has already handed those tokens to the
+    caller. Raising at the end of the generator would land an error on a
+    response body that has started, which is the mid-stream failure the guard
+    is placed to avoid.
+    """
+    client = _anthropic(monkeypatch)
+    client._aclient = MagicMock()
+    client._aclient.messages.stream.return_value = _FakeAsyncStream(["\n\n"], "max_tokens")
+
+    assert _adrain(client) == ["\n\n"]
+
+
+def test_anthropic_astream_is_quiet_on_an_ordinary_empty_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`end_turn` with nothing to say is not an exhausted budget."""
+    client = _anthropic(monkeypatch)
+    client._aclient = MagicMock()
+    client._aclient.messages.stream.return_value = _FakeAsyncStream([], "end_turn")
+
+    assert _adrain(client) == []

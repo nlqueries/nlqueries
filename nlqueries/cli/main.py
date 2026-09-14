@@ -15,7 +15,6 @@ Commands
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
@@ -444,12 +443,24 @@ def _check_llm() -> _CheckResult:
         # result on such a deployment rather than a fault. Reporting it as a
         # failure would tell the operator to raise a limit that has no bearing
         # on a hard-coded probe budget.
-        with contextlib.suppress(OutputBudgetExhausted):
+        spent_on_reasoning = False
+        try:
             llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
+        except OutputBudgetExhausted:
+            spent_on_reasoning = True
         ms = int((time.monotonic() - t0) * 1000)
-        return _CheckResult(
-            "LLM provider", "ok", f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
-        )
+        detail = f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
+        if spent_on_reasoning:
+            # Said out loud, because this is the command an operator runs when
+            # answers are coming back empty, and a bare "ok ... responds" would
+            # send them to look somewhere else. Still `ok`: the provider is
+            # reachable, which is what was asked.
+            detail += (
+                " — spent the 5-token probe budget before writing anything, "
+                "which is normal for a reasoning model; if answers are coming "
+                "back empty, raise LLM_MAX_OUTPUT_TOKENS"
+            )
+        return _CheckResult("LLM provider", "ok", detail)
     except Exception as exc:  # noqa: BLE001
         return _CheckResult(
             "LLM provider", "fail", f"{LLM_PROVIDER} — {LLM_MODEL}: {exc}", str(exc)

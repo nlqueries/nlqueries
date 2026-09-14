@@ -25,7 +25,6 @@ get_cache_stats     Return cache size and collection info for an agent.
 
 from __future__ import annotations
 
-import contextlib
 import getpass
 import logging
 import os
@@ -358,11 +357,22 @@ def health(probe_llm: bool = False) -> str:
             t0 = time.monotonic()
             # See the CLI doctor: the probe asks for five tokens to stay cheap,
             # and a reasoning model spends them all reasoning. The round trip
-            # succeeded, which is what is being checked.
-            with contextlib.suppress(OutputBudgetExhausted):
+            # succeeded, which is what is being checked -- but it is said out
+            # loud, so a caller diagnosing empty answers is not told the LLM is
+            # simply fine.
+            spent_on_reasoning = False
+            try:
                 get_llm_client().complete("You are a health check.", "Reply OK.", max_tokens=5)
+            except OutputBudgetExhausted:
+                spent_on_reasoning = True
             ms = int((time.monotonic() - t0) * 1000)
-            lines.append(f"✅ **LLM** — {config.LLM_PROVIDER} / {config.LLM_MODEL} ({ms} ms)")
+            note = (
+                " — spent the 5-token probe budget before writing anything (normal for a "
+                "reasoning model; raise LLM_MAX_OUTPUT_TOKENS if answers come back empty)"
+                if spent_on_reasoning
+                else ""
+            )
+            lines.append(f"✅ **LLM** — {config.LLM_PROVIDER} / {config.LLM_MODEL} ({ms} ms){note}")
         except Exception as exc:  # noqa: BLE001
             lines.append(f"❌ **LLM** — {config.LLM_PROVIDER}: {exc}")
 

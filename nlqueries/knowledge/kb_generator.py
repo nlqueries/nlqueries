@@ -12,7 +12,6 @@ import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
 from nlqueries.knowledge.description_dates import stamp_descriptions
-from nlqueries.llm import OutputBudgetExhausted
 from nlqueries.processing.parameterizer import QueryCapsule
 
 logger = logging.getLogger(__name__)
@@ -207,6 +206,16 @@ def describe_columns(
         "Reply ONLY with a valid JSON object — no markdown fences, no explanation."
     )
     user = "\n".join(lines)
+
+    # Function-local, and `llm.client` rather than `llm`. Importing ANY submodule
+    # of `nlqueries.llm` executes the package __init__, which imports both
+    # concrete clients and therefore litellm and anthropic -- so at module level
+    # either spelling would put those two behind every `import
+    # nlqueries.knowledge`, which `knowledge/__init__` makes unavoidable.
+    # Measured: before this line moved, that import pulled both; after, neither.
+    # Here it costs nothing: `describe_columns` is handed a live client, so
+    # `nlqueries.llm` is in sys.modules long before this runs.
+    from nlqueries.llm.client import OutputBudgetExhausted  # noqa: PLC0415
 
     budget = _description_token_budget(len(eligible))
     try:
