@@ -23,9 +23,27 @@ from pathlib import Path
 
 import pytest
 
+#: The variables that can each reattach one branch of the state tree.
+_PER_PATH = ("KB_PATH", "CONNECTORS_FILE", "CAPSULES_DIR", "FEEDBACK_DIR")
+
 
 def _config_with(monkeypatch: pytest.MonkeyPatch, **env: str):
-    """Reimport `nlqueries.config` with *env* applied."""
+    """Reimport `nlqueries.config` with *env* applied, and nothing else.
+
+    Every per-path variable not named in *env* is cleared first. These tests are
+    about which setting wins, so they have to start from a known state rather
+    than from whatever the ambient environment holds -- and it now holds all
+    four, because `conftest.py` sets them to keep the suite's writes inside its
+    temporary state directory.
+
+    That coupling was latent before: the tests passed only because nobody had
+    those variables exported. `test_a_per_path_override_still_wins` was the one
+    that noticed, since it asserts `CAPSULES_DIR` follows `NLQ_STATE_DIR` while
+    deliberately overriding `KB_PATH` alone.
+    """
+    for key in _PER_PATH:
+        if key not in env:
+            monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     import nlqueries.config as config_module
