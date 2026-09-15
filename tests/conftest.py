@@ -7,6 +7,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import os
+import pathlib
 import shutil
 import tempfile
 from pathlib import Path
@@ -52,25 +53,39 @@ if not os.environ.get("NLQ_STATE_DIR"):
     os.environ["NLQ_STATE_DIR"] = _TEST_STATE_DIR
 atexit.register(shutil.rmtree, _TEST_STATE_DIR, ignore_errors=True)
 
-# And the per-path variables are removed, not merely left to fall back.
+# And the per-path variables are SET to their redirected paths -- not removed.
 #
 # `config` reads `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR` and `FEEDBACK_DIR`
-# from their own variables FIRST and only then from `STATE_DIR`, and
-# `load_dotenv(override=False)` runs inside `config` at import -- so a `.env` in
-# the working directory, which is the local setup `docs/configuration.md`
-# describes, reattaches any one of those branches to the operator's real files
-# despite the root having moved.
+# from their own variables FIRST and only then from `STATE_DIR`, so each is a
+# door around the root move. `load_dotenv(override=False)` runs inside `config`
+# at import, and a `.env` in the checkout -- the local setup
+# `docs/configuration.md` describes -- can hold any of them.
 #
-# The asymmetry with the root is deliberate. Honouring an outer `NLQ_STATE_DIR`
-# means honouring somebody who said "put the whole tree here"; honouring an
-# outer `KB_PATH` during a test run means letting one branch quietly point home
-# while everything else is redirected, which is the half-redirect this file
-# exists to prevent. `test_everything_derived_from_it_moved_too` does catch it,
-# but only once it runs -- and in collection order `test_cli.py`,
-# `test_connector_resolver_seam.py`, `test_feedback.py` and `test_kb_stats.py`
-# have each had their chance to write by then.
-for _per_path in ("KB_PATH", "CONNECTORS_FILE", "CAPSULES_DIR", "FEEDBACK_DIR"):
-    os.environ.pop(_per_path, None)
+# Removing them was the obvious move and it is backwards. dotenv skips a key
+# only when it is **already in `os.environ`**:
+#
+#     if k in os.environ and not self.override: continue
+#
+# so popping a name does not protect it, it guarantees the `.env` value wins.
+# Measured, with `KB_PATH=/from/dotenv` in a `.env`:
+#
+#     absent beforehand  -> /from/dotenv
+#     present beforehand -> /redirected/knowledge_base
+#
+# Setting them is therefore what makes `load_dotenv` leave them alone, and what
+# makes the root move the only thing deciding where the suite writes.
+#
+# The values mirror `config`'s own defaults, which is the one thing here that
+# has to be kept in step by hand; `test_everything_derived_from_it_moved_too`
+# fails if they drift.
+_STATE = pathlib.Path(os.environ["NLQ_STATE_DIR"])
+for _name, _path in (
+    ("KB_PATH", _STATE / "knowledge_base"),
+    ("CONNECTORS_FILE", _STATE / "connectors.yaml"),
+    ("CAPSULES_DIR", _STATE / "capsules"),
+    ("FEEDBACK_DIR", _STATE / "feedback"),
+):
+    os.environ[_name] = str(_path)
 
 
 def _stamp(path: Path) -> tuple[object, ...]:
@@ -119,9 +134,16 @@ def _the_operators_connectors_file_is_left_alone() -> object:
     session. A guard that only ever fires when a mechanism has failed is worth
     more than one that fires often.
     """
-    from nlqueries import config
-
-    real: Path = config.CONNECTORS_FILE
+    # The operator's real file, named explicitly rather than read from
+    # `config` -- which now points at the temporary tree, so reading it would
+    # turn this into a guard on the redirect's own scratch file. That is wrong
+    # in both directions: it could not see an escape while the redirect holds,
+    # which is the fault the redirect exists for, and it would fail the whole
+    # session over a write to the temporary registry -- entirely safe, and now a
+    # reasonable thing for a new test to do through the CLI -- with the message
+    # "That is the operator's real connector registry", sending the reader after
+    # a fault that did not happen.
+    real = Path.home() / ".nlqueries" / "connectors.yaml"
     before = _stamp(real)
     yield
     after = _stamp(real)

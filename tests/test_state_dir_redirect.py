@@ -63,24 +63,35 @@ def test_a_blank_state_dir_is_not_treated_as_a_choice() -> None:
     assert os.environ.get("NLQ_STATE_DIR"), "the redirect must set a non-empty value"
 
 
-def test_no_per_path_override_reattaches_a_branch_to_the_home_directory() -> None:
+def test_every_per_path_variable_points_inside_the_redirect() -> None:
     """The root moving is only the whole answer if nothing else gets a vote.
 
     `config` reads `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR` and
-    `FEEDBACK_DIR` from their own variables *first*, and
-    `load_dotenv(override=False)` runs inside `config` at import -- so a `.env`
-    in the working directory, which is the documented local setup, points one
-    branch at the operator's real files while everything else is redirected.
+    `FEEDBACK_DIR` from their own variables *first*, so each is a door around
+    the root move, and `load_dotenv(override=False)` runs inside `config` at
+    import -- a `.env` in the checkout, which is the documented local setup, can
+    hold any of them.
 
-    `test_everything_derived_from_it_moved_too` catches the consequence, but
-    only once it runs, and several suites that write have had their turn by
-    then. This asserts the cause, which is true from the first test onwards.
+    They are **set**, not unset, and this asserted the opposite at first. dotenv
+    skips a key only when it is already in `os.environ`, so removing a name does
+    not protect it -- it guarantees the `.env` value wins. Measured with
+    `KB_PATH=/from/dotenv` in a `.env`: absent beforehand yields
+    `/from/dotenv`, present beforehand keeps the redirected path.
+
+    Asserted on the environment rather than on `config`, because this holds from
+    the first test onwards while `test_everything_derived_from_it_moved_too`
+    catches the consequence only once it runs -- after `test_cli.py`,
+    `test_connector_resolver_seam.py`, `test_feedback.py` and `test_kb_stats.py`
+    have each had a chance to write.
     """
     import os
 
+    state = Path(os.environ["NLQ_STATE_DIR"]).resolve()
     for name in ("KB_PATH", "CONNECTORS_FILE", "CAPSULES_DIR", "FEEDBACK_DIR"):
-        assert name not in os.environ, (
-            f"{name} is set, so it overrides the redirected STATE_DIR for that branch"
+        raw = os.environ.get(name)
+        assert raw, f"{name} is unset, so a .env value would win at config import"
+        assert Path(raw).resolve().is_relative_to(state), (
+            f"{name}={raw} is outside the redirected state directory"
         )
 
 
