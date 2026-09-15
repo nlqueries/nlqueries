@@ -37,6 +37,51 @@ def test_the_state_directory_is_not_the_operators() -> None:
     # the system temp directory is `C:/Users/<user>/AppData/Local/Temp` -- so the
     # assertion failed on a correct redirect. What matters is that it is not the
     # operator's `~/.nlqueries`, not where the OS keeps its scratch space.
+    #
+    # It is also not the checkout, which is the failure the two assertions above
+    # cannot see on their own: an empty `NLQ_STATE_DIR` makes `STATE_DIR`
+    # `Path("")`, the working directory, which is neither `~/.nlqueries` nor
+    # equal to the environment variable's literal value... except that it is, so
+    # the second assertion passes too. `conftest` now refuses an empty value
+    # rather than relying on this to notice.
+    assert state != Path.cwd(), "the suite would write into the checkout"
+
+
+def test_a_blank_state_dir_is_not_treated_as_a_choice() -> None:
+    """An empty variable is somebody disabling a setting, not setting one.
+
+    `setdefault` keeps `NLQ_STATE_DIR=""`, and `Path("")` is the working
+    directory -- so the suite would scatter `connectors.yaml`, `knowledge_base/`
+    and the rest through the checkout while the assertions above reported the
+    redirect intact. `config` reads a blanked variable the same way elsewhere.
+
+    Asserted on the rule rather than the outcome, because the outcome is decided
+    at `conftest` import and cannot be re-run inside a test.
+    """
+    import os
+
+    assert os.environ.get("NLQ_STATE_DIR"), "the redirect must set a non-empty value"
+
+
+def test_no_per_path_override_reattaches_a_branch_to_the_home_directory() -> None:
+    """The root moving is only the whole answer if nothing else gets a vote.
+
+    `config` reads `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR` and
+    `FEEDBACK_DIR` from their own variables *first*, and
+    `load_dotenv(override=False)` runs inside `config` at import -- so a `.env`
+    in the working directory, which is the documented local setup, points one
+    branch at the operator's real files while everything else is redirected.
+
+    `test_everything_derived_from_it_moved_too` catches the consequence, but
+    only once it runs, and several suites that write have had their turn by
+    then. This asserts the cause, which is true from the first test onwards.
+    """
+    import os
+
+    for name in ("KB_PATH", "CONNECTORS_FILE", "CAPSULES_DIR", "FEEDBACK_DIR"):
+        assert name not in os.environ, (
+            f"{name} is set, so it overrides the redirected STATE_DIR for that branch"
+        )
 
 
 def test_the_bound_copies_cannot_disagree_with_the_config() -> None:

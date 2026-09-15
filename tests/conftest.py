@@ -38,11 +38,39 @@ import pytest
 # `tests/test_state_dir_redirect.py` asserts it at run time, so a future plugin
 # that imports core first fails loudly instead of quietly writing home.
 #
-# `setdefault`, so a deliberate outer value still wins -- CI or a developer
-# pinning it for a reproduction should not be silently overridden.
+# An outer value still wins -- CI or a developer pinning it for a reproduction
+# should not be silently overridden -- but only a *usable* one. An empty
+# `NLQ_STATE_DIR` survives `setdefault`, and `Path("")` is the working
+# directory, so the suite would scatter `connectors.yaml`, `knowledge_base/` and
+# the rest through the checkout. Both assertions in
+# `test_state_dir_redirect.py` pass in that state, because the cwd is not
+# `~/.nlqueries`: the guard reports the redirect intact while it is not. Treated
+# as a value somebody meant to disable, which is how `config` reads a blanked
+# variable elsewhere.
 _TEST_STATE_DIR = tempfile.mkdtemp(prefix="nlq-test-state-")
-os.environ.setdefault("NLQ_STATE_DIR", _TEST_STATE_DIR)
+if not os.environ.get("NLQ_STATE_DIR"):
+    os.environ["NLQ_STATE_DIR"] = _TEST_STATE_DIR
 atexit.register(shutil.rmtree, _TEST_STATE_DIR, ignore_errors=True)
+
+# And the per-path variables are removed, not merely left to fall back.
+#
+# `config` reads `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR` and `FEEDBACK_DIR`
+# from their own variables FIRST and only then from `STATE_DIR`, and
+# `load_dotenv(override=False)` runs inside `config` at import -- so a `.env` in
+# the working directory, which is the local setup `docs/configuration.md`
+# describes, reattaches any one of those branches to the operator's real files
+# despite the root having moved.
+#
+# The asymmetry with the root is deliberate. Honouring an outer `NLQ_STATE_DIR`
+# means honouring somebody who said "put the whole tree here"; honouring an
+# outer `KB_PATH` during a test run means letting one branch quietly point home
+# while everything else is redirected, which is the half-redirect this file
+# exists to prevent. `test_everything_derived_from_it_moved_too` does catch it,
+# but only once it runs -- and in collection order `test_cli.py`,
+# `test_connector_resolver_seam.py`, `test_feedback.py` and `test_kb_stats.py`
+# have each had their chance to write by then.
+for _per_path in ("KB_PATH", "CONNECTORS_FILE", "CAPSULES_DIR", "FEEDBACK_DIR"):
+    os.environ.pop(_per_path, None)
 
 
 def _stamp(path: Path) -> tuple[object, ...]:
