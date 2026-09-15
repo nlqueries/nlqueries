@@ -4,11 +4,45 @@ Shared pytest fixtures for the nlqueries-core test suite.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# The suite writes under a temporary state directory, never the operator's.
+#
+# `config.STATE_DIR` is the root of everything NLQueries keeps between runs, and
+# five values derive from it -- `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR`,
+# `FEEDBACK_DIR`, and the embed server's pid file -- plus the session log and the
+# cache signing key, which are built from it at use.
+#
+# Guarding one of those was what we had, and it was not a mechanism. Three
+# separate escapes into `~/.nlqueries` were found in one afternoon -- the
+# connectors file, the KB under `KB_PATH`, and the session log under `STATE_DIR`
+# -- and each was found by a reviewer pointing at it or by walking the directory
+# by hand. Moving the root redirects a test that writes somewhere *new*, which is
+# the case neither of those finds.
+#
+# **This must run before anything imports `nlqueries`,** because `STATE_DIR` is
+# read at import and `cli/main.py` and `embed_server.py` bind values derived from
+# it at import too. Setting it afterwards would redirect the readers and none of
+# the writers, which is precisely the silent half-fix the guard below exists to
+# catch. Measured rather than assumed: `sys.modules` holds no `nlqueries` module
+# when this file executes, so a module-level assignment here is early enough.
+# `tests/test_state_dir_redirect.py` asserts it at run time, so a future plugin
+# that imports core first fails loudly instead of quietly writing home.
+#
+# `setdefault`, so a deliberate outer value still wins -- CI or a developer
+# pinning it for a reproduction should not be silently overridden.
+_TEST_STATE_DIR = tempfile.mkdtemp(prefix="nlq-test-state-")
+os.environ.setdefault("NLQ_STATE_DIR", _TEST_STATE_DIR)
+atexit.register(shutil.rmtree, _TEST_STATE_DIR, ignore_errors=True)
 
 
 def _stamp(path: Path) -> tuple[object, ...]:
@@ -50,6 +84,12 @@ def _the_operators_connectors_file_is_left_alone() -> object:
     worth knowing rather than discovering: it names no test, so a bisect is what
     identifies the writer, and it stamps at the first test's setup, which is after
     collection -- a write during module import happens before it is watching.
+
+    Kept after the `NLQ_STATE_DIR` redirect at the top of this file, which should
+    make reaching the real file impossible. That is exactly why it stays: it is
+    now the check that the redirect is holding, and it costs one stat per
+    session. A guard that only ever fires when a mechanism has failed is worth
+    more than one that fires often.
     """
     from nlqueries import config
 
