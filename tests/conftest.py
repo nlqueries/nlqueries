@@ -4,11 +4,88 @@ Shared pytest fixtures for the nlqueries-core test suite.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
+import os
+import pathlib
+import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# The suite writes under a temporary state directory, never the operator's.
+#
+# `config.STATE_DIR` is the root of everything NLQueries keeps between runs, and
+# five values derive from it -- `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR`,
+# `FEEDBACK_DIR`, and the embed server's pid file -- plus the session log and the
+# cache signing key, which are built from it at use.
+#
+# Guarding one of those was what we had, and it was not a mechanism. Three
+# separate escapes into `~/.nlqueries` were found in one afternoon -- the
+# connectors file, the KB under `KB_PATH`, and the session log under `STATE_DIR`
+# -- and each was found by a reviewer pointing at it or by walking the directory
+# by hand. Moving the root redirects a test that writes somewhere *new*, which is
+# the case neither of those finds.
+#
+# **This must run before anything imports `nlqueries`,** because `STATE_DIR` is
+# read at import and `cli/main.py` and `embed_server.py` bind values derived from
+# it at import too. Setting it afterwards would redirect the readers and none of
+# the writers, which is precisely the silent half-fix the guard below exists to
+# catch. Measured rather than assumed: `sys.modules` holds no `nlqueries` module
+# when this file executes, so a module-level assignment here is early enough.
+# `tests/test_state_dir_redirect.py` asserts it at run time, so a future plugin
+# that imports core first fails loudly instead of quietly writing home.
+#
+# An outer value still wins -- CI or a developer pinning it for a reproduction
+# should not be silently overridden -- but only a *usable* one. An empty
+# `NLQ_STATE_DIR` survives `setdefault`, and `Path("")` is the working
+# directory, so the suite would scatter `connectors.yaml`, `knowledge_base/` and
+# the rest through the checkout. Both assertions in
+# `test_state_dir_redirect.py` pass in that state, because the cwd is not
+# `~/.nlqueries`: the guard reports the redirect intact while it is not. Treated
+# as a value somebody meant to disable, which is how `config` reads a blanked
+# variable elsewhere.
+_TEST_STATE_DIR = tempfile.mkdtemp(prefix="nlq-test-state-")
+if not os.environ.get("NLQ_STATE_DIR"):
+    os.environ["NLQ_STATE_DIR"] = _TEST_STATE_DIR
+atexit.register(shutil.rmtree, _TEST_STATE_DIR, ignore_errors=True)
+
+# And the per-path variables are SET to their redirected paths -- not removed.
+#
+# `config` reads `KB_PATH`, `CONNECTORS_FILE`, `CAPSULES_DIR` and `FEEDBACK_DIR`
+# from their own variables FIRST and only then from `STATE_DIR`, so each is a
+# door around the root move. `load_dotenv(override=False)` runs inside `config`
+# at import, and a `.env` in the checkout -- the local setup
+# `docs/configuration.md` describes -- can hold any of them.
+#
+# Removing them was the obvious move and it is backwards. dotenv skips a key
+# only when it is **already in `os.environ`**:
+#
+#     if k in os.environ and not self.override: continue
+#
+# so popping a name does not protect it, it guarantees the `.env` value wins.
+# Measured, with `KB_PATH=/from/dotenv` in a `.env`:
+#
+#     absent beforehand  -> /from/dotenv
+#     present beforehand -> /redirected/knowledge_base
+#
+# Setting them is therefore what makes `load_dotenv` leave them alone, and what
+# makes the root move the only thing deciding where the suite writes.
+#
+# The values mirror `config`'s own defaults, which is the one thing here that
+# has to be kept in step by hand; `test_everything_derived_from_it_moved_too`
+# fails if they drift.
+_STATE = pathlib.Path(os.environ["NLQ_STATE_DIR"])
+for _name, _path in (
+    ("KB_PATH", _STATE / "knowledge_base"),
+    ("CONNECTORS_FILE", _STATE / "connectors.yaml"),
+    ("CAPSULES_DIR", _STATE / "capsules"),
+    ("FEEDBACK_DIR", _STATE / "feedback"),
+):
+    os.environ[_name] = str(_path)
 
 
 def _stamp(path: Path) -> tuple[object, ...]:
@@ -50,10 +127,23 @@ def _the_operators_connectors_file_is_left_alone() -> object:
     worth knowing rather than discovering: it names no test, so a bisect is what
     identifies the writer, and it stamps at the first test's setup, which is after
     collection -- a write during module import happens before it is watching.
-    """
-    from nlqueries import config
 
-    real: Path = config.CONNECTORS_FILE
+    Kept after the `NLQ_STATE_DIR` redirect at the top of this file, which should
+    make reaching the real file impossible. That is exactly why it stays: it is
+    now the check that the redirect is holding, and it costs one stat per
+    session. A guard that only ever fires when a mechanism has failed is worth
+    more than one that fires often.
+    """
+    # The operator's real file, named explicitly rather than read from
+    # `config` -- which now points at the temporary tree, so reading it would
+    # turn this into a guard on the redirect's own scratch file. That is wrong
+    # in both directions: it could not see an escape while the redirect holds,
+    # which is the fault the redirect exists for, and it would fail the whole
+    # session over a write to the temporary registry -- entirely safe, and now a
+    # reasonable thing for a new test to do through the CLI -- with the message
+    # "That is the operator's real connector registry", sending the reader after
+    # a fault that did not happen.
+    real = Path.home() / ".nlqueries" / "connectors.yaml"
     before = _stamp(real)
     yield
     after = _stamp(real)
