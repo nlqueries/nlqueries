@@ -16,26 +16,23 @@
 #
 # Arguments are passed straight to pytest.
 #
-# AFTER AN INTERRUPTED RUN, CHECK FOR STRANDED CONTAINERS:
+# The testcontainers reaper is left ON, so an abnormal exit cleans up after
+# itself. To check anyway, or after a crash of the reaper too:
 #
 #   docker ps --filter label=org.testcontainers=true
 #
-# The reaper is disabled below (it collides on its fixed container name), so
-# nothing cleans up after an abnormal exit.
-#
-# A single Ctrl-C does not strand anything: docker proxies SIGINT to pytest as
-# PID 1, pytest catches `KeyboardInterrupt` and still runs
-# `pytest_sessionfinish`, so the fixtures' `finally` blocks do stop their
-# containers -- session- and module-scoped alike. What strands a sibling is a
-# `docker kill` or an OOM kill, which leaves no teardown at all, or a second
-# Ctrl-C landing inside a teardown, which cuts it off part-way through
-# `container.stop()`. All three were measured in this image, not reasoned about.
-#
-# The label filter rather than an image name, because the fixtures start
+# That filter rather than an image name, because the fixtures start
 # `postgres:16-alpine` (the Postgres connector and security suites) and
-# `qdrant/qdrant:v1.18.2` (the two cache integration modules), and the filter
-# keeps finding them if that list changes. CI never notices -- the runner is
-# discarded; a dev machine accumulates them.
+# `qdrant/qdrant:v1.18.2` (the two cache integration modules), and a filter
+# keeps finding them if that list changes.
+#
+# For the record, since a previous revision of this header said otherwise: a
+# single Ctrl-C strands nothing even with the reaper off. Docker proxies
+# SIGINT to pytest as PID 1, pytest catches `KeyboardInterrupt` and still runs
+# `pytest_sessionfinish`, so the fixtures' `finally` blocks stop their own
+# containers. What the reaper is for is the case where no teardown runs at
+# all -- a `docker kill`, an OOM kill, or a second Ctrl-C cutting into a
+# teardown already in progress. Each of those was measured here.
 
 set -euo pipefail
 
@@ -60,6 +57,63 @@ fi
 # Only rebuilds when pyproject.toml changes — the dependency layer is keyed on
 # the manifest, not on source.
 MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" "$MOUNT" >/dev/null
+
+# Reaper preflight. Without this image the container fixtures raise, the suite
+# turns that into `pytest.skip`, and the run is green with the security corpus
+# absent — a worse outcome than failing. The full explanation, including which
+# fixtures swallow it, is in the block above the `docker run` at the foot of
+# this script.
+#
+# The tag is read out of the image rather than written here. `Dockerfile.test`
+# installs the dev extras from `pyproject.toml`, where the constraint is
+# `testcontainers[postgres]>=4.0` — NOT the pinned `requirements/core.lock` — so
+# a rebuild can carry a newer testcontainers whose `ryuk_image` default has
+# moved, and a tag hardcoded in this script would send you after the wrong one.
+# The opt-out the failure message below points at. Honoured in two places,
+# because either alone is useless: skipping the preflight lets the run start,
+# and the `-e` on the `docker run` is what actually reaches pytest -- this
+# script passes only the flags it names, so a variable exported in the
+# caller's shell does not cross into the container by itself.
+#
+# Parsed the way testcontainers parses it, not as "set to anything". Its
+# `_render_bool` tests `env_val.lower() in ENABLE_FLAGS`, and
+# `ENABLE_FLAGS = ("yes", "true", "t", "y", "1")` -- so `false`, `0`, `no` and
+# any typo all mean the reaper is ON.
+#
+# Treating those as the opt-out was a hole reached through the one variable this
+# script invites the reader to set: `TESTCONTAINERS_RYUK_DISABLED=false` skipped
+# the preflight, announced "running without the reaper", and then handed pytest a
+# value that switched the reaper back on -- so on a machine with no ryuk image it
+# produced exactly the green-with-the-corpus-missing run the preflight exists to
+# stop. Anything this script does not recognise falls through to the preflight,
+# which is the direction that fails safe.
+RYUK_OFF=()
+case "$(printf '%s' "${TESTCONTAINERS_RYUK_DISABLED:-}" | tr '[:upper:]' '[:lower:]')" in
+  yes | true | t | y | 1)
+  RYUK_OFF=(-e "TESTCONTAINERS_RYUK_DISABLED=$TESTCONTAINERS_RYUK_DISABLED")
+  echo "TESTCONTAINERS_RYUK_DISABLED is set: running without the reaper." >&2
+  echo "Nothing will clean up after an abnormal exit -- see the block above the" >&2
+  echo "docker run below, which explains what that costs." >&2
+  ;;
+  *)
+  RYUK_PROBE='from testcontainers.core.config import testcontainers_config as c; print(c.ryuk_image)'
+  RYUK="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE" python -c "$RYUK_PROBE" 2>/dev/null || true)"
+  if [ -z "$RYUK" ]; then
+    # Could not ask the image. Say so rather than pretending the check ran: the
+    # whole point is that a missing reaper is invisible in the results.
+    echo "Warning: could not read the reaper image from $IMAGE; preflight skipped." >&2
+  elif ! docker image inspect "$RYUK" >/dev/null 2>&1; then
+    echo "Fetching the testcontainers reaper ($RYUK)..." >&2
+    if ! docker pull "$RYUK" >/dev/null 2>&1; then
+      echo "Could not obtain the reaper image $RYUK." >&2
+      echo "Running anyway would SKIP the security corpus and report green," >&2
+      echo "so this stops here. Pull it when you next have registry access," >&2
+      echo "or re-run with TESTCONTAINERS_RYUK_DISABLED=true to run without cleanup." >&2
+      exit 1
+    fi
+  fi
+  ;;
+esac
 
 # The whole repo is mounted read-only rather than a list of subdirectories:
 # tests reach for `scripts/`, `docs/` and example files, and discovering each
@@ -89,9 +143,34 @@ fi
 # and `tests/integration/` -- which is the same class of misleading green this
 # script exists to remove.
 #
-# `TESTCONTAINERS_RYUK_DISABLED` matches what ci.yml sets; without it the reaper
-# collides on its fixed container name (`409 Conflict`). The host override plus
-# `host-gateway` is what lets this container reach the published port.
+# The reaper is deliberately NOT disabled here. It was, on the stated grounds
+# that it 'collides on its fixed container name (409 Conflict)' -- which
+# cannot happen: `Reaper._create_instance` names it
+# `testcontainers-ryuk-{SESSION_ID}` with a per-process `uuid4()`. With the
+# reaper enabled the whole suite passes and leaves nothing behind, so the
+# reason for switching off the only cleanup that survives an abnormal exit
+# did not survive being checked.
+#
+# `ci.yml` and `release.yml` both still set the flag on their own Pytest steps.
+# Why either does is not recorded anywhere, and on an ephemeral runner the reaper
+# makes no difference either way, so both are left alone rather than changed on a
+# guess. Each carries a note saying so, and the two move together or not at all.
+#
+# THE REAPER IS A PREREQUISITE OF A LOCAL RUN, and it would fail quietly, so
+# there is a preflight for it *above*, just after the image build. It is
+# created inside
+# `DockerContainer.start()`, which `tests/security/conftest.py` and
+# `tests/test_postgres_connector.py` both wrap in
+# `except Exception: pytest.skip(...)` -- so on a fresh, offline or rate-limited
+# machine a reaper that cannot start does not fail the run; it removes the
+# security corpus from it and reports green. That is the exact class of
+# misleading result described twenty lines above, and enabling the reaper is
+# what gives it this new way to fire, so the check fails fast instead of the
+# comment merely warning about it. The `pytest.skip` swallowing itself predates
+# this and is left alone.
+#
+# The host override plus `host-gateway` is what lets this container reach the
+# published port.
 #
 # Measured: `test_payload_corpus.py` and `test_postgres_connector.py` went from
 # skipped to 37 passed, 3 xfailed, 0 skipped.
@@ -110,7 +189,7 @@ exec env MSYS_NO_PATHCONV=1 docker run --rm \
   -v "/var/run/docker.sock:/var/run/docker.sock" \
   --add-host host.docker.internal:host-gateway \
   -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
-  -e TESTCONTAINERS_RYUK_DISABLED=true \
+  ${RYUK_OFF[@]+"${RYUK_OFF[@]}"} \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e HOME=/tmp \
   -w /app \
