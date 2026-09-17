@@ -48,6 +48,22 @@ MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" 
 # wheels; left visible it shadows nothing by default, but anything that adds it
 # to `sys.path` would load Windows binaries inside Linux and fail confusingly.
 #
+# `.venv` is masked by an anonymous volume *only when the host actually has one*.
+# The host copy holds win_amd64 wheels, and anything putting it on `sys.path`
+# would load Windows binaries inside Linux and fail confusingly — but the mask is
+# nested inside the read-only bind at /app, and mounts are applied outermost
+# first, so on a tree with no `.venv` the runtime has to create the mountpoint
+# through a read-only filesystem and the run dies before pytest starts:
+#
+#   make mountpoint "/app/.venv": mkdirat ...: read-only file system
+#
+# `.venv` is gitignored, so a fresh clone hits that on the very first invocation
+# — precisely the opaque failure this script exists to remove.
+MASK=()
+if [ -d "$HERE/.venv" ]; then
+  MASK=(-v "/app/.venv")
+fi
+
 # The Docker socket is passed through because parts of the suite use
 # testcontainers to stand up a real Postgres. Without it those tests do not
 # skip, they ERROR on `DockerException` — 22 of them — which at a glance is
@@ -58,7 +74,7 @@ MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" 
 # ~/.nlqueries.
 exec env MSYS_NO_PATHCONV=1 docker run --rm \
   -v "$MOUNT:/app:ro" \
-  -v "/app/.venv" \
+  ${MASK[@]+"${MASK[@]}"} \
   -v "/var/run/docker.sock:/var/run/docker.sock" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e HOME=/tmp \
