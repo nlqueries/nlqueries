@@ -58,6 +58,32 @@ fi
 # the manifest, not on source.
 MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" "$MOUNT" >/dev/null
 
+# Reaper preflight. See the header: without this image the container fixtures
+# raise, the suite turns that into `pytest.skip`, and the run is green with the
+# security corpus absent — a worse outcome than failing.
+#
+# The tag is read out of the image rather than written here. `Dockerfile.test`
+# installs the dev extras from `pyproject.toml`, where the constraint is
+# `testcontainers[postgres]>=4.0` — NOT the pinned `requirements/core.lock` — so
+# a rebuild can carry a newer testcontainers whose `ryuk_image` default has
+# moved, and a tag hardcoded in this script would send you after the wrong one.
+RYUK_PROBE='from testcontainers.core.config import testcontainers_config as c; print(c.ryuk_image)'
+RYUK="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE" python -c "$RYUK_PROBE" 2>/dev/null || true)"
+if [ -z "$RYUK" ]; then
+  # Could not ask the image. Say so rather than pretending the check ran: the
+  # whole point is that a missing reaper is invisible in the results.
+  echo "Warning: could not read the reaper image from $IMAGE; preflight skipped." >&2
+elif ! docker image inspect "$RYUK" >/dev/null 2>&1; then
+  echo "Fetching the testcontainers reaper ($RYUK)..." >&2
+  if ! docker pull "$RYUK" >/dev/null 2>&1; then
+    echo "Could not obtain the reaper image $RYUK." >&2
+    echo "Running anyway would SKIP the security corpus and report green," >&2
+    echo "so this stops here. Pull it when you next have registry access," >&2
+    echo "or set TESTCONTAINERS_RYUK_DISABLED=true to run without cleanup." >&2
+    exit 1
+  fi
+fi
+
 # The whole repo is mounted read-only rather than a list of subdirectories:
 # tests reach for `scripts/`, `docs/` and example files, and discovering each
 # missing one through a fresh collection error is a slow way to learn the list.
@@ -99,19 +125,17 @@ fi
 # makes no difference either way, so both are left alone rather than changed on a
 # guess. Each carries a note saying so, and the two move together or not at all.
 #
-# THE REAPER IS NOW A PREREQUISITE OF A LOCAL RUN, and it fails quietly. Its
-# image has to be pullable and reachable through the host override, and it is
-# created inside `DockerContainer.start()` -- which `tests/security/conftest.py`
-# and `tests/test_postgres_connector.py` both wrap in
-# `except Exception: pytest.skip(...)`. So on a fresh or rate-limited machine a
-# reaper that cannot start does not fail the run; it skips the security corpus
-# and reports green, which is the exact class of misleading result described
-# twenty lines above. If those modules start skipping, suspect the reaper first:
-#
-#   docker pull testcontainers/ryuk:0.8.1   # `ryuk_image` on testcontainers 4.15.0
-#
-# The swallowing predates this change and is not fixed here, but this change is
-# what gives it a new way to fire.
+# THE REAPER IS A PREREQUISITE OF A LOCAL RUN, and it would fail quietly, so
+# there is a preflight for it below. It is created inside
+# `DockerContainer.start()`, which `tests/security/conftest.py` and
+# `tests/test_postgres_connector.py` both wrap in
+# `except Exception: pytest.skip(...)` -- so on a fresh, offline or rate-limited
+# machine a reaper that cannot start does not fail the run; it removes the
+# security corpus from it and reports green. That is the exact class of
+# misleading result described twenty lines above, and enabling the reaper is
+# what gives it this new way to fire, so the check fails fast instead of the
+# comment merely warning about it. The `pytest.skip` swallowing itself predates
+# this and is left alone.
 #
 # The host override plus `host-gateway` is what lets this container reach the
 # published port.
