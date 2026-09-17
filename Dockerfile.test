@@ -1,0 +1,40 @@
+# Test runner for the core suite.
+#
+# Why this exists: Smart App Control is enforced on the Windows dev machine and
+# blocks `grpc/_cython/cygrpc*.pyd` — an unsigned 11 MB native extension pulled
+# in transitively by `qdrant-client`. Every test whose import chain reaches it
+# fails locally with `ImportError: DLL load failed while importing cygrpc`, and
+# two modules fail to collect outright, which aborts the whole run with exit 2.
+#
+# Smart App Control has no per-file or per-process exception list, and switching
+# it off cannot be undone without reinstalling Windows. A Linux container has no
+# Windows Code Integrity, so the same wheels simply load.
+#
+# Layer order is deliberate: dependencies come from `pyproject.toml` alone, so
+# editing source does not invalidate the install layer and a re-run is seconds
+# rather than minutes.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Build deps for the wheels that have no manylinux build, and git because a
+# couple of dependencies are resolved from source.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential git \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dependency layer. Only the manifest is copied, so this is cached across every
+# source edit. README is copied because hatchling reads it for the metadata.
+COPY pyproject.toml README.md LICENSE ./
+RUN mkdir -p nlqueries && touch nlqueries/__init__.py \
+ && pip install --no-cache-dir -e ".[dev]"
+
+# Source is mounted at run time, not baked in, so the container always tests the
+# working tree rather than a stale copy.
+CMD ["pytest", "tests/", "-q", "--no-header"]

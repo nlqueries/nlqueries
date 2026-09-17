@@ -2,6 +2,13 @@
 .git
 .gitignore
 
+# Virtualenvs. Not excluded before, so the whole 1.5 GB Windows venv (including
+# torch/lib/*.dll, which no other pattern catches) was walked into the build
+# context on every invocation, before the layer cache was even consulted.
+.venv/
+venv/
+ENV/
+
 # Python cache
 __pycache__
 *.pyc

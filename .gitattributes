@@ -1,0 +1,14 @@
+# Shell scripts and container files must keep LF, whatever the platform.
+#
+# `core.autocrlf=true` is set on the Windows dev machines, so without this a
+# fresh checkout rewrites these to CRLF and they break in ways that do not name
+# the cause: a CRLF shell script fails with `$'\r': command not found`, or
+# `bad interpreter: /bin/bash^M`, and a CRLF Dockerfile can break RUN lines that
+# use a trailing backslash.
+#
+# Git already normalises to LF *in the repository* — the damage happens on
+# checkout, to the working copy, which is why the warning at commit time is easy
+# to dismiss.
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+*.bash          text eol=lf
