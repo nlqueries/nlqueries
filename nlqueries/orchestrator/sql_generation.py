@@ -29,6 +29,10 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import get_llm_client, output_budget
+from nlqueries.orchestrator.prompt_assembly import (
+    _PARTIAL_COLUMNS_NOTE,
+    _columns_omitted,
+)
 from nlqueries.sql_policy import evaluate
 
 if TYPE_CHECKING:
@@ -391,6 +395,17 @@ def _format_schema_for_prompt(knowledge_base: dict[str, Any]) -> str:
             lines.append(header)
             for col in table.get("columns", []):
                 lines.append(f"  - {col.get('name', '')} ({col.get('type', '')})")
+            # The third renderer of this schema, and the one most easily missed:
+            # `_build_sql_system_prompt` feeds it to `generate_sql` *and* to
+            # `validate_and_repair`. Without the note, the repair step is asked
+            # to regenerate a statement from a partial column list presented as
+            # a complete one -- the exact situation the flag exists to prevent,
+            # at the moment the model is most likely to reach for `SELECT *`.
+            #
+            # Imported rather than restated: three renderers each carrying their
+            # own copy of this sentence is how they come to disagree.
+            if _columns_omitted(table):
+                lines.append(f"Note: {_PARTIAL_COLUMNS_NOTE}.")
             lines.append("")
 
     capsules: list[dict[str, Any]] = knowledge_base.get("query_capsules", [])

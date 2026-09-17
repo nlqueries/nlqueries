@@ -276,6 +276,24 @@ async def assemble_prompt_async(
 # ---------------------------------------------------------------------------
 
 
+#: Appended to a table whose KB entry sets ``columns_omitted``.
+#:
+#: A knowledge base may list only some of a table's columns — a deployment can
+#: restrict which of them a given agent may read. The model cannot tell a
+#: partial list from a complete one, so it writes ``SELECT *`` meaning
+#: "everything about this table" and either receives columns the KB never showed
+#: it or has the statement refused by whatever enforced the restriction. Saying
+#: so costs a few tokens and avoids both.
+_PARTIAL_COLUMNS_NOTE = (
+    "only the columns listed are available for this table; select them by name, never with *"
+)
+
+
+def _columns_omitted(table: dict[str, Any]) -> bool:
+    """Whether *table*'s KB entry says its column list is incomplete."""
+    return bool(table.get("columns_omitted"))
+
+
 def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     """Render the KB as a compact M-Schema string (Phase 6B).
 
@@ -334,6 +352,13 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
 
         if col_parts:
             lines.append(", ".join(col_parts))
+        if _columns_omitted(table):
+            # `Note:` prefixed, not parenthesised. M-Schema renders columns as
+            # parenthesised tuples -- `(id:BIGINT)` -- so a bare `(...)` line
+            # here is not syntactically distinguishable from a further column
+            # entry, and the whole value of this line rests on the model reading
+            # it as prose rather than as schema.
+            lines.append(f"Note: {_PARTIAL_COLUMNS_NOTE}.")
         lines.append("")
 
     if foreign_keys:
@@ -404,6 +429,11 @@ def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
                 lines.append(f"  - {col_name} ({col_type}): {col_desc}")
             else:
                 lines.append(f"  - {col_name} ({col_type})")
+        # Both renderers carry the note, because `SCHEMA_FORMAT` chooses between
+        # them at runtime: marking only the default would leave every `verbose`
+        # deployment with the restriction unstated and no way to tell.
+        if _columns_omitted(table):
+            lines.append(f"Note: {_PARTIAL_COLUMNS_NOTE}.")
         lines.append("")
     return "\n".join(lines)
 
