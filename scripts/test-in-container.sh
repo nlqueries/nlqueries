@@ -16,26 +16,23 @@
 #
 # Arguments are passed straight to pytest.
 #
-# AFTER AN INTERRUPTED RUN, CHECK FOR STRANDED CONTAINERS:
+# The testcontainers reaper is left ON, so an abnormal exit cleans up after
+# itself. To check anyway, or after a crash of the reaper too:
 #
 #   docker ps --filter label=org.testcontainers=true
 #
-# The reaper is disabled below (it collides on its fixed container name), so
-# nothing cleans up after an abnormal exit.
-#
-# A single Ctrl-C does not strand anything: docker proxies SIGINT to pytest as
-# PID 1, pytest catches `KeyboardInterrupt` and still runs
-# `pytest_sessionfinish`, so the fixtures' `finally` blocks do stop their
-# containers -- session- and module-scoped alike. What strands a sibling is a
-# `docker kill` or an OOM kill, which leaves no teardown at all, or a second
-# Ctrl-C landing inside a teardown, which cuts it off part-way through
-# `container.stop()`. All three were measured in this image, not reasoned about.
-#
-# The label filter rather than an image name, because the fixtures start
+# That filter rather than an image name, because the fixtures start
 # `postgres:16-alpine` (the Postgres connector and security suites) and
-# `qdrant/qdrant:v1.18.2` (the two cache integration modules), and the filter
-# keeps finding them if that list changes. CI never notices -- the runner is
-# discarded; a dev machine accumulates them.
+# `qdrant/qdrant:v1.18.2` (the two cache integration modules), and a filter
+# keeps finding them if that list changes.
+#
+# For the record, since a previous revision of this header said otherwise: a
+# single Ctrl-C strands nothing even with the reaper off. Docker proxies
+# SIGINT to pytest as PID 1, pytest catches `KeyboardInterrupt` and still runs
+# `pytest_sessionfinish`, so the fixtures' `finally` blocks stop their own
+# containers. What the reaper is for is the case where no teardown runs at
+# all -- a `docker kill`, an OOM kill, or a second Ctrl-C cutting into a
+# teardown already in progress. Each of those was measured here.
 
 set -euo pipefail
 
@@ -89,9 +86,20 @@ fi
 # and `tests/integration/` -- which is the same class of misleading green this
 # script exists to remove.
 #
-# `TESTCONTAINERS_RYUK_DISABLED` matches what ci.yml sets; without it the reaper
-# collides on its fixed container name (`409 Conflict`). The host override plus
-# `host-gateway` is what lets this container reach the published port.
+# The reaper is deliberately NOT disabled here. It was, on the stated grounds
+# that it 'collides on its fixed container name (409 Conflict)' -- which
+# cannot happen: `Reaper._create_instance` names it
+# `testcontainers-ryuk-{SESSION_ID}` with a per-process `uuid4()`. With the
+# reaper enabled the whole suite passes and leaves nothing behind, so the
+# reason for switching off the only cleanup that survives an abnormal exit
+# did not survive being checked.
+#
+# `ci.yml` still sets the flag. Why it does is not recorded anywhere, and on
+# an ephemeral runner the reaper makes no difference either way, so that is
+# left alone rather than changed on a guess.
+#
+# The host override plus `host-gateway` is what lets this container reach the
+# published port.
 #
 # Measured: `test_payload_corpus.py` and `test_postgres_connector.py` went from
 # skipped to 37 passed, 3 xfailed, 0 skipped.
@@ -110,7 +118,6 @@ exec env MSYS_NO_PATHCONV=1 docker run --rm \
   -v "/var/run/docker.sock:/var/run/docker.sock" \
   --add-host host.docker.internal:host-gateway \
   -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
-  -e TESTCONTAINERS_RYUK_DISABLED=true \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e HOME=/tmp \
   -w /app \

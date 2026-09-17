@@ -181,6 +181,14 @@ jobs:
       - name: Run pytest with coverage
         run: pytest --cov=nlqueries --cov-report=xml --cov-report=term-missing
         env:
+          # Why this is set is not recorded. It was once explained, in
+          # scripts/test-in-container.sh, as avoiding a 409 on the reaper's fixed
+          # container name -- but the reaper names itself with a per-process uuid4,
+          # so that cannot have been it, and with the reaper enabled the suite
+          # passes and strands nothing. On an ephemeral runner it makes no
+          # observable difference either way, so this is left as it is rather than
+          # changed on a guess. If it ever needs touching, start by finding out
+          # what the original failure actually was.
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
       - name: Upload coverage report
