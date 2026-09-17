@@ -82,8 +82,8 @@ def get_agent_schema(agent_id: str) -> str:
     """Return the schema for an agent: tables, columns, types, and foreign keys.
 
     Reads the agent's YAML knowledge base and formats it compactly so you can
-    inspect exactly which tables and columns are available before formulating
-    a question.
+    inspect which tables and columns are available before formulating a
+    question. A table whose column list is partial carries a note saying so.
 
     Args:
         agent_id: Agent ID from list_agents().
@@ -94,6 +94,31 @@ def get_agent_schema(agent_id: str) -> str:
     import re  # noqa: PLC0415
 
     import yaml  # noqa: PLC0415
+
+    # The same note the prompt renderers emit, from the same constant, so the
+    # four renderings of this column list cannot drift apart in what they say
+    # about a partial one. Imported here rather than at module scope, matching
+    # how this function defers its other imports.
+    #
+    # Why the note is needed: a deployment can restrict which columns an agent
+    # may read, and the knowledge base then lists only the permitted ones, so a
+    # withheld column is indistinguishable from one the table does not have. A
+    # reader -- person or client model -- concludes the data is not there rather
+    # than that it was withheld. Nothing on this path writes SQL, so it is
+    # milder than in the prompt renderers, but it is the same false impression.
+    #
+    # That reasoning lives here and not in the docstring because FastMCP
+    # publishes the docstring verbatim as the tool description every MCP client
+    # model receives: `_build_server` registers `guard(fn, ...)` and `guard`
+    # keeps `__doc__` through `functools.wraps`. Measured on the published
+    # description: 403 characters before this change, 951 with the rationale in
+    # the docstring, 458 with the one sentence above -- and every one of those
+    # characters is spent on every client, for a distinction no client can act
+    # on.
+    from nlqueries.orchestrator.prompt_assembly import (  # noqa: PLC0415
+        _PARTIAL_COLUMNS_NOTE,
+        _columns_omitted,
+    )
 
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
     kb_path = config.KB_PATH / f"{safe_id}.yaml"
@@ -133,6 +158,9 @@ def get_agent_schema(agent_id: str) -> str:
             col_parts.append(f"  {col_name}: {col_type}{flag_str}{sample_str}")
 
         lines.append("\n".join(col_parts))
+
+        if _columns_omitted(tbl):
+            lines.append(f"  Note: {_PARTIAL_COLUMNS_NOTE}.")
 
         fks = tbl.get("foreign_keys", [])
         if fks:
