@@ -44,10 +44,6 @@ MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" 
 # tests reach for `scripts/`, `docs/` and example files, and discovering each
 # missing one through a fresh collection error is a slow way to learn the list.
 #
-# `.venv` is masked by an anonymous volume. The host copy holds win_amd64
-# wheels; left visible it shadows nothing by default, but anything that adds it
-# to `sys.path` would load Windows binaries inside Linux and fail confusingly.
-#
 # `.venv` is masked by an anonymous volume *only when the host actually has one*.
 # The host copy holds win_amd64 wheels, and anything putting it on `sys.path`
 # would load Windows binaries inside Linux and fail confusingly — but the mask is
@@ -64,6 +60,21 @@ if [ -d "$HERE/.venv" ]; then
   MASK=(-v "/app/.venv")
 fi
 
+# The socket alone is not enough, and this is the important part: with only the
+# socket, testcontainers starts its sibling on the *host* and these tests cannot
+# reach it, so the fixtures take their `pytest.skip` path. The run then reports
+# zero failures while silently omitting the security corpus --
+# `test_payload_corpus.py`, `test_cache_poisoning.py`, `test_postgres_connector.py`
+# and `tests/integration/` -- which is the same class of misleading green this
+# script exists to remove.
+#
+# `TESTCONTAINERS_RYUK_DISABLED` matches what ci.yml sets; without it the reaper
+# collides on its fixed container name (`409 Conflict`). The host override plus
+# `host-gateway` is what lets this container reach the published port.
+#
+# Measured: `test_payload_corpus.py` and `test_postgres_connector.py` went from
+# skipped to 37 passed, 3 xfailed, 0 skipped.
+#
 # The Docker socket is passed through because parts of the suite use
 # testcontainers to stand up a real Postgres. Without it those tests do not
 # skip, they ERROR on `DockerException` — 22 of them — which at a glance is
@@ -76,6 +87,9 @@ exec env MSYS_NO_PATHCONV=1 docker run --rm \
   -v "$MOUNT:/app:ro" \
   ${MASK[@]+"${MASK[@]}"} \
   -v "/var/run/docker.sock:/var/run/docker.sock" \
+  --add-host host.docker.internal:host-gateway \
+  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  -e TESTCONTAINERS_RYUK_DISABLED=true \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e HOME=/tmp \
   -w /app \
