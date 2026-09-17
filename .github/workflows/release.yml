@@ -62,6 +62,9 @@ jobs:
         run: pytest --tb=short -q
         working-directory: ${{ github.workspace }}
         env:
+          # Second copy of this flag. Why either is set is not recorded --
+          # see the note on the same line in ci.yml before changing or
+          # removing it, and change both together or neither.
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   # ---------------------------------------------------------------------------

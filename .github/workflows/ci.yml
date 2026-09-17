@@ -188,7 +188,9 @@ jobs:
           # passes and strands nothing. On an ephemeral runner it makes no
           # observable difference either way, so this is left as it is rather than
           # changed on a guess. If it ever needs touching, start by finding out
-          # what the original failure actually was.
+          # what the original failure actually was -- and note that
+          # release.yml sets the same flag on its own Pytest step, so the two
+          # move together or not at all.
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
       - name: Upload coverage report
