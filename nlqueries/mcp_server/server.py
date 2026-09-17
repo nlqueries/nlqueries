@@ -83,16 +83,7 @@ def get_agent_schema(agent_id: str) -> str:
 
     Reads the agent's YAML knowledge base and formats it compactly so you can
     inspect which tables and columns are available before formulating a
-    question.
-
-    A table whose column list is **partial** carries a note saying so. A
-    deployment can restrict which columns a given agent may read, and the
-    knowledge base then lists only the permitted ones. Without the note the
-    absent columns are indistinguishable from columns the table does not
-    have, and a reader -- person or client model -- concludes the data is not
-    there rather than that it was withheld. Nothing on this path writes SQL,
-    so the consequence is milder than in the prompt renderers, but it is the
-    same false impression.
+    question. A table whose column list is partial carries a note saying so.
 
     Args:
         agent_id: Agent ID from list_agents().
@@ -108,6 +99,22 @@ def get_agent_schema(agent_id: str) -> str:
     # four renderings of this column list cannot drift apart in what they say
     # about a partial one. Imported here rather than at module scope, matching
     # how this function defers its other imports.
+    #
+    # Why the note is needed: a deployment can restrict which columns an agent
+    # may read, and the knowledge base then lists only the permitted ones, so a
+    # withheld column is indistinguishable from one the table does not have. A
+    # reader -- person or client model -- concludes the data is not there rather
+    # than that it was withheld. Nothing on this path writes SQL, so it is
+    # milder than in the prompt renderers, but it is the same false impression.
+    #
+    # That reasoning lives here and not in the docstring because FastMCP
+    # publishes the docstring verbatim as the tool description every MCP client
+    # model receives: `_build_server` registers `guard(fn, ...)` and `guard`
+    # keeps `__doc__` through `functools.wraps`. Measured on the published
+    # description: 403 characters before this change, 951 with the rationale in
+    # the docstring, 458 with the one sentence above -- and every one of those
+    # characters is spent on every client, for a distinction no client can act
+    # on.
     from nlqueries.orchestrator.prompt_assembly import (  # noqa: PLC0415
         _PARTIAL_COLUMNS_NOTE,
         _columns_omitted,
