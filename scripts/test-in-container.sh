@@ -16,12 +16,26 @@
 #
 # Arguments are passed straight to pytest.
 #
-# AFTER AN INTERRUPTED RUN, CHECK `docker ps`. The testcontainers reaper is
-# disabled below (it collides on its fixed container name), and the fixtures
-# stop their own containers in a `finally` that does not run if you Ctrl-C or
-# the container is killed. Each interrupted invocation can therefore leave a
-# `postgres:16-alpine` sibling running on the host indefinitely. CI never
-# notices because the runner is discarded; a dev machine accumulates them.
+# AFTER AN INTERRUPTED RUN, CHECK FOR STRANDED CONTAINERS:
+#
+#   docker ps --filter label=org.testcontainers=true
+#
+# The reaper is disabled below (it collides on its fixed container name), so
+# nothing cleans up after an abnormal exit.
+#
+# A single Ctrl-C does not strand anything: docker proxies SIGINT to pytest as
+# PID 1, pytest catches `KeyboardInterrupt` and still runs
+# `pytest_sessionfinish`, so the fixtures' `finally` blocks do stop their
+# containers -- session- and module-scoped alike. What strands a sibling is a
+# `docker kill` or an OOM kill, which leaves no teardown at all, or a second
+# Ctrl-C landing inside a teardown, which cuts it off part-way through
+# `container.stop()`. All three were measured in this image, not reasoned about.
+#
+# The label filter rather than an image name, because the fixtures start
+# `postgres:16-alpine` (the Postgres connector and security suites) and
+# `qdrant/qdrant:v1.18.2` (the two cache integration modules), and the filter
+# keeps finding them if that list changes. CI never notices -- the runner is
+# discarded; a dev machine accumulates them.
 
 set -euo pipefail
 
