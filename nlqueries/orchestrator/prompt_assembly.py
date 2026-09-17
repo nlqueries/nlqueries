@@ -353,7 +353,12 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
         if col_parts:
             lines.append(", ".join(col_parts))
         if _columns_omitted(table):
-            lines.append(f"({_PARTIAL_COLUMNS_NOTE})")
+            # `Note:` prefixed, not parenthesised. M-Schema renders columns as
+            # parenthesised tuples -- `(id:BIGINT)` -- so a bare `(...)` line
+            # here is not syntactically distinguishable from a further column
+            # entry, and the whole value of this line rests on the model reading
+            # it as prose rather than as schema.
+            lines.append(f"Note: {_PARTIAL_COLUMNS_NOTE}.")
         lines.append("")
 
     if foreign_keys:

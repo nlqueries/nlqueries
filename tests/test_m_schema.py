@@ -505,3 +505,57 @@ def test_the_note_names_the_table_it_belongs_to() -> None:
     assert note_at < regions_at, (
         "the note landed after the next table, so it reads as belonging to it"
     )
+
+
+def test_the_sql_generation_renderer_says_it_too() -> None:
+    """The third renderer of this schema, and the one most easily missed.
+
+    `_build_sql_system_prompt` feeds `_format_schema_for_prompt` to `generate_sql`
+    *and* to `validate_and_repair`. Without the note the repair step regenerates
+    from a partial column list presented as a complete one — the exact situation
+    the flag exists to prevent, at the moment the model is most likely to reach
+    for `SELECT *`.
+
+    It lives in `sql_generation`, not `prompt_assembly`, which is why searching
+    one module for "renderers" missed it.
+    """
+    from nlqueries.orchestrator.sql_generation import _format_schema_for_prompt
+
+    assert "never with *" in _format_schema_for_prompt(_kb_with(True))
+    assert "never with *" not in _format_schema_for_prompt(_kb_with(False))
+
+
+def test_every_renderer_uses_the_one_sentence() -> None:
+    """Three copies of this sentence is how three renderers come to disagree.
+
+    Asserted against the shared constant rather than a literal, so a renderer
+    that grew its own wording fails here rather than drifting quietly.
+    """
+    from nlqueries.orchestrator.prompt_assembly import (
+        _PARTIAL_COLUMNS_NOTE,
+        _build_full_schema_section,
+    )
+    from nlqueries.orchestrator.sql_generation import _format_schema_for_prompt
+
+    kb = _kb_with(True)
+    for rendered in (
+        _render_m_schema(kb),
+        _build_full_schema_section(kb),
+        _format_schema_for_prompt(kb),
+    ):
+        assert _PARTIAL_COLUMNS_NOTE in rendered
+        assert rendered.count(_PARTIAL_COLUMNS_NOTE) == 1
+
+
+def test_the_m_schema_note_is_not_mistakable_for_a_column() -> None:
+    """M-Schema renders columns as parenthesised tuples — `(id:BIGINT)`.
+
+    A bare `(...)` line is therefore not syntactically distinguishable from a
+    further column entry, and the value of this line rests entirely on the model
+    reading it as prose. The verbose renderer prefixes `Note:`; so does this one.
+    """
+    rendered = _render_m_schema(_kb_with(True))
+
+    note_line = next(ln for ln in rendered.splitlines() if "never with *" in ln)
+    assert note_line.startswith("Note:"), note_line
+    assert not note_line.startswith("("), note_line
