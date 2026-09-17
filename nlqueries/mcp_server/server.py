@@ -82,8 +82,17 @@ def get_agent_schema(agent_id: str) -> str:
     """Return the schema for an agent: tables, columns, types, and foreign keys.
 
     Reads the agent's YAML knowledge base and formats it compactly so you can
-    inspect exactly which tables and columns are available before formulating
-    a question.
+    inspect which tables and columns are available before formulating a
+    question.
+
+    A table whose column list is **partial** carries a note saying so. A
+    deployment can restrict which columns a given agent may read, and the
+    knowledge base then lists only the permitted ones. Without the note the
+    absent columns are indistinguishable from columns the table does not
+    have, and a reader -- person or client model -- concludes the data is not
+    there rather than that it was withheld. Nothing on this path writes SQL,
+    so the consequence is milder than in the prompt renderers, but it is the
+    same false impression.
 
     Args:
         agent_id: Agent ID from list_agents().
@@ -94,6 +103,15 @@ def get_agent_schema(agent_id: str) -> str:
     import re  # noqa: PLC0415
 
     import yaml  # noqa: PLC0415
+
+    # The same note the prompt renderers emit, from the same constant, so the
+    # four renderings of this column list cannot drift apart in what they say
+    # about a partial one. Imported here rather than at module scope, matching
+    # how this function defers its other imports.
+    from nlqueries.orchestrator.prompt_assembly import (  # noqa: PLC0415
+        _PARTIAL_COLUMNS_NOTE,
+        _columns_omitted,
+    )
 
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
     kb_path = config.KB_PATH / f"{safe_id}.yaml"
@@ -133,6 +151,9 @@ def get_agent_schema(agent_id: str) -> str:
             col_parts.append(f"  {col_name}: {col_type}{flag_str}{sample_str}")
 
         lines.append("\n".join(col_parts))
+
+        if _columns_omitted(tbl):
+            lines.append(f"  Note: {_PARTIAL_COLUMNS_NOTE}.")
 
         fks = tbl.get("foreign_keys", [])
         if fks:

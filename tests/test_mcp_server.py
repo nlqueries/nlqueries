@@ -348,6 +348,90 @@ class TestGetAgentSchema:
 
         assert "One row per placed order" in out
 
+    def test_a_partial_column_list_says_so(self, tmp_path: Path) -> None:
+        """A withheld column must not read as a column the table does not have.
+
+        Nothing on this path writes SQL, so this is milder than the three prompt
+        renderers -- but a person or client model inspecting the schema draws the
+        same wrong conclusion, that the data is simply absent.
+        """
+        from nlqueries.mcp_server.server import get_agent_schema
+        from nlqueries.orchestrator.prompt_assembly import _PARTIAL_COLUMNS_NOTE
+
+        self._write_kb(
+            tmp_path,
+            """
+            schema:
+              tables:
+                - name: customers
+                  columns_omitted: true
+                  columns:
+                    - name: id
+                      type: BIGINT
+                - name: orders
+                  columns:
+                    - name: id
+                      type: BIGINT
+            """,
+        )
+        with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
+            out = get_agent_schema("sales")
+
+        assert _PARTIAL_COLUMNS_NOTE in out
+
+        # Inside the marked table's block, not appended once for the schema --
+        # an `in` check alone is satisfied by a note rendered anywhere.
+        assert out.index(_PARTIAL_COLUMNS_NOTE) < out.index("**orders**")
+        # And exactly once: `orders` is unmarked and must not inherit it.
+        assert out.count(_PARTIAL_COLUMNS_NOTE) == 1
+
+    def test_a_complete_column_list_is_left_alone(self, tmp_path: Path) -> None:
+        """The control. Every knowledge base written before the flag existed.
+
+        A note on every table teaches the reader to ignore it, which costs the
+        marked ones the only thing they had.
+        """
+        from nlqueries.mcp_server.server import get_agent_schema
+        from nlqueries.orchestrator.prompt_assembly import _PARTIAL_COLUMNS_NOTE
+
+        self._write_kb(
+            tmp_path,
+            """
+            schema:
+              tables:
+                - name: orders
+                  columns:
+                    - name: id
+                      type: BIGINT
+            """,
+        )
+        with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
+            out = get_agent_schema("sales")
+
+        assert _PARTIAL_COLUMNS_NOTE not in out
+
+    def test_columns_omitted_false_is_a_complete_list(self, tmp_path: Path) -> None:
+        """Present-and-false is not the same as marked, which `.get` alone blurs."""
+        from nlqueries.mcp_server.server import get_agent_schema
+        from nlqueries.orchestrator.prompt_assembly import _PARTIAL_COLUMNS_NOTE
+
+        self._write_kb(
+            tmp_path,
+            """
+            schema:
+              tables:
+                - name: orders
+                  columns_omitted: false
+                  columns:
+                    - name: id
+                      type: BIGINT
+            """,
+        )
+        with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
+            out = get_agent_schema("sales")
+
+        assert _PARTIAL_COLUMNS_NOTE not in out
+
     def test_pk_flag_shown(self, tmp_path: Path) -> None:
         from nlqueries.mcp_server.server import get_agent_schema
 
