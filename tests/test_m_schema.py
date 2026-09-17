@@ -416,3 +416,92 @@ class TestAssemblePromptSchemaFormat:
             prompt = assemble_prompt("How many orders?", self._kb())
         assert "status" in prompt.static_system
         assert "id" in prompt.static_system
+
+
+# ---------------------------------------------------------------------------
+# columns_omitted: telling the model its column list is partial
+# ---------------------------------------------------------------------------
+#
+# A knowledge base may list only some of a table's columns, because a deployment
+# restricted which of them an agent may read. Nothing said so, and the model
+# cannot tell a partial list from a complete one -- so it wrote `SELECT *`
+# meaning "everything about this table" and either received columns the KB never
+# showed it, or had the statement refused by whatever enforced the restriction.
+#
+# Both renderers carry the note. `SCHEMA_FORMAT` picks between them at runtime,
+# so marking only the default would leave every `verbose` deployment with the
+# restriction unstated and nothing to reveal that.
+
+
+def _kb_with(omitted: bool) -> dict:
+    table: dict = {
+        "name": "orders",
+        "columns": [{"name": "id", "type": "BIGINT"}],
+    }
+    if omitted:
+        table["columns_omitted"] = True
+    return {"db_name": "sales", "schema": {"tables": [table]}}
+
+
+def test_m_schema_says_the_column_list_is_partial() -> None:
+    rendered = _render_m_schema(_kb_with(True))
+    assert "never with *" in rendered, rendered
+
+
+def test_verbose_schema_says_the_column_list_is_partial() -> None:
+    """The renderer a `verbose` deployment gets, which must not be forgotten."""
+    from nlqueries.orchestrator.prompt_assembly import _build_full_schema_section
+
+    rendered = _build_full_schema_section(_kb_with(True))
+    assert "never with *" in rendered, rendered
+
+
+def test_neither_renderer_says_it_when_the_list_is_complete() -> None:
+    """The control. A note on every table would train the model to ignore it.
+
+    Absence of the key is the ordinary case -- every knowledge base written
+    before this existed -- so it must render exactly as it did.
+    """
+    from nlqueries.orchestrator.prompt_assembly import _build_full_schema_section
+
+    kb = _kb_with(False)
+    assert "never with *" not in _render_m_schema(kb)
+    assert "never with *" not in _build_full_schema_section(kb)
+
+
+def test_an_explicit_false_is_treated_as_complete() -> None:
+    """`columns_omitted: false` is a full list, not a missing key."""
+    kb = _kb_with(True)
+    kb["schema"]["tables"][0]["columns_omitted"] = False
+
+    assert "never with *" not in _render_m_schema(kb)
+
+
+def test_the_note_names_the_table_it_belongs_to() -> None:
+    """One partial table in a schema must not mark the others.
+
+    Asserted on position rather than presence: the note has to sit inside the
+    marked table's block, and a renderer that appended it once per schema would
+    satisfy a mere `in` check.
+    """
+    kb = {
+        "db_name": "sales",
+        "schema": {
+            "tables": [
+                {
+                    "name": "orders",
+                    "columns": [{"name": "id", "type": "BIGINT"}],
+                    "columns_omitted": True,
+                },
+                {"name": "regions", "columns": [{"name": "code", "type": "TEXT"}]},
+            ]
+        },
+    }
+    rendered = _render_m_schema(kb)
+
+    assert rendered.count("never with *") == 1
+    note_at = rendered.index("never with *")
+    regions_at = rendered.index("regions")
+    assert note_at < regions_at, (
+        "the note landed after the next table, so it reads as belonging to it"
+    )
