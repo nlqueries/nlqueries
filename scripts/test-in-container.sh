@@ -15,6 +15,13 @@
 #   scripts/test-in-container.sh -k cache_poisoning # one pattern
 #
 # Arguments are passed straight to pytest.
+#
+# AFTER AN INTERRUPTED RUN, CHECK `docker ps`. The testcontainers reaper is
+# disabled below (it collides on its fixed container name), and the fixtures
+# stop their own containers in a `finally` that does not run if you Ctrl-C or
+# the container is killed. Each interrupted invocation can therefore leave a
+# `postgres:16-alpine` sibling running on the host indefinitely. CI never
+# notices because the runner is discarded; a dev machine accumulates them.
 
 set -euo pipefail
 
