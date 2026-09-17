@@ -67,20 +67,32 @@ MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" 
 # `testcontainers[postgres]>=4.0` — NOT the pinned `requirements/core.lock` — so
 # a rebuild can carry a newer testcontainers whose `ryuk_image` default has
 # moved, and a tag hardcoded in this script would send you after the wrong one.
-RYUK_PROBE='from testcontainers.core.config import testcontainers_config as c; print(c.ryuk_image)'
-RYUK="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE" python -c "$RYUK_PROBE" 2>/dev/null || true)"
-if [ -z "$RYUK" ]; then
-  # Could not ask the image. Say so rather than pretending the check ran: the
-  # whole point is that a missing reaper is invisible in the results.
-  echo "Warning: could not read the reaper image from $IMAGE; preflight skipped." >&2
-elif ! docker image inspect "$RYUK" >/dev/null 2>&1; then
-  echo "Fetching the testcontainers reaper ($RYUK)..." >&2
-  if ! docker pull "$RYUK" >/dev/null 2>&1; then
-    echo "Could not obtain the reaper image $RYUK." >&2
-    echo "Running anyway would SKIP the security corpus and report green," >&2
-    echo "so this stops here. Pull it when you next have registry access," >&2
-    echo "or set TESTCONTAINERS_RYUK_DISABLED=true to run without cleanup." >&2
-    exit 1
+# The opt-out the failure message below points at. Honoured in two places,
+# because either alone is useless: skipping the preflight lets the run start,
+# and the `-e` on the `docker run` is what actually reaches pytest -- this
+# script passes only the flags it names, so a variable exported in the
+# caller's shell does not cross into the container by itself.
+RYUK_OFF=()
+if [ -n "${TESTCONTAINERS_RYUK_DISABLED:-}" ]; then
+  RYUK_OFF=(-e "TESTCONTAINERS_RYUK_DISABLED=$TESTCONTAINERS_RYUK_DISABLED")
+  echo "TESTCONTAINERS_RYUK_DISABLED is set: running without the reaper." >&2
+  echo "Nothing will clean up after an abnormal exit -- see the header." >&2
+else
+  RYUK_PROBE='from testcontainers.core.config import testcontainers_config as c; print(c.ryuk_image)'
+  RYUK="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE" python -c "$RYUK_PROBE" 2>/dev/null || true)"
+  if [ -z "$RYUK" ]; then
+    # Could not ask the image. Say so rather than pretending the check ran: the
+    # whole point is that a missing reaper is invisible in the results.
+    echo "Warning: could not read the reaper image from $IMAGE; preflight skipped." >&2
+  elif ! docker image inspect "$RYUK" >/dev/null 2>&1; then
+    echo "Fetching the testcontainers reaper ($RYUK)..." >&2
+    if ! docker pull "$RYUK" >/dev/null 2>&1; then
+      echo "Could not obtain the reaper image $RYUK." >&2
+      echo "Running anyway would SKIP the security corpus and report green," >&2
+      echo "so this stops here. Pull it when you next have registry access," >&2
+      echo "or re-run with TESTCONTAINERS_RYUK_DISABLED=true to run without cleanup." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -157,6 +169,7 @@ exec env MSYS_NO_PATHCONV=1 docker run --rm \
   -v "/var/run/docker.sock:/var/run/docker.sock" \
   --add-host host.docker.internal:host-gateway \
   -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  ${RYUK_OFF[@]+"${RYUK_OFF[@]}"} \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e HOME=/tmp \
   -w /app \
