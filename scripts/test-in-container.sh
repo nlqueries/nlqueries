@@ -94,9 +94,24 @@ fi
 # reason for switching off the only cleanup that survives an abnormal exit
 # did not survive being checked.
 #
-# `ci.yml` still sets the flag. Why it does is not recorded anywhere, and on
-# an ephemeral runner the reaper makes no difference either way, so that is
-# left alone rather than changed on a guess.
+# `ci.yml` and `release.yml` both still set the flag on their own Pytest steps.
+# Why either does is not recorded anywhere, and on an ephemeral runner the reaper
+# makes no difference either way, so both are left alone rather than changed on a
+# guess. Each carries a note saying so, and the two move together or not at all.
+#
+# THE REAPER IS NOW A PREREQUISITE OF A LOCAL RUN, and it fails quietly. Its
+# image has to be pullable and reachable through the host override, and it is
+# created inside `DockerContainer.start()` -- which `tests/security/conftest.py`
+# and `tests/test_postgres_connector.py` both wrap in
+# `except Exception: pytest.skip(...)`. So on a fresh or rate-limited machine a
+# reaper that cannot start does not fail the run; it skips the security corpus
+# and reports green, which is the exact class of misleading result described
+# twenty lines above. If those modules start skipping, suspect the reaper first:
+#
+#   docker pull testcontainers/ryuk:0.8.1   # `ryuk_image` on testcontainers 4.15.0
+#
+# The swallowing predates this change and is not fixed here, but this change is
+# what gives it a new way to fire.
 #
 # The host override plus `host-gateway` is what lets this container reach the
 # published port.
