@@ -58,9 +58,11 @@ fi
 # the manifest, not on source.
 MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" "$MOUNT" >/dev/null
 
-# Reaper preflight. See the header: without this image the container fixtures
-# raise, the suite turns that into `pytest.skip`, and the run is green with the
-# security corpus absent — a worse outcome than failing.
+# Reaper preflight. Without this image the container fixtures raise, the suite
+# turns that into `pytest.skip`, and the run is green with the security corpus
+# absent — a worse outcome than failing. The full explanation, including which
+# fixtures swallow it, is in the block above the `docker run` at the foot of
+# this script.
 #
 # The tag is read out of the image rather than written here. `Dockerfile.test`
 # installs the dev extras from `pyproject.toml`, where the constraint is
@@ -72,12 +74,28 @@ MSYS_NO_PATHCONV=1 docker build --quiet -f "$MOUNT/Dockerfile.test" -t "$IMAGE" 
 # and the `-e` on the `docker run` is what actually reaches pytest -- this
 # script passes only the flags it names, so a variable exported in the
 # caller's shell does not cross into the container by itself.
+#
+# Parsed the way testcontainers parses it, not as "set to anything". Its
+# `_render_bool` tests `env_val.lower() in ENABLE_FLAGS`, and
+# `ENABLE_FLAGS = ("yes", "true", "t", "y", "1")` -- so `false`, `0`, `no` and
+# any typo all mean the reaper is ON.
+#
+# Treating those as the opt-out was a hole reached through the one variable this
+# script invites the reader to set: `TESTCONTAINERS_RYUK_DISABLED=false` skipped
+# the preflight, announced "running without the reaper", and then handed pytest a
+# value that switched the reaper back on -- so on a machine with no ryuk image it
+# produced exactly the green-with-the-corpus-missing run the preflight exists to
+# stop. Anything this script does not recognise falls through to the preflight,
+# which is the direction that fails safe.
 RYUK_OFF=()
-if [ -n "${TESTCONTAINERS_RYUK_DISABLED:-}" ]; then
+case "$(printf '%s' "${TESTCONTAINERS_RYUK_DISABLED:-}" | tr '[:upper:]' '[:lower:]')" in
+  yes | true | t | y | 1)
   RYUK_OFF=(-e "TESTCONTAINERS_RYUK_DISABLED=$TESTCONTAINERS_RYUK_DISABLED")
   echo "TESTCONTAINERS_RYUK_DISABLED is set: running without the reaper." >&2
-  echo "Nothing will clean up after an abnormal exit -- see the header." >&2
-else
+  echo "Nothing will clean up after an abnormal exit -- see the block above the" >&2
+  echo "docker run below, which explains what that costs." >&2
+  ;;
+  *)
   RYUK_PROBE='from testcontainers.core.config import testcontainers_config as c; print(c.ryuk_image)'
   RYUK="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE" python -c "$RYUK_PROBE" 2>/dev/null || true)"
   if [ -z "$RYUK" ]; then
@@ -94,7 +112,8 @@ else
       exit 1
     fi
   fi
-fi
+  ;;
+esac
 
 # The whole repo is mounted read-only rather than a list of subdirectories:
 # tests reach for `scripts/`, `docs/` and example files, and discovering each
@@ -138,7 +157,8 @@ fi
 # guess. Each carries a note saying so, and the two move together or not at all.
 #
 # THE REAPER IS A PREREQUISITE OF A LOCAL RUN, and it would fail quietly, so
-# there is a preflight for it below. It is created inside
+# there is a preflight for it *above*, just after the image build. It is
+# created inside
 # `DockerContainer.start()`, which `tests/security/conftest.py` and
 # `tests/test_postgres_connector.py` both wrap in
 # `except Exception: pytest.skip(...)` -- so on a fresh, offline or rate-limited
