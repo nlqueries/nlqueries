@@ -154,12 +154,20 @@ class ExcelConnector(DocumentConnector):
         # was shown rather than looking for its siblings.
         budget = ExtractionBudget(name=source_path.name)
         wb = openpyxl.load_workbook(str(source_path), read_only=True, data_only=True)
-        budget.check("opening the workbook")
 
         chunks: list[DocumentChunk] = []
         rows_seen = 0
 
         try:
+            # Inside the `try`, so `finally: wb.close()` runs when it fires --
+            # which is exactly the case the budget exists for. Raising between
+            # `load_workbook` and the `try` left the read-only workbook and the
+            # zip handle it holds to a finaliser, and on Windows that is long
+            # enough to keep the uploaded file locked against the caller
+            # deleting it. Checked here rather than earlier changes nothing about
+            # *when* it fires: no rows have been read yet either way.
+            budget.check("opening the workbook")
+
             for sheet_index, sheet in enumerate(wb.worksheets, start=1):
                 headers: list[str] | None = None
                 first_data_row_num = 1

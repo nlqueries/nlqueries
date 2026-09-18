@@ -328,3 +328,80 @@ def test_the_seconds_setting_falls_back_rather_than_raising(
     for bad in ("120s", "", "abc", "0", "-1", "inf", "-inf", "nan"):
         monkeypatch.setenv("NLQ_MAX_EXTRACTION_SECONDS", bad)
         assert _positive_float("NLQ_MAX_EXTRACTION_SECONDS", 120.0) == 120.0, bad
+
+
+def test_the_excel_budget_covers_opening_the_workbook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the Excel clock starts, for the same reason as the Word case.
+
+    `test_every_connector_is_bounded_by_the_clock[excel]` patches `MAX_SECONDS`
+    to `0.0`, so its first check fires wherever the budget was constructed and it
+    passes equally for a budget built before `load_workbook` and one built after
+    — which is why it did not catch the ordering. `read_only=True` makes row
+    iteration lazy, not opening: measured at ~0.33s for a 60,000-row workbook
+    before a single row is read.
+
+    Small non-zero budget, with opening made slow, so it fails if the clock
+    starts after `load_workbook`.
+    """
+    import openpyxl as real_openpyxl
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    path = _sheet(tmp_path / "slow.xlsx", rows=10)
+    real_load = real_openpyxl.load_workbook
+
+    def _slow_load(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.2)
+        return real_load(*args, **kwargs)
+
+    # Patched on `openpyxl` itself: the connector imports it inside `ingest`, so
+    # there is no attribute on the connector module to replace.
+    monkeypatch.setattr(real_openpyxl, "load_workbook", _slow_load)
+    monkeypatch.setattr(_limits, "MAX_SECONDS", 0.05)
+
+    with pytest.raises(DocumentTooComplexError, match="opening the workbook"):
+        ExcelConnector().ingest(path, source_id="s")
+
+
+def test_a_refused_workbook_does_not_stay_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget firing must not leak the workbook's file handle.
+
+    The check used to sit between `load_workbook` and the `try` whose `finally`
+    calls `wb.close()`, so the one case the budget exists for was the one case
+    that skipped the close — leaving the zip handle to a finaliser, which on
+    Windows is long enough to keep the uploaded file locked against the caller
+    deleting it.
+
+    Asserted on `close()` actually being called, rather than on the file being
+    deletable, because the latter passes on this platform either way and would
+    prove nothing.
+    """
+    import openpyxl as real_openpyxl
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    path = _sheet(tmp_path / "leak.xlsx", rows=10)
+    real_load = real_openpyxl.load_workbook
+    closed: list[bool] = []
+
+    def _tracking_load(*args: Any, **kwargs: Any) -> Any:
+        wb = real_load(*args, **kwargs)
+        real_close = wb.close
+
+        def _close() -> None:
+            closed.append(True)
+            real_close()
+
+        wb.close = _close  # type: ignore[method-assign]
+        time.sleep(0.2)
+        return wb
+
+    monkeypatch.setattr(real_openpyxl, "load_workbook", _tracking_load)
+    monkeypatch.setattr(_limits, "MAX_SECONDS", 0.05)
+
+    with pytest.raises(DocumentTooComplexError):
+        ExcelConnector().ingest(path, source_id="s")
+
+    assert closed, "the workbook was not closed when the budget refused it"
