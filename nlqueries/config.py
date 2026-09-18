@@ -562,7 +562,7 @@ document whatever its directory claims.
 Measured: 200,000 rows by 10 columns took 87 seconds and 149 MiB of heap to
 ingest, from a 5.2 MiB file. 50,000 is generous for a document being chunked for
 retrieval -- at the connector's batch size of 50 it is already a thousand chunks
-per sheet -- and holds that cost to a few seconds.
+from one document -- and holds that cost to a few seconds.
 
 Rows rather than cells because it is the number a person can check against their
 own file. Width still matters to cost, which is what the runtime budget is for.

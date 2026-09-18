@@ -51,6 +51,41 @@ class DocumentTooComplexError(Exception):
     Deliberately not ``ValueError`` or ``MemoryError``: callers distinguish "this
     file is refused" from "this file is broken", and the enterprise ingestion
     task reports the two differently to the user.
+
+    Raised directly only by the *deterministic* limits -- the expansion gate and
+    the row cap. Both read a property of the file, so a caller that retries gets
+    the same answer and has spent a download and a parse to learn nothing.
+    :class:`DocumentExtractionTimeout` is the partial exception to that -- read
+    its docstring before retrying one, since it is not always transient -- and is
+    a subclass precisely so an existing ``except DocumentTooComplexError`` keeps
+    catching both.
+    """
+
+
+class DocumentExtractionTimeout(DocumentTooComplexError):
+    """Raised when extraction ran out of wall-clock budget.
+
+    Split from its parent because it is the one refusal here that *may* not be a
+    property of the file. The budget measures elapsed time, so it is partly a
+    function of what else the machine was doing: a document that extracts in
+    100s on an idle worker can pass the 120s default on a busy one and fail it
+    on the next. A caller that treats every ``DocumentTooComplexError`` as final
+    therefore permanently rejects files that are fine, and tells their owner to
+    split something that did not need splitting.
+
+    **It may equally be the file, and that is the case this class exists for.**
+    The budget is the only bound on what the expansion gate cannot reach: a
+    ``.pdf`` is not a zip, Word has no count cap, and an archive that misstated
+    its directory gets past the gate by construction. Such a document times out
+    on every attempt.
+
+    So a retry must be **bounded and counted per document**, not merely allowed.
+    Retry this rather than its parent, but with a limit, and record a document
+    that keeps timing out as finally refused -- an unbounded retry repeats a
+    download and up to ``MAX_EXTRACTION_SECONDS`` of parsing for exactly the
+    files these limits were added to contain, which makes the defence an
+    amplifier. ``enterprise``'s ingestion task bounds it with
+    ``INGEST_MAX_RETRIES``.
     """
 
 
@@ -102,7 +137,7 @@ class ExtractionBudget:
     def check(self, progress: str) -> None:
         """Raise if the budget is spent. *progress* names how far it got."""
         if self.elapsed > self._limit:
-            raise DocumentTooComplexError(
+            raise DocumentExtractionTimeout(
                 f"Extracting {self._name} passed the {self._limit:g}s budget "
                 f"after {progress} ({self.elapsed:.1f}s)."
             )
