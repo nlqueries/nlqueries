@@ -33,9 +33,10 @@ gate rather than the only one, and why the count limits in the connectors
 
 from __future__ import annotations
 
-import os
 import zipfile
 from pathlib import Path
+
+from nlqueries.config import MAX_DOCUMENT_EXPANDED_BYTES, MAX_DOCUMENT_EXPANSION_RATIO
 
 
 class DocumentTooComplexError(Exception):
@@ -47,39 +48,17 @@ class DocumentTooComplexError(Exception):
     """
 
 
-def _int_env(name: str, default: int) -> int:
-    """Read a positive integer from the environment, or fall back.
-
-    A malformed value falls back rather than raising: these are ceilings, and a
-    typo in a deployment's environment should not stop every ingest -- it should
-    leave the documented default in force.
-    """
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-#: Largest total uncompressed size permitted in a zip-based document.
+#: Re-exported from :mod:`nlqueries.config` rather than read from the environment
+#: here. ``config`` is where ``load_dotenv()`` runs and, by its own docstring, the
+#: single source of truth for settings -- and nothing in this package imports it
+#: otherwise, so reading ``os.getenv`` at import time meant that on any path where
+#: ``config`` had not already been imported the ``.env`` file had not been read and
+#: an operator's override was silently ignored.
 #:
-#: 400 MiB, which is above the ~231 MiB a legitimate 7 MiB spreadsheet reached in
-#: the table above and well below what an unbounded expansion costs a worker. A
-#: deployment with genuinely larger documents raises it knowingly; the point is
-#: that the ceiling exists rather than that this number is the only right one.
-MAX_EXPANDED_BYTES: int = _int_env("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 400 * 1024 * 1024)
-
-#: Largest compression ratio permitted, as expanded-over-compressed.
-#:
-#: Complementary to the byte ceiling rather than redundant with it: a small file
-#: that expands 1000x is a bomb even when the result sits under the ceiling, and
-#: a large file that expands 2x is ordinary. 100x is roughly three times the
-#: highest ratio measured on real content, so it refuses the crafted case without
-#: touching the plausible one.
-MAX_EXPANSION_RATIO: int = _int_env("NLQ_MAX_DOCUMENT_EXPANSION_RATIO", 100)
+#: Bound as module attributes so they remain the names this module's callers and
+#: tests refer to.
+MAX_EXPANDED_BYTES: int = MAX_DOCUMENT_EXPANDED_BYTES
+MAX_EXPANSION_RATIO: int = MAX_DOCUMENT_EXPANSION_RATIO
 
 
 def check_archive_expansion(source: str | Path) -> None:

@@ -5,7 +5,13 @@ and python-docx so it can run without the extras; that is the right trade for
 testing chunk shapes and the wrong one here. A limit on what a parser consumes is
 only meaningful against the parser -- a mocked ``openpyxl`` would confirm the
 arithmetic in ``_limits`` and say nothing about whether a real ``.xlsx`` is
-refused. The extras are in the ``dev`` group for this reason.
+refused.
+
+The parsers are installed for this reason -- in the CI test jobs, the release
+workflow's gate, and ``Dockerfile.test``, and deliberately *not* in the ``dev``
+extra: ``dev`` is compiled into ``requirements/core.lock``, which the runtime
+image installs, so putting them there would ship pdfplumber, python-docx and
+openpyxl to every deployment in order to make these tests run.
 """
 
 from __future__ import annotations
@@ -155,17 +161,54 @@ def test_the_limits_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
     """Configurable, and a malformed value falls back rather than raising.
 
     These are ceilings; a typo in a deployment's environment should leave the
-    documented default in force, not stop every ingest.
+    documented default in force, not stop every ingest at import time.
     """
+    from nlqueries.config import _positive_int
+
     monkeypatch.setenv("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", "123")
-    assert _limits._int_env("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 999) == 123
+    assert _positive_int("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 999) == 123
 
     for bad in ("not-a-number", "0", "-5", ""):
         monkeypatch.setenv("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", bad)
-        assert _limits._int_env("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 999) == 999, bad
+        assert _positive_int("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 999) == 999, bad
 
     monkeypatch.delenv("NLQ_MAX_DOCUMENT_EXPANDED_BYTES")
-    assert _limits._int_env("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 999) == 999
+    assert _positive_int("NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 999) == 999
+
+
+def test_the_settings_are_declared_in_config_not_read_here() -> None:
+    """Where the values come from, which is the part review found wrong.
+
+    `config` is where `load_dotenv()` runs and, by its own docstring, the single
+    source of truth for settings. Nothing in `document_connectors` imports it, so
+    reading the environment in `_limits` at import time meant that on any path
+    where `config` had not already been imported the `.env` file had not been
+    read -- and an operator's override was silently ignored while the document
+    was refused against the default.
+
+    Asserted over the parsed module rather than its text. The first version of
+    this test searched the source for the offending call and failed on the
+    *comment* explaining why it had been removed: a whole-file text assertion
+    cannot tell code from prose about code.
+    """
+    import ast
+
+    import nlqueries.config as config_module
+
+    assert _limits.MAX_EXPANDED_BYTES == config_module.MAX_DOCUMENT_EXPANDED_BYTES
+    assert _limits.MAX_EXPANSION_RATIO == config_module.MAX_DOCUMENT_EXPANSION_RATIO
+
+    tree = ast.parse(Path(_limits.__file__).read_text(encoding="utf-8"))
+    reads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"getenv", "environ"}
+    ]
+    assert not reads, (
+        f"_limits reads the environment directly at line(s) {[n.lineno for n in reads]}"
+    )
 
 
 def test_the_connector_refuses_before_openpyxl_opens_the_file(

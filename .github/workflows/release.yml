@@ -43,7 +43,7 @@ jobs:
           cache: pip
 
       - name: Install dev dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,docs]"
         working-directory: ${{ github.workspace }}
 
       - name: Ruff lint
