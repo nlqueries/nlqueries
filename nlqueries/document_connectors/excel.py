@@ -25,6 +25,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from nlqueries.document_connectors._limits import check_archive_expansion
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 
 _BATCH_SIZE = 50
@@ -89,6 +90,10 @@ class ExcelConnector(DocumentConnector):
             ) from exc
 
         source_path = Path(source)
+        # Refuse a document that would expand beyond the limits before the
+        # parser opens it. Reads the zip central directory only; nothing is
+        # decompressed -- see `_limits` for the measured ratios.
+        check_archive_expansion(source_path)
         wb = openpyxl.load_workbook(str(source_path), read_only=True, data_only=True)
 
         chunks: list[DocumentChunk] = []
