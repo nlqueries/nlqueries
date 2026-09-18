@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from nlqueries.document_connectors._limits import check_archive_expansion
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -53,6 +54,10 @@ class WordConnector(DocumentConnector):
             ) from exc
 
         source_path = Path(source)
+        # Refuse a document that would expand beyond the limits before the
+        # parser opens it. Reads the zip central directory only; nothing is
+        # decompressed -- see `_limits` for the measured ratios.
+        check_archive_expansion(source_path)
         doc = docx.Document(str(source_path))
 
         # Collect (heading_text, body_text) pairs by walking paragraphs.

@@ -480,9 +480,54 @@ Business rules are always injected in full regardless of this flag."""
 CONNECTORS_FILE: Path = Path(os.getenv("CONNECTORS_FILE", str(STATE_DIR / "connectors.yaml")))
 """YAML file that stores registered connector configurations."""
 
+
 # ---------------------------------------------------------------------------
 # Connector execution
 # ---------------------------------------------------------------------------
+def _positive_int(name: str, default: int) -> int:
+    """A positive integer from the environment, or *default*.
+
+    A malformed or non-positive value falls back rather than raising. These are
+    ceilings on what a document may cost to parse: a typo in a deployment's
+    environment should leave the documented default in force, not stop every
+    ingest at import time.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+MAX_DOCUMENT_EXPANDED_BYTES: int = _positive_int(
+    "NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 400 * 1024 * 1024
+)
+"""Largest total uncompressed size permitted in a zip-based document (.xlsx, .docx).
+
+An upload is size-limited and a request body is capped, but neither bounds what
+comes out of a parser -- and the number that matters for a worker's memory is the
+expanded size, not the size on disk. Measured on ordinary content: 200k rows by
+10 columns is 5.2 MiB on disk and 108.8 MiB expanded; 300k rows of repeated text
+is 7.1 MiB and 231.2 MiB.
+
+400 MiB sits above both and well below what an unbounded expansion costs. Raise
+it knowingly for genuinely larger documents; the point is that a ceiling exists.
+"""
+
+MAX_DOCUMENT_EXPANSION_RATIO: int = _positive_int("NLQ_MAX_DOCUMENT_EXPANSION_RATIO", 100)
+"""Largest expanded-over-compressed ratio permitted in a zip-based document.
+
+Complementary to the byte ceiling rather than redundant with it: a small file
+that expands 1000x is a bomb even when the result fits under the ceiling, and a
+large file that expands 2x is ordinary. 100x is roughly three times the highest
+ratio measured on real content, so it refuses the crafted case without touching
+the plausible one.
+"""
+
+
 CONNECTOR_MAX_FETCH_ROWS: int = int(os.getenv("CONNECTOR_MAX_FETCH_ROWS", "10000"))
 """Most rows a connector will materialise from one query.
 

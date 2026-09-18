@@ -74,7 +74,7 @@ jobs:
           cache: pip
 
       - name: Install package + dev extras
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,docs]"
 
       - name: pip-audit
         run: |
@@ -144,7 +144,7 @@ jobs:
           cache: pip
 
       - name: Install dev dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,docs]"
 
       - name: Ruff lint
         run: ruff check .
@@ -176,7 +176,7 @@ jobs:
           cache: pip
 
       - name: Install package + dev extras
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,docs]"
 
       - name: Run pytest with coverage
         run: pytest --cov=nlqueries --cov-report=xml --cov-report=term-missing

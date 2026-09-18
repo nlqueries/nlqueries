@@ -36,9 +36,17 @@ WORKDIR /app
 
 # Dependency layer. Only the manifest is copied, so this is cached across every
 # source edit. README is copied because hatchling reads it for the metadata.
+#
+# `[docs]` as well as `[dev]`: the document connectors' limits on what a parser
+# may consume are only meaningful against the real pdfplumber/openpyxl/
+# python-docx, and `tests/test_document_connectors.py` mocks all three, so
+# without this nothing in the suite ever parses a file. Deliberately here and in
+# the CI test jobs rather than in the `dev` extra itself -- `dev` is compiled
+# into `requirements/core.lock`, which the *runtime* image installs, and these
+# parsers are a test need rather than something every deployment should carry.
 COPY pyproject.toml README.md LICENSE ./
 RUN mkdir -p nlqueries && touch nlqueries/__init__.py \
- && pip install --no-cache-dir -e ".[dev]"
+ && pip install --no-cache-dir -e ".[dev,docs]"
 
 # Source is mounted at run time, not baked in, so the container always tests the
 # working tree rather than a stale copy.
