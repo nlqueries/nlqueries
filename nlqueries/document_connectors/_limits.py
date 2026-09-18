@@ -51,6 +51,28 @@ class DocumentTooComplexError(Exception):
     Deliberately not ``ValueError`` or ``MemoryError``: callers distinguish "this
     file is refused" from "this file is broken", and the enterprise ingestion
     task reports the two differently to the user.
+
+    Raised directly only by the *deterministic* limits -- the expansion gate and
+    the row cap. Both read a property of the file, so a caller that retries gets
+    the same answer and has spent a download and a parse to learn nothing.
+    :class:`DocumentExtractionTimeout` is the exception to that, and is a
+    subclass precisely so an existing ``except DocumentTooComplexError`` keeps
+    catching both.
+    """
+
+
+class DocumentExtractionTimeout(DocumentTooComplexError):
+    """Raised when extraction ran out of wall-clock budget.
+
+    Split from its parent because it is the one refusal here that is *not* a
+    property of the file. The budget measures elapsed time, so it is a function
+    of what else the machine was doing: a document that extracts in 100s on an
+    idle worker can pass the 120s default on a busy one and fail it on the next.
+
+    A caller that treats every ``DocumentTooComplexError`` as final therefore
+    permanently rejects files that are fine, and tells their owner to split
+    something that did not need splitting. Callers that retry should retry this
+    one and not its parent.
     """
 
 
@@ -102,7 +124,7 @@ class ExtractionBudget:
     def check(self, progress: str) -> None:
         """Raise if the budget is spent. *progress* names how far it got."""
         if self.elapsed > self._limit:
-            raise DocumentTooComplexError(
+            raise DocumentExtractionTimeout(
                 f"Extracting {self._name} passed the {self._limit:g}s budget "
                 f"after {progress} ({self.elapsed:.1f}s)."
             )
