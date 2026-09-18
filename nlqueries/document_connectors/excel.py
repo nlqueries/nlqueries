@@ -25,7 +25,12 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from nlqueries.document_connectors._limits import check_archive_expansion
+from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._limits import (
+    DocumentTooComplexError,
+    ExtractionBudget,
+    check_archive_expansion,
+)
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 
 _BATCH_SIZE = 50
@@ -70,6 +75,47 @@ def _rows_to_text(rows: list[list[Any]], headers: list[str] | None) -> str:
     return "\n".join(lines)
 
 
+def _batch_chunk(
+    batch: list[list[Any]],
+    batch_index: int,
+    *,
+    source_id: str,
+    source_path: Path,
+    sheet_title: str,
+    sheet_index: int,
+    headers: list[str] | None,
+    first_data_row_num: int,
+) -> DocumentChunk | None:
+    """One batch's chunk, or ``None`` when the batch serialises to nothing.
+
+    ``None`` rather than an empty chunk, and the caller advances *batch_index*
+    regardless: a wholly blank batch leaves a gap in the emitted indexes. That
+    was the behaviour before this connector streamed -- the old code built every
+    row of a sheet, enumerated over fixed offsets and ``continue``d on blank text
+    -- and the ids are derived from the index, so changing it would renumber
+    chunks for any sheet containing a blank stretch.
+    """
+    text = _rows_to_text(batch, headers)
+    if not text.strip():
+        return None
+    row_start = first_data_row_num + batch_index * _BATCH_SIZE
+    row_end = row_start + len(batch) - 1
+    return DocumentChunk(
+        chunk_id=_make_chunk_id(source_id, sheet_index, batch_index),
+        source_id=source_id,
+        source_name=source_path.name,
+        page_number=sheet_index,
+        chunk_index=batch_index,
+        text=text,
+        metadata={
+            "connector": "excel",
+            "file_path": str(source_path),
+            "sheet_name": sheet_title,
+            "row_range": f"{row_start}-{row_end}",
+        },
+    )
+
+
 class ExcelConnector(DocumentConnector):
     """Extract and chunk text from Excel (.xlsx) files using openpyxl.
 
@@ -97,13 +143,16 @@ class ExcelConnector(DocumentConnector):
         wb = openpyxl.load_workbook(str(source_path), read_only=True, data_only=True)
 
         chunks: list[DocumentChunk] = []
+        budget = ExtractionBudget(name=source_path.name)
+        rows_seen = 0
 
         try:
             for sheet_index, sheet in enumerate(wb.worksheets, start=1):
                 headers: list[str] | None = None
-                data_rows: list[list[Any]] = []
                 first_data_row_num = 1
                 header_detected = False
+                batch: list[list[Any]] = []
+                batch_index = 0
 
                 for row_num, row in enumerate(sheet.iter_rows(values_only=True), start=1):
                     values = list(row)
@@ -112,34 +161,45 @@ class ExcelConnector(DocumentConnector):
                         if _is_header_row(values):
                             headers = [_cell_str(v) or f"col{i + 1}" for i, v in enumerate(values)]
                             first_data_row_num = row_num + 1
-                            continue  # header consumed; not added to data_rows
-                    data_rows.append(values)
-
-                for batch_index, batch_offset in enumerate(range(0, len(data_rows), _BATCH_SIZE)):
-                    batch = data_rows[batch_offset : batch_offset + _BATCH_SIZE]
-                    text = _rows_to_text(batch, headers)
-                    if not text.strip():
-                        continue
-
-                    row_start = first_data_row_num + batch_offset
-                    row_end = row_start + len(batch) - 1
-                    chunk_id = _make_chunk_id(source_id, sheet_index, batch_index)
-                    chunks.append(
-                        DocumentChunk(
-                            chunk_id=chunk_id,
-                            source_id=source_id,
-                            source_name=source_path.name,
-                            page_number=sheet_index,
-                            chunk_index=batch_index,
-                            text=text,
-                            metadata={
-                                "connector": "excel",
-                                "file_path": str(source_path),
-                                "sheet_name": sheet.title,
-                                "row_range": f"{row_start}-{row_end}",
-                            },
+                            continue  # header consumed; not a data row
+                    batch.append(values)
+                    rows_seen += 1
+                    if rows_seen > _limits.MAX_ROWS:
+                        raise DocumentTooComplexError(
+                            f"{source_path.name} has more than {_limits.MAX_ROWS} rows; "
+                            f"extraction stopped at sheet {sheet.title!r}, row {row_num}."
                         )
+                    if len(batch) == _BATCH_SIZE:
+                        chunk = _batch_chunk(
+                            batch,
+                            batch_index,
+                            source_id=source_id,
+                            source_path=source_path,
+                            sheet_title=sheet.title,
+                            sheet_index=sheet_index,
+                            headers=headers,
+                            first_data_row_num=first_data_row_num,
+                        )
+                        if chunk is not None:
+                            chunks.append(chunk)
+                        batch_index += 1
+                        batch = []
+                        budget.check(f"{rows_seen} rows")
+
+                if batch:
+                    chunk = _batch_chunk(
+                        batch,
+                        batch_index,
+                        source_id=source_id,
+                        source_path=source_path,
+                        sheet_title=sheet.title,
+                        sheet_index=sheet_index,
+                        headers=headers,
+                        first_data_row_num=first_data_row_num,
                     )
+                    if chunk is not None:
+                        chunks.append(chunk)
+                budget.check(f"sheet {sheet_index}")
         finally:
             wb.close()
 

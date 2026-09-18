@@ -33,10 +33,16 @@ gate rather than the only one, and why the count limits in the connectors
 
 from __future__ import annotations
 
+import time
 import zipfile
 from pathlib import Path
 
-from nlqueries.config import MAX_DOCUMENT_EXPANDED_BYTES, MAX_DOCUMENT_EXPANSION_RATIO
+from nlqueries.config import (
+    MAX_DOCUMENT_EXPANDED_BYTES,
+    MAX_DOCUMENT_EXPANSION_RATIO,
+    MAX_DOCUMENT_ROWS,
+    MAX_EXTRACTION_SECONDS,
+)
 
 
 class DocumentTooComplexError(Exception):
@@ -59,6 +65,47 @@ class DocumentTooComplexError(Exception):
 #: tests refer to.
 MAX_EXPANDED_BYTES: int = MAX_DOCUMENT_EXPANDED_BYTES
 MAX_EXPANSION_RATIO: int = MAX_DOCUMENT_EXPANSION_RATIO
+MAX_ROWS: int = MAX_DOCUMENT_ROWS
+MAX_SECONDS: float = MAX_EXTRACTION_SECONDS
+
+
+class ExtractionBudget:
+    """A wall-clock deadline for extracting one document.
+
+    The expansion gate reads what an archive declares about itself. This measures
+    what extraction actually costs, so it bounds a document whose directory lied,
+    a `.pdf` (which is not an archive and never passed through that gate at all),
+    and the case no size predicts -- a small file that is simply expensive to
+    parse.
+
+    One budget across every connector, rather than a page cap for PDFs, a
+    paragraph cap for Word and a row cap for spreadsheets. Per-format counts are
+    guesses about cost; a clock measures it. A 3,000-page PDF of scanned images
+    and a 30-page one of dense tables cost very differently, and no page number
+    tells them apart.
+
+    :meth:`check` is called *between* units of work -- a page, a paragraph
+    section, a batch of rows -- so the budget bounds a long document rather than
+    interrupting one slow page part-way. A parser that hangs inside a single unit
+    is not something this can stop, and is not what it claims to.
+    """
+
+    def __init__(self, seconds: float | None = None, *, name: str = "document") -> None:
+        self._limit = MAX_SECONDS if seconds is None else seconds
+        self._started = time.monotonic()
+        self._name = name
+
+    @property
+    def elapsed(self) -> float:
+        return time.monotonic() - self._started
+
+    def check(self, progress: str) -> None:
+        """Raise if the budget is spent. *progress* names how far it got."""
+        if self.elapsed > self._limit:
+            raise DocumentTooComplexError(
+                f"Extracting {self._name} passed the {self._limit:g}s budget "
+                f"after {progress} ({self.elapsed:.1f}s)."
+            )
 
 
 def check_archive_expansion(source: str | Path) -> None:

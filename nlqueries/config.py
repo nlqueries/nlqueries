@@ -527,6 +527,36 @@ ratio measured on real content, so it refuses the crafted case without touching
 the plausible one.
 """
 
+MAX_DOCUMENT_ROWS: int = _positive_int("NLQ_MAX_DOCUMENT_ROWS", 50_000)
+"""Most spreadsheet rows extracted from one document, across all its sheets.
+
+The expansion gate reads sizes the archive declares about itself, which a
+malformed archive can misstate. This is counted while reading, so it bounds a
+document whatever its directory claims.
+
+Measured: 200,000 rows by 10 columns took 87 seconds and 149 MiB of heap to
+ingest, from a 5.2 MiB file. 50,000 is generous for a document being chunked for
+retrieval -- at the connector's batch size of 50 it is already a thousand chunks
+per sheet -- and holds that cost to a few seconds.
+
+Rows rather than cells because it is the number a person can check against their
+own file. Width still matters to cost, which is what the runtime budget is for.
+"""
+
+MAX_EXTRACTION_SECONDS: float = float(os.getenv("NLQ_MAX_EXTRACTION_SECONDS", "120") or 120)
+"""Wall-clock budget for extracting one document, across every connector.
+
+One budget rather than a page cap for PDFs, a paragraph cap for Word and a row
+cap for spreadsheets. Per-format counts are guesses about cost; a clock measures
+it. A 3,000-page PDF of scanned images and a 30-page one of dense tables cost
+very differently, and no page number distinguishes them.
+
+Checked between units of work -- pages, paragraphs, row batches -- so it bounds a
+long document rather than interrupting a single slow page. It is a ceiling on
+ingestion, not a latency target: ingestion is a background task, and the failure
+it prevents is a worker held for minutes by one upload.
+"""
+
 
 CONNECTOR_MAX_FETCH_ROWS: int = int(os.getenv("CONNECTOR_MAX_FETCH_ROWS", "10000"))
 """Most rows a connector will materialise from one query.

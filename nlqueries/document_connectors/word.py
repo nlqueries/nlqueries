@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from nlqueries.document_connectors._limits import check_archive_expansion
+from nlqueries.document_connectors._limits import ExtractionBudget, check_archive_expansion
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -99,7 +99,12 @@ class WordConnector(DocumentConnector):
         chunks: list[DocumentChunk] = []
         global_chunk_index = 0
 
-        for heading, section_text in sections:
+        # The expansion gate bounds what the archive declares; this bounds what
+        # extraction actually costs, for the archive that misstated it.
+        budget = ExtractionBudget(name=source_path.name)
+
+        for section_number, (heading, section_text) in enumerate(sections, start=1):
+            budget.check(f"{section_number - 1} of {len(sections)} sections")
             if len(section_text) > _SPLIT_THRESHOLD:
                 sub_texts = splitter.split_text(section_text)
             else:
