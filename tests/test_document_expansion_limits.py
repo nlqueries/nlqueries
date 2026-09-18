@@ -211,28 +211,55 @@ def test_the_settings_are_declared_in_config_not_read_here() -> None:
     )
 
 
-def test_the_connector_refuses_before_openpyxl_opens_the_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _make_docx(path: Path) -> Path:
+    document = docx.Document()
+    for _ in range(500):
+        document.add_paragraph("some text that compresses well " * 5)
+    document.save(str(path))
+    return path
+
+
+@pytest.mark.parametrize("connector_name", ["excel", "word"])
+def test_the_connector_refuses_before_its_parser_opens_the_file(
+    connector_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The wiring, not the function.
 
     ``check_archive_expansion`` having its own tests says nothing about whether
-    the connector calls it, and the connector is the only caller that matters.
-    Asserted by making ``load_workbook`` fail the test if it is reached, so a
-    guard that ran too late would be caught as well as one that never ran.
+    a connector calls it, and the connectors are the only callers that matter.
+    Asserted by replacing each parser's entry point with something that fails
+    the test if reached, so a guard that ran too late is caught as well as one
+    that never ran.
+
+    Parameterised over both after review found the Word half untested: this
+    covered Excel only, and `test_a_word_document_goes_through_the_same_guard`
+    calls the function directly, which demonstrates that it handles a `.docx`
+    and not that `WordConnector` consults it. Measured before fixing —
+    deleting the guard line from `word.py` passed all 31 tests in this module
+    and `test_document_connectors.py` together.
     """
+    import docx as real_docx
     import openpyxl as real_openpyxl
     from nlqueries.document_connectors import excel as excel_module
+    from nlqueries.document_connectors import word as word_module
 
-    path = _sheet(tmp_path / "x.xlsx", rows=1_000)
+    def _must_not_be_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            f"the {connector_name} parser opened a document the guard should have refused"
+        )
+
+    if connector_name == "excel":
+        path = _sheet(tmp_path / "x.xlsx", rows=1_000)
+        connector = excel_module.ExcelConnector()
+        monkeypatch.setattr(real_openpyxl, "load_workbook", _must_not_be_called)
+    else:
+        path = _make_docx(tmp_path / "x.docx")
+        connector = word_module.WordConnector()
+        monkeypatch.setattr(real_docx, "Document", _must_not_be_called)
+
     _compressed, expanded = _expansion(path)
     monkeypatch.setattr(_limits, "MAX_EXPANDED_BYTES", expanded - 1)
     monkeypatch.setattr(_limits, "MAX_EXPANSION_RATIO", 10**9)
 
-    def _must_not_be_called(*args: object, **kwargs: object) -> None:
-        raise AssertionError("openpyxl opened a document the guard should have refused")
-
-    monkeypatch.setattr(real_openpyxl, "load_workbook", _must_not_be_called)
-
     with pytest.raises(DocumentTooComplexError):
-        excel_module.ExcelConnector().ingest(path, source_id="s")
+        connector.ingest(path, source_id="s")
