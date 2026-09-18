@@ -502,6 +502,31 @@ def _positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _positive_float(name: str, default: float) -> float:
+    """A positive, finite float from the environment, or *default*.
+
+    The float sibling of :func:`_positive_int`, and it exists for the same
+    reason plus one more. Malformed and non-positive values fall back, so a
+    deployment typo leaves the documented default in force rather than raising
+    while this module is imported -- which would take down the CLI and the MCP
+    server at startup, not merely fail one ingest.
+
+    ``inf`` and ``nan`` are refused too, and ``nan`` is the reason this is not
+    a one-line ``float()``: every comparison against it is false, so a budget of
+    ``nan`` does not fail loudly, it silently never expires.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return value
+
+
 MAX_DOCUMENT_EXPANDED_BYTES: int = _positive_int(
     "NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 400 * 1024 * 1024
 )
@@ -525,6 +550,36 @@ that expands 1000x is a bomb even when the result fits under the ceiling, and a
 large file that expands 2x is ordinary. 100x is roughly three times the highest
 ratio measured on real content, so it refuses the crafted case without touching
 the plausible one.
+"""
+
+MAX_DOCUMENT_ROWS: int = _positive_int("NLQ_MAX_DOCUMENT_ROWS", 50_000)
+"""Most spreadsheet rows extracted from one document, across all its sheets.
+
+The expansion gate reads sizes the archive declares about itself, which a
+malformed archive can misstate. This is counted while reading, so it bounds a
+document whatever its directory claims.
+
+Measured: 200,000 rows by 10 columns took 87 seconds and 149 MiB of heap to
+ingest, from a 5.2 MiB file. 50,000 is generous for a document being chunked for
+retrieval -- at the connector's batch size of 50 it is already a thousand chunks
+per sheet -- and holds that cost to a few seconds.
+
+Rows rather than cells because it is the number a person can check against their
+own file. Width still matters to cost, which is what the runtime budget is for.
+"""
+
+MAX_EXTRACTION_SECONDS: float = _positive_float("NLQ_MAX_EXTRACTION_SECONDS", 120.0)
+"""Wall-clock budget for extracting one document, across every connector.
+
+One budget rather than a page cap for PDFs, a paragraph cap for Word and a row
+cap for spreadsheets. Per-format counts are guesses about cost; a clock measures
+it. A 3,000-page PDF of scanned images and a 30-page one of dense tables cost
+very differently, and no page number distinguishes them.
+
+Checked between units of work -- pages, paragraphs, row batches -- so it bounds a
+long document rather than interrupting a single slow page. It is a ceiling on
+ingestion, not a latency target: ingestion is a background task, and the failure
+it prevents is a worker held for minutes by one upload.
 """
 
 

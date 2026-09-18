@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from nlqueries.document_connectors._limits import check_archive_expansion
+from nlqueries.document_connectors._limits import ExtractionBudget, check_archive_expansion
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -58,7 +58,16 @@ class WordConnector(DocumentConnector):
         # parser opens it. Reads the zip central directory only; nothing is
         # decompressed -- see `_limits` for the measured ratios.
         check_archive_expansion(source_path)
+
+        # Started BEFORE `docx.Document()`, which parses the whole file into
+        # memory, and before the paragraph walk below. An earlier revision
+        # constructed it after both, so the clock began once every expensive
+        # phase was already done and could only ever measure the chunk-splitting
+        # loop -- useless for the case the budget exists to bound, an archive
+        # that misstated its directory and is expensive to parse.
+        budget = ExtractionBudget(name=source_path.name)
         doc = docx.Document(str(source_path))
+        budget.check("parsing the document")
 
         # Collect (heading_text, body_text) pairs by walking paragraphs.
         sections: list[tuple[str, str]] = []
@@ -99,7 +108,8 @@ class WordConnector(DocumentConnector):
         chunks: list[DocumentChunk] = []
         global_chunk_index = 0
 
-        for heading, section_text in sections:
+        for section_number, (heading, section_text) in enumerate(sections, start=1):
+            budget.check(f"{section_number - 1} of {len(sections)} sections")
             if len(section_text) > _SPLIT_THRESHOLD:
                 sub_texts = splitter.split_text(section_text)
             else:
