@@ -163,7 +163,17 @@ class ExcelConnector(DocumentConnector):
                             first_data_row_num = row_num + 1
                             continue  # header consumed; not a data row
                     batch.append(values)
-                    rows_seen += 1
+                    # Counted only when the row has content. `iter_rows` yields
+                    # every materialised row, and whole-column formatting leaves
+                    # thousands of empty ones behind -- measured: a 200-row sheet
+                    # with such padding yields 5,201 tuples. Counting those would
+                    # refuse a workbook whose owner can see 200 rows in it.
+                    #
+                    # Deliberately separate from the batching, which still takes
+                    # every row: blank batches are what produce the index gaps
+                    # that `_batch_chunk` preserves.
+                    if any(v is not None and str(v).strip() != "" for v in values):
+                        rows_seen += 1
                     if rows_seen > _limits.MAX_ROWS:
                         raise DocumentTooComplexError(
                             f"{source_path.name} has more than {_limits.MAX_ROWS} rows; "

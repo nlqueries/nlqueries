@@ -502,6 +502,31 @@ def _positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _positive_float(name: str, default: float) -> float:
+    """A positive, finite float from the environment, or *default*.
+
+    The float sibling of :func:`_positive_int`, and it exists for the same
+    reason plus one more. Malformed and non-positive values fall back, so a
+    deployment typo leaves the documented default in force rather than raising
+    while this module is imported -- which would take down the CLI and the MCP
+    server at startup, not merely fail one ingest.
+
+    ``inf`` and ``nan`` are refused too, and ``nan`` is the reason this is not
+    a one-line ``float()``: every comparison against it is false, so a budget of
+    ``nan`` does not fail loudly, it silently never expires.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return value
+
+
 MAX_DOCUMENT_EXPANDED_BYTES: int = _positive_int(
     "NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 400 * 1024 * 1024
 )
@@ -543,7 +568,7 @@ Rows rather than cells because it is the number a person can check against their
 own file. Width still matters to cost, which is what the runtime budget is for.
 """
 
-MAX_EXTRACTION_SECONDS: float = float(os.getenv("NLQ_MAX_EXTRACTION_SECONDS", "120") or 120)
+MAX_EXTRACTION_SECONDS: float = _positive_float("NLQ_MAX_EXTRACTION_SECONDS", 120.0)
 """Wall-clock budget for extracting one document, across every connector.
 
 One budget rather than a page cap for PDFs, a paragraph cap for Word and a row

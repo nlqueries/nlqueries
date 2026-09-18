@@ -240,3 +240,91 @@ def _minimal_pdf(path: Path, pages: int) -> Path:
     out += trailer.encode() + f"startxref\n{xref_at}\n%%EOF\n".encode()
     path.write_bytes(bytes(out))
     return path
+
+
+def test_the_word_budget_covers_parsing_not_only_chunking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the clock starts, which the parameterised test above cannot see.
+
+    With `MAX_SECONDS` patched to `0.0` the first check fires wherever the
+    budget was constructed, so that test passes for a budget started after the
+    expensive phases — which is exactly the defect review found. This one uses a
+    small non-zero budget and makes *parsing* dominate, so it fails if the clock
+    starts after `docx.Document()` and passes only when it starts before.
+    """
+    from nlqueries.document_connectors import word as word_module
+
+    path = tmp_path / "slow.docx"
+    document = docx.Document()
+    for n in range(5):
+        document.add_paragraph(f"paragraph {n}")
+    document.save(str(path))
+
+    real_document = docx.Document
+
+    def _slow_document(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.2)  # stand in for a document that is expensive to parse
+        return real_document(*args, **kwargs)
+
+    # Patched on the `docx` module itself, not on `word_module`: the connector
+    # imports docx *inside* `ingest`, so there is no module attribute to replace
+    # and it resolves the name from `sys.modules` at call time.
+    monkeypatch.setattr(docx, "Document", _slow_document)
+    monkeypatch.setattr(_limits, "MAX_SECONDS", 0.05)
+
+    with pytest.raises(DocumentTooComplexError, match="parsing the document"):
+        word_module.WordConnector().ingest(path, source_id="s")
+
+
+def test_padding_rows_do_not_count_towards_the_row_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap must count rows a person can count in their own file.
+
+    `iter_rows` yields every *materialised* row, and whole-column formatting
+    leaves thousands of empty ones behind. Measured on this version: a 200-row
+    sheet with such padding yields 5,201 tuples. A cap counting those refuses a
+    workbook its owner sees 200 rows in.
+
+    (The reviewer proposed the mechanism as `<dimension>` over-declaration.
+    Measured, that does *not* pad — a sheet declaring `A1:C1048576` still yields
+    only its real rows. Materialised blank rows are the route that does.)
+    """
+    from nlqueries.document_connectors.excel import ExcelConnector
+
+    path = tmp_path / "padded.xlsx"
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet("data")
+    ws.append(["a", "b", "c"])
+    for n in range(100):
+        ws.append([f"r{n}", n, n * 2])
+    for _ in range(1_000):
+        ws.append([None, None, None])
+    wb.save(str(path))
+
+    monkeypatch.setattr(_limits, "MAX_ROWS", 200)  # 100 real rows, 1,100 yielded
+    chunks = ExcelConnector().ingest(path, source_id="s")  # must not raise
+    assert chunks, "a padded workbook produced no chunks"
+
+
+def test_the_seconds_setting_falls_back_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed value must not raise while `nlqueries.config` is imported.
+
+    That would take down the CLI and the MCP server at startup, not merely fail
+    one ingest -- and `docs/configuration.md` promises fallback behaviour for the
+    neighbouring document limits, so an operator expects it here.
+
+    `nan` has its own case: every comparison against it is false, so a budget of
+    `nan` would not fail loudly, it would silently never expire.
+    """
+    from nlqueries.config import _positive_float
+
+    monkeypatch.setenv("NLQ_MAX_EXTRACTION_SECONDS", "45.5")
+    assert _positive_float("NLQ_MAX_EXTRACTION_SECONDS", 120.0) == 45.5
+
+    for bad in ("120s", "", "abc", "0", "-1", "inf", "-inf", "nan"):
+        monkeypatch.setenv("NLQ_MAX_EXTRACTION_SECONDS", bad)
+        assert _positive_float("NLQ_MAX_EXTRACTION_SECONDS", 120.0) == 120.0, bad

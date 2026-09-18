@@ -58,7 +58,16 @@ class WordConnector(DocumentConnector):
         # parser opens it. Reads the zip central directory only; nothing is
         # decompressed -- see `_limits` for the measured ratios.
         check_archive_expansion(source_path)
+
+        # Started BEFORE `docx.Document()`, which parses the whole file into
+        # memory, and before the paragraph walk below. An earlier revision
+        # constructed it after both, so the clock began once every expensive
+        # phase was already done and could only ever measure the chunk-splitting
+        # loop -- useless for the case the budget exists to bound, an archive
+        # that misstated its directory and is expensive to parse.
+        budget = ExtractionBudget(name=source_path.name)
         doc = docx.Document(str(source_path))
+        budget.check("parsing the document")
 
         # Collect (heading_text, body_text) pairs by walking paragraphs.
         sections: list[tuple[str, str]] = []
@@ -98,10 +107,6 @@ class WordConnector(DocumentConnector):
 
         chunks: list[DocumentChunk] = []
         global_chunk_index = 0
-
-        # The expansion gate bounds what the archive declares; this bounds what
-        # extraction actually costs, for the archive that misstated it.
-        budget = ExtractionBudget(name=source_path.name)
 
         for section_number, (heading, section_text) in enumerate(sections, start=1):
             budget.check(f"{section_number - 1} of {len(sections)} sections")
