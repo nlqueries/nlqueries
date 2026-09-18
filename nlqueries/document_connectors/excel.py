@@ -140,10 +140,23 @@ class ExcelConnector(DocumentConnector):
         # parser opens it. Reads the zip central directory only; nothing is
         # decompressed -- see `_limits` for the measured ratios.
         check_archive_expansion(source_path)
+
+        # Started BEFORE `load_workbook`, matching `pdf.py` and `word.py`.
+        # `read_only=True` makes row iteration lazy; it does not make opening
+        # free -- the manifest, the styles and (for a file written by Excel) the
+        # shared-string table are read eagerly. Measured here at ~0.33s for a
+        # 60,000-row workbook before a single row is iterated, which is work the
+        # clock should be accountable for.
+        #
+        # An earlier revision built the budget after this call, so that phase sat
+        # outside the clock. That was the same defect review found in `word.py`
+        # the round before, and it survived here because I fixed the instance I
+        # was shown rather than looking for its siblings.
+        budget = ExtractionBudget(name=source_path.name)
         wb = openpyxl.load_workbook(str(source_path), read_only=True, data_only=True)
+        budget.check("opening the workbook")
 
         chunks: list[DocumentChunk] = []
-        budget = ExtractionBudget(name=source_path.name)
         rows_seen = 0
 
         try:
