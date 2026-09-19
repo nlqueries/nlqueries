@@ -268,7 +268,16 @@ class DuckDBConnector(DatabaseConnector):
                 if col_names:
                     pks.setdefault((schema, table), set()).update(col_names)
             return pks
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # Keys are an enrichment, the columns are the schema, so this
+            # degrades rather than failing -- but it used to do so in silence,
+            # which makes a catalogue problem look like a database with no
+            # primary keys. The other connectors say why; so does this one now.
+            logger.warning(
+                "DuckDBConnector: primary keys unavailable, continuing without them. "
+                "The driver said: %s",
+                str(exc) or exc.__class__.__name__,
+            )
             return {}
 
     # ------------------------------------------------------------------

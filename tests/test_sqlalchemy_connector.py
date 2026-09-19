@@ -8,15 +8,20 @@ reflection and execution paths are covered end to end.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from nlqueries.connectors import CONNECTOR_REGISTRY
+from nlqueries.connectors import sqlalchemy_connector as sqlalchemy_connector_module
 from nlqueries.connectors.sqlalchemy_connector import (
     SQLAlchemyConnector,
     _apply_statement_timeout,
 )
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import DatabaseError
 
 from tests.conftest import granted
 
@@ -125,6 +130,255 @@ def test_reflects_columns_pk_and_fk(tmp_path: Path) -> None:
     assert cols["customer_id"].is_foreign_key is True
     assert cols["customer_id"].references == "customers.id"
     assert cols["total"].is_primary_key is False
+
+
+class _RefusingInspector:
+    """A real Inspector with some calls refused, as a restricted catalogue does.
+
+    A Snowflake share, or a role without the grant, answers the constraint views
+    with an error while still describing its tables and columns. SQLAlchemy
+    surfaces that as `DatabaseError`, which is what the connector narrows to --
+    so the default here is a real one, not a bare `Exception` that would pass
+    whatever breadth of catch the code happened to use.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        refuse: dict[str, set[str] | None],
+        error: type[Exception],
+        malformed: set[str] | None = None,
+    ) -> None:
+        self._inner = inner
+        self._refuse = refuse
+        self._error = error
+        self._malformed = malformed or set()
+
+    def get_columns(self, table_name: str, *args: Any, **kwargs: Any) -> Any:
+        # Reflects, but returns a row the builder cannot use -- so the table is
+        # dropped by the block that builds `ColumnSpec`s, which is a later and
+        # different path from `get_columns` itself being refused.
+        if table_name in self._malformed:
+            return [{"no_name_key": True}]
+        if "get_columns" in self._refuse:
+            return self.__getattr__("get_columns")(table_name, *args, **kwargs)
+        return self._inner.get_columns(table_name, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._refuse:
+            only = self._refuse[name]
+
+            def _refuse(*args: Any, **_kwargs: Any) -> Any:
+                # `only` narrows the refusal to named tables, so a run can mix a
+                # refusal that costs the keys with one that drops the table.
+                if only is not None and (not args or args[0] not in only):
+                    return getattr(self._inner, name)(*args, **_kwargs)
+                # Naming the call keeps assertions specific about which
+                # reflection was refused, rather than that something was.
+                message = (
+                    f"{name} refused: Object "
+                    "'SHARED_DB.INFORMATION_SCHEMA.KEY_COLUMN_USAGE' "
+                    "does not exist or not authorized"
+                )
+                if self._error is DatabaseError:
+                    raise DatabaseError(f"-- reflect {name}", {}, Exception(message))
+                raise self._error(message)
+
+            return _refuse
+        return getattr(self._inner, name)
+
+
+def _refusing(
+    *calls: str,
+    error: type[Exception] = DatabaseError,
+    extra: dict[str, set[str] | None] | None = None,
+    malformed: set[str] | None = None,
+) -> Any:
+    """Patch the module's `inspect` so reflection meets a restricted catalogue.
+
+    *calls* are refused for every table; *extra* maps a call to the tables it is
+    refused for, so one run can mix a refusal that costs only the keys with one
+    that drops the table.
+    """
+    refuse: dict[str, set[str] | None] = {c: None for c in calls}
+    refuse.update(extra or {})
+    return patch.object(
+        sqlalchemy_connector_module,
+        "inspect",
+        lambda engine: _RefusingInspector(sa_inspect(engine), refuse, error, malformed),
+    )
+
+
+def test_a_catalogue_that_refuses_keys_still_returns_the_tables(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The tables are the schema; the keys are an enrichment.
+
+    Key reflection used to sit in the same `try` as the column reflection, so a
+    catalogue that refuses constraint metadata cost the whole table. Every table
+    failing the same way returned an empty schema -- which the caller cannot
+    tell apart from a database that has no tables, and which the UI reported as
+    "No tables found in this connector."
+    """
+    c = _connect(tmp_path)
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER"
+        "  REFERENCES customers(id))",
+    )
+
+    with caplog.at_level(logging.WARNING), _refusing("get_pk_constraint", "get_foreign_keys"):
+        schema = c.extract_schema()
+
+    assert {t.name for t in schema.tables} == {"customers", "orders"}
+    orders = next(t for t in schema.tables if t.name == "orders")
+    assert {col.name for col in orders.columns} == {"id", "customer_id"}
+    # Kept, but not claimed: no key it could not read is reported as present.
+    assert all(not col.is_primary_key and not col.is_foreign_key for col in orders.columns)
+    # And the reason is on the record, not swallowed.
+    assert "KEY_COLUMN_USAGE" in caplog.text
+
+
+def test_a_key_that_did_read_is_kept_when_only_the_other_kind_is_refused(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Primary and foreign keys are separate catalogue reads, so separate `try`s.
+
+    A role can hold one grant and not the other. Sharing one `try` discarded a
+    primary key that had already been read because the foreign keys were refused
+    after it -- degrading further than the evidence requires, which is the thing
+    this change exists to stop doing.
+    """
+    c = _connect(tmp_path)
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER"
+        "  REFERENCES customers(id))",
+    )
+
+    with caplog.at_level(logging.WARNING), _refusing("get_foreign_keys"):
+        schema = c.extract_schema()
+
+    orders = next(t for t in schema.tables if t.name == "orders")
+    cols = {col.name: col for col in orders.columns}
+    assert cols["id"].is_primary_key is True
+    # Refused, so not claimed -- but it cost only itself.
+    assert cols["customer_id"].is_foreign_key is False
+    assert "foreign keys" in caplog.text
+    assert "primary keys" not in caplog.text
+
+
+def test_the_warning_counts_the_tables_seen_and_names_a_reason_per_kind(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """How widespread the refusal was is the figure worth having.
+
+    Counting the tables *kept* reported "2 of 2" on a run that saw three, and a
+    table refused its keys and then dropped was still counted as kept. Both
+    kinds also shared one reason line, which named the foreign-key error even
+    where the two were refused for different reasons.
+    """
+    c = _connect(tmp_path)
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER"
+        "  REFERENCES customers(id))",
+        "CREATE TABLE audit (id INTEGER PRIMARY KEY, note TEXT)",
+    )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        _refusing("get_pk_constraint", "get_foreign_keys", extra={"get_columns": {"audit"}}),
+    ):
+        schema = c.extract_schema()
+
+    # `audit` lost its columns, so it is not a table the operator got back.
+    assert {t.name for t in schema.tables} == {"customers", "orders"}
+    assert "kept 2 of 3 table(s)" in caplog.text
+    # A reason attached to each kind, not one borrowed for both.
+    assert "foreign keys (" in caplog.text
+    assert "primary keys (" in caplog.text
+    assert "get_pk_constraint refused" in caplog.text
+    assert "get_foreign_keys refused" in caplog.text
+
+
+def test_a_table_dropped_after_its_keys_were_refused_is_not_counted_as_kept(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ordering, not merely the arithmetic.
+
+    Recording `keyless` before the append counted a table the operator never
+    got back. It has to be the later drop -- the block that builds the
+    `ColumnSpec`s -- because a refusal of `get_columns` itself short-circuits
+    before any key is read, so it cannot exercise this at all.
+    """
+    c = _connect(tmp_path)
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER"
+        "  REFERENCES customers(id))",
+        "CREATE TABLE audit (id INTEGER PRIMARY KEY, note TEXT)",
+    )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        _refusing("get_pk_constraint", "get_foreign_keys", malformed={"audit"}),
+    ):
+        schema = c.extract_schema()
+
+    assert {t.name for t in schema.tables} == {"customers", "orders"}
+    # Two kept without keys, out of three seen -- `audit` is neither.
+    assert "kept 2 of 3 table(s)" in caplog.text
+
+
+def test_a_fault_that_is_not_a_catalogue_refusal_is_not_swallowed(tmp_path: Path) -> None:
+    """`DatabaseError`, not `Exception` -- the reason `MSSQLConnector._enrichment`
+    gives for the same choice.
+
+    A catch-all would convert a bug in `_foreign_key_map`, or a connection lost
+    mid-introspection, into "the catalogue refused foreign keys" and then state
+    as fact that the table has no keys. Degrading is right for a refusal and
+    wrong for a fault.
+    """
+    c = _connect(tmp_path)
+    _seed(c, "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+
+    with _refusing("get_foreign_keys", error=RuntimeError), pytest.raises(RuntimeError):
+        c.extract_schema()
+
+
+def test_the_warning_for_a_skipped_table_says_why(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The column path is the only one that still drops a table, so it is the
+    one an operator most needs a reason from."""
+    c = _connect(tmp_path)
+    _seed(c, "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+
+    with caplog.at_level(logging.WARNING), _refusing("get_columns"):
+        schema = c.extract_schema()
+
+    assert schema.tables == []
+    assert "get_columns refused" in caplog.text
+
+
+def test_a_table_whose_columns_refuse_is_still_skipped(tmp_path: Path) -> None:
+    """The existing behaviour, kept: without columns there is no table to return.
+
+    Negative control for the split -- it must not have turned every reflection
+    failure into a table with no columns.
+    """
+    c = _connect(tmp_path)
+    _seed(c, "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+
+    with _refusing("get_columns"):
+        schema = c.extract_schema()
+
+    assert schema.tables == []
 
 
 def test_ddl_through_the_answer_path_is_not_undone_on_sqlite(tmp_path: Path) -> None:

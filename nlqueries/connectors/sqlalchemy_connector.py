@@ -28,6 +28,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine, make_url
+from sqlalchemy.exc import DatabaseError
 
 from nlqueries import config
 from nlqueries.connectors._budget import collect
@@ -323,26 +324,67 @@ class SQLAlchemyConnector(DatabaseConnector):
 
         Row counts and column descriptions are left ``None`` — neither is
         portably available across dialects without extra per-table queries.
-        A table that fails to reflect is skipped rather than aborting the build.
+        A table whose columns cannot be read is skipped rather than aborting the
+        build; a table whose *keys* cannot be read is kept without them.
         """
         engine = self._require_engine()
         inspector = inspect(engine)
         default_schema = inspector.default_schema_name or ""
         tables: list[TableSpec] = []
+        seen = 0
+        keyless: set[str] = set()
+        # Which kind of key was refused, and the first reason given for that kind.
+        refused: dict[str, str] = {}
 
         for table_name in inspector.get_table_names():
+            seen += 1
             try:
-                pk = inspector.get_pk_constraint(table_name).get("constrained_columns") or []
-                pk_cols = set(pk)
-                fk_cols: dict[str, str] = {}
-                for fk in inspector.get_foreign_keys(table_name):
-                    ref_table = fk.get("referred_table")
-                    referred = fk.get("referred_columns") or []
-                    constrained = fk.get("constrained_columns") or []
-                    for i, col in enumerate(constrained):
-                        ref_col = referred[i] if i < len(referred) else ""
-                        fk_cols[col] = f"{ref_table}.{ref_col}"
+                reflected_columns = inspector.get_columns(table_name)
+            except Exception as exc:  # noqa: BLE001 - one bad table never breaks the reflect
+                # This is the only path that still drops a table, so it is the
+                # one an operator most needs a reason from.
+                logger.warning(
+                    "SQLAlchemyConnector: could not reflect table %r, skipping it. "
+                    "The driver said: %s",
+                    table_name,
+                    str(exc) or exc.__class__.__name__,
+                )
+                continue
 
+            # Keys are an enrichment; the columns are the schema. Reflecting them
+            # used to sit inside the same `try` as the columns, so a catalogue
+            # that refuses constraint metadata -- a Snowflake share, a role
+            # without the grant -- cost the whole table, and every table failing
+            # the same way returned an empty schema the caller cannot tell from a
+            # database with no tables.
+            #
+            # Primary and foreign keys get a `try` each because they are separate
+            # catalogue reads on most dialects and a role can hold one grant and
+            # not the other. Sharing one would discard a primary key that had
+            # already been read because the foreign keys were refused after it.
+            # `DatabaseError` rather than `Exception`, for the reason
+            # `MSSQLConnector._enrichment` gives: it covers the permission and
+            # missing-object cases a restricted catalogue raises, and leaves a
+            # programming error in this module or a connection that has gone to
+            # raise as before. Catching everything here would report a genuine
+            # fault as "the catalogue refused foreign keys" and then state, as
+            # fact, that the table has no keys.
+            table_refused: dict[str, str] = {}
+            try:
+                pk_cols = set(
+                    inspector.get_pk_constraint(table_name).get("constrained_columns") or []
+                )
+            except DatabaseError as exc:
+                pk_cols = set()
+                table_refused["primary keys"] = str(exc) or exc.__class__.__name__
+
+            try:
+                fk_cols = self._foreign_key_map(inspector, table_name)
+            except DatabaseError as exc:
+                fk_cols = {}
+                table_refused["foreign keys"] = str(exc) or exc.__class__.__name__
+
+            try:
                 columns = [
                     ColumnSpec(
                         name=col["name"],
@@ -353,7 +395,7 @@ class SQLAlchemyConnector(DatabaseConnector):
                         references=fk_cols.get(col["name"]),
                         description=col.get("comment"),
                     )
-                    for col in inspector.get_columns(table_name)
+                    for col in reflected_columns
                 ]
                 tables.append(
                     TableSpec(
@@ -364,14 +406,52 @@ class SQLAlchemyConnector(DatabaseConnector):
                         description=None,
                     )
                 )
-            except Exception:  # noqa: BLE001 — one bad table never breaks the whole reflect
-                logger.warning("SQLAlchemyConnector: could not reflect table %r", table_name)
+                # Recorded only once the table is known to be kept -- a table
+                # that was refused its keys and then dropped below is not one
+                # the operator got back.
+                if table_refused:
+                    keyless.add(table_name)
+                    for kind, reason in table_refused.items():
+                        refused.setdefault(kind, reason)
+            except Exception as exc:  # noqa: BLE001 — one bad table never breaks the reflect
+                logger.warning(
+                    "SQLAlchemyConnector: could not reflect table %r, skipping it. "
+                    "The driver said: %s",
+                    table_name,
+                    str(exc) or exc.__class__.__name__,
+                )
+
+        if keyless:
+            # `seen`, not `len(tables)`: how widespread the refusal was is the
+            # figure worth having, and a run that also dropped tables would
+            # otherwise report "2 of 2" out of five. Each kind carries its own
+            # reason, since the two can be refused for different ones.
+            logger.warning(
+                "SQLAlchemyConnector: kept %d of %d table(s) without complete key metadata -- "
+                "the catalogue refused %s",
+                len(keyless),
+                seen,
+                "; ".join(f"{kind} ({reason})" for kind, reason in sorted(refused.items())),
+            )
 
         return SchemaSpec(
             database=str(engine.url.database or ""),
             tables=tables,
             extracted_at=_utc_now_iso(),
         )
+
+    @staticmethod
+    def _foreign_key_map(inspector: Any, table_name: str) -> dict[str, str]:
+        """Return ``{column: "ref_table.ref_column"}`` for *table_name*."""
+        fk_cols: dict[str, str] = {}
+        for fk in inspector.get_foreign_keys(table_name):
+            ref_table = fk.get("referred_table")
+            referred = fk.get("referred_columns") or []
+            constrained = fk.get("constrained_columns") or []
+            for i, col in enumerate(constrained):
+                ref_col = referred[i] if i < len(referred) else ""
+                fk_cols[col] = f"{ref_table}.{ref_col}"
+        return fk_cols
 
     # ------------------------------------------------------------------
     # extract_query_history
