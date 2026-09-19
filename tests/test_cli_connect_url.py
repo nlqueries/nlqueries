@@ -38,6 +38,27 @@ def connectors_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def keychain(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Stand in for the OS credential store, for every test in this module.
+
+    `keyring` is a base dependency, not an optional extra, so on a machine with
+    a working backend an unpatched test writes its fixture password into the
+    real keychain under the service `nlqueries` and leaves it there.
+    tests/test_connector_resolver_seam.py patches the same seam for the same
+    reason. Autouse rather than per-test: the cost of forgetting it is a secret
+    on the developer's machine, not a failing assertion.
+    """
+    saved: dict[str, str] = {}
+
+    def save_password(connector_id: str, password: str) -> bool:
+        saved[connector_id] = password
+        return True  # as if the keychain accepted it
+
+    monkeypatch.setattr(cli_main, "_save_password", save_password)
+    return saved
+
+
 @pytest.fixture
 def stub_handshake(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Let `connect` reach persistence without a database, recording credentials."""
@@ -105,20 +126,20 @@ def test_url_fields_are_read_back_out_of_the_url(
     assert "localhost" not in written
 
 
-def test_password_in_the_url_is_stripped_when_the_keychain_takes_it(
-    monkeypatch: pytest.MonkeyPatch,
+def test_password_in_the_url_is_kept_out_of_the_written_config(
     connectors_file: Path,
     stub_handshake: list[dict[str, Any]],
+    keychain: dict[str, str],
 ) -> None:
-    """A password inside the URL must be handled like one passed as --password."""
-    captured: dict[str, str] = {}
+    """A password inside the URL is handled like one passed as --password.
 
-    def save_password(connector_id: str, password: str) -> bool:
-        captured[connector_id] = password
-        return True  # keychain available
-
-    monkeypatch.setattr(cli_main, "_save_password", save_password)
-
+    Masked, not removed. `URL.set(password=None)` is a no-op -- SQLAlchemy
+    applies only non-None values -- so the writer's `str(...)` falls through to
+    `URL.__repr__`, which is `render_as_string(hide_password=True)`. The secret
+    is genuinely off disk; what stands in for it is `***`. That predates this
+    change, and the literal is asserted so that a later change making the
+    removal real fails here and gets looked at rather than passing silently.
+    """
     result = CliRunner().invoke(
         cli,
         ["connect", "sqlalchemy", "--url", f"mysql+pymysql://alice:{SECRET}@db.internal:3306/shop"],
@@ -126,13 +147,10 @@ def test_password_in_the_url_is_stripped_when_the_keychain_takes_it(
 
     assert result.exit_code == 0, result.output
     written = connectors_file.read_text(encoding="utf-8")
-    # Negative control: the URL really was written, so the assertion below is
-    # about stripping rather than about an absent line.
-    assert "url: mysql+pymysql://alice:" in written
-    assert "db.internal:3306/shop" in written
+    assert "url: mysql+pymysql://alice:***@db.internal:3306/shop" in written
     assert SECRET not in written
     assert SECRET not in result.output
-    assert list(captured.values()) == [SECRET]
+    assert list(keychain.values()) == [SECRET]
 
 
 def test_url_password_never_printed(
@@ -172,3 +190,107 @@ def test_malformed_url_is_refused(connectors_file: Path) -> None:
     assert result.exit_code != 0
     assert "not a valid SQLAlchemy URL" in result.output
     assert not connectors_file.exists()
+
+
+def test_password_env_is_honoured_for_a_url(
+    monkeypatch: pytest.MonkeyPatch,
+    connectors_file: Path,
+    stub_handshake: list[dict[str, Any]],
+) -> None:
+    """--password-env applies to --url, rather than being accepted and dropped.
+
+    Refusing it instead would have left the URL as the only way to supply a
+    secret for this type, and a URL is an argv value -- the shell-history
+    exposure --password-env exists to avoid.
+    """
+    monkeypatch.setenv("DB_PW", SECRET)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "connect",
+            "sqlalchemy",
+            "--url",
+            "postgresql://alice@db.internal/shop",
+            "--password-env",
+            "DB_PW",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert stub_handshake[0]["password"] == SECRET
+    assert stub_handshake[0]["url"] == f"postgresql://alice:{SECRET}@db.internal/shop"
+
+
+def test_password_option_is_honoured_for_a_url(
+    connectors_file: Path, stub_handshake: list[dict[str, Any]]
+) -> None:
+    result = CliRunner().invoke(
+        cli,
+        [
+            "connect",
+            "sqlalchemy",
+            "--url",
+            "postgresql://alice@db.internal/shop",
+            "--password",
+            SECRET,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert stub_handshake[0]["password"] == SECRET
+
+
+def test_password_in_both_the_url_and_an_option_is_refused(
+    connectors_file: Path, stub_handshake: list[dict[str, Any]]
+) -> None:
+    """Same principle as --url on another db-type: two sources, no precedence."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "connect",
+            "sqlalchemy",
+            "--url",
+            f"postgresql://alice:{SECRET}@db.internal/shop",
+            "--password",
+            "a-different-one",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "already carries a password" in result.output
+    assert not connectors_file.exists()
+
+
+def test_unset_password_env_is_refused_for_a_url(
+    connectors_file: Path, stub_handshake: list[dict[str, Any]]
+) -> None:
+    result = CliRunner().invoke(
+        cli,
+        [
+            "connect",
+            "sqlalchemy",
+            "--url",
+            "postgresql://alice@db.internal/shop",
+            "--password-env",
+            "NOT_SET_ANYWHERE",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "is not set or is empty" in result.output
+    assert not connectors_file.exists()
+
+
+def test_a_url_with_no_password_does_not_prompt(
+    tmp_path: Path, connectors_file: Path, stub_handshake: list[dict[str, Any]]
+) -> None:
+    """sqlite URLs have no password; the command must not stop for input.
+
+    Empty stdin, so an interactive prompt would surface rather than hang.
+    """
+    result = CliRunner().invoke(cli, ["connect", "sqlalchemy", "--url", "sqlite:///x.db"], input="")
+
+    assert result.exit_code == 0, result.output
+    assert "Database password" not in result.output
+    assert stub_handshake[0]["password"] is None

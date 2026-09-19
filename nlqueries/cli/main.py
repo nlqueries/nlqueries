@@ -749,7 +749,31 @@ def connect(
         except Exception as exc:  # noqa: BLE001
             raise click.ClickException(f"--url is not a valid SQLAlchemy URL: {exc}") from exc
 
-        url = str(url_opt).strip()
+        # --password / --password-env still apply. Refusing them would leave the
+        # URL as the only way to supply a secret for this type, and a URL is an
+        # argv value -- exactly the shell-history exposure those two options
+        # exist to avoid. Supplying it twice is refused, for the same reason
+        # --url is refused on the types that compose their own.
+        supplied: str | None = None
+        if password_env is not None:
+            supplied = os.environ.get(password_env) or ""
+            if not supplied:
+                raise click.ClickException(
+                    f"Environment variable '{password_env}' is not set or is empty."
+                )
+        elif password is not None:
+            supplied = password
+        if supplied is not None:
+            if parsed.password:
+                raise click.ClickException(
+                    "--url already carries a password. Pass it in the URL or with "
+                    "--password/--password-env, not both."
+                )
+            parsed = parsed.set(password=supplied)
+
+        # hide_password=False because this is the URL used to connect; the copy
+        # written to disk is masked further down.
+        url = parsed.render_as_string(hide_password=False)
         sa_driver = parsed.drivername
         host = parsed.host or ""
         resolved_port = parsed.port or 0
