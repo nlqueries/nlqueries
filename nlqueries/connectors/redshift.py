@@ -187,43 +187,70 @@ class RedshiftConnector(DatabaseConnector):
         """Return ``{(schema, table): row_count}`` from ``SVV_TABLE_INFO``.
 
         Falls back to a plain ``information_schema`` list (with ``None`` counts)
-        if the user lacks access to ``SVV_TABLE_INFO``.
+        if the user lacks access to ``SVV_TABLE_INFO`` -- which is the common
+        case, since reading it needs a grant most analyst roles are not given.
+
+        The fallback runs on a fresh cursor, after rolling back. `Cursor.execute`
+        opens an explicit transaction when autocommit is off, so the failed
+        `SVV_TABLE_INFO` statement leaves the block aborted; reusing the same
+        cursor inside it made the fallback query fail with 25P02 and propagate,
+        so the documented fallback never actually ran and a role without that
+        grant got no schema at all.
         """
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT schema, "table", tbl_rows
-                FROM SVV_TABLE_INFO
-                WHERE schema NOT IN (
-                    'information_schema','pg_catalog','pg_internal',
-                    'pg_toast','pg_temp_1','pg_bitmapindex'
+        with contextlib.closing(conn.cursor()) as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT schema, "table", tbl_rows
+                    FROM SVV_TABLE_INFO
+                    WHERE schema NOT IN (
+                        'information_schema','pg_catalog','pg_internal',
+                        'pg_toast','pg_temp_1','pg_bitmapindex'
+                    )
+                    ORDER BY schema, "table"
+                    """
                 )
-                ORDER BY schema, "table"
-                """
-            )
-            rows = cur.fetchall()
-            result: dict[tuple[str, str], int | None] = {
-                (r[0], r[1]): (int(r[2]) if r[2] is not None else None) for r in rows
-            }
-        except Exception:  # noqa: BLE001
-            # Fallback: list tables without row counts
-            cur.execute(
-                """
-                SELECT table_schema, table_name
-                FROM information_schema.tables
+                return {
+                    (r[0], r[1]): (int(r[2]) if r[2] is not None else None) for r in cur.fetchall()
+                }
+            except Exception as exc:  # noqa: BLE001 — falls back, and logs
+                logger.warning(
+                    "RedshiftConnector: could not read SVV_TABLE_INFO (%s). Listing "
+                    "tables without row counts; this usually means the role lacks the "
+                    "grant that view requires.",
+                    exc,
+                )
+
+        # Outside the `with`, and after the rollback: the aborted block has to be
+        # ended before anything else will run on this connection.
+        with contextlib.suppress(Exception):
+            conn.rollback()
+
+        # Rolled back on the way out too. If this one fails as well -- a dropped
+        # connection, or a role that cannot read `information_schema.tables`
+        # either -- the exception propagates with the block still aborted, and
+        # the next `execute_query` on this connector then fails at
+        # `SET TRANSACTION READ ONLY` for a reason that has nothing to do with
+        # the query the user ran.
+        try:
+            with contextlib.closing(conn.cursor()) as cur:
+                cur.execute(
+                    """
+                    SELECT table_schema, table_name
+                    FROM information_schema.tables
                 WHERE table_type = 'BASE TABLE'
-                  AND table_schema NOT IN (
-                      'information_schema','pg_catalog','pg_internal',
-                      'pg_toast','pg_temp_1','pg_bitmapindex'
-                  )
-                ORDER BY table_schema, table_name
-                """
-            )
-            result = {(r[0], r[1]): None for r in cur.fetchall()}
-        finally:
-            cur.close()
-        return result
+                      AND table_schema NOT IN (
+                          'information_schema','pg_catalog','pg_internal',
+                          'pg_toast','pg_temp_1','pg_bitmapindex'
+                      )
+                    ORDER BY table_schema, table_name
+                    """
+                )
+                return {(r[0], r[1]): None for r in cur.fetchall()}
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
     @staticmethod
     def _fetch_columns(conn: Any) -> dict[tuple[str, str], list[dict[str, Any]]]:
