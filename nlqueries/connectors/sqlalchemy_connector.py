@@ -28,6 +28,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine, make_url
+from sqlalchemy.exc import DatabaseError
 
 from nlqueries import config
 from nlqueries.connectors._budget import collect
@@ -330,11 +331,13 @@ class SQLAlchemyConnector(DatabaseConnector):
         inspector = inspect(engine)
         default_schema = inspector.default_schema_name or ""
         tables: list[TableSpec] = []
+        seen = 0
         keyless: set[str] = set()
-        # Which kind of key was refused, and the first reason given for it.
+        # Which kind of key was refused, and the first reason given for that kind.
         refused: dict[str, str] = {}
 
         for table_name in inspector.get_table_names():
+            seen += 1
             try:
                 reflected_columns = inspector.get_columns(table_name)
             except Exception as exc:  # noqa: BLE001 - one bad table never breaks the reflect
@@ -359,21 +362,27 @@ class SQLAlchemyConnector(DatabaseConnector):
             # catalogue reads on most dialects and a role can hold one grant and
             # not the other. Sharing one would discard a primary key that had
             # already been read because the foreign keys were refused after it.
+            # `DatabaseError` rather than `Exception`, for the reason
+            # `MSSQLConnector._enrichment` gives: it covers the permission and
+            # missing-object cases a restricted catalogue raises, and leaves a
+            # programming error in this module or a connection that has gone to
+            # raise as before. Catching everything here would report a genuine
+            # fault as "the catalogue refused foreign keys" and then state, as
+            # fact, that the table has no keys.
+            table_refused: dict[str, str] = {}
             try:
                 pk_cols = set(
                     inspector.get_pk_constraint(table_name).get("constrained_columns") or []
                 )
-            except Exception as exc:  # noqa: BLE001
+            except DatabaseError as exc:
                 pk_cols = set()
-                keyless.add(table_name)
-                refused.setdefault("primary keys", str(exc) or exc.__class__.__name__)
+                table_refused["primary keys"] = str(exc) or exc.__class__.__name__
 
             try:
                 fk_cols = self._foreign_key_map(inspector, table_name)
-            except Exception as exc:  # noqa: BLE001
+            except DatabaseError as exc:
                 fk_cols = {}
-                keyless.add(table_name)
-                refused.setdefault("foreign keys", str(exc) or exc.__class__.__name__)
+                table_refused["foreign keys"] = str(exc) or exc.__class__.__name__
 
             try:
                 columns = [
@@ -397,6 +406,13 @@ class SQLAlchemyConnector(DatabaseConnector):
                         description=None,
                     )
                 )
+                # Recorded only once the table is known to be kept -- a table
+                # that was refused its keys and then dropped below is not one
+                # the operator got back.
+                if table_refused:
+                    keyless.add(table_name)
+                    for kind, reason in table_refused.items():
+                        refused.setdefault(kind, reason)
             except Exception as exc:  # noqa: BLE001 — one bad table never breaks the reflect
                 logger.warning(
                     "SQLAlchemyConnector: could not reflect table %r, skipping it. "
@@ -406,14 +422,16 @@ class SQLAlchemyConnector(DatabaseConnector):
                 )
 
         if keyless:
-            kinds = sorted(refused)
+            # `seen`, not `len(tables)`: how widespread the refusal was is the
+            # figure worth having, and a run that also dropped tables would
+            # otherwise report "2 of 2" out of five. Each kind carries its own
+            # reason, since the two can be refused for different ones.
             logger.warning(
                 "SQLAlchemyConnector: kept %d of %d table(s) without complete key metadata -- "
-                "the catalogue refused %s. The driver said: %s",
+                "the catalogue refused %s",
                 len(keyless),
-                len(tables),
-                " and ".join(kinds),
-                refused[kinds[0]],
+                seen,
+                "; ".join(f"{kind} ({reason})" for kind, reason in sorted(refused.items())),
             )
 
         return SchemaSpec(
