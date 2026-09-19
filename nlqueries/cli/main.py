@@ -669,8 +669,11 @@ def connect(
     # ------------------------------------------------------------------
     # File-based (DuckDB, SQLite) and service-account (BigQuery) types have no
     # user/password — skip credential prompting entirely.
-    # `sqlalchemy` joins these because its password, if any, is inside the URL;
-    # prompting would ask for a value with nowhere to go.
+    # `sqlalchemy` joins them for a different reason: whether a URL's dialect
+    # needs a password is not knowable here -- `sqlite:///app.db` must not stop
+    # for a prompt -- so it is never prompted for. `--password` and
+    # `--password-env` are still supported for the type; the sqlalchemy branch
+    # below applies them to the parsed URL.
     _no_auth_types = {"bigquery", "duckdb", "sqlite", "sqlalchemy"}
     if db_type_l not in _no_auth_types:
         if password_env is not None:
