@@ -138,49 +138,59 @@ class RedshiftConnector(DatabaseConnector):
         returned as ``None``.
         """
         conn = self._require_conn()
+        try:
+            row_counts = self._fetch_row_counts(conn)
+            cols_by_table = self._fetch_columns(conn)
+            # Keys are an enrichment, tables and columns are the schema. The
+            # constraint views are restricted on a datashare consumer database, and
+            # `_fetch_row_counts` above already falls back rather than failing for
+            # the same reason -- this extends that to the rest of the enrichment,
+            # so a database that can describe its tables is not refused outright.
+            pks = self._enrichment("primary keys", lambda: self._fetch_primary_keys(conn), {})
+            fks = self._enrichment("foreign keys", lambda: self._fetch_foreign_keys(conn), {})
 
-        row_counts = self._fetch_row_counts(conn)
-        cols_by_table = self._fetch_columns(conn)
-        # Keys are an enrichment, tables and columns are the schema. The
-        # constraint views are restricted on a datashare consumer database, and
-        # `_fetch_row_counts` above already falls back rather than failing for
-        # the same reason -- this extends that to the rest of the enrichment,
-        # so a database that can describe its tables is not refused outright.
-        pks = self._enrichment("primary keys", lambda: self._fetch_primary_keys(conn), {})
-        fks = self._enrichment("foreign keys", lambda: self._fetch_foreign_keys(conn), {})
+            tables: list[TableSpec] = []
+            for (schema, name), row_count in row_counts.items():
+                key = (schema, name)
+                pk_cols = pks.get(key, set())
+                fk_cols = fks.get(key, {})
+                columns = [
+                    ColumnSpec(
+                        name=col["column_name"],
+                        type=col["data_type"],
+                        nullable=col["is_nullable"],
+                        is_primary_key=col["column_name"] in pk_cols,
+                        is_foreign_key=col["column_name"] in fk_cols,
+                        references=fk_cols.get(col["column_name"]),
+                        description=None,
+                    )
+                    for col in cols_by_table.get(key, [])
+                ]
+                tables.append(
+                    TableSpec(
+                        name=name,
+                        schema=schema,
+                        row_count=row_count,
+                        columns=columns,
+                        description=None,
+                    )
+                )
 
-        tables: list[TableSpec] = []
-        for (schema, name), row_count in row_counts.items():
-            key = (schema, name)
-            pk_cols = pks.get(key, set())
-            fk_cols = fks.get(key, {})
-            columns = [
-                ColumnSpec(
-                    name=col["column_name"],
-                    type=col["data_type"],
-                    nullable=col["is_nullable"],
-                    is_primary_key=col["column_name"] in pk_cols,
-                    is_foreign_key=col["column_name"] in fk_cols,
-                    references=fk_cols.get(col["column_name"]),
-                    description=None,
-                )
-                for col in cols_by_table.get(key, [])
-            ]
-            tables.append(
-                TableSpec(
-                    name=name,
-                    schema=schema,
-                    row_count=row_count,
-                    columns=columns,
-                    description=None,
-                )
+            return SchemaSpec(
+                database=self._database,
+                tables=tables,
+                extracted_at=_utc_now_iso(),
             )
-
-        return SchemaSpec(
-            database=self._database,
-            tables=tables,
-            extracted_at=_utc_now_iso(),
-        )
+        finally:
+            # Every `cur.execute` above opened a transaction implicitly, and
+            # nothing here commits or rolls back -- so on the way out of a
+            # *successful* extract the connection still carries an open
+            # transaction. `_execute_query` opens the next user query with
+            # `SET TRANSACTION READ ONLY`, which the server only accepts as
+            # the first statement of a transaction, so that query would fail
+            # on a reused connection. The failure paths roll back for their
+            # own reasons; this covers the ones that succeed, and the raise.
+            self._end_transaction()
 
     @staticmethod
     def _fetch_row_counts(conn: Any) -> dict[tuple[str, str], int | None]:
