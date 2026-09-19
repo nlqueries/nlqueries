@@ -249,9 +249,8 @@ class RedshiftConnector(DatabaseConnector):
         cur.close()
         return result
 
-    @staticmethod
-    def _enrichment(label: str, fetch: Any, default: Any) -> Any:
-        """Run an optional schema enrichment, or log and return *default*.
+    def _enrichment(self, label: str, fetch: Any, default: Any) -> Any:
+        """Run an optional schema enrichment, or roll back, log and return *default*.
 
         Broad on purpose, matching `_fetch_row_counts`'s existing fallback: the
         driver raises a plain `Exception` subclass for both "no such view" and
@@ -259,10 +258,20 @@ class RedshiftConnector(DatabaseConnector):
         carries the reason, because the cost of a broad catch is that a real
         fault becomes a quieter schema rather than a failure -- so it has to be
         visible in the log.
+
+        The rollback is the part that is easy to miss. `Cursor.execute` opens an
+        explicit transaction whenever one is not already open and autocommit is
+        off, which is the default -- so a statement that fails leaves the block
+        in the aborted state. Swallowing the error without ending it makes every
+        later statement on this connection fail with 25P02: the foreign-key
+        fetch below would be logged as though the datashare caused it, and the
+        `SET TRANSACTION READ ONLY` that opens the next user query would fail
+        for no reason that reaches the user.
         """
         try:
             return fetch()
-        except Exception as exc:  # noqa: BLE001 — degraded, and logged
+        except Exception as exc:  # noqa: BLE001 — degraded, rolled back, and logged
+            self._end_transaction()
             logger.warning(
                 "RedshiftConnector: could not read %s (%s). The schema will omit them; "
                 "this is expected on a database imported from a datashare.",
@@ -273,54 +282,52 @@ class RedshiftConnector(DatabaseConnector):
 
     @staticmethod
     def _fetch_primary_keys(conn: Any) -> dict[tuple[str, str], set[str]]:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT tc.table_schema, tc.table_name, kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON kcu.constraint_name  = tc.constraint_name
-               AND kcu.constraint_schema = tc.constraint_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema NOT IN (
-                  'information_schema','pg_catalog','pg_internal'
-              )
-            """
-        )
-        result: dict[tuple[str, str], set[str]] = {}
-        try:
+        # `closing`, not a `finally` around the fetch. The driver reports a
+        # missing or restricted view from `execute`, so a guard beginning after
+        # it covered only the path that does not fail -- and with the caller now
+        # swallowing the error, every degraded extraction leaked a cursor.
+        with contextlib.closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT tc.table_schema, tc.table_name, kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON kcu.constraint_name  = tc.constraint_name
+                   AND kcu.constraint_schema = tc.constraint_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND tc.table_schema NOT IN (
+                      'information_schema','pg_catalog','pg_internal'
+                  )
+                """
+            )
+            result: dict[tuple[str, str], set[str]] = {}
             for r in cur.fetchall():
                 result.setdefault((r[0], r[1]), set()).add(r[2])
-        finally:
-            cur.close()
         return result
 
     @staticmethod
     def _fetch_foreign_keys(conn: Any) -> dict[tuple[str, str], dict[str, str]]:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT tc.table_schema, tc.table_name, kcu.column_name,
-                   ccu.table_name AS ref_table, ccu.column_name AS ref_col
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON kcu.constraint_name  = tc.constraint_name
-               AND kcu.constraint_schema = tc.constraint_schema
-            JOIN information_schema.constraint_column_usage ccu
-                ON ccu.constraint_name  = tc.constraint_name
-               AND ccu.constraint_schema = tc.constraint_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema NOT IN (
-                  'information_schema','pg_catalog','pg_internal'
-              )
-            """
-        )
-        result: dict[tuple[str, str], dict[str, str]] = {}
-        try:
+        with contextlib.closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT tc.table_schema, tc.table_name, kcu.column_name,
+                       ccu.table_name AS ref_table, ccu.column_name AS ref_col
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON kcu.constraint_name  = tc.constraint_name
+                   AND kcu.constraint_schema = tc.constraint_schema
+                JOIN information_schema.constraint_column_usage ccu
+                    ON ccu.constraint_name  = tc.constraint_name
+                   AND ccu.constraint_schema = tc.constraint_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema NOT IN (
+                      'information_schema','pg_catalog','pg_internal'
+                  )
+                """
+            )
+            result: dict[tuple[str, str], dict[str, str]] = {}
             for r in cur.fetchall():
                 result.setdefault((r[0], r[1]), {})[r[2]] = f"{r[3]}.{r[4]}"
-        finally:
-            cur.close()
         return result
 
     # ------------------------------------------------------------------

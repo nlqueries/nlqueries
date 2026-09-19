@@ -310,12 +310,17 @@ class SnowflakeConnector(DatabaseConnector):
             text = str(exc)
             if not any(view in text for view in ("KEY_COLUMN_USAGE", "TABLE_CONSTRAINTS")):
                 raise
+            # The whole message, not its first line. Snowflake puts the code on
+            # line one and the object name on line two, so `splitlines()[0]`
+            # dropped the very detail the guard matched on -- and telling a
+            # share-imported database from a guard firing for another reason is
+            # the reason this is logged at all.
             logger.warning(
-                "Snowflake database %s exposes no constraint views (%s); primary and "
-                "foreign keys will be absent from the schema. This is normal for a "
-                "database imported from a share.",
+                "Snowflake database %s exposes no constraint views; primary and foreign "
+                "keys will be absent from the schema. This is normal for a database "
+                "imported from a share. The driver said: %s",
                 database,
-                text.splitlines()[0] if text else exc.__class__.__name__,
+                text or exc.__class__.__name__,
             )
             return {}, {}
 
