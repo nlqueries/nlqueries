@@ -570,8 +570,10 @@ class TestSchemaDegradesWithoutConstraintViews:
         connector._database = "dev"
         connector.extract_schema()
 
-        # Once per failed enrichment, so the next statement starts clean.
-        assert conn.rollback.call_count == 2
+        # Once per failed enrichment, so the next statement starts clean, plus
+        # once as `extract_schema` returns -- see
+        # TestRedshiftExtractSchemaTransaction for that third one.
+        assert conn.rollback.call_count == 3
 
     def test_mssql_omits_keys_rather_than_failing(self) -> None:
         from nlqueries.connectors.mssql import MSSQLConnector
@@ -707,3 +709,97 @@ class TestRedshiftRowCountFallback:
 
         assert RedshiftConnector._fetch_row_counts(conn) == {("public", "users"): 42}
         conn.rollback.assert_not_called()
+
+
+class TestRedshiftExtractSchemaTransaction:
+    """`extract_schema` must not hand the next query an open transaction.
+
+    `_execute_query`'s own docstring says `SET TRANSACTION READ ONLY` has to be
+    the first statement of the transaction it opens. Every `cur.execute` in the
+    schema readers opens one implicitly, and the success path returned without
+    ending it -- so the first user query on a reused connection was refused for
+    a reason that had nothing to do with the query. The failure paths already
+    rolled back for their own reasons; the paths that worked did not.
+    """
+
+    @staticmethod
+    def _conn_for_extract_then_query() -> MagicMock:
+        conn = MagicMock()
+        cur_tables = _make_cursor([("public", "users", 100)])
+        cur_cols = _make_cursor([("public", "users", "id", "integer", False)])
+        cur_pks = _make_cursor([("public", "users", "id")])
+        cur_fks = _make_cursor([])
+        query_cur = MagicMock()
+        query_cur.description = [("id",)]
+        query_cur.fetchall.return_value = [(1,)]
+        query_cur.__iter__.return_value = iter([(1,)])
+        conn.cursor.side_effect = [cur_tables, cur_cols, cur_pks, cur_fks, query_cur]
+        # `cursor.side_effect` hands back mocks that are not children of `conn`,
+        # so their calls never reach `conn.mock_calls`. Attaching the query
+        # cursor puts the rollback and the statement that must follow it into
+        # one ordered log.
+        conn.attach_mock(query_cur, "query_cur")
+        return conn
+
+    def test_the_transaction_is_closed_by_the_time_extract_returns(self) -> None:
+        """Ordering is the property, so the assertion is on ordering.
+
+        `rollback.assert_called()` would stay green with the rollback moved into
+        `execute_query`, which is where it already happens and is too late: the
+        query has issued `SET TRANSACTION READ ONLY` by then. Requiring it to be
+        the last thing `extract_schema` does pins the fix to the right place.
+        """
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn = self._conn_for_extract_then_query()
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+        connector._database = "dev"
+
+        spec = connector.extract_schema()
+        during_extract = [c[0] for c in conn.mock_calls]
+
+        # Negative control: ending the transaction must not cost the schema.
+        assert [t.name for t in spec.tables] == ["users"]
+        assert during_extract[-1] == "rollback"
+
+    def test_the_next_query_can_still_be_made_read_only(self) -> None:
+        """The consequence the rollback exists for, asserted end to end."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn = self._conn_for_extract_then_query()
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+        connector._database = "dev"
+
+        connector.extract_schema()
+        result = connector.execute_query("SELECT id FROM users")
+
+        assert result.error is None
+        names = [c[0] for c in conn.mock_calls]
+        first_query_stmt = names.index("query_cur.execute")
+        # `SET TRANSACTION READ ONLY` is the query's first statement, and the
+        # schema extraction closed its transaction before it -- which is the
+        # whole point: the server only accepts it as the first statement of a
+        # transaction.
+        assert conn.mock_calls[first_query_stmt][1][0] == "SET TRANSACTION READ ONLY"
+        assert "rollback" in names[:first_query_stmt]
+
+    def test_the_transaction_is_closed_when_the_extract_fails(self) -> None:
+        """A raise leaves the connection reusable too."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur_tables = _make_cursor([("public", "users", 100)])
+        broken_cols = MagicMock()
+        broken_cols.execute.side_effect = Exception("permission denied for information_schema")
+        conn = MagicMock()
+        conn.cursor.side_effect = [cur_tables, broken_cols]
+
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+        connector._database = "dev"
+
+        with pytest.raises(Exception, match="permission denied"):
+            connector.extract_schema()
+
+        assert [c[0] for c in conn.mock_calls][-1] == "rollback"
