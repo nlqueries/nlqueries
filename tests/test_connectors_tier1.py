@@ -614,3 +614,67 @@ class TestSchemaDegradesWithoutConstraintViews:
             pytest.raises(TypeError),
         ):
             connector.extract_schema()
+
+
+class TestRedshiftRowCountFallback:
+    """The documented fallback has to survive the statement that triggers it.
+
+    Reading `SVV_TABLE_INFO` needs a grant most analyst roles are not given, so
+    this is the common Redshift path, not an edge case.
+    """
+
+    @staticmethod
+    def _conn(second_cursor_rows: list[tuple[str, str]]) -> tuple[MagicMock, MagicMock]:
+        denied = MagicMock()
+        denied.execute.side_effect = Exception("permission denied for relation svv_table_info")
+        fallback = _make_cursor(second_cursor_rows)
+        conn = MagicMock()
+        conn.cursor.side_effect = [denied, fallback]
+        return conn, fallback
+
+    def test_falls_back_on_a_fresh_cursor(self) -> None:
+        """Reusing the cursor ran the fallback inside the aborted block, so it
+        failed with 25P02 and propagated -- the fallback never ran at all."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn, _ = self._conn([("public", "users"), ("public", "orders")])
+
+        counts = RedshiftConnector._fetch_row_counts(conn)
+
+        assert counts == {("public", "users"): None, ("public", "orders"): None}
+        # A second cursor was taken rather than the failed one reused.
+        assert conn.cursor.call_count == 2
+
+    def test_rolls_back_before_the_fallback(self) -> None:
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn, _ = self._conn([("public", "users")])
+
+        RedshiftConnector._fetch_row_counts(conn)
+
+        conn.rollback.assert_called_once()
+
+    def test_closes_the_cursor_that_failed(self) -> None:
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn = MagicMock()
+        denied = MagicMock()
+        denied.execute.side_effect = Exception("permission denied")
+        fallback = _make_cursor([])
+        conn.cursor.side_effect = [denied, fallback]
+
+        RedshiftConnector._fetch_row_counts(conn)
+
+        denied.close.assert_called_once()
+        fallback.close.assert_called_once()
+
+    def test_the_happy_path_still_returns_counts(self) -> None:
+        """Negative control: the fallback must not have become the only path."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur = _make_cursor([("public", "users", 42)])
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+
+        assert RedshiftConnector._fetch_row_counts(conn) == {("public", "users"): 42}
+        conn.rollback.assert_not_called()
