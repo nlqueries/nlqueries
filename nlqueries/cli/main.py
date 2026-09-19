@@ -560,6 +560,17 @@ def cli() -> None:
     metavar="VAR",
     help="Read the password from environment variable VAR instead of the command line.",
 )
+@click.option(
+    "--url",
+    "url_opt",
+    default=None,
+    metavar="URL",
+    help=(
+        "Full SQLAlchemy URL, for the generic 'sqlalchemy' db-type "
+        '(e.g. "mysql+pymysql://alice:secret@db:3306/shop"). '
+        "The URL's own driver must be installed."
+    ),
+)
 @click.option("--account", default=None, help="Snowflake account identifier.")
 @click.option("--warehouse", default=None, help="Snowflake warehouse to use.")
 @click.option("--schema", "db_schema", default=None, help="Snowflake schema (optional).")
@@ -596,6 +607,7 @@ def connect(
     user: str | None,
     password: str | None,
     password_env: str | None,
+    url_opt: str | None,
     account: str | None,
     warehouse: str | None,
     db_schema: str | None,
@@ -609,7 +621,12 @@ def connect(
 
     \b
     DB_TYPE  one of: postgres, mysql, bigquery, snowflake, redshift, mssql,
-             duckdb, sqlite
+             duckdb, sqlite, sqlalchemy
+
+    
+    `sqlalchemy` is the generic connector: it takes a whole SQLAlchemy URL via
+    --url and reaches anything with a SQLAlchemy dialect installed (MariaDB,
+    Oracle, ...). Every other type composes its URL from the options below.
 
     \b
     Examples:
@@ -620,12 +637,30 @@ def connect(
           --database mydb --user alice --password secret
       nlqueries connect duckdb --database /data/warehouse.db
       nlqueries connect sqlite --database /data/app.db
+      nlqueries connect sqlalchemy --url "mysql+pymysql://alice:secret@db:3306/shop"
       nlqueries connect snowflake --account acme-prod --database PROD --user bob \\
           --password YOUR_PASSWORD --warehouse COMPUTE_WH --schema PUBLIC
       nlqueries connect bigquery --project-id acme-prod --dataset-id analytics \\
           --service-account-json /path/to/key.json
     """
     db_type_l = db_type.lower()
+
+    # --url and `sqlalchemy` go together. The generic connector's only
+    # credential is a whole URL, and every other type composes its URL from the
+    # discrete options below -- so accepting --url for one of those would mean
+    # two sources for the same value with nothing to say which wins.
+    if db_type_l == "sqlalchemy" and not url_opt:
+        raise click.ClickException(
+            "sqlalchemy requires --url.\n"
+            "  Example: nlqueries connect sqlalchemy "
+            '--url "mysql+pymysql://alice:secret@db:3306/shop"'
+        )
+    if url_opt and db_type_l != "sqlalchemy":
+        raise click.ClickException(
+            f"--url is only valid with the 'sqlalchemy' db-type, not '{db_type}'.\n"
+            "  Either drop --url and pass --host/--database/--user, or connect as "
+            "'sqlalchemy' with the whole URL."
+        )
 
     # ------------------------------------------------------------------
     # Resolve the password without letting it hit shell history.
@@ -634,7 +669,9 @@ def connect(
     # ------------------------------------------------------------------
     # File-based (DuckDB, SQLite) and service-account (BigQuery) types have no
     # user/password — skip credential prompting entirely.
-    _no_auth_types = {"bigquery", "duckdb", "sqlite"}
+    # `sqlalchemy` joins these because its password, if any, is inside the URL;
+    # prompting would ask for a value with nowhere to go.
+    _no_auth_types = {"bigquery", "duckdb", "sqlite", "sqlalchemy"}
     if db_type_l not in _no_auth_types:
         if password_env is not None:
             password = os.environ.get(password_env) or ""
@@ -677,6 +714,9 @@ def connect(
     elif db_type_l in ("duckdb", "sqlite"):
         # File-based: only a database path is needed (or :memory:, the default).
         pass
+    elif db_type_l == "sqlalchemy":
+        # Everything required is inside --url, already checked above.
+        pass
     else:
         missing = [
             name
@@ -694,27 +734,59 @@ def connect(
                 f"--user alice --password secret"
             )
 
-    # Resolve port
-    resolved_port: int = port or _DEFAULT_PORTS.get(db_type_l, 5432)
+    resolved_port: int
+    sa_driver = ""
+    if db_type_l == "sqlalchemy":
+        # The URL is the input, so host/port/database/user are read back out of
+        # it rather than composed into it. They are what the config file, the
+        # connector id and the keychain entry are built from below, and leaving
+        # them as the option defaults would have recorded `localhost` for a
+        # connector pointing somewhere else entirely.
+        from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
 
-    # Build connection URL
-    try:
-        url = _build_url(
-            db_type,
-            host,
-            resolved_port,
-            database or "",
-            user or "",
-            password or "",
-            account=account,
-            project=project_id,
+        try:
+            parsed = _mu(str(url_opt).strip())
+        except Exception as exc:  # noqa: BLE001
+            raise click.ClickException(f"--url is not a valid SQLAlchemy URL: {exc}") from exc
+
+        url = str(url_opt).strip()
+        sa_driver = parsed.drivername
+        host = parsed.host or ""
+        resolved_port = parsed.port or 0
+        database = parsed.database
+        user = parsed.username
+        password = parsed.password
+        # Never the URL: it may carry the password, and the id is printed,
+        # stored and passed on the command line from here on.
+        cid = connector_id or f"sqlalchemy:{parsed.drivername}:{database or host or 'db'}"
+    else:
+        # Resolve port
+        resolved_port = port or _DEFAULT_PORTS.get(db_type_l, 5432)
+
+        # Build connection URL
+        try:
+            url = _build_url(
+                db_type,
+                host,
+                resolved_port,
+                database or "",
+                user or "",
+                password or "",
+                account=account,
+                project=project_id,
+            )
+        except click.ClickException:
+            raise
+
+        cid = connector_id or f"{db_type_l}:{host}:{database or project_id}"
+
+    if db_type_l == "sqlalchemy":
+        # The URL itself is not printed -- it may carry the password.
+        where = f"{host}:{resolved_port}/{database}" if host else (database or "")
+        console.print(
+            f"[bold]Connecting[/bold] via SQLAlchemy ([cyan]{sa_driver}[/cyan]) {where} …"
         )
-    except click.ClickException:
-        raise
-
-    cid = connector_id or f"{db_type_l}:{host}:{database or project_id}"
-
-    if db_type_l == "bigquery":
+    elif db_type_l == "bigquery":
         console.print(f"[bold]Connecting[/bold] to BigQuery project [cyan]{project_id}[/cyan] …")
     elif db_type_l in ("duckdb", "sqlite"):
         db_label = database or ":memory:"
@@ -744,6 +816,9 @@ def connect(
         "project_id": project_id,
         "dataset_id": dataset_id,
         "service_account_json": service_account_json,
+        # SQLAlchemyConnector's only credential. Every other connector ignores
+        # an unknown key, and `resolver_entry` below already carried it.
+        "url": url,
     }
     # Entry-shaped, rather than the CLI's own option dict. `connector_class_for`
     # documents its second argument as the connector's configuration entry, and

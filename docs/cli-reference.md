@@ -69,6 +69,15 @@ nlqueries connect sqlite --database /data/app.db --alias app-local   # persisten
 nlqueries connect sqlite --alias app-mem                             # in-memory, transient
 ```
 
+**Generic SQLAlchemy** — for anything without a dedicated type above (MariaDB, Oracle, ...); install that driver yourself
+
+```bash
+nlqueries connect sqlalchemy --url "mysql+pymysql://alice:secret@db.internal:3306/shop" --alias shop
+nlqueries connect sqlalchemy --url "oracle+cx_oracle://alice:secret@host:1521/?service_name=ORCL"
+```
+
+`--url` takes a whole SQLAlchemy URL and is the only way to configure this type; it is rejected on any other db-type, which composes its URL from the flags above. Host, port, database and user are read back out of the URL for the config file, and a password inside the URL is moved into the OS keychain exactly as `--password` would be. Schema comes from SQLAlchemy's dialect-agnostic inspector and there is no query history — see [connectors.md](connectors.md).
+
 See [connectors.md](connectors.md) for per-database query-history and schema-introspection caveats (Redshift, MSSQL, DuckDB, and SQLite in particular).
 
 ---
