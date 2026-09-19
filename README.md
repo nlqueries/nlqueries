@@ -35,6 +35,9 @@
 | **Conversational follow-ups** | Carries context across questions so a follow-up like "and by region?" resolves against the previous query — on by default in `nlqueries query`, reset with `--new-session` |
 | **Semantic cache** | Returns previously-answered similar questions in under 50 ms, no LLM or DB round-trip |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |
+| **Feedback loop** | Rate an answer with `feedback`, review with `feedback-stats`, and `promote-feedback` the thumbs-up ones — their SQL is re-validated against the current schema and blended into later prompts as verified examples |
+| **Regression checks** | `eval` re-asks the agent's own mined capsules — and a golden question set too, with `--golden` — then checks the generated SQL parses and references only tables the agent knows |
+| **dbt import** | `import-dbt` merges dbt model and column descriptions into the knowledge base |
 | **LLM client** | Anthropic, OpenAI, Amazon Bedrock, or any LiteLLM-supported provider |
 | **MCP server** | Query execution and schema/knowledge lookup exposed as MCP tools for Claude, Cursor, etc. |
 | **CLI** | `nlqueries` (or the shorter `nlq` alias) — connect, build, query, and inspect from your terminal |
@@ -45,7 +48,7 @@ See [docs/architecture.md](docs/architecture.md) (or [read online](https://nlque
 
 ## Quickstart
 
-**Prerequisite:** Python 3.11+.
+**Prerequisite:** Python 3.11–3.14.
 
 ### Option A — Docker (recommended)
 
@@ -55,11 +58,13 @@ Pulls the published [`nlqueries/core`](https://hub.docker.com/r/nlqueries/core) 
 curl -O https://raw.githubusercontent.com/nlqueries/nlqueries/main/docker-compose.yml
 ```
 
-Create a `.env` file next to it with at least one LLM key:
+Create a `.env` file next to it with one LLM key and a Qdrant key. Both are
+required — compose refuses to start without `QDRANT_API_KEY`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
 # or OPENAI_API_KEY=sk-...
+QDRANT_API_KEY=...   # any random secret: openssl rand -hex 32
 ```
 
 Then start the stack:
@@ -85,13 +90,18 @@ nlqueries health
 Optional extras for specific connectors:
 
 ```bash
-pip install "nlqueries-core[mysql]"     # MySQL
-pip install "nlqueries-core[redshift]"  # Amazon Redshift
-pip install "nlqueries-core[mssql]"     # SQL Server / Azure SQL
-pip install "nlqueries-core[duckdb]"    # DuckDB
-pip install "nlqueries-core[docs]"      # PDF / Word / Excel ingestion
-pip install "nlqueries-core[wiki]"      # Notion / Confluence sync
+pip install "nlqueries-core[mysql]"      # MySQL
+pip install "nlqueries-core[snowflake]"  # Snowflake
+pip install "nlqueries-core[bigquery]"   # Google BigQuery
+pip install "nlqueries-core[redshift]"   # Amazon Redshift
+pip install "nlqueries-core[mssql]"      # SQL Server / Azure SQL
+pip install "nlqueries-core[duckdb]"     # DuckDB
+pip install "nlqueries-core[docs]"       # PDF / Word / Excel ingestion
+pip install "nlqueries-core[wiki]"       # Notion / Confluence sync
 ```
+
+PostgreSQL and SQLite need no extra. The generic `sqlalchemy` connector needs
+whichever driver its URL names.
 
 ### Option C — Clone and install from source
 
@@ -137,6 +147,9 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read o
 | [docs/qdrant-setup.md](docs/qdrant-setup.md) (or [read online](https://nlqueries.com/docs/qdrant-setup.html)) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
 | [docs/mcp-authentication.md](docs/mcp-authentication.md) (or [read online](https://nlqueries.com/docs/mcp-authentication.html)) | Authenticating the MCP server — required to serve it over a network |
 | [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture.html)) | Module layout and request flow |
+| [docs/database-hardening.md](docs/database-hardening.md) (or [read online](https://nlqueries.com/docs/database-hardening.html)) | The read-only role to grant per engine, and exactly what each connector does and does not enforce |
+| [docs/dependency-locking.md](docs/dependency-locking.md) (or [read online](https://nlqueries.com/docs/dependency-locking.html)) | The hashed lock file the image builds from, the digest-pinned base image, and how to regenerate both |
+| [docs/contributing.md](docs/contributing.md) (or [read online](https://nlqueries.com/docs/contributing.html)) | What a new connector has to implement, and what to open an issue about first |
 
 ---
 
@@ -148,4 +161,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). All contributors must sign the CLA befor
 
 ## License
 
-[Business Source License 1.1](LICENSE) — each release converts to Apache 2.0 four years after its release date.
+[Business Source License 1.1](LICENSE) — converting to Apache 2.0 no later than **June 4, 2030**. The licence sets that date and also converts each version on the fourth anniversary of its own first publication, whichever comes first, so a version first published before June 4, 2026 converts on its own anniversary, ahead of the fixed date.
+
+Until then the licence grants production use, including commercially and self-hosted, with one carve-out: you may not offer NLQueries Core to third parties as a hosted or managed service. Individual and non-commercial self-hosted deployments are unrestricted. [LICENSE](LICENSE) is the authority; this paragraph is a summary.
