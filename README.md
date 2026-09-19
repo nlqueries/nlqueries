@@ -36,7 +36,7 @@
 | **Semantic cache** | Returns previously-answered similar questions in under 50 ms, no LLM or DB round-trip |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |
 | **Feedback loop** | Rate an answer with `feedback`, review with `feedback-stats`, and `promote-feedback` the thumbs-up ones — their SQL is re-validated against the current schema and blended into later prompts as verified examples |
-| **Regression checks** | `eval` replays a golden question set against an agent, so a knowledge-base change can be checked before it ships |
+| **Regression checks** | `eval` re-asks the agent's own mined capsules — and a golden question set too, with `--golden` — then checks the generated SQL parses and references only tables the agent knows |
 | **dbt import** | `import-dbt` merges dbt model and column descriptions into the knowledge base |
 | **LLM client** | Anthropic, OpenAI, Amazon Bedrock, or any LiteLLM-supported provider |
 | **MCP server** | Query execution and schema/knowledge lookup exposed as MCP tools for Claude, Cursor, etc. |
@@ -161,6 +161,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). All contributors must sign the CLA befor
 
 ## License
 
-[Business Source License 1.1](LICENSE) — converting to Apache 2.0 on **June 4, 2030**, a single date for every release rather than a rolling window per release.
+[Business Source License 1.1](LICENSE) — converting to Apache 2.0 no later than **June 4, 2030**. The licence sets that date and also converts each version on the fourth anniversary of its own first publication, whichever comes first, so a version first published before June 4, 2026 converts on its own anniversary, ahead of the fixed date.
 
 Until then the licence grants production use, including commercially and self-hosted, with one carve-out: you may not offer NLQueries Core to third parties as a hosted or managed service. Individual and non-commercial self-hosted deployments are unrestricted. [LICENSE](LICENSE) is the authority; this paragraph is a summary.
