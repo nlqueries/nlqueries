@@ -780,9 +780,17 @@ def connect(
         database = parsed.database
         user = parsed.username
         password = parsed.password
+        # Host *and* database, the way every other networked type composes
+        # `{db_type}:{host}:{database}`. Keyed on the database alone, two URLs
+        # differing only by host collapse to one id, and the second
+        # registration silently replaces the first -- its config entry, its
+        # alias, and its keychain password -- with nothing printed to say so.
+        # Either may be absent: a SQLite URL has no host, and a DSN-style URL
+        # such as the Oracle example carries no path.
+        location = ":".join(part for part in (host, database) if part) or "db"
         # Never the URL: it may carry the password, and the id is printed,
         # stored and passed on the command line from here on.
-        cid = connector_id or f"sqlalchemy:{parsed.drivername}:{database or host or 'db'}"
+        cid = connector_id or f"sqlalchemy:{parsed.drivername}:{location}"
     else:
         # Resolve port
         resolved_port = port or _DEFAULT_PORTS.get(db_type_l, 5432)

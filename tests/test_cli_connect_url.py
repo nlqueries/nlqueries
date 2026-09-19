@@ -17,6 +17,7 @@ from typing import Any
 import nlqueries.cli.main as cli_main
 import pytest
 from click.testing import CliRunner
+from nlqueries import config
 from nlqueries.cli.main import cli
 
 # Distinctive on purpose: a password that also appeared in the surrounding
@@ -34,7 +35,15 @@ def connectors_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     installs a session guard against.
     """
     path = tmp_path / "connectors.yaml"
+    # Both ends. `_save_connector` is a read-modify-write that WRITES through
+    # `cli.main.CONNECTORS_FILE`, bound at import, and READS through
+    # `load_connectors_for_update` -> `config.CONNECTORS_FILE`, resolved per
+    # call. Patch one and registering a second connector reads a different file
+    # from the one it writes, so the first entry vanishes -- which looks exactly
+    # like the id collision this module tests for. tests/conftest.py warns about
+    # the mirror image of this.
     monkeypatch.setattr(cli_main, "CONNECTORS_FILE", path)
+    monkeypatch.setattr(config, "CONNECTORS_FILE", path)
     return path
 
 
@@ -294,3 +303,65 @@ def test_a_url_with_no_password_does_not_prompt(
     assert result.exit_code == 0, result.output
     assert "Database password" not in result.output
     assert stub_handshake[0]["password"] is None
+
+
+def test_two_hosts_with_the_same_database_get_distinct_ids(
+    connectors_file: Path,
+    stub_handshake: list[dict[str, Any]],
+    keychain: dict[str, str],
+) -> None:
+    """Keying the id on the database alone silently destroys the first connector.
+
+    `_save_connector` and `_save_password` both overwrite by id, so a colliding
+    id takes the earlier entry's alias and keychain password with it and prints
+    nothing to say so. Every other networked type composes
+    `{db_type}:{host}:{database}` for this reason.
+    """
+    for host, secret, alias in (
+        ("staging.internal", "staging-pw-a1b2", "stg"),
+        ("prod.internal", "prod-pw-c3d4", "prod"),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "connect",
+                "sqlalchemy",
+                "--url",
+                f"postgresql://alice:{secret}@{host}/shop",
+                "--alias",
+                alias,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    written = connectors_file.read_text(encoding="utf-8")
+    assert "sqlalchemy:postgresql:staging.internal:shop" in written
+    assert "sqlalchemy:postgresql:prod.internal:shop" in written
+    # Both aliases survive, so neither entry replaced the other.
+    assert "alias: stg" in written
+    assert "alias: prod" in written
+    assert sorted(keychain) == [
+        "sqlalchemy:postgresql:prod.internal:shop",
+        "sqlalchemy:postgresql:staging.internal:shop",
+    ]
+
+
+def test_id_falls_back_when_the_url_has_no_host_or_no_path(
+    connectors_file: Path, stub_handshake: list[dict[str, Any]]
+) -> None:
+    """A SQLite URL has no host; a DSN-style URL carries no path."""
+    result = CliRunner().invoke(cli, ["connect", "sqlalchemy", "--url", "sqlite:///data/app.db"])
+    assert result.exit_code == 0, result.output
+    assert "sqlalchemy:sqlite:data/app.db" in result.output
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "connect",
+            "sqlalchemy",
+            "--url",
+            "oracle+cx_oracle://alice:s@dbhost:1521/?service_name=ORCL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "sqlalchemy:oracle+cx_oracle:dbhost" in result.output
