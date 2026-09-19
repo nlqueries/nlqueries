@@ -92,6 +92,27 @@ class SnowflakeConnector(DatabaseConnector):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _account_identifier(value: str) -> str:
+        """The account identifier, with a pasted host reduced back to one.
+
+        The driver builds the host by appending ``.snowflakecomputing.com`` to
+        whatever it is given, so an account copied out of a browser address bar
+        produces ``acme-xy12345.snowflakecomputing.com.snowflakecomputing.com``.
+        That resolves, reaches Snowflake's wildcard certificate, and fails TLS
+        verification -- so the error names a certificate mismatch and says
+        nothing about the field that caused it.
+
+        A scheme and any trailing path go too, for the same reason: they are
+        what a copied URL carries.
+        """
+        account = value.strip().removeprefix("https://").removeprefix("http://")
+        account = account.split("/", 1)[0]
+        suffix = ".snowflakecomputing.com"
+        while account.lower().endswith(suffix):
+            account = account[: -len(suffix)]
+        return account
+
     def connect(self, credentials: dict[str, Any]) -> None:
         """Open a Snowflake connection from ``credentials``.
 
@@ -102,7 +123,7 @@ class SnowflakeConnector(DatabaseConnector):
         self._db_schema = credentials.get("schema")
 
         connect_kwargs: dict[str, Any] = {
-            "account": credentials["account"],
+            "account": self._account_identifier(str(credentials["account"])),
             "user": credentials.get("user"),
             "password": credentials.get("password"),
             "warehouse": credentials.get("warehouse"),
@@ -186,7 +207,13 @@ class SnowflakeConnector(DatabaseConnector):
 
         tables_meta = self._fetch_tables(connection, database)
         columns_by_table = self._fetch_columns(connection, database)
-        primary_keys, foreign_keys = self._fetch_constraint_columns(connection, database)
+        # Keys are an enrichment; tables and columns are the schema. A database
+        # imported from a share exposes a reduced INFORMATION_SCHEMA with no
+        # TABLE_CONSTRAINTS or KEY_COLUMN_USAGE, so this raised 002003 (42S02)
+        # and threw away a complete table and column listing that had already
+        # been read -- on the sample-data share, which is how most people first
+        # point this at Snowflake. Degrade to "no key information" instead.
+        primary_keys, foreign_keys = self._fetch_constraint_columns_or_empty(connection, database)
 
         tables: list[TableSpec] = []
         for (schema_name, table_name), meta in tables_meta.items():
@@ -264,6 +291,38 @@ class SnowflakeConnector(DatabaseConnector):
             key = (row["TABLE_SCHEMA"], row["TABLE_NAME"])
             result.setdefault(key, []).append(row)
         return result
+
+    @classmethod
+    def _fetch_constraint_columns_or_empty(
+        cls, connection: Any, database: str
+    ) -> tuple[dict[tuple[str, str], set[str]], dict[tuple[str, str], set[str]]]:
+        """:meth:`_fetch_constraint_columns`, or empty when the views are absent.
+
+        Narrow on purpose. Only the driver's ``ProgrammingError`` is caught, and
+        only when it names one of the two views -- a permission problem on the
+        tables themselves, a network failure, or a malformed query still raise,
+        because those mean the schema on offer would be wrong rather than
+        merely less detailed.
+        """
+        try:
+            return cls._fetch_constraint_columns(connection, database)
+        except snowflake.connector.errors.ProgrammingError as exc:
+            text = str(exc)
+            if not any(view in text for view in ("KEY_COLUMN_USAGE", "TABLE_CONSTRAINTS")):
+                raise
+            # The whole message, not its first line. Snowflake puts the code on
+            # line one and the object name on line two, so `splitlines()[0]`
+            # dropped the very detail the guard matched on -- and telling a
+            # share-imported database from a guard firing for another reason is
+            # the reason this is logged at all.
+            logger.warning(
+                "Snowflake database %s exposes no constraint views; primary and foreign "
+                "keys will be absent from the schema. This is normal for a database "
+                "imported from a share. The driver said: %s",
+                database,
+                text or exc.__class__.__name__,
+            )
+            return {}, {}
 
     @classmethod
     def _fetch_constraint_columns(

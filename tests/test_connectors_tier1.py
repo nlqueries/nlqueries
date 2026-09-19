@@ -491,3 +491,126 @@ class TestConnectorRegistry:
         assert CONNECTOR_REGISTRY.get("redshift") is RedshiftConnector
         assert CONNECTOR_REGISTRY.get("mssql") is MSSQLConnector
         assert CONNECTOR_REGISTRY.get("duckdb") is DuckDBConnector
+
+
+class TestSchemaDegradesWithoutConstraintViews:
+    """Keys are an enrichment; tables and columns are the schema.
+
+    Observed on Snowflake against a share-imported database: the constraint
+    views are absent, and losing them threw away a complete table and column
+    listing that had already been read. Redshift restricts the same views on a
+    datashare consumer, and a SQL Server login without VIEW DEFINITION can fail
+    the query outright, so the same degrade applies to all three.
+    """
+
+    def test_redshift_omits_keys_rather_than_failing(self) -> None:
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn = MagicMock()
+        cur_tables = _make_cursor([("public", "users", 100)])
+        cur_cols = _make_cursor([("public", "users", "id", "integer", False)])
+        denied = MagicMock()
+        denied.execute.side_effect = Exception("permission denied for relation key_column_usage")
+
+        conn.cursor.side_effect = [cur_tables, cur_cols, denied, denied]
+
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+        connector._database = "dev"
+        spec = connector.extract_schema()
+
+        assert [t.name for t in spec.tables] == ["users"]
+        assert [c.name for c in spec.tables[0].columns] == ["id"]
+        # Degraded, not invented.
+        assert spec.tables[0].columns[0].is_primary_key is False
+
+    @pytest.mark.parametrize("failing_call", ["execute", "fetchall"])
+    def test_redshift_closes_its_cursor_however_the_key_query_fails(
+        self, failing_call: str
+    ) -> None:
+        """Both call sites, because the one that matters is `execute`.
+
+        The driver reports a missing or restricted view from `execute`, not from
+        the fetch, so a guard starting after it covered only the path that does
+        not fail -- and with the caller swallowing the error, each degraded
+        extraction leaked a cursor instead of raising.
+        """
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur = MagicMock()
+        getattr(cur, failing_call).side_effect = Exception("permission denied")
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+
+        with pytest.raises(Exception, match="permission denied"):
+            RedshiftConnector._fetch_primary_keys(conn)
+
+        cur.close.assert_called_once()
+
+    def test_redshift_rolls_back_after_a_degraded_enrichment(self) -> None:
+        """`Cursor.execute` opens a transaction when autocommit is off, so a
+        failed statement leaves the block aborted.
+
+        Swallowed without ending it, every later statement on the connection
+        fails with 25P02: the foreign-key fetch is then logged as though the
+        datashare caused it, and the `SET TRANSACTION READ ONLY` opening the
+        next user query fails for no reason the user can see.
+        """
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        conn = MagicMock()
+        cur_tables = _make_cursor([("public", "users", 100)])
+        cur_cols = _make_cursor([("public", "users", "id", "integer", False)])
+        denied = MagicMock()
+        denied.execute.side_effect = Exception("permission denied for relation")
+        conn.cursor.side_effect = [cur_tables, cur_cols, denied, denied]
+
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+        connector._database = "dev"
+        connector.extract_schema()
+
+        # Once per failed enrichment, so the next statement starts clean.
+        assert conn.rollback.call_count == 2
+
+    def test_mssql_omits_keys_rather_than_failing(self) -> None:
+        from nlqueries.connectors.mssql import MSSQLConnector
+        from sqlalchemy.exc import DatabaseError
+
+        connector = granted(MSSQLConnector())
+        refused = DatabaseError("SELECT ...", {}, Exception("VIEW DEFINITION denied"))
+
+        with (
+            patch.object(MSSQLConnector, "_require_engine"),
+            patch.object(MSSQLConnector, "_fetch_tables", return_value={("dbo", "users"): 5}),
+            patch.object(
+                MSSQLConnector,
+                "_fetch_columns",
+                return_value={
+                    ("dbo", "users"): [
+                        {"column_name": "id", "data_type": "int", "is_nullable": False}
+                    ]
+                },
+            ),
+            patch.object(MSSQLConnector, "_fetch_primary_keys", side_effect=refused),
+            patch.object(MSSQLConnector, "_fetch_foreign_keys", side_effect=refused),
+        ):
+            spec = connector.extract_schema()
+
+        assert [t.name for t in spec.tables] == ["users"]
+        assert spec.tables[0].columns[0].is_primary_key is False
+
+    def test_mssql_still_raises_a_fault_that_is_not_the_database_refusing(self) -> None:
+        """Only DatabaseError degrades. A bug in this module must still surface."""
+        from nlqueries.connectors.mssql import MSSQLConnector
+
+        connector = granted(MSSQLConnector())
+
+        with (
+            patch.object(MSSQLConnector, "_require_engine"),
+            patch.object(MSSQLConnector, "_fetch_tables", return_value={("dbo", "users"): 5}),
+            patch.object(MSSQLConnector, "_fetch_columns", return_value={}),
+            patch.object(MSSQLConnector, "_fetch_primary_keys", side_effect=TypeError("bug")),
+            pytest.raises(TypeError),
+        ):
+            connector.extract_schema()
