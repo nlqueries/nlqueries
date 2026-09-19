@@ -330,31 +330,50 @@ class SQLAlchemyConnector(DatabaseConnector):
         inspector = inspect(engine)
         default_schema = inspector.default_schema_name or ""
         tables: list[TableSpec] = []
-        keyless: list[str] = []
-        first_key_error: str | None = None
+        keyless: set[str] = set()
+        # Which kind of key was refused, and the first reason given for it.
+        refused: dict[str, str] = {}
 
         for table_name in inspector.get_table_names():
             try:
                 reflected_columns = inspector.get_columns(table_name)
-            except Exception:  # noqa: BLE001 - one bad table never breaks the whole reflect
-                logger.warning("SQLAlchemyConnector: could not reflect table %r", table_name)
+            except Exception as exc:  # noqa: BLE001 - one bad table never breaks the reflect
+                # This is the only path that still drops a table, so it is the
+                # one an operator most needs a reason from.
+                logger.warning(
+                    "SQLAlchemyConnector: could not reflect table %r, skipping it. "
+                    "The driver said: %s",
+                    table_name,
+                    str(exc) or exc.__class__.__name__,
+                )
                 continue
 
+            # Keys are an enrichment; the columns are the schema. Reflecting them
+            # used to sit inside the same `try` as the columns, so a catalogue
+            # that refuses constraint metadata -- a Snowflake share, a role
+            # without the grant -- cost the whole table, and every table failing
+            # the same way returned an empty schema the caller cannot tell from a
+            # database with no tables.
+            #
+            # Primary and foreign keys get a `try` each because they are separate
+            # catalogue reads on most dialects and a role can hold one grant and
+            # not the other. Sharing one would discard a primary key that had
+            # already been read because the foreign keys were refused after it.
             try:
-                pk = inspector.get_pk_constraint(table_name).get("constrained_columns") or []
-                pk_cols = set(pk)
+                pk_cols = set(
+                    inspector.get_pk_constraint(table_name).get("constrained_columns") or []
+                )
+            except Exception as exc:  # noqa: BLE001
+                pk_cols = set()
+                keyless.add(table_name)
+                refused.setdefault("primary keys", str(exc) or exc.__class__.__name__)
+
+            try:
                 fk_cols = self._foreign_key_map(inspector, table_name)
             except Exception as exc:  # noqa: BLE001
-                # Keys are an enrichment; the columns are the schema. Reflecting
-                # them used to sit inside the same `try` as the columns, so a
-                # catalogue that refuses constraint metadata -- a Snowflake
-                # share, a role without the grant -- cost the whole table. Every
-                # table failing the same way returned an empty schema, which the
-                # caller cannot tell from a database that has no tables.
-                keyless.append(table_name)
-                if first_key_error is None:
-                    first_key_error = str(exc) or exc.__class__.__name__
-                pk_cols, fk_cols = set(), {}
+                fk_cols = {}
+                keyless.add(table_name)
+                refused.setdefault("foreign keys", str(exc) or exc.__class__.__name__)
 
             try:
                 columns = [
@@ -378,17 +397,23 @@ class SQLAlchemyConnector(DatabaseConnector):
                         description=None,
                     )
                 )
-            except Exception:  # noqa: BLE001 — one bad table never breaks the whole reflect
-                logger.warning("SQLAlchemyConnector: could not reflect table %r", table_name)
+            except Exception as exc:  # noqa: BLE001 — one bad table never breaks the reflect
+                logger.warning(
+                    "SQLAlchemyConnector: could not reflect table %r, skipping it. "
+                    "The driver said: %s",
+                    table_name,
+                    str(exc) or exc.__class__.__name__,
+                )
 
         if keyless:
+            kinds = sorted(refused)
             logger.warning(
-                "SQLAlchemyConnector: kept %d of %d table(s) without key metadata -- the "
-                "catalogue refused it, so primary and foreign keys are omitted for them. "
-                "The driver said: %s",
+                "SQLAlchemyConnector: kept %d of %d table(s) without complete key metadata -- "
+                "the catalogue refused %s. The driver said: %s",
                 len(keyless),
                 len(tables),
-                first_key_error,
+                " and ".join(kinds),
+                refused[kinds[0]],
             )
 
         return SchemaSpec(

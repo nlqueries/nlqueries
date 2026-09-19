@@ -146,8 +146,11 @@ class _RefusingInspector:
         if name in self._refuse:
 
             def _refuse(*_args: Any, **_kwargs: Any) -> Any:
+                # Naming the call keeps assertions specific about which
+                # reflection was refused, rather than that something was.
                 raise RuntimeError(
-                    "Object 'SHARED_DB.INFORMATION_SCHEMA.KEY_COLUMN_USAGE' "
+                    f"{name} refused: Object "
+                    "'SHARED_DB.INFORMATION_SCHEMA.KEY_COLUMN_USAGE' "
                     "does not exist or not authorized"
                 )
 
@@ -193,6 +196,51 @@ def test_a_catalogue_that_refuses_keys_still_returns_the_tables(
     assert all(not col.is_primary_key and not col.is_foreign_key for col in orders.columns)
     # And the reason is on the record, not swallowed.
     assert "KEY_COLUMN_USAGE" in caplog.text
+
+
+def test_a_key_that_did_read_is_kept_when_only_the_other_kind_is_refused(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Primary and foreign keys are separate catalogue reads, so separate `try`s.
+
+    A role can hold one grant and not the other. Sharing one `try` discarded a
+    primary key that had already been read because the foreign keys were refused
+    after it -- degrading further than the evidence requires, which is the thing
+    this change exists to stop doing.
+    """
+    c = _connect(tmp_path)
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER"
+        "  REFERENCES customers(id))",
+    )
+
+    with caplog.at_level(logging.WARNING), _refusing("get_foreign_keys"):
+        schema = c.extract_schema()
+
+    orders = next(t for t in schema.tables if t.name == "orders")
+    cols = {col.name: col for col in orders.columns}
+    assert cols["id"].is_primary_key is True
+    # Refused, so not claimed -- but it cost only itself.
+    assert cols["customer_id"].is_foreign_key is False
+    assert "foreign keys" in caplog.text
+    assert "primary keys" not in caplog.text
+
+
+def test_the_warning_for_a_skipped_table_says_why(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The column path is the only one that still drops a table, so it is the
+    one an operator most needs a reason from."""
+    c = _connect(tmp_path)
+    _seed(c, "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+
+    with caplog.at_level(logging.WARNING), _refusing("get_columns"):
+        schema = c.extract_schema()
+
+    assert schema.tables == []
+    assert "get_columns refused" in caplog.text
 
 
 def test_a_table_whose_columns_refuse_is_still_skipped(tmp_path: Path) -> None:
