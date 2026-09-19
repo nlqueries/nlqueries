@@ -646,13 +646,42 @@ class TestRedshiftRowCountFallback:
         assert conn.cursor.call_count == 2
 
     def test_rolls_back_before_the_fallback(self) -> None:
+        """Before, not merely at some point.
+
+        `assert_called_once` would hold with the rollback moved below the second
+        `execute`, which is the 25P02 failure this exists to prevent -- the test
+        would stay green while the bug came back. Ordering is the property.
+        """
         from nlqueries.connectors.redshift import RedshiftConnector
 
         conn, _ = self._conn([("public", "users")])
 
         RedshiftConnector._fetch_row_counts(conn)
 
-        conn.rollback.assert_called_once()
+        names = [c[0] for c in conn.mock_calls]
+        assert names.count("rollback") == 1
+        # cursor, cursor().execute, ... rollback ... then the SECOND cursor.
+        assert names.index("rollback") < len(names) - 1 - names[::-1].index("cursor")
+
+    def test_rolls_back_when_the_fallback_also_fails(self) -> None:
+        """Otherwise the block stays aborted on the way out, and the next
+        `execute_query` fails at `SET TRANSACTION READ ONLY` for a reason
+        unrelated to the query the user ran."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        denied = MagicMock()
+        denied.execute.side_effect = Exception("permission denied for relation svv_table_info")
+        also_denied = MagicMock()
+        also_denied.execute.side_effect = Exception("permission denied for information_schema")
+        conn = MagicMock()
+        conn.cursor.side_effect = [denied, also_denied]
+
+        with pytest.raises(Exception, match="information_schema"):
+            RedshiftConnector._fetch_row_counts(conn)
+
+        # Once before the fallback, once on the way out.
+        assert conn.rollback.call_count == 2
+        also_denied.close.assert_called_once()
 
     def test_closes_the_cursor_that_failed(self) -> None:
         from nlqueries.connectors.redshift import RedshiftConnector

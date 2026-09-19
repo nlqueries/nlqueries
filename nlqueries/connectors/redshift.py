@@ -226,20 +226,31 @@ class RedshiftConnector(DatabaseConnector):
         with contextlib.suppress(Exception):
             conn.rollback()
 
-        with contextlib.closing(conn.cursor()) as cur:
-            cur.execute(
-                """
-                SELECT table_schema, table_name
-                FROM information_schema.tables
+        # Rolled back on the way out too. If this one fails as well -- a dropped
+        # connection, or a role that cannot read `information_schema.tables`
+        # either -- the exception propagates with the block still aborted, and
+        # the next `execute_query` on this connector then fails at
+        # `SET TRANSACTION READ ONLY` for a reason that has nothing to do with
+        # the query the user ran.
+        try:
+            with contextlib.closing(conn.cursor()) as cur:
+                cur.execute(
+                    """
+                    SELECT table_schema, table_name
+                    FROM information_schema.tables
                 WHERE table_type = 'BASE TABLE'
-                  AND table_schema NOT IN (
-                      'information_schema','pg_catalog','pg_internal',
-                      'pg_toast','pg_temp_1','pg_bitmapindex'
-                  )
-                ORDER BY table_schema, table_name
-                """
-            )
-            return {(r[0], r[1]): None for r in cur.fetchall()}
+                      AND table_schema NOT IN (
+                          'information_schema','pg_catalog','pg_internal',
+                          'pg_toast','pg_temp_1','pg_bitmapindex'
+                      )
+                    ORDER BY table_schema, table_name
+                    """
+                )
+                return {(r[0], r[1]): None for r in cur.fetchall()}
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
     @staticmethod
     def _fetch_columns(conn: Any) -> dict[tuple[str, str], list[dict[str, Any]]]:
