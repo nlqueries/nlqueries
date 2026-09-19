@@ -14,6 +14,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+import snowflake.connector
 from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY
 from nlqueries.connectors.base import ColumnSpec, QueryRecord, QueryResult, SchemaSpec, TableSpec
@@ -715,3 +716,115 @@ def test_the_lock_is_released_when_the_query_raises(monkeypatch):
     acquired = connector._txn_lock.acquire(timeout=0.5)  # noqa: SLF001
     assert acquired, "the lock was not released after the query raised"
     connector._txn_lock.release()  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# A database imported from a share has no constraint views
+# ---------------------------------------------------------------------------
+
+
+def _no_constraint_views(_connection, sql):
+    """Snowflake's answer for a shared database: the two views do not exist."""
+    if "TABLE_CONSTRAINTS" in sql:
+        raise snowflake.connector.errors.ProgrammingError(
+            msg=(
+                "002003 (42S02): SQL compilation error:\n"
+                "Object 'TPCDS_10TB.INFORMATION_SCHEMA.KEY_COLUMN_USAGE' does not "
+                "exist or not authorized."
+            )
+        )
+    return _query_side_effect(_connection, sql)
+
+
+def test_extract_schema_survives_a_database_with_no_constraint_views():
+    """Tables and columns are the schema; keys are an enrichment.
+
+    Observed on a live share-imported TPCDS database: tables and columns both
+    returned, and the constraint query then failed the whole extraction, so a
+    complete listing that had already been read was thrown away.
+    """
+    connector, _ = _connector_with_mock_connection()
+
+    with patch.object(SnowflakeConnector, "_query", side_effect=_no_constraint_views):
+        schema = connector.extract_schema()
+
+    assert [t.name for t in schema.tables] == ["CUSTOMERS", "ORDERS"]
+    # Degraded, not invented: every column is present, none claims to be a key.
+    orders = next(t for t in schema.tables if t.name == "ORDERS")
+    assert [c.name for c in orders.columns] == ["ID", "CUSTOMER_ID"]
+    assert not any(c.is_primary_key or c.is_foreign_key for t in schema.tables for c in t.columns)
+
+
+def test_extract_schema_still_reports_keys_when_the_views_exist():
+    """Negative control: the degrade must not have become the only path."""
+    connector, _ = _connector_with_mock_connection()
+
+    with patch.object(SnowflakeConnector, "_query", side_effect=_query_side_effect):
+        schema = connector.extract_schema()
+
+    orders = next(t for t in schema.tables if t.name == "ORDERS")
+    assert next(c for c in orders.columns if c.name == "ID").is_primary_key
+    assert next(c for c in orders.columns if c.name == "CUSTOMER_ID").is_foreign_key
+
+
+def test_an_unrelated_programming_error_still_fails_the_extraction():
+    """Only the missing views are tolerated.
+
+    A permission problem on the tables, or a malformed query, means the schema
+    on offer would be wrong rather than less detailed, so it must still raise.
+    """
+    connector, _ = _connector_with_mock_connection()
+
+    def denied(_connection, sql):
+        if "TABLE_CONSTRAINTS" in sql:
+            raise snowflake.connector.errors.ProgrammingError(
+                msg="002003 (42S02): SQL compilation error:\nInsufficient privileges."
+            )
+        return _query_side_effect(_connection, sql)
+
+    with (
+        patch.object(SnowflakeConnector, "_query", side_effect=denied),
+        pytest.raises(snowflake.connector.errors.ProgrammingError),
+    ):
+        connector.extract_schema()
+
+
+# ---------------------------------------------------------------------------
+# Account identifier
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("entered", "expected"),
+    [
+        ("acme-xy12345", "acme-xy12345"),
+        # The observed failure: the driver appends the domain to whatever it is
+        # given, so a pasted host became ...snowflakecomputing.com twice over
+        # and failed TLS against Snowflake's wildcard certificate.
+        ("mknodsp-me91560.snowflakecomputing.com", "mknodsp-me91560"),
+        ("https://acme-xy12345.snowflakecomputing.com", "acme-xy12345"),
+        ("https://acme-xy12345.snowflakecomputing.com/console/login", "acme-xy12345"),
+        ("  acme-xy12345.snowflakecomputing.com  ", "acme-xy12345"),
+        ("ACME-XY12345.SnowflakeComputing.Com", "ACME-XY12345"),
+        # Left alone: a privatelink identifier is not the public host.
+        ("acme.us-east-1.privatelink", "acme.us-east-1.privatelink"),
+    ],
+)
+def test_account_identifier_reduces_a_pasted_host(entered, expected):
+    assert SnowflakeConnector._account_identifier(entered) == expected
+
+
+def test_connect_passes_the_reduced_account_to_the_driver():
+    """The normalisation has to reach the driver, not just exist."""
+    with patch("snowflake.connector.connect") as connect:
+        SnowflakeConnector().connect(
+            {
+                "account": "acme-xy12345.snowflakecomputing.com",
+                "user": "u",
+                "password": "p",
+                "warehouse": "w",
+                "database": "d",
+            }
+        )
+
+    assert connect.call_args.kwargs["account"] == "acme-xy12345"

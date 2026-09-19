@@ -141,8 +141,13 @@ class RedshiftConnector(DatabaseConnector):
 
         row_counts = self._fetch_row_counts(conn)
         cols_by_table = self._fetch_columns(conn)
-        pks = self._fetch_primary_keys(conn)
-        fks = self._fetch_foreign_keys(conn)
+        # Keys are an enrichment, tables and columns are the schema. The
+        # constraint views are restricted on a datashare consumer database, and
+        # `_fetch_row_counts` above already falls back rather than failing for
+        # the same reason -- this extends that to the rest of the enrichment,
+        # so a database that can describe its tables is not refused outright.
+        pks = self._enrichment("primary keys", lambda: self._fetch_primary_keys(conn), {})
+        fks = self._enrichment("foreign keys", lambda: self._fetch_foreign_keys(conn), {})
 
         tables: list[TableSpec] = []
         for (schema, name), row_count in row_counts.items():
@@ -245,6 +250,28 @@ class RedshiftConnector(DatabaseConnector):
         return result
 
     @staticmethod
+    def _enrichment(label: str, fetch: Any, default: Any) -> Any:
+        """Run an optional schema enrichment, or log and return *default*.
+
+        Broad on purpose, matching `_fetch_row_counts`'s existing fallback: the
+        driver raises a plain `Exception` subclass for both "no such view" and
+        "permission denied", and the two are one outcome here. The warning
+        carries the reason, because the cost of a broad catch is that a real
+        fault becomes a quieter schema rather than a failure -- so it has to be
+        visible in the log.
+        """
+        try:
+            return fetch()
+        except Exception as exc:  # noqa: BLE001 — degraded, and logged
+            logger.warning(
+                "RedshiftConnector: could not read %s (%s). The schema will omit them; "
+                "this is expected on a database imported from a datashare.",
+                label,
+                exc,
+            )
+            return default
+
+    @staticmethod
     def _fetch_primary_keys(conn: Any) -> dict[tuple[str, str], set[str]]:
         cur = conn.cursor()
         cur.execute(
@@ -261,9 +288,11 @@ class RedshiftConnector(DatabaseConnector):
             """
         )
         result: dict[tuple[str, str], set[str]] = {}
-        for r in cur.fetchall():
-            result.setdefault((r[0], r[1]), set()).add(r[2])
-        cur.close()
+        try:
+            for r in cur.fetchall():
+                result.setdefault((r[0], r[1]), set()).add(r[2])
+        finally:
+            cur.close()
         return result
 
     @staticmethod
@@ -287,9 +316,11 @@ class RedshiftConnector(DatabaseConnector):
             """
         )
         result: dict[tuple[str, str], dict[str, str]] = {}
-        for r in cur.fetchall():
-            result.setdefault((r[0], r[1]), {})[r[2]] = f"{r[3]}.{r[4]}"
-        cur.close()
+        try:
+            for r in cur.fetchall():
+                result.setdefault((r[0], r[1]), {})[r[2]] = f"{r[3]}.{r[4]}"
+        finally:
+            cur.close()
         return result
 
     # ------------------------------------------------------------------

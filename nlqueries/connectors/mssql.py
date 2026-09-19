@@ -26,6 +26,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine
+from sqlalchemy.exc import DatabaseError
 
 from nlqueries import config
 from nlqueries.connectors._budget import collect
@@ -144,8 +145,14 @@ class MSSQLConnector(DatabaseConnector):
             database = conn.execute(text("SELECT DB_NAME()")).scalar_one()
             tables_meta = self._fetch_tables(conn)
             cols_by_table = self._fetch_columns(conn)
-            pks = self._fetch_primary_keys(conn)
-            fks = self._fetch_foreign_keys(conn)
+            # Keys are an enrichment; tables and columns are the schema.
+            # SQL Server's INFORMATION_SCHEMA views usually filter by
+            # permission rather than erroring, so this is the quieter of the
+            # engines -- but a login without VIEW DEFINITION on a locked-down
+            # Azure SQL database can still fail the query outright, and losing
+            # the whole schema over the key flags is the wrong trade.
+            pks = self._enrichment("primary keys", lambda: self._fetch_primary_keys(conn), {})
+            fks = self._enrichment("foreign keys", lambda: self._fetch_foreign_keys(conn), {})
 
         tables: list[TableSpec] = []
         for (schema, name), row_count in tables_meta.items():
@@ -233,6 +240,26 @@ class MSSQLConnector(DatabaseConnector):
                 }
             )
         return result
+
+    @staticmethod
+    def _enrichment(label: str, fetch: Any, default: Any) -> Any:
+        """Run an optional schema enrichment, or log and return *default*.
+
+        Narrower than the Redshift equivalent because SQLAlchemy gives a shared
+        base for driver faults: ``DatabaseError`` covers the permission and
+        missing-object cases and leaves a programming error in this module, or
+        a connection that has gone, to raise as before.
+        """
+        try:
+            return fetch()
+        except DatabaseError as exc:
+            logger.warning(
+                "MSSQLConnector: could not read %s (%s). The schema will omit them; "
+                "this usually means the login lacks VIEW DEFINITION.",
+                label,
+                exc,
+            )
+            return default
 
     @staticmethod
     def _fetch_primary_keys(conn: Any) -> dict[tuple[str, str], set[str]]:
