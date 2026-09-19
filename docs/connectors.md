@@ -38,6 +38,9 @@ why the role matters more than the transaction does.
 | SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`) |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
 | SQLite | included (stdlib `sqlite3`) | None — file-based, no persisted history |
+| Generic SQLAlchemy | included (SQLAlchemy is a base dependency); install the URL's own driver | None — no portable source across dialects |
+
+The generic `sqlalchemy` type reaches anything with a SQLAlchemy dialect installed — MariaDB, Oracle, and the engines above if you would rather supply a URL than the discrete flags. It is configured by `--url` rather than the per-field flags, and introspects schema through SQLAlchemy's dialect-agnostic inspector rather than engine-specific catalog SQL. `--password` and `--password-env` still apply, and are the better habit — a password inside the URL is a command-line argument and lands in shell history. See [cli-reference.md](cli-reference.md#connect).
 
 See [cli-reference.md](cli-reference.md#connect) for `connect` examples per type.
 
