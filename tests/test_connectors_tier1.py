@@ -711,6 +711,77 @@ class TestRedshiftRowCountFallback:
         conn.rollback.assert_not_called()
 
 
+class TestRedshiftSiblingTransactions:
+    """The other two methods that leave a transaction open.
+
+    Same defect as `extract_schema` had, same cause: every statement opens a
+    transaction implicitly and the connector's connection is reused across
+    requests, so whatever it leaves open is the next query's problem -- which
+    surfaces as `SET TRANSACTION READ ONLY` failing for a reason unrelated to
+    the query the user ran.
+    """
+
+    def test_test_connection_closes_its_transaction(self) -> None:
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur = _make_cursor([(1,)])
+        conn = _make_conn(cur)
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+
+        assert connector.test_connection() is True
+
+        assert [c[0] for c in conn.mock_calls][-1] == "rollback"
+
+    def test_test_connection_closes_cursor_and_transaction_when_it_fails(self) -> None:
+        """The old code closed the cursor inside the `try`, so a failing
+        `SELECT 1` leaked the cursor as well as the transaction."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("connection reset")
+        conn = _make_conn(cur)
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+
+        assert connector.test_connection() is False
+
+        cur.close.assert_called_once()
+        conn.rollback.assert_called_once()
+
+    def test_extract_query_history_closes_its_transaction(self) -> None:
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur = _make_cursor([("SELECT 1", 3, 12.0, "2026-01-01")])
+        conn = _make_conn(cur)
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+
+        records = connector.extract_query_history()
+
+        # Negative control: ending the transaction did not cost the history.
+        assert [r.sql for r in records] == ["SELECT 1"]
+        assert [c[0] for c in conn.mock_calls][-1] == "rollback"
+
+    def test_extract_query_history_closes_its_transaction_when_stl_query_is_denied(
+        self,
+    ) -> None:
+        """The swallowed failure leaves the block aborted, so this path needs it
+        more than the one that worked."""
+        from nlqueries.connectors.redshift import RedshiftConnector
+
+        cur = MagicMock()
+        cur.execute.side_effect = Exception("permission denied for relation stl_query")
+        conn = _make_conn(cur)
+        connector = granted(RedshiftConnector())
+        connector._conn = conn
+
+        assert connector.extract_query_history() == []
+
+        cur.close.assert_called_once()
+        assert [c[0] for c in conn.mock_calls][-1] == "rollback"
+
+
 class TestRedshiftExtractSchemaTransaction:
     """`extract_schema` must not hand the next query an open transaction.
 

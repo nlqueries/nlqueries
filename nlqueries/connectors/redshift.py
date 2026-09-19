@@ -115,14 +115,21 @@ class RedshiftConnector(DatabaseConnector):
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds against the cluster."""
         try:
-            cur = self._require_conn().cursor()
-            cur.execute("SELECT 1")
-            cur.fetchone()
-            cur.close()
+            with contextlib.closing(self._require_conn().cursor()) as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
             return True
         except Exception:  # noqa: BLE001
             logger.exception("RedshiftConnector.test_connection failed")
             return False
+        finally:
+            # `SELECT 1` opens a transaction like any other statement, and the
+            # connection outlives this call -- `loader.py` caches connectors
+            # across requests. Left open, what fails is the next query's
+            # `SET TRANSACTION READ ONLY`, for a reason the user cannot see.
+            # `contextlib.closing` also closes the cursor on the failure path,
+            # which the earlier `cur.close()` inside the `try` did not.
+            self._end_transaction()
 
     # ------------------------------------------------------------------
     # extract_schema
@@ -412,6 +419,11 @@ class RedshiftConnector(DatabaseConnector):
             rows = []
         finally:
             cur.close()
+            # The `STL_QUERY` statement opened a transaction, and the swallowed
+            # failure leaves the block aborted on top of that. Same reasoning as
+            # `extract_schema`: the connection is reused, so this must not be
+            # the next caller's problem.
+            self._end_transaction()
 
         return [
             QueryRecord(
