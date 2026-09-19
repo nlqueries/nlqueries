@@ -323,26 +323,40 @@ class SQLAlchemyConnector(DatabaseConnector):
 
         Row counts and column descriptions are left ``None`` — neither is
         portably available across dialects without extra per-table queries.
-        A table that fails to reflect is skipped rather than aborting the build.
+        A table whose columns cannot be read is skipped rather than aborting the
+        build; a table whose *keys* cannot be read is kept without them.
         """
         engine = self._require_engine()
         inspector = inspect(engine)
         default_schema = inspector.default_schema_name or ""
         tables: list[TableSpec] = []
+        keyless: list[str] = []
+        first_key_error: str | None = None
 
         for table_name in inspector.get_table_names():
             try:
+                reflected_columns = inspector.get_columns(table_name)
+            except Exception:  # noqa: BLE001 - one bad table never breaks the whole reflect
+                logger.warning("SQLAlchemyConnector: could not reflect table %r", table_name)
+                continue
+
+            try:
                 pk = inspector.get_pk_constraint(table_name).get("constrained_columns") or []
                 pk_cols = set(pk)
-                fk_cols: dict[str, str] = {}
-                for fk in inspector.get_foreign_keys(table_name):
-                    ref_table = fk.get("referred_table")
-                    referred = fk.get("referred_columns") or []
-                    constrained = fk.get("constrained_columns") or []
-                    for i, col in enumerate(constrained):
-                        ref_col = referred[i] if i < len(referred) else ""
-                        fk_cols[col] = f"{ref_table}.{ref_col}"
+                fk_cols = self._foreign_key_map(inspector, table_name)
+            except Exception as exc:  # noqa: BLE001
+                # Keys are an enrichment; the columns are the schema. Reflecting
+                # them used to sit inside the same `try` as the columns, so a
+                # catalogue that refuses constraint metadata -- a Snowflake
+                # share, a role without the grant -- cost the whole table. Every
+                # table failing the same way returned an empty schema, which the
+                # caller cannot tell from a database that has no tables.
+                keyless.append(table_name)
+                if first_key_error is None:
+                    first_key_error = str(exc) or exc.__class__.__name__
+                pk_cols, fk_cols = set(), {}
 
+            try:
                 columns = [
                     ColumnSpec(
                         name=col["name"],
@@ -353,7 +367,7 @@ class SQLAlchemyConnector(DatabaseConnector):
                         references=fk_cols.get(col["name"]),
                         description=col.get("comment"),
                     )
-                    for col in inspector.get_columns(table_name)
+                    for col in reflected_columns
                 ]
                 tables.append(
                     TableSpec(
@@ -367,11 +381,34 @@ class SQLAlchemyConnector(DatabaseConnector):
             except Exception:  # noqa: BLE001 — one bad table never breaks the whole reflect
                 logger.warning("SQLAlchemyConnector: could not reflect table %r", table_name)
 
+        if keyless:
+            logger.warning(
+                "SQLAlchemyConnector: kept %d of %d table(s) without key metadata -- the "
+                "catalogue refused it, so primary and foreign keys are omitted for them. "
+                "The driver said: %s",
+                len(keyless),
+                len(tables),
+                first_key_error,
+            )
+
         return SchemaSpec(
             database=str(engine.url.database or ""),
             tables=tables,
             extracted_at=_utc_now_iso(),
         )
+
+    @staticmethod
+    def _foreign_key_map(inspector: Any, table_name: str) -> dict[str, str]:
+        """Return ``{column: "ref_table.ref_column"}`` for *table_name*."""
+        fk_cols: dict[str, str] = {}
+        for fk in inspector.get_foreign_keys(table_name):
+            ref_table = fk.get("referred_table")
+            referred = fk.get("referred_columns") or []
+            constrained = fk.get("constrained_columns") or []
+            for i, col in enumerate(constrained):
+                ref_col = referred[i] if i < len(referred) else ""
+                fk_cols[col] = f"{ref_table}.{ref_col}"
+        return fk_cols
 
     # ------------------------------------------------------------------
     # extract_query_history

@@ -8,15 +8,19 @@ reflection and execution paths are covered end to end.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from nlqueries.connectors import CONNECTOR_REGISTRY
+from nlqueries.connectors import sqlalchemy_connector as sqlalchemy_connector_module
 from nlqueries.connectors.sqlalchemy_connector import (
     SQLAlchemyConnector,
     _apply_statement_timeout,
 )
+from sqlalchemy import inspect as sa_inspect
 
 from tests.conftest import granted
 
@@ -125,6 +129,85 @@ def test_reflects_columns_pk_and_fk(tmp_path: Path) -> None:
     assert cols["customer_id"].is_foreign_key is True
     assert cols["customer_id"].references == "customers.id"
     assert cols["total"].is_primary_key is False
+
+
+class _RefusingInspector:
+    """A real Inspector with some calls refused, as a restricted catalogue does.
+
+    A Snowflake share, or a role without the grant, answers the constraint views
+    with an error while still describing its tables and columns.
+    """
+
+    def __init__(self, inner: Any, refuse: tuple[str, ...]) -> None:
+        self._inner = inner
+        self._refuse = refuse
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._refuse:
+
+            def _refuse(*_args: Any, **_kwargs: Any) -> Any:
+                raise RuntimeError(
+                    "Object 'SHARED_DB.INFORMATION_SCHEMA.KEY_COLUMN_USAGE' "
+                    "does not exist or not authorized"
+                )
+
+            return _refuse
+        return getattr(self._inner, name)
+
+
+def _refusing(*calls: str) -> Any:
+    """Patch the module's `inspect` so reflection meets a restricted catalogue."""
+    return patch.object(
+        sqlalchemy_connector_module,
+        "inspect",
+        lambda engine: _RefusingInspector(sa_inspect(engine), calls),
+    )
+
+
+def test_a_catalogue_that_refuses_keys_still_returns_the_tables(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The tables are the schema; the keys are an enrichment.
+
+    Key reflection used to sit in the same `try` as the column reflection, so a
+    catalogue that refuses constraint metadata cost the whole table. Every table
+    failing the same way returned an empty schema -- which the caller cannot
+    tell apart from a database that has no tables, and which the UI reported as
+    "No tables found in this connector."
+    """
+    c = _connect(tmp_path)
+    _seed(
+        c,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER"
+        "  REFERENCES customers(id))",
+    )
+
+    with caplog.at_level(logging.WARNING), _refusing("get_pk_constraint", "get_foreign_keys"):
+        schema = c.extract_schema()
+
+    assert {t.name for t in schema.tables} == {"customers", "orders"}
+    orders = next(t for t in schema.tables if t.name == "orders")
+    assert {col.name for col in orders.columns} == {"id", "customer_id"}
+    # Kept, but not claimed: no key it could not read is reported as present.
+    assert all(not col.is_primary_key and not col.is_foreign_key for col in orders.columns)
+    # And the reason is on the record, not swallowed.
+    assert "KEY_COLUMN_USAGE" in caplog.text
+
+
+def test_a_table_whose_columns_refuse_is_still_skipped(tmp_path: Path) -> None:
+    """The existing behaviour, kept: without columns there is no table to return.
+
+    Negative control for the split -- it must not have turned every reflection
+    failure into a table with no columns.
+    """
+    c = _connect(tmp_path)
+    _seed(c, "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+
+    with _refusing("get_columns"):
+        schema = c.extract_schema()
+
+    assert schema.tables == []
 
 
 def test_ddl_through_the_answer_path_is_not_undone_on_sqlite(tmp_path: Path) -> None:
