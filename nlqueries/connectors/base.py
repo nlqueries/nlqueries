@@ -15,7 +15,10 @@ This module is part of the public OSS API: it ships in the open-source
 from __future__ import annotations
 
 import contextlib
+import logging
+import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -24,6 +27,8 @@ from nlqueries.execution import (
     ExecutionNotPermitted,
     ExecutionPolicy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -174,6 +179,46 @@ class DatabaseConnector(ABC):
     #: its handle somewhere new is a deliberate edit here and not a silent leak.
     _HANDLE_ATTRS: ClassVar[tuple[str, ...]] = ("_conn", "_connection", "_client")
 
+    def _use_state(self) -> tuple[threading.Lock, dict[str, Any]]:
+        """This instance's use counter, created on first need.
+
+        Lazily, because connectors are not required to call ``super().__init__``
+        and several do not; a counter that existed only for the well-behaved
+        ones would protect exactly the connectors that did not need it.
+        """
+        state = self.__dict__.get("_use_state_dict")
+        if state is None:
+            state = {"count": 0, "deferred": False}
+            self.__dict__["_use_state_dict"] = state
+            self.__dict__["_use_state_lock"] = threading.Lock()
+        lock: threading.Lock = self.__dict__["_use_state_lock"]
+        return lock, state
+
+    @contextlib.contextmanager
+    def in_use(self) -> Iterator[None]:
+        """Hold this connector open for the duration of one operation.
+
+        Taken by :class:`PermittedConnector`, the per-request view the loader
+        hands out, around everything that touches the database. A ``close``
+        arriving while the count is non-zero is deferred to whichever caller
+        leaves last, so an eviction cannot pull the handle out from under a
+        statement that is still running.
+        """
+        lock, state = self._use_state()
+        with lock:
+            state["count"] += 1
+        try:
+            yield
+        finally:
+            release = False
+            with lock:
+                state["count"] -= 1
+                if state["count"] <= 0 and state["deferred"]:
+                    state["deferred"] = False
+                    release = True
+            if release:
+                self._release()
+
     def close(self) -> None:
         """Release whatever this connector holds open.
 
@@ -199,10 +244,36 @@ class DatabaseConnector(ABC):
         ``None`` and would otherwise hand the caller a closed handle to fail on
         further in.
         """
+        lock, state = self._use_state()
+        with lock:
+            if state["count"] > 0:
+                # Someone is mid-call. The loader disposes entries other callers
+                # already hold -- `_cache_get` on a stale one, `_cache_put` on a
+                # replaced one, `invalidate_connector_cache` on demand -- and
+                # that was harmless while this only disposed an engine, because
+                # `dispose()` leaves checked-out connections alone. Closing a raw
+                # handle is not harmless: it aborts the statement running on it,
+                # and with the attribute cleared the caller is told "connect()
+                # must be called before use", which points at configuration
+                # rather than at the eviction that actually happened.
+                state["deferred"] = True
+                return
+        self._release()
+
+    def _release(self) -> None:
+        """Close the handles, unconditionally. :meth:`close` is the gate."""
         engine = getattr(self, "_engine", None)
         if engine is not None:
-            with contextlib.suppress(Exception):
+            # Disposed, not cleared: `dispose()` returns the pool's connections
+            # and leaves the engine usable, building a new pool on next use.
+            try:
                 engine.dispose()
+            except Exception:  # noqa: BLE001 - releasing must not raise
+                logger.warning(
+                    "%s could not dispose its engine; its pooled connections may still be open",
+                    type(self).__name__,
+                    exc_info=True,
+                )
 
         for attr in self._HANDLE_ATTRS:
             handle = getattr(self, attr, None)
@@ -212,8 +283,19 @@ class DatabaseConnector(ABC):
             # would otherwise leave the attribute pointing at a handle this
             # method has already given up on, and the next caller would use it.
             setattr(self, attr, None)
-            with contextlib.suppress(Exception):
+            try:
                 handle.close()
+            except Exception:  # noqa: BLE001 - releasing must not raise
+                # Logged, because this is exactly the case where the session this
+                # method exists to release is probably still open on the server.
+                # The loader's `_dispose` suppresses as well, so without this the
+                # leak left behind is invisible from both sides.
+                logger.warning(
+                    "%s could not close %s; the server-side session may still be open",
+                    type(self).__name__,
+                    attr,
+                    exc_info=True,
+                )
 
     def bind_execution_policy(self, policy: ExecutionPolicy) -> None:
         """Grant this connector permission to execute statements.
@@ -341,19 +423,24 @@ class PermittedConnector(DatabaseConnector):
         self._inner.connect(credentials)
 
     def test_connection(self) -> bool:
-        return self._inner.test_connection()
+        with self._inner.in_use():
+            return self._inner.test_connection()
 
     def extract_schema(self) -> SchemaSpec:
-        return self._inner.extract_schema()
+        with self._inner.in_use():
+            return self._inner.extract_schema()
 
     def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
-        return self._inner.extract_query_history(days, limit)
+        with self._inner.in_use():
+            return self._inner.extract_query_history(days, limit)
 
     def get_schema_summary(self) -> tuple[int, int]:
-        return self._inner.get_schema_summary()
+        with self._inner.in_use():
+            return self._inner.get_schema_summary()
 
     def list_security_policies(self) -> SecurityPolicyReport:
-        return self._inner.list_security_policies()
+        with self._inner.in_use():
+            return self._inner.list_security_policies()
 
     def close(self) -> None:
         """Intentionally a no-op.
@@ -375,4 +462,8 @@ class PermittedConnector(DatabaseConnector):
         # already checked this wrapper's policy. The inner private method is
         # called directly to keep enforcement in one place: the inner public
         # method would consult its own unbound, denying policy.
-        return self._inner._execute_query(sql, timeout_seconds, max_rows)
+        # The longest thing this wrapper does, and the one the deferred
+        # close matters most for: a query outliving its connector's
+        # eviction is the case that turned a leak into an aborted statement.
+        with self._inner.in_use():
+            return self._inner._execute_query(sql, timeout_seconds, max_rows)

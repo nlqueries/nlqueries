@@ -165,17 +165,129 @@ def test_every_connector_holds_its_handle_where_close_looks() -> None:
     root = Path(__file__).resolve().parents[1] / package
     known = set(DatabaseConnector._HANDLE_ATTRS) | {"_engine"}
     # Anything assigned from a call that looks like opening a connection.
-    assigned = re.compile(r"self\.(_[a-z_]+)\s*=\s*[a-z_]+[a-z_0-9.]*\.(connect|Client)\(")
+    # The dotted prefix is optional: `from redshift_connector import connect`
+    # then `self._session = connect(...)` is the same hazard written differently,
+    # and requiring `driver.connect(` would not see it.
+    assigned = re.compile(r"self\.(_[a-z_]+)\s*=\s*(?:[a-z_][a-z_0-9.]*\.)?(connect|Client)\(")
 
     offenders: list[str] = []
+    found: set[str] = set()
+    scanned = 0
     for path in sorted(root.glob("*.py")):
         if path.name in {"base.py", "loader.py", "__init__.py"}:
             continue
+        scanned += 1
         for attr, _call in assigned.findall(path.read_text(encoding="utf-8")):
+            found.add(attr)
             if attr not in known:
                 offenders.append(f"{path.name}: self.{attr}")
+
+    # Asserted before the offenders, because "no offenders" is also what an
+    # empty scan says. `root.glob` on a directory that is not there yields
+    # nothing at all -- which is what a run against an installed package rather
+    # than this checkout would produce -- and a pattern that stops matching
+    # reports the same clean result as a codebase with nothing wrong in it.
+    assert scanned >= 5, f"the scan read {scanned} connector modules; it is not looking at them"
+    assert found, "the scan matched no handle assignments at all, so it is proving nothing"
 
     assert not offenders, (
         "these hold a driver handle on an attribute `DatabaseConnector.close` does not "
         f"release, so evicting one from the cache leaks it: {sorted(set(offenders))}"
     )
+
+
+class _SlowHandle(_Handle):
+    """A handle that records whether it was closed while a query was running."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_during_query = False
+        self.querying = False
+
+    def close(self) -> None:
+        if self.querying:
+            self.closed_during_query = True
+        super().close()
+
+
+def test_close_waits_for_a_caller_that_is_still_using_the_connector() -> None:
+    """The regression releasing raw handles would otherwise introduce.
+
+    The loader disposes cached entries other callers already hold -- `_cache_get`
+    on a stale one, `_cache_put` on a replaced one, `invalidate_connector_cache`
+    on demand. That was harmless while `close` only disposed an engine, because
+    `dispose()` leaves checked-out connections alone. Closing a raw handle is
+    not: it aborts the statement running on it. The ordinary case is a slow
+    query, a TTL that lapses mid-flight, and the next request evicting the entry
+    the first request is still reading from.
+    """
+    connector = _Connector()
+    handle = _SlowHandle()
+    connector._conn = handle
+
+    with connector.in_use():
+        handle.querying = True
+        connector.close()  # the eviction, arriving mid-query
+        assert handle.closed == 0, "the handle was closed under a running caller"
+        assert connector._conn is handle, "the handle was taken away mid-query"
+        handle.querying = False
+
+    assert handle.closed == 1, "the deferred close never happened"
+    assert handle.closed_during_query is False
+    assert connector._conn is None
+
+
+def test_the_last_caller_out_performs_the_deferred_close() -> None:
+    # Two overlapping callers: the close must wait for both, not the first.
+    connector = _Connector()
+    handle = _Handle()
+    connector._conn = handle
+
+    with connector.in_use():
+        with connector.in_use():
+            connector.close()
+            assert handle.closed == 0
+        assert handle.closed == 0, "closed while one caller was still inside"
+
+    assert handle.closed == 1
+
+
+def test_a_connector_nobody_holds_closes_immediately() -> None:
+    # The common case, and the control: deferral must not become "never".
+    connector = _Connector()
+    handle = _Handle()
+    connector._conn = handle
+
+    connector.close()
+
+    assert handle.closed == 1
+
+
+def test_a_caller_leaving_without_a_pending_close_closes_nothing() -> None:
+    # Leaving `in_use` must not release a connector nobody asked to close, or
+    # every finished query would drop the connection the cache just stored.
+    connector = _Connector()
+    handle = _Handle()
+    connector._conn = handle
+
+    with connector.in_use():
+        pass
+
+    assert handle.closed == 0
+    assert connector._conn is handle
+
+
+def test_a_failing_close_is_logged_rather_than_silently_swallowed(caplog) -> None:
+    """The one case where the session is most likely still open on the server.
+
+    `loader._dispose` suppresses too, so with nothing logged here the residual
+    leak is invisible from both sides.
+    """
+    connector = _Connector()
+    connector._conn = _Handle(raises=True)
+
+    with caplog.at_level("WARNING"):
+        connector.close()
+
+    assert "_conn" in caplog.text
+    assert "_Connector" in caplog.text
