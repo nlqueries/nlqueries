@@ -180,18 +180,38 @@ class DatabaseConnector(ABC):
     _HANDLE_ATTRS: ClassVar[tuple[str, ...]] = ("_conn", "_connection", "_client")
 
     def _use_state(self) -> tuple[threading.Lock, dict[str, Any]]:
-        """This instance's use counter, created on first need.
+        """This instance's lock and use counter, created on first need.
 
         Lazily, because connectors are not required to call ``super().__init__``
         and several do not; a counter that existed only for the well-behaved
         ones would protect exactly the connectors that did not need it.
+
+        Created atomically, because the first two callers of a pooled connector
+        can arrive on different threads at the same moment -- which is the only
+        situation any of this matters in.
         """
-        state = self.__dict__.get("_use_state_dict")
-        if state is None:
-            state = {"count": 0, "deferred": False}
-            self.__dict__["_use_state_dict"] = state
-            self.__dict__["_use_state_lock"] = threading.Lock()
-        lock: threading.Lock = self.__dict__["_use_state_lock"]
+        # Keyed distinctly from this method's own name: an entry in the
+        # instance dict shadows the bound method, so storing the pair under
+        # `_use_state` makes the second call find a tuple where it expects a
+        # method and fail with "'tuple' object is not callable".
+        existing = self.__dict__.get("_use_state_pair")
+        if existing is None:
+            # One `setdefault`, publishing the lock and the counter together.
+            # Two statements could not do it safely: writing the dict before the
+            # lock lets a second thread see the counter and miss the lock, and
+            # two threads both taking a creation branch end up with a state each
+            # -- so a count incremented against one is invisible to the `close`
+            # reading the other, and the handle is closed under a running
+            # statement after all. That is the failure this counter exists to
+            # prevent, reintroduced by the counter's own initialisation.
+            #
+            # `dict.setdefault` is a single C-level operation, so the loser of
+            # the race gets the winner's pair rather than its own. The pair it
+            # allocated and did not install is simply collected.
+            existing = self.__dict__.setdefault(
+                "_use_state_pair", (threading.Lock(), {"count": 0, "deferred": False})
+            )
+        lock, state = existing
         return lock, state
 
     @contextlib.contextmanager

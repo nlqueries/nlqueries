@@ -291,3 +291,78 @@ def test_a_failing_close_is_logged_rather_than_silently_swallowed(caplog) -> Non
 
     assert "_conn" in caplog.text
     assert "_Connector" in caplog.text
+
+
+def test_a_query_through_the_wrapper_holds_the_connector_open() -> None:
+    """The wiring everything else here depends on, and nothing else covers.
+
+    The deferral only protects a real deployment because `PermittedConnector`
+    takes `in_use()` around its delegated calls, and the loader hands out that
+    wrapper exclusively. Every other test in this file calls `in_use` on a bare
+    connector, so deleting the guard from `PermittedConnector._execute_query`
+    leaves them all green while restoring the aborted-statement regression for
+    every connector the loader returns.
+
+    So this drives a query the way a request does and evicts the connector from
+    inside it.
+    """
+    from nlqueries.connectors.base import PermittedConnector, QueryResult
+    from nlqueries.execution import ExecutionPolicy
+
+    handle = _Handle()
+    observed: dict[str, object] = {}
+
+    class _Inner(_Connector):
+        def _execute_query(
+            self,
+            sql: str,
+            timeout_seconds: float | None = None,
+            max_rows: int | None = None,
+        ) -> QueryResult:
+            # The eviction, arriving while this statement is running.
+            self.close()
+            observed["closed_mid_query"] = handle.closed
+            observed["handle_attached"] = self._conn is handle
+            return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=None)
+
+    inner = _Inner()
+    inner._conn = handle
+    wrapper = PermittedConnector(inner, ExecutionPolicy.execute_read_only())
+
+    wrapper.execute_query("select 1")
+
+    assert observed["closed_mid_query"] == 0, "the handle was closed under a running query"
+    assert observed["handle_attached"] is True, "the handle was detached mid-query"
+    assert handle.closed == 1, "the deferred close did not run when the query finished"
+    assert inner._conn is None
+
+
+def test_the_counter_is_created_once_and_shared_by_every_caller() -> None:
+    """Repeated callers get the same lock and the same counter.
+
+    Deterministic, and therefore weaker than it looks: it catches a `_use_state`
+    that builds a fresh pair per call -- which would make every `in_use` count
+    against a counter nobody reads -- but it cannot catch the interleaving that
+    motivated publishing the pair atomically.
+
+    That race was not reproducible here. A barrier over eight threads and 150
+    fresh connectors failed to catch a deliberately two-step publication in five
+    consecutive runs: under CPython the window between the two dict writes is too
+    narrow to land in on demand. A test that cannot fail for the reason it names
+    is worse than none, so it is not in this file. `setdefault` remains the right
+    construction for the reason a lock is right whether or not a test can
+    provoke contention -- the correctness argument is the interleaving, not the
+    observation of one.
+    """
+    connector = _Connector()
+
+    first_lock, first_state = connector._use_state()
+    second_lock, second_state = connector._use_state()
+
+    assert first_lock is second_lock
+    assert first_state is second_state
+
+    with connector.in_use():
+        assert connector._use_state()[1]["count"] == 1, (
+            "a second call built a new counter, so the count is invisible to close()"
+        )
