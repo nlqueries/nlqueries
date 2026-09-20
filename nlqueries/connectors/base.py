@@ -17,7 +17,7 @@ from __future__ import annotations
 import contextlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from nlqueries.execution import (
     DEFAULT_POLICY,
@@ -169,20 +169,51 @@ class DatabaseConnector(ABC):
         """
         ...
 
+    #: Attributes that hold a live handle to the database, in the order they are
+    #: released. Named rather than discovered, so adding a connector that holds
+    #: its handle somewhere new is a deliberate edit here and not a silent leak.
+    _HANDLE_ATTRS: ClassVar[tuple[str, ...]] = ("_conn", "_connection", "_client")
+
     def close(self) -> None:
         """Release whatever this connector holds open.
 
-        A default rather than an abstract method: most connectors keep a
-        SQLAlchemy engine on ``_engine`` and nothing else, and the ones that do
-        not should not be made to write an empty override. Called when a cached
-        connector is evicted — without it, engines would be released only by
-        garbage collection, which is not a schedule a customer's DBA would
-        recognise as one.
+        A default rather than an abstract method: a connector that holds nothing
+        should not have to write an empty override. Called when the loader
+        evicts a cached connector — without it, what the connector holds is
+        released only by garbage collection, which is not a schedule a
+        customer's DBA would recognise as one.
+
+        This used to dispose ``_engine`` alone, on the reading that the others
+        "keep a SQLAlchemy engine and nothing else". Five did not: BigQuery
+        holds a ``_client``, DuckDB, Redshift and SQLite a ``_conn``, Snowflake a
+        ``_connection``. None of them overrode this, so eviction released
+        nothing for any of them and the server-side session stayed open until
+        the object was collected — on Redshift and Snowflake, a real session
+        against a real warehouse.
+
+        The engine and the raw handles are treated differently on purpose.
+        ``engine.dispose()`` returns the pool's connections and leaves the engine
+        usable — it builds a new pool on next use — so the attribute stays. A raw
+        DBAPI handle is dead once closed, so it is cleared: the connectors guard
+        it with ``_require_conn``, which raises a plain "not connected" for
+        ``None`` and would otherwise hand the caller a closed handle to fail on
+        further in.
         """
         engine = getattr(self, "_engine", None)
         if engine is not None:
             with contextlib.suppress(Exception):
                 engine.dispose()
+
+        for attr in self._HANDLE_ATTRS:
+            handle = getattr(self, attr, None)
+            if handle is None:
+                continue
+            # Cleared before the close, not after: a driver that raises on close
+            # would otherwise leave the attribute pointing at a handle this
+            # method has already given up on, and the next caller would use it.
+            setattr(self, attr, None)
+            with contextlib.suppress(Exception):
+                handle.close()
 
     def bind_execution_policy(self, policy: ExecutionPolicy) -> None:
         """Grant this connector permission to execute statements.
