@@ -15,15 +15,38 @@ This module is part of the public OSS API: it ships in the open-source
 from __future__ import annotations
 
 import contextlib
+import logging
+import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from nlqueries.execution import (
     DEFAULT_POLICY,
     ExecutionNotPermitted,
     ExecutionPolicy,
 )
+
+logger = logging.getLogger(__name__)
+
+
+#: How many times `PermittedConnector._active` will take the guard before
+#: giving up. Three, because the case it exists for is a rebuilt connector being
+#: evicted before its holder can enter -- one more eviction than that, on one
+#: request, is churn the caller should hear about rather than wait through.
+_REOPEN_ATTEMPTS = 3
+
+
+class ConnectorClosed(RuntimeError):
+    """Raised when a caller reaches for a connector the cache has released.
+
+    Distinct from the connectors' own "connect() must be called before use",
+    which says the caller never connected. This says the opposite: it was
+    connected, and the loader evicted it underneath — the caller should ask the
+    loader for another rather than look at its own configuration, and the two
+    are not distinguishable from the message the guard used to produce.
+    """
 
 
 @dataclass
@@ -169,20 +192,191 @@ class DatabaseConnector(ABC):
         """
         ...
 
+    #: Attributes that hold a live handle to the database, in the order they are
+    #: released. Named rather than discovered, so adding a connector that holds
+    #: its handle somewhere new is a deliberate edit here and not a silent leak.
+    _HANDLE_ATTRS: ClassVar[tuple[str, ...]] = ("_conn", "_connection", "_client")
+
+    def _use_state(self) -> tuple[threading.Lock, dict[str, Any]]:
+        """This instance's lock and use counter, created on first need.
+
+        Lazily, because connectors are not required to call ``super().__init__``
+        and several do not; a counter that existed only for the well-behaved
+        ones would protect exactly the connectors that did not need it.
+
+        Created atomically, because the first two callers of a pooled connector
+        can arrive on different threads at the same moment -- which is the only
+        situation any of this matters in.
+        """
+        # Keyed distinctly from this method's own name: an entry in the
+        # instance dict shadows the bound method, so storing the pair under
+        # `_use_state` makes the second call find a tuple where it expects a
+        # method and fail with "'tuple' object is not callable".
+        existing = self.__dict__.get("_use_state_pair")
+        if existing is None:
+            # One `setdefault`, publishing the lock and the counter together.
+            # Two statements could not do it safely: writing the dict before the
+            # lock lets a second thread see the counter and miss the lock, and
+            # two threads both taking a creation branch end up with a state each
+            # -- so a count incremented against one is invisible to the `close`
+            # reading the other, and the handle is closed under a running
+            # statement after all. That is the failure this counter exists to
+            # prevent, reintroduced by the counter's own initialisation.
+            #
+            # `dict.setdefault` is a single C-level operation, so the loser of
+            # the race gets the winner's pair rather than its own. The pair it
+            # allocated and did not install is simply collected.
+            existing = self.__dict__.setdefault(
+                "_use_state_pair",
+                (threading.Lock(), {"count": 0, "deferred": False, "closing": False}),
+            )
+        lock, state = existing
+        return lock, state
+
+    @contextlib.contextmanager
+    def in_use(self) -> Iterator[None]:
+        """Hold this connector open for the duration of one operation.
+
+        Taken by :class:`PermittedConnector`, the per-request view the loader
+        hands out, around everything that touches the database. A ``close``
+        arriving while the count is non-zero is deferred to whichever caller
+        leaves last, so an eviction cannot pull the handle out from under a
+        statement that is still running.
+        """
+        lock, state = self._use_state()
+        with lock:
+            if state.get("closing"):
+                # Refused rather than counted, and only for a connector whose
+                # release destroys what it holds -- see `close`. The guard spans
+                # one call, so an eviction landing between two of them finds the
+                # count at zero and closes; and `open_connector_for_agent`
+                # returns before the `asyncio.to_thread` hop into
+                # `execute_query`, so that window is on the ordinary path.
+                # Entering here after a close was requested also lets a statement
+                # start between the moment `close` decides to release and the
+                # release itself, which is the abort the deferral exists to
+                # prevent.
+                raise ConnectorClosed(
+                    f"{type(self).__name__} was released by the connector cache; "
+                    "ask the loader for a new one."
+                )
+            state["count"] += 1
+        try:
+            yield
+        finally:
+            release = False
+            with lock:
+                state["count"] -= 1
+                if state["count"] <= 0 and state["deferred"]:
+                    state["deferred"] = False
+                    release = True
+            if release:
+                self._release()
+
     def close(self) -> None:
         """Release whatever this connector holds open.
 
-        A default rather than an abstract method: most connectors keep a
-        SQLAlchemy engine on ``_engine`` and nothing else, and the ones that do
-        not should not be made to write an empty override. Called when a cached
-        connector is evicted — without it, engines would be released only by
-        garbage collection, which is not a schedule a customer's DBA would
-        recognise as one.
+        A default rather than an abstract method: a connector that holds nothing
+        should not have to write an empty override. Called when the loader
+        evicts a cached connector — without it, what the connector holds is
+        released only by garbage collection, which is not a schedule a
+        customer's DBA would recognise as one.
+
+        This used to dispose ``_engine`` alone, on the reading that the others
+        "keep a SQLAlchemy engine and nothing else". Five did not: BigQuery
+        holds a ``_client``, DuckDB, Redshift and SQLite a ``_conn``, Snowflake a
+        ``_connection``. None of them overrode this, so eviction released
+        nothing for any of them and the server-side session stayed open until
+        the object was collected — on Redshift and Snowflake, a real session
+        against a real warehouse.
+
+        The engine and the raw handles are treated differently on purpose.
+        ``engine.dispose()`` returns the pool's connections and leaves the engine
+        usable — it builds a new pool on next use — so the attribute stays. A raw
+        DBAPI handle is dead once closed, so it is cleared: the connectors guard
+        it with ``_require_conn``, which raises a plain "not connected" for
+        ``None`` and would otherwise hand the caller a closed handle to fail on
+        further in.
         """
+        lock, state = self._use_state()
+        with lock:
+            # Only when the release actually destroys something. A connector
+            # holding a raw handle is finished once it is closed; one holding
+            # only an engine is not, because `dispose()` returns the pool and
+            # leaves the object usable — it builds a new pool on next use.
+            #
+            # Refusing for both was a regression, and a broad one: Postgres,
+            # MSSQL and the generic SQLAlchemy connector are engine-only, so a
+            # routine eviction — a TTL lapse in `_cache_get`, an LRU replacement
+            # in `_cache_put`, a credential change calling
+            # `invalidate_connector_cache` — would fail the next call made by
+            # any request still holding that wrapper. All of those were harmless
+            # for those connectors before this branch.
+            #
+            # Read now rather than at release: by then the attributes have been
+            # cleared, and "does this connector hold a handle" would answer no
+            # for exactly the connectors it needs to answer yes for.
+            # Monotonic. Recomputing it from the live attributes lets the flag
+            # fall back to False once `_release` has cleared them -- so a second
+            # `close()`, or a subclass that closes its own handle before
+            # delegating to `super().close()`, reopens the door on a connector
+            # whose handle is already gone and the next caller gets "connect()
+            # must be called before use", which is the message this flag exists
+            # to replace. `EnterpriseRedshiftConnector` has exactly that shape
+            # today, so it is a trap with a caller rather than only in theory.
+            state["closing"] = state["closing"] or any(
+                getattr(self, attr, None) is not None for attr in self._HANDLE_ATTRS
+            )
+            if state["count"] > 0:
+                # Someone is mid-call. The loader disposes entries other callers
+                # already hold -- `_cache_get` on a stale one, `_cache_put` on a
+                # replaced one, `invalidate_connector_cache` on demand -- and
+                # that was harmless while this only disposed an engine, because
+                # `dispose()` leaves checked-out connections alone. Closing a raw
+                # handle is not harmless: it aborts the statement running on it,
+                # and with the attribute cleared the caller is told "connect()
+                # must be called before use", which points at configuration
+                # rather than at the eviction that actually happened.
+                state["deferred"] = True
+                return
+        self._release()
+
+    def _release(self) -> None:
+        """Close the handles, unconditionally. :meth:`close` is the gate."""
         engine = getattr(self, "_engine", None)
         if engine is not None:
-            with contextlib.suppress(Exception):
+            # Disposed, not cleared: `dispose()` returns the pool's connections
+            # and leaves the engine usable, building a new pool on next use.
+            try:
                 engine.dispose()
+            except Exception:  # noqa: BLE001 - releasing must not raise
+                logger.warning(
+                    "%s could not dispose its engine; its pooled connections may still be open",
+                    type(self).__name__,
+                    exc_info=True,
+                )
+
+        for attr in self._HANDLE_ATTRS:
+            handle = getattr(self, attr, None)
+            if handle is None:
+                continue
+            # Cleared before the close, not after: a driver that raises on close
+            # would otherwise leave the attribute pointing at a handle this
+            # method has already given up on, and the next caller would use it.
+            setattr(self, attr, None)
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001 - releasing must not raise
+                # Logged, because this is exactly the case where the session this
+                # method exists to release is probably still open on the server.
+                # The loader's `_dispose` suppresses as well, so without this the
+                # leak left behind is invisible from both sides.
+                logger.warning(
+                    "%s could not close %s; the server-side session may still be open",
+                    type(self).__name__,
+                    attr,
+                    exc_info=True,
+                )
 
     def bind_execution_policy(self, policy: ExecutionPolicy) -> None:
         """Grant this connector permission to execute statements.
@@ -301,28 +495,101 @@ class PermittedConnector(DatabaseConnector):
     permitted, and execution is therefore what is checked.
     """
 
-    def __init__(self, inner: DatabaseConnector, policy: ExecutionPolicy) -> None:
+    def __init__(
+        self,
+        inner: DatabaseConnector,
+        policy: ExecutionPolicy,
+        connector_id: str | None = None,
+    ) -> None:
         self._inner = inner
         self._execution_policy = policy
+        #: Which connector this wrapper is for, so a released one can be rebuilt
+        #: under the caller. The ID and not the agent: an agent's binding can be
+        #: changed, and a caller that obtained this wrapper for one database must
+        #: not silently be moved to another. None disables recovery, which is
+        #: what a directly-constructed wrapper gets.
+        self._connector_id = connector_id
+
+    def _reopen(self) -> DatabaseConnector | None:
+        """Rebuild the connector this wrapper is for. Imported late: the loader
+        imports this module, so a module-level import would be circular."""
+        if self._connector_id is None:
+            return None
+        from nlqueries.connectors.loader import reopen_connector  # noqa: PLC0415
+
+        return reopen_connector(self._connector_id)
+
+    @contextlib.contextmanager
+    def _active(self) -> Iterator[DatabaseConnector]:
+        """The inner connector, held open for one operation.
+
+        Recovers from an eviction exactly once. `_cache_put` disposes connectors
+        that callers already hold, so finding this one released is ordinary
+        rather than exceptional -- and before the raw handles were released it
+        cost nothing, because closing them did nothing. The rebuild happens here
+        and not per call: `_load_connectors` parses the file every time, so
+        resolving eagerly would put a YAML parse on every query.
+
+        Fails closed. If the rebuild yields nothing the original `ConnectorClosed`
+        is raised, never a silent fall back to the released connector -- which
+        would mean querying with a credential the cache has already retired, and
+        is the failure `invalidate_connector_cache` exists to prevent.
+        """
+        with contextlib.ExitStack() as stack:
+            # Only entering the guard is guarded. An ExitStack rather than a
+            # `with` so the `yield` sits outside the `try`: a `ConnectorClosed`
+            # thrown in by the caller's body would otherwise be caught here and
+            # answered with a second `yield`, which is a `generator didn't stop
+            # after throw()` in place of the real error.
+            for attempt in range(_REOPEN_ATTEMPTS):
+                try:
+                    stack.enter_context(self._inner.in_use())
+                    break
+                except ConnectorClosed:
+                    # The replacement can be evicted too, in the window between
+                    # `_reopen` returning it and the guard being taken. A single
+                    # retry left that window open, and it is widest exactly when
+                    # this path is busiest: after `invalidate_connector_cache`
+                    # several holders rebuild at once and each one's `_cache_put`
+                    # disposes the connector the previous one has just been
+                    # handed -- the shape `test_twenty_threads_build_at_most_a_
+                    # handful` already demonstrates for the open path.
+                    #
+                    # Bounded rather than `while True`: persistent churn should
+                    # surface as a failed query rather than as a request that
+                    # never returns, and re-raising the last `ConnectorClosed`
+                    # keeps the fail-closed behaviour exactly as it was.
+                    if attempt == _REOPEN_ATTEMPTS - 1:
+                        raise
+                    replacement = self._reopen()
+                    if replacement is None:
+                        raise
+                    self._inner = replacement
+            yield self._inner
 
     # -- delegation ------------------------------------------------------
     def connect(self, credentials: dict[str, Any]) -> None:
         self._inner.connect(credentials)
 
     def test_connection(self) -> bool:
-        return self._inner.test_connection()
+        with self._active() as inner:
+            return inner.test_connection()
 
     def extract_schema(self) -> SchemaSpec:
-        return self._inner.extract_schema()
+        with self._active() as inner:
+            return inner.extract_schema()
 
     def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
-        return self._inner.extract_query_history(days, limit)
+        with self._active() as inner:
+            return inner.extract_query_history(days, limit)
 
     def get_schema_summary(self) -> tuple[int, int]:
-        return self._inner.get_schema_summary()
+        with self._active() as inner:
+            return inner.get_schema_summary()
 
     def list_security_policies(self) -> SecurityPolicyReport:
-        return self._inner.list_security_policies()
+        with self._active() as inner:
+            return inner.list_security_policies()
 
     def close(self) -> None:
         """Intentionally a no-op.
@@ -344,4 +611,8 @@ class PermittedConnector(DatabaseConnector):
         # already checked this wrapper's policy. The inner private method is
         # called directly to keep enforcement in one place: the inner public
         # method would consult its own unbound, denying policy.
-        return self._inner._execute_query(sql, timeout_seconds, max_rows)
+        # The longest thing this wrapper does, and the one the deferred
+        # close matters most for: a query outliving its connector's
+        # eviction is the case that turned a leak into an aborted statement.
+        with self._active() as inner:
+            return inner._execute_query(sql, timeout_seconds, max_rows)
