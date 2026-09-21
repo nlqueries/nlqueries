@@ -126,6 +126,14 @@ def test_close_is_safe_with_nothing_held_and_safe_twice() -> None:
     connector.close()
 
     assert handle.closed == 1
+    # And the second close did not unset the flag. Recomputed from the live
+    # attributes it would: `_release` has cleared `_conn`, so the connector no
+    # longer looks like one whose release destroys anything, and the next caller
+    # would be admitted to a connector with no handle.
+    from nlqueries.connectors.base import ConnectorClosed
+
+    with pytest.raises(ConnectorClosed), connector.in_use():
+        pass  # pragma: no cover - refused
 
 
 def test_an_engine_is_disposed_but_kept() -> None:

@@ -309,7 +309,15 @@ class DatabaseConnector(ABC):
             # Read now rather than at release: by then the attributes have been
             # cleared, and "does this connector hold a handle" would answer no
             # for exactly the connectors it needs to answer yes for.
-            state["closing"] = any(
+            # Monotonic. Recomputing it from the live attributes lets the flag
+            # fall back to False once `_release` has cleared them -- so a second
+            # `close()`, or a subclass that closes its own handle before
+            # delegating to `super().close()`, reopens the door on a connector
+            # whose handle is already gone and the next caller gets "connect()
+            # must be called before use", which is the message this flag exists
+            # to replace. `EnterpriseRedshiftConnector` has exactly that shape
+            # today, so it is a trap with a caller rather than only in theory.
+            state["closing"] = state["closing"] or any(
                 getattr(self, attr, None) is not None for attr in self._HANDLE_ATTRS
             )
             if state["count"] > 0:
