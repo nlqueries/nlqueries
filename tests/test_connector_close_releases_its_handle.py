@@ -431,3 +431,59 @@ def test_a_refused_entry_does_not_leave_the_count_raised() -> None:
             pass  # pragma: no cover - refused
 
     assert connector._use_state()[1]["count"] == 0
+
+
+def test_an_engine_only_connector_stays_usable_after_an_eviction() -> None:
+    """Postgres, MSSQL and the generic SQLAlchemy connector are engine-only.
+
+    `dispose()` returns the pool and leaves the engine usable — it builds a new
+    one on next use — so eviction has always been harmless for them. Refusing
+    entry afterwards would break the next call made by any request still holding
+    the wrapper, on a TTL lapse, an LRU replacement or a credential change: all
+    routine, all previously safe.
+    """
+
+    class _Engine:
+        def __init__(self) -> None:
+            self.disposed = 0
+
+        def dispose(self) -> None:
+            self.disposed += 1
+
+    connector = _Connector()
+    engine = _Engine()
+    connector._engine = engine
+
+    connector.close()
+
+    assert engine.disposed == 1
+    # Still usable, which is the whole point.
+    with connector.in_use():
+        pass
+    assert connector._engine is engine
+
+
+def test_a_raw_handle_connector_is_still_refused_after_an_eviction() -> None:
+    # The control for the narrowing. A connector whose handle is gone cannot
+    # serve anyone, and saying so plainly is better than the driver's own
+    # complaint several frames later.
+    from nlqueries.connectors.base import ConnectorClosed
+
+    connector = _Connector()
+    connector._conn = _Handle()
+
+    connector.close()
+
+    with pytest.raises(ConnectorClosed), connector.in_use():
+        pass  # pragma: no cover - refused
+
+
+def test_a_connector_holding_nothing_at_all_is_not_refused() -> None:
+    # Closing one that holds neither an engine nor a handle destroys nothing, so
+    # there is nothing to refuse for.
+    connector = _Connector()
+
+    connector.close()
+
+    with connector.in_use():
+        pass

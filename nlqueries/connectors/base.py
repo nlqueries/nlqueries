@@ -239,14 +239,16 @@ class DatabaseConnector(ABC):
         lock, state = self._use_state()
         with lock:
             if state.get("closing"):
-                # Refused rather than counted. The guard spans one call, so an
-                # eviction landing between two of them finds the count at zero
-                # and closes -- and `open_connector_for_agent` returns before
-                # the `asyncio.to_thread` hop into `execute_query`, so that
-                # window is on the ordinary path. Entering here after a close
-                # was requested also lets a statement start between the moment
-                # `close` decides to release and the release itself, which is
-                # the abort the deferral exists to prevent.
+                # Refused rather than counted, and only for a connector whose
+                # release destroys what it holds -- see `close`. The guard spans
+                # one call, so an eviction landing between two of them finds the
+                # count at zero and closes; and `open_connector_for_agent`
+                # returns before the `asyncio.to_thread` hop into
+                # `execute_query`, so that window is on the ordinary path.
+                # Entering here after a close was requested also lets a statement
+                # start between the moment `close` decides to release and the
+                # release itself, which is the abort the deferral exists to
+                # prevent.
                 raise ConnectorClosed(
                     f"{type(self).__name__} was released by the connector cache; "
                     "ask the loader for a new one."
@@ -291,12 +293,25 @@ class DatabaseConnector(ABC):
         """
         lock, state = self._use_state()
         with lock:
-            # Set before anything else and never cleared: from here on this
-            # connector is finished, whether the handles go now or when the last
-            # holder leaves. `in_use` reads it to refuse newcomers, which is what
-            # makes the deferral cover the gaps between calls rather than only
-            # the calls themselves.
-            state["closing"] = True
+            # Only when the release actually destroys something. A connector
+            # holding a raw handle is finished once it is closed; one holding
+            # only an engine is not, because `dispose()` returns the pool and
+            # leaves the object usable — it builds a new pool on next use.
+            #
+            # Refusing for both was a regression, and a broad one: Postgres,
+            # MSSQL and the generic SQLAlchemy connector are engine-only, so a
+            # routine eviction — a TTL lapse in `_cache_get`, an LRU replacement
+            # in `_cache_put`, a credential change calling
+            # `invalidate_connector_cache` — would fail the next call made by
+            # any request still holding that wrapper. All of those were harmless
+            # for those connectors before this branch.
+            #
+            # Read now rather than at release: by then the attributes have been
+            # cleared, and "does this connector hold a handle" would answer no
+            # for exactly the connectors it needs to answer yes for.
+            state["closing"] = any(
+                getattr(self, attr, None) is not None for attr in self._HANDLE_ATTRS
+            )
             if state["count"] > 0:
                 # Someone is mid-call. The loader disposes entries other callers
                 # already hold -- `_cache_get` on a stale one, `_cache_put` on a
