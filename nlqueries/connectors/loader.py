@@ -356,6 +356,72 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
     return credentials
 
 
+def reopen_connector(connector_id: str) -> DatabaseConnector | None:
+    """Rebuild the connector for *connector_id*, or return None.
+
+    Pinned to the connector id and never resolved from an agent. A caller that
+    obtained a wrapper for one database must not be moved to another one because
+    the agent's binding changed underneath it -- which is a thing that can
+    happen, since changing an agent's connector is a feature.
+
+    Reached only when a caller finds the connector it holds has been released:
+    `_cache_put` disposes connectors that callers are already holding, so a cold
+    start that builds several for one agent closes all but one while every
+    wrapper is live. Before the handles were released that was harmless. Now it
+    is not, and this is how such a caller recovers rather than failing a query
+    the cache had no quarrel with.
+
+    Deliberately not on the hot path. `_load_connectors` parses the file on
+    every call, so resolving per query would put a YAML parse on every question
+    asked -- which is the cost this loader has twice been corrected for.
+
+    The build below deliberately mirrors `open_connector_for_agent`'s rather
+    than sharing it: that function's value is in what it says when each step
+    fails, and those messages are about an agent, which this has none of. The
+    two rules that must stay in step are the fingerprint being computed from the
+    entry before `credentials_for` runs, and a degraded resolution being cached
+    under `<fingerprint>:degraded` so the next open re-resolves. Changing either
+    in one place only would leave a reopen holding a class the open path had
+    already stopped using.
+    """
+    connectors = _load_connectors()
+    cfg = connectors.get(connector_id)
+    if not isinstance(cfg, dict):
+        logger.warning(
+            "Cannot reopen connector %s: it is no longer in %s.",
+            connector_id,
+            config.CONNECTORS_FILE,
+        )
+        return None
+
+    fingerprint = ""
+    if config.CONNECTOR_CACHE_ENABLED:
+        fingerprint = _fingerprint(connector_id, cfg)
+        cached = _cache_get(connector_id, fingerprint)
+        if cached is not None:
+            return cached
+
+    db_type = str(cfg.get("db_type") or "").lower()
+    connector_cls, resolution_degraded = _resolve(db_type, cfg)
+    if connector_cls is None:
+        return None
+
+    try:
+        connector = connector_cls()
+        connector.connect(credentials_for(connector_id, cfg))
+    except Exception:  # noqa: BLE001 - the caller reports it; see below
+        logger.warning("Could not reopen connector %s.", connector_id, exc_info=True)
+        return None
+
+    if config.CONNECTOR_CACHE_ENABLED:
+        _cache_put(
+            connector_id,
+            connector,
+            f"{fingerprint}:degraded" if resolution_degraded else fingerprint,
+        )
+    return connector
+
+
 def open_connector_for_agent(
     agent_id: str, execution: ExecutionPolicy = DEFAULT_POLICY
 ) -> DatabaseConnector | None:
@@ -444,7 +510,7 @@ def open_connector_for_agent(
         fingerprint = _fingerprint(connector_id, cfg)
         cached = _cache_get(connector_id, fingerprint)
         if cached is not None:
-            return PermittedConnector(cached, execution)
+            return PermittedConnector(cached, execution, connector_id=connector_id)
 
     # `or ""` rather than a default: a `db_type:` key with no value under it
     # parses to None, which `.get("db_type", "")` returns happily and `.lower()`
@@ -496,7 +562,7 @@ def open_connector_for_agent(
                 connector,
                 f"{fingerprint}:degraded" if resolution_degraded else fingerprint,
             )
-        return PermittedConnector(connector, execution)
+        return PermittedConnector(connector, execution, connector_id=connector_id)
     except Exception:  # noqa: BLE001
         # Deliberately not "the connection attempt failed". This block covers
         # `credentials_for` as well as `connect`, and `connect` on the

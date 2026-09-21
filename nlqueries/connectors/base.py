@@ -488,33 +488,85 @@ class PermittedConnector(DatabaseConnector):
     permitted, and execution is therefore what is checked.
     """
 
-    def __init__(self, inner: DatabaseConnector, policy: ExecutionPolicy) -> None:
+    def __init__(
+        self,
+        inner: DatabaseConnector,
+        policy: ExecutionPolicy,
+        connector_id: str | None = None,
+    ) -> None:
         self._inner = inner
         self._execution_policy = policy
+        #: Which connector this wrapper is for, so a released one can be rebuilt
+        #: under the caller. The ID and not the agent: an agent's binding can be
+        #: changed, and a caller that obtained this wrapper for one database must
+        #: not silently be moved to another. None disables recovery, which is
+        #: what a directly-constructed wrapper gets.
+        self._connector_id = connector_id
+
+    def _reopen(self) -> DatabaseConnector | None:
+        """Rebuild the connector this wrapper is for. Imported late: the loader
+        imports this module, so a module-level import would be circular."""
+        if self._connector_id is None:
+            return None
+        from nlqueries.connectors.loader import reopen_connector  # noqa: PLC0415
+
+        return reopen_connector(self._connector_id)
+
+    @contextlib.contextmanager
+    def _active(self) -> Iterator[DatabaseConnector]:
+        """The inner connector, held open for one operation.
+
+        Recovers from an eviction exactly once. `_cache_put` disposes connectors
+        that callers already hold, so finding this one released is ordinary
+        rather than exceptional -- and before the raw handles were released it
+        cost nothing, because closing them did nothing. The rebuild happens here
+        and not per call: `_load_connectors` parses the file every time, so
+        resolving eagerly would put a YAML parse on every query.
+
+        Fails closed. If the rebuild yields nothing the original `ConnectorClosed`
+        is raised, never a silent fall back to the released connector -- which
+        would mean querying with a credential the cache has already retired, and
+        is the failure `invalidate_connector_cache` exists to prevent.
+        """
+        with contextlib.ExitStack() as stack:
+            # Only entering the guard is guarded. An ExitStack rather than a
+            # `with` so the `yield` sits outside the `try`: a `ConnectorClosed`
+            # thrown in by the caller's body would otherwise be caught here and
+            # answered with a second `yield`, which is a `generator didn't stop
+            # after throw()` in place of the real error.
+            try:
+                stack.enter_context(self._inner.in_use())
+            except ConnectorClosed:
+                replacement = self._reopen()
+                if replacement is None:
+                    raise
+                self._inner = replacement
+                stack.enter_context(self._inner.in_use())
+            yield self._inner
 
     # -- delegation ------------------------------------------------------
     def connect(self, credentials: dict[str, Any]) -> None:
         self._inner.connect(credentials)
 
     def test_connection(self) -> bool:
-        with self._inner.in_use():
-            return self._inner.test_connection()
+        with self._active() as inner:
+            return inner.test_connection()
 
     def extract_schema(self) -> SchemaSpec:
-        with self._inner.in_use():
-            return self._inner.extract_schema()
+        with self._active() as inner:
+            return inner.extract_schema()
 
     def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
-        with self._inner.in_use():
-            return self._inner.extract_query_history(days, limit)
+        with self._active() as inner:
+            return inner.extract_query_history(days, limit)
 
     def get_schema_summary(self) -> tuple[int, int]:
-        with self._inner.in_use():
-            return self._inner.get_schema_summary()
+        with self._active() as inner:
+            return inner.get_schema_summary()
 
     def list_security_policies(self) -> SecurityPolicyReport:
-        with self._inner.in_use():
-            return self._inner.list_security_policies()
+        with self._active() as inner:
+            return inner.list_security_policies()
 
     def close(self) -> None:
         """Intentionally a no-op.
@@ -539,5 +591,5 @@ class PermittedConnector(DatabaseConnector):
         # The longest thing this wrapper does, and the one the deferred
         # close matters most for: a query outliving its connector's
         # eviction is the case that turned a leak into an aborted statement.
-        with self._inner.in_use():
-            return self._inner._execute_query(sql, timeout_seconds, max_rows)
+        with self._active() as inner:
+            return inner._execute_query(sql, timeout_seconds, max_rows)
