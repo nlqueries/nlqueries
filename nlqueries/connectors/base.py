@@ -31,6 +31,17 @@ from nlqueries.execution import (
 logger = logging.getLogger(__name__)
 
 
+class ConnectorClosed(RuntimeError):
+    """Raised when a caller reaches for a connector the cache has released.
+
+    Distinct from the connectors' own "connect() must be called before use",
+    which says the caller never connected. This says the opposite: it was
+    connected, and the loader evicted it underneath — the caller should ask the
+    loader for another rather than look at its own configuration, and the two
+    are not distinguishable from the message the guard used to produce.
+    """
+
+
 @dataclass
 class ColumnSpec:
     """Describes a single column within a table."""
@@ -209,7 +220,8 @@ class DatabaseConnector(ABC):
             # the race gets the winner's pair rather than its own. The pair it
             # allocated and did not install is simply collected.
             existing = self.__dict__.setdefault(
-                "_use_state_pair", (threading.Lock(), {"count": 0, "deferred": False})
+                "_use_state_pair",
+                (threading.Lock(), {"count": 0, "deferred": False, "closing": False}),
             )
         lock, state = existing
         return lock, state
@@ -226,6 +238,19 @@ class DatabaseConnector(ABC):
         """
         lock, state = self._use_state()
         with lock:
+            if state.get("closing"):
+                # Refused rather than counted. The guard spans one call, so an
+                # eviction landing between two of them finds the count at zero
+                # and closes -- and `open_connector_for_agent` returns before
+                # the `asyncio.to_thread` hop into `execute_query`, so that
+                # window is on the ordinary path. Entering here after a close
+                # was requested also lets a statement start between the moment
+                # `close` decides to release and the release itself, which is
+                # the abort the deferral exists to prevent.
+                raise ConnectorClosed(
+                    f"{type(self).__name__} was released by the connector cache; "
+                    "ask the loader for a new one."
+                )
             state["count"] += 1
         try:
             yield
@@ -266,6 +291,12 @@ class DatabaseConnector(ABC):
         """
         lock, state = self._use_state()
         with lock:
+            # Set before anything else and never cleared: from here on this
+            # connector is finished, whether the handles go now or when the last
+            # holder leaves. `in_use` reads it to refuse newcomers, which is what
+            # makes the deferral cover the gaps between calls rather than only
+            # the calls themselves.
+            state["closing"] = True
             if state["count"] > 0:
                 # Someone is mid-call. The loader disposes entries other callers
                 # already hold -- `_cache_get` on a stale one, `_cache_put` on a

@@ -366,3 +366,68 @@ def test_the_counter_is_created_once_and_shared_by_every_caller() -> None:
         assert connector._use_state()[1]["count"] == 1, (
             "a second call built a new counter, so the count is invisible to close()"
         )
+
+
+def test_a_caller_arriving_after_the_close_is_told_what_happened() -> None:
+    """The gap between calls, which the guard alone did not cover.
+
+    A holder of the wrapper is not inside `in_use` the whole time it holds the
+    connector -- `open_connector_for_agent` returns before the `asyncio.to_thread`
+    hop into `execute_query`, so there is a window on the ordinary path where the
+    count is zero. An eviction landing there closed the handle and cleared it,
+    and the caller's next statement failed with "connect() must be called before
+    use": a message about its own configuration, for something the cache did.
+    """
+    from nlqueries.connectors.base import ConnectorClosed
+
+    connector = _Connector()
+    connector._conn = _Handle()
+
+    connector.close()
+
+    with pytest.raises(ConnectorClosed) as excinfo, connector.in_use():
+        pass  # pragma: no cover - entry is refused before this runs
+
+    assert "connector cache" in str(excinfo.value)
+    assert "_Connector" in str(excinfo.value)
+
+
+def test_no_statement_can_start_between_deciding_to_release_and_releasing() -> None:
+    """The narrower interleaving, and the one the deferral was added to stop.
+
+    `close` clears `deferred` under the lock and then calls `_release` outside
+    it. Without the flag a thread could enter `in_use` in that gap and begin a
+    statement that `_release` then aborted -- the exact failure being guarded
+    against, reintroduced by the guard's own release path.
+    """
+    from nlqueries.connectors.base import ConnectorClosed
+
+    connector = _Connector()
+    handle = _Handle()
+    connector._conn = handle
+
+    with connector.in_use():
+        connector.close()
+        assert handle.closed == 0
+
+    # The release has now happened. Anyone arriving afterwards is refused rather
+    # than handed a connector whose handle is gone.
+    assert handle.closed == 1
+    with pytest.raises(ConnectorClosed), connector.in_use():
+        pass  # pragma: no cover - entry is refused before this runs
+
+
+def test_a_refused_entry_does_not_leave_the_count_raised() -> None:
+    # A refusal that incremented first would leave the counter permanently above
+    # zero, and a later deferred close would never fire at all.
+    from nlqueries.connectors.base import ConnectorClosed
+
+    connector = _Connector()
+    connector._conn = _Handle()
+    connector.close()
+
+    for _ in range(3):
+        with pytest.raises(ConnectorClosed), connector.in_use():
+            pass  # pragma: no cover - refused
+
+    assert connector._use_state()[1]["count"] == 0
