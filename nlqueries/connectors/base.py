@@ -31,6 +31,13 @@ from nlqueries.execution import (
 logger = logging.getLogger(__name__)
 
 
+#: How many times `PermittedConnector._active` will take the guard before
+#: giving up. Three, because the case it exists for is a rebuilt connector being
+#: evicted before its holder can enter -- one more eviction than that, on one
+#: request, is churn the caller should hear about rather than wait through.
+_REOPEN_ATTEMPTS = 3
+
+
 class ConnectorClosed(RuntimeError):
     """Raised when a caller reaches for a connector the cache has released.
 
@@ -534,14 +541,30 @@ class PermittedConnector(DatabaseConnector):
             # thrown in by the caller's body would otherwise be caught here and
             # answered with a second `yield`, which is a `generator didn't stop
             # after throw()` in place of the real error.
-            try:
-                stack.enter_context(self._inner.in_use())
-            except ConnectorClosed:
-                replacement = self._reopen()
-                if replacement is None:
-                    raise
-                self._inner = replacement
-                stack.enter_context(self._inner.in_use())
+            for attempt in range(_REOPEN_ATTEMPTS):
+                try:
+                    stack.enter_context(self._inner.in_use())
+                    break
+                except ConnectorClosed:
+                    # The replacement can be evicted too, in the window between
+                    # `_reopen` returning it and the guard being taken. A single
+                    # retry left that window open, and it is widest exactly when
+                    # this path is busiest: after `invalidate_connector_cache`
+                    # several holders rebuild at once and each one's `_cache_put`
+                    # disposes the connector the previous one has just been
+                    # handed -- the shape `test_twenty_threads_build_at_most_a_
+                    # handful` already demonstrates for the open path.
+                    #
+                    # Bounded rather than `while True`: persistent churn should
+                    # surface as a failed query rather than as a request that
+                    # never returns, and re-raising the last `ConnectorClosed`
+                    # keeps the fail-closed behaviour exactly as it was.
+                    if attempt == _REOPEN_ATTEMPTS - 1:
+                        raise
+                    replacement = self._reopen()
+                    if replacement is None:
+                        raise
+                    self._inner = replacement
             yield self._inner
 
     # -- delegation ------------------------------------------------------

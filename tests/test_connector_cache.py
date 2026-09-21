@@ -243,9 +243,16 @@ class _RealConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._conn = object()
         self.queries = 0
+        #: What `connect` was handed. The recovery tests assert on this rather
+        #: than on the wrapper's own attributes: `_connector_id` is written once
+        #: in `__init__` and never reassigned, so it reports what the wrapper
+        #: was ASKED for and not what the rebuild actually resolved. The
+        #: credentials are the only thing downstream of the resolution.
+        self.credentials: dict[str, Any] = {}
         _RealConnector.instances.append(self)
 
     def connect(self, credentials: dict[str, Any]) -> None:
+        self.credentials = dict(credentials)
         return None
 
     def test_connection(self) -> bool:
@@ -303,41 +310,119 @@ def test_a_caller_holding_a_wrapper_survives_an_eviction(connectors_file, real_c
 
 
 def test_the_rebuild_is_pinned_to_the_connector_and_not_the_agent(
-    connectors_file, real_connector, monkeypatch
+    connectors_file, real_connector
 ) -> None:
     """A caller must not be moved to a different database mid-request.
 
     Changing which connector an agent points at is a feature, so re-resolving
-    from the agent would let that change land on a caller who obtained the
-    wrapper under the old binding. The rebuild takes the connector id the
-    wrapper was opened for and nothing else.
+    from the agent would let that change land on a caller that obtained its
+    wrapper under the old binding.
+
+    Making that observable takes some arranging, and the arrangement is the
+    point. `_find_connector_id` tries the agent id as a key first and then falls
+    back to a sanitised match -- `re.sub(r"[^\w.-]", "_", key) == agent_id` --
+    returning the FIRST key that matches. Two different keys can therefore
+    resolve from one agent id, and `postgres:localhost:db` and
+    `postgres/localhost/db` both sanitise to `postgres_localhost_db`.
+
+    So the wrapper is opened under the sanitised agent id while only the
+    colon-spelled entry exists, which pins it to that entry. The file is then
+    rewritten with the slash-spelled entry FIRST, pointing at another host.
+    Re-resolving from the agent now reaches the other database; re-opening the
+    pinned id still reaches the original. The credentials say which happened.
+
+    The previous version of this test asserted `held._connector_id`. That is
+    written once in `__init__` and never reassigned, so it was true however the
+    rebuild resolved -- and with the agent id equal to the connector id, both
+    routes reached the same entry regardless. It named this property and
+    measured nothing.
     """
     held = loader.open_connector_for_agent(
-        "postgres:localhost:db", ExecutionPolicy.execute_read_only()
+        "postgres_localhost_db", ExecutionPolicy.execute_read_only()
     )
     assert held is not None
+    assert len(real_connector) == 1
+    assert real_connector[0].credentials["host"] == "localhost"
 
-    # The agent's entry now names a different connector entirely.
     connectors_file.write_text(
         yaml.safe_dump(
             {
+                # First, so the sanitised fallback walks into it.
+                "postgres/localhost/db": {
+                    "db_type": "postgres",
+                    "url": "postgresql://user:secret@elsewhere:5432/other",
+                },
                 "postgres:localhost:db": {
                     "db_type": "postgres",
                     "url": "postgresql://user:secret@localhost:5432/db",
                 },
-                "postgres:elsewhere:other": {
-                    "db_type": "postgres",
-                    "url": "postgresql://user:secret@elsewhere:5432/other",
-                },
-            }
+            },
+            sort_keys=False,
         )
     )
     loader.invalidate_connector_cache("postgres:localhost:db")
 
     held.execute_query("select 1")
 
-    # Rebuilt under its own id, so the entry it used is the one it started with.
-    assert held._connector_id == "postgres:localhost:db"
+    assert len(real_connector) == 2, "the wrapper did not rebuild"
+    rebuilt = real_connector[1]
+    # The database it was opened for, not the one the agent now names.
+    assert rebuilt.credentials["host"] == "localhost", (
+        "the rebuild resolved from the agent and reached another database"
+    )
+    assert rebuilt.credentials["database"] == "db"
+
+
+def test_a_replacement_evicted_before_its_holder_enters_is_retried(
+    connectors_file, real_connector, monkeypatch
+) -> None:
+    """The rebuild can be evicted too, before the caller reaches the guard.
+
+    `_reopen` returns a connector and the caller then takes `in_use` on it, and
+    those are two steps. An eviction landing between them made the recovery
+    raise the very `ConnectorClosed` it exists to swallow. The window is a few
+    bytecodes wide and is widest when this path is busiest: after an
+    invalidation, several holders rebuild at once and each one's `_cache_put`
+    disposes the connector the previous one was just handed.
+
+    Reproduced by closing the first replacement as it is handed over, which is
+    that race with the timing made deterministic.
+    """
+    held = loader.open_connector_for_agent(
+        "postgres:localhost:db", ExecutionPolicy.execute_read_only()
+    )
+    assert held is not None
+
+    real_reopen = loader.reopen_connector
+    handed: list[object] = []
+
+    def reopen_then_evict(connector_id: str):
+        replacement = real_reopen(connector_id)
+        handed.append(replacement)
+        # Only the first one. The second is handed over intact, which is what
+        # makes this a retry test rather than another fail-closed test.
+        #
+        # Through the invalidation rather than by calling `close()` directly.
+        # Closing it alone leaves the closed object in the cache, so the retry
+        # is handed the same dead connector and the test reproduces a race that
+        # cannot happen: whatever closes a pooled connector -- `_cache_put`
+        # replacing it, or an invalidation -- takes it out of the cache in the
+        # same breath. That is what makes the retry worth having, because the
+        # rebuild that follows reaches a genuinely new connector.
+        if replacement is not None and len(handed) == 1:
+            loader.invalidate_connector_cache(connector_id)
+        return replacement
+
+    monkeypatch.setattr(loader, "reopen_connector", reopen_then_evict)
+    loader.invalidate_connector_cache("postgres:localhost:db")
+
+    held.execute_query("select 1")
+
+    assert len(handed) == 2, "the wrapper gave up after one rebuild"
+    # The query ran on the second replacement, not on the closed one.
+    assert handed[1] is not None
+    assert handed[1].queries == 1
+    assert handed[0].queries == 0
 
 
 def test_a_connector_that_cannot_be_rebuilt_fails_closed(connectors_file, real_connector) -> None:
