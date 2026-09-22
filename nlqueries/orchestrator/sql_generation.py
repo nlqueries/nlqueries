@@ -32,6 +32,7 @@ from nlqueries.llm import get_llm_client, output_budget
 from nlqueries.orchestrator.prompt_assembly import (
     _PARTIAL_COLUMNS_NOTE,
     _columns_omitted,
+    _table_ref,
 )
 from nlqueries.sql_policy import evaluate
 
@@ -387,9 +388,13 @@ def _format_schema_for_prompt(knowledge_base: dict[str, Any]) -> str:
         lines.append("## Database Schema")
         lines.append("")
         for table in tables:
-            name = table.get("name", "")
             desc = table.get("description", "")
-            header = f"Table: {name}"
+            # Through the same helper as the other two renderers. This one is
+            # the reason a shared helper exists rather than two call sites: it
+            # is easy to miss, and it is not a side path -- it feeds both
+            # `generate_sql` and the repair step, which runs precisely when the
+            # first attempt was wrong.
+            header = f"Table: {_table_ref(table)}"
             if desc:
                 header += f" — {desc}"
             lines.append(header)

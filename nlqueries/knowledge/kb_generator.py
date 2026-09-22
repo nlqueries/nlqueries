@@ -412,6 +412,18 @@ def generate_knowledge_base(
         tables.append(
             {
                 "name": table.name,
+                # The schema the table actually lives in, so a prompt can name
+                # it the way the database will accept. Without this the KB knew
+                # only `customer`, and generated SQL for anything outside the
+                # connection's default schema referred to a table the server
+                # could not resolve.
+                #
+                # Always written. Every connector reports a schema --
+                # `TableSpec.schema` is a required `str` -- so a regenerated
+                # SQLite base renders `main.orders`, which resolves. The
+                # renderers' bare fallback is for knowledge bases written
+                # before this field existed, and for hand-edited ones.
+                "schema": table.schema,
                 "description": table_desc,
                 "description_source": table_src,
                 "row_count": table.row_count,

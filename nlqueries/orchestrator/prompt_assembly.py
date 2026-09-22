@@ -322,7 +322,7 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     for table in tables:
         name = table.get("name", "")
         desc = table.get("description", "")
-        header = f"【Table】 {name}"
+        header = f"【Table】 {_table_ref(table)}"
         if desc:
             header += f" — {desc}"
         lines.append(header)
@@ -402,6 +402,34 @@ def _build_static_system(knowledge_base: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _table_ref(table: dict[str, Any]) -> str:
+    """How a table should be NAMED to the model: ``schema.table``, or bare.
+
+    Table HEADERS only. The foreign-key block and the per-column ``FK->``
+    flags still read bare, and that is a known gap rather than an oversight:
+    `kb_generator` builds `foreign_keys` from `col.references`, which the
+    connectors report unqualified, so there is nothing here to qualify them
+    WITH. A model mirroring one of those lines into a join therefore loses the
+    schema, and on two same-named tables in different schemas the block is
+    ambiguous. Closing it means resolving reference targets back to their
+    tables at generation time, which is a change to the knowledge base rather
+    than to this renderer.
+
+    The knowledge base used to record only the bare name, so a prompt could not
+    tell the model where a table lived and generated SQL referred to something
+    the server could not resolve -- invisible on a connection whose default
+    schema already held everything, and a hard failure anywhere else.
+
+    Every connector reports a schema -- `TableSpec.schema` is a required `str`
+    -- so the bare fallback is for knowledge bases written before this field
+    existed and for hand-edited entries, not for any connector. A regenerated
+    SQLite base renders `main.orders`, which resolves.
+    """
+    name = str(table.get("name", ""))
+    schema = str(table.get("schema") or "").strip()
+    return f"{schema}.{name}" if schema and name else name
+
+
 def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
     """Render ALL tables from the KB in deterministic (KB YAML) order."""
     tables: list[dict[str, Any]] = knowledge_base.get("schema", {}).get("tables", [])
@@ -412,7 +440,7 @@ def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
     for table in tables:
         name = table.get("name", "")
         desc = table.get("description", "")
-        lines.append(f"### Table: {name}")
+        lines.append(f"### Table: {_table_ref(table)}")
         if name:
             record_prompt_section(f"table_desc:{name}")  # provenance (SYL-1.1)
         if desc:
@@ -562,7 +590,31 @@ def _format_dynamic_context(
     parts: list[str] = []
 
     if hit_names:
-        parts.append("## Most relevant tables for this question\n" + ", ".join(hit_names))
+        # Qualified through the same helper as the schema block.
+        # `upsert_schema` writes `table_name` into the Qdrant payload
+        # unqualified, so without this a single prompt could offer
+        # `sales.orders` in the schema block and `orders` in the hint list
+        # directly above it -- two names for one table, in the place a
+        # reader of `_table_ref` is most likely to assume was covered.
+        #
+        # A hit naming a table the KB does not hold keeps its bare name:
+        # better a name the model can still match than one invented here.
+        # Qualified only when the bare name maps to exactly ONE table.
+        #
+        # A knowledge base holding both `public.orders` and `sales.orders` is
+        # the ordinary multi-schema case, and the Qdrant payload carries no
+        # schema -- so there is nothing here to say which was meant. Naming one
+        # would point the model at a definite schema that may be the wrong one,
+        # and a query against the wrong table returns a plausible answer rather
+        # than an error. The bare name leaves the schema block to disambiguate,
+        # which is what it did before this.
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for t in knowledge_base.get("schema", {}).get("tables", []):
+            by_name.setdefault(str(t.get("name", "")), []).append(t)
+        qualified = [
+            _table_ref(by_name[n][0]) if len(by_name.get(n, ())) == 1 else n for n in hit_names
+        ]
+        parts.append("## Most relevant tables for this question\n" + ", ".join(qualified))
 
     if verified_hits or capsule_hits:
         cap_lines: list[str] = [

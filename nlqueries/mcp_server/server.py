@@ -135,9 +135,15 @@ def get_agent_schema(agent_id: str) -> str:
     if not tables:
         return f"Agent '{agent_id}' has no tables in its knowledge base."
 
+    # The fourth rendering of this list, and the one shown to an MCP
+    # client's model. It composes no SQL itself, but these are the names
+    # that model will use when it asks for some -- so it names tables the
+    # way the three prompt renderers do. Deferred like the imports above.
+    from nlqueries.orchestrator.prompt_assembly import _table_ref  # noqa: PLC0415
+
     lines: list[str] = [f"## Schema — {agent_id}\n"]
     for tbl in tables:
-        name = tbl.get("name", "?")
+        name = _table_ref(tbl) or tbl.get("name", "?")
         desc = tbl.get("description", "")
         header = f"**{name}**" + (f" — {desc}" if desc else "")
         lines.append(header)
