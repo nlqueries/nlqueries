@@ -151,6 +151,20 @@ def test_table_fields_present():
     assert "columns" in tbl
 
 
+def test_the_table_carries_its_schema():
+    """The generator half, on which the three prompt renderers depend.
+
+    Nothing else asserted it: `test_table_fields_present` above checks `name`,
+    `row_count`, `description` and `columns`, and passes with the schema line
+    deleted. Every table dict is rebuilt from scratch on each run, so a field
+    that stops being emitted disappears silently rather than failing -- and the
+    visible consequence would be prompts quietly going back to bare names.
+    """
+    schema = _make_schema([_make_table("orders")])
+    kb = generate_knowledge_base(schema, [], agent_name="agent1")
+    assert kb["schema"]["tables"][0]["schema"] == "public"
+
+
 def test_column_fields_present():
     cols = [_make_column("id", "INT"), _make_column("status", "VARCHAR")]
     schema = _make_schema([_make_table("orders", columns=cols)])

@@ -420,9 +420,15 @@ def _table_ref(table: dict[str, Any]) -> str:
     the server could not resolve -- invisible on a connection whose default
     schema already held everything, and a hard failure anywhere else.
 
-    Bare when the KB has no schema for the table, which covers two cases that
-    both want the old behaviour: a connector that reports no schema at all
-    (DuckDB, SQLite), and a knowledge base written before this field existed.
+    Bare when the KB has no schema for the table. That covers a knowledge base
+    written before this field existed, and a hand-edited entry -- NOT, as an
+    earlier version of this claimed, connectors that report no schema. None do:
+    `TableSpec.schema` is a required `str`, `sqlite.py` sets `"main"`,
+    `duckdb.py` takes it from the catalog, and `sqlalchemy_connector.py` uses
+    `inspector.default_schema_name`, which is populated for the engines it
+    serves. A regenerated SQLite base therefore renders `main.orders`, which is
+    harmless because `main` resolves -- but it is the opposite of what that
+    comment led a reader to expect.
     """
     name = str(table.get("name", ""))
     schema = str(table.get("schema") or "").strip()
@@ -589,7 +595,20 @@ def _format_dynamic_context(
     parts: list[str] = []
 
     if hit_names:
-        parts.append("## Most relevant tables for this question\n" + ", ".join(hit_names))
+        # Qualified through the same helper as the schema block.
+        # `upsert_schema` writes `table_name` into the Qdrant payload
+        # unqualified, so without this a single prompt could offer
+        # `sales.orders` in the schema block and `orders` in the hint list
+        # directly above it -- two names for one table, in the place a
+        # reader of `_table_ref` is most likely to assume was covered.
+        #
+        # A hit naming a table the KB does not hold keeps its bare name:
+        # better a name the model can still match than one invented here.
+        by_name = {
+            str(t.get("name", "")): t for t in knowledge_base.get("schema", {}).get("tables", [])
+        }
+        qualified = [_table_ref(by_name[n]) if n in by_name else n for n in hit_names]
+        parts.append("## Most relevant tables for this question\n" + ", ".join(qualified))
 
     if verified_hits or capsule_hits:
         cap_lines: list[str] = [

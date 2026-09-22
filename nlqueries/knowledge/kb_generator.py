@@ -418,10 +418,18 @@ def generate_knowledge_base(
                 # connection's default schema referred to a table the server
                 # could not resolve.
                 #
-                # Written even when empty: a connector that reports no schema
-                # (DuckDB, SQLite) stores "" and the renderers fall back to the
-                # bare name, so the key is always present and always tells the
-                # truth rather than being absent for two different reasons.
+                # Always written, so the key is present and true rather than
+                # absent for two different reasons.
+                #
+                # Not, as this comment first claimed, because some connectors
+                # report no schema: none do. `TableSpec.schema` is a required
+                # `str`, `sqlite.py` sets "main", `duckdb.py` reads the catalog,
+                # and `sqlalchemy_connector.py` uses
+                # `inspector.default_schema_name`. So a regenerated SQLite base
+                # renders `main.orders` -- harmless, since `main` resolves, but
+                # worth stating plainly rather than leaving a reader expecting
+                # a bare name. The renderers' fallback is for knowledge bases
+                # written before this field existed, and for hand-edited ones.
                 "schema": table.schema,
                 "description": table_desc,
                 "description_source": table_src,

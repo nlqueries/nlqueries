@@ -46,10 +46,14 @@ def test_a_table_with_a_schema_is_named_by_both() -> None:
 
 
 def test_a_table_without_a_schema_keeps_its_bare_name() -> None:
-    """Two cases want this, and both want the old behaviour.
+    """For knowledge bases written before the field existed, and hand-edited
+    entries.
 
-    A connector that reports no schema at all -- DuckDB and SQLite -- and a
-    knowledge base written before the field existed.
+    NOT for connectors that report no schema, which this docstring first
+    claimed: none do. `TableSpec.schema` is a required `str`, `sqlite.py` sets
+    "main", `duckdb.py` reads the catalog, and `sqlalchemy_connector.py` uses
+    `inspector.default_schema_name`. A regenerated SQLite base renders
+    `main.orders`, which resolves.
     """
     assert _table_ref({"name": "orders"}) == "orders"
     assert _table_ref({"name": "orders", "schema": ""}) == "orders"
@@ -106,3 +110,27 @@ def test_the_sql_generation_renderer_falls_back_too() -> None:
     rendered = _format_schema_for_prompt(_kb(table))
     assert "Table: orders" in rendered
     assert ".orders" not in rendered, rendered
+
+
+def test_the_hint_list_agrees_with_the_schema_block() -> None:
+    """One prompt must not show two names for one table.
+
+    `_format_dynamic_context` heads its list with names from the Qdrant
+    payload, which `upsert_schema` writes unqualified -- so a prompt could
+    offer `sales.orders` in the schema block and `orders` in the hint list
+    directly above it.
+    """
+    from nlqueries.orchestrator.prompt_assembly import _format_dynamic_context
+
+    kb = _kb({"name": "orders", "schema": "sales", "columns": []})
+    out = _format_dynamic_context(kb, 5, ["orders"], [], [])
+    assert "sales.orders" in out, out
+
+
+def test_a_hit_the_kb_does_not_hold_keeps_its_bare_name() -> None:
+    """Better a name the model can still match than one invented here."""
+    from nlqueries.orchestrator.prompt_assembly import _format_dynamic_context
+
+    kb = _kb({"name": "orders", "schema": "sales", "columns": []})
+    out = _format_dynamic_context(kb, 5, ["legacy_audit"], [], [])
+    assert "legacy_audit" in out
