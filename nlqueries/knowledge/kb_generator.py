@@ -412,6 +412,17 @@ def generate_knowledge_base(
         tables.append(
             {
                 "name": table.name,
+                # The schema the table actually lives in, so a prompt can name
+                # it the way the database will accept. Without this the KB knew
+                # only `customer`, and generated SQL for anything outside the
+                # connection's default schema referred to a table the server
+                # could not resolve.
+                #
+                # Written even when empty: a connector that reports no schema
+                # (DuckDB, SQLite) stores "" and the renderers fall back to the
+                # bare name, so the key is always present and always tells the
+                # truth rather than being absent for two different reasons.
+                "schema": table.schema,
                 "description": table_desc,
                 "description_source": table_src,
                 "row_count": table.row_count,

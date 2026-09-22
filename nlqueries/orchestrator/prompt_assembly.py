@@ -322,7 +322,7 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     for table in tables:
         name = table.get("name", "")
         desc = table.get("description", "")
-        header = f"【Table】 {name}"
+        header = f"【Table】 {_table_ref(table)}"
         if desc:
             header += f" — {desc}"
         lines.append(header)
@@ -402,6 +402,23 @@ def _build_static_system(knowledge_base: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _table_ref(table: dict[str, Any]) -> str:
+    """How a table should be NAMED to the model: ``schema.table``, or bare.
+
+    The knowledge base used to record only the bare name, so a prompt could not
+    tell the model where a table lived and generated SQL referred to something
+    the server could not resolve -- invisible on a connection whose default
+    schema already held everything, and a hard failure anywhere else.
+
+    Bare when the KB has no schema for the table, which covers two cases that
+    both want the old behaviour: a connector that reports no schema at all
+    (DuckDB, SQLite), and a knowledge base written before this field existed.
+    """
+    name = str(table.get("name", ""))
+    schema = str(table.get("schema") or "").strip()
+    return f"{schema}.{name}" if schema and name else name
+
+
 def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
     """Render ALL tables from the KB in deterministic (KB YAML) order."""
     tables: list[dict[str, Any]] = knowledge_base.get("schema", {}).get("tables", [])
@@ -412,7 +429,7 @@ def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
     for table in tables:
         name = table.get("name", "")
         desc = table.get("description", "")
-        lines.append(f"### Table: {name}")
+        lines.append(f"### Table: {_table_ref(table)}")
         if name:
             record_prompt_section(f"table_desc:{name}")  # provenance (SYL-1.1)
         if desc:
