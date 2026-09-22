@@ -405,6 +405,16 @@ def _build_static_system(knowledge_base: dict[str, Any]) -> str:
 def _table_ref(table: dict[str, Any]) -> str:
     """How a table should be NAMED to the model: ``schema.table``, or bare.
 
+    Table HEADERS only. The foreign-key block and the per-column ``FK->``
+    flags still read bare, and that is a known gap rather than an oversight:
+    `kb_generator` builds `foreign_keys` from `col.references`, which the
+    connectors report unqualified, so there is nothing here to qualify them
+    WITH. A model mirroring one of those lines into a join therefore loses the
+    schema, and on two same-named tables in different schemas the block is
+    ambiguous. Closing it means resolving reference targets back to their
+    tables at generation time, which is a change to the knowledge base rather
+    than to this renderer.
+
     The knowledge base used to record only the bare name, so a prompt could not
     tell the model where a table lived and generated SQL referred to something
     the server could not resolve -- invisible on a connection whose default

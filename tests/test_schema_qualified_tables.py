@@ -8,9 +8,14 @@ where a table lived. On a connection whose default schema already held
 everything that was invisible; anywhere else the model produced SQL referring
 to a table the server could not resolve.
 
-Both renderers are covered on purpose. ``compact`` is the default and
-``verbose`` is what an older deployment gets, and a fix applied to one of them
-is a fix that half the installations do not have.
+All THREE renderers are covered on purpose, and the count is the point. Two
+live in ``prompt_assembly`` -- ``compact`` is the default and ``verbose`` is
+what an older deployment gets -- and the third is
+``sql_generation._format_schema_for_prompt``, which its own comment calls "the
+one most easily missed". It is not a side path: it feeds ``generate_sql`` and
+the repair step, which runs exactly when the first attempt was wrong. The first
+version of this change covered two of the three and said so in its
+description.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from nlqueries.orchestrator.prompt_assembly import (
     _render_m_schema,
     _table_ref,
 )
+from nlqueries.orchestrator.sql_generation import _format_schema_for_prompt
 
 
 def _kb(table: dict[str, Any]) -> dict[str, Any]:
@@ -81,3 +87,22 @@ def test_a_kb_without_schemas_renders_exactly_as_before() -> None:
     for rendered in (_compact(_kb(table)), _build_full_schema_section(_kb(table))):
         assert "orders" in rendered
         assert ".orders" not in rendered, rendered
+
+
+def test_the_sql_generation_renderer_qualifies_too() -> None:
+    """The third renderer, and the one a reader is least likely to look for.
+
+    `_format_schema_for_prompt` feeds `_build_sql_system_prompt`, which serves
+    both `generate_sql` and `validate_and_repair`. Leaving it bare meant the
+    main generation path still asked for SQL against `orders` while the other
+    two renderers said `sales.orders`.
+    """
+    rendered = _format_schema_for_prompt(_kb({"name": "orders", "schema": "sales", "columns": []}))
+    assert "Table: sales.orders" in rendered, rendered
+
+
+def test_the_sql_generation_renderer_falls_back_too() -> None:
+    table = {"name": "orders", "columns": [{"name": "id", "type": "BIGINT"}]}
+    rendered = _format_schema_for_prompt(_kb(table))
+    assert "Table: orders" in rendered
+    assert ".orders" not in rendered, rendered
