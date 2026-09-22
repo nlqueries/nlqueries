@@ -420,15 +420,10 @@ def _table_ref(table: dict[str, Any]) -> str:
     the server could not resolve -- invisible on a connection whose default
     schema already held everything, and a hard failure anywhere else.
 
-    Bare when the KB has no schema for the table. That covers a knowledge base
-    written before this field existed, and a hand-edited entry -- NOT, as an
-    earlier version of this claimed, connectors that report no schema. None do:
-    `TableSpec.schema` is a required `str`, `sqlite.py` sets `"main"`,
-    `duckdb.py` takes it from the catalog, and `sqlalchemy_connector.py` uses
-    `inspector.default_schema_name`, which is populated for the engines it
-    serves. A regenerated SQLite base therefore renders `main.orders`, which is
-    harmless because `main` resolves -- but it is the opposite of what that
-    comment led a reader to expect.
+    Every connector reports a schema -- `TableSpec.schema` is a required `str`
+    -- so the bare fallback is for knowledge bases written before this field
+    existed and for hand-edited entries, not for any connector. A regenerated
+    SQLite base renders `main.orders`, which resolves.
     """
     name = str(table.get("name", ""))
     schema = str(table.get("schema") or "").strip()
@@ -604,10 +599,21 @@ def _format_dynamic_context(
         #
         # A hit naming a table the KB does not hold keeps its bare name:
         # better a name the model can still match than one invented here.
-        by_name = {
-            str(t.get("name", "")): t for t in knowledge_base.get("schema", {}).get("tables", [])
-        }
-        qualified = [_table_ref(by_name[n]) if n in by_name else n for n in hit_names]
+        # Qualified only when the bare name maps to exactly ONE table.
+        #
+        # A knowledge base holding both `public.orders` and `sales.orders` is
+        # the ordinary multi-schema case, and the Qdrant payload carries no
+        # schema -- so there is nothing here to say which was meant. Naming one
+        # would point the model at a definite schema that may be the wrong one,
+        # and a query against the wrong table returns a plausible answer rather
+        # than an error. The bare name leaves the schema block to disambiguate,
+        # which is what it did before this.
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for t in knowledge_base.get("schema", {}).get("tables", []):
+            by_name.setdefault(str(t.get("name", "")), []).append(t)
+        qualified = [
+            _table_ref(by_name[n][0]) if len(by_name.get(n, ())) == 1 else n for n in hit_names
+        ]
         parts.append("## Most relevant tables for this question\n" + ", ".join(qualified))
 
     if verified_hits or capsule_hits:

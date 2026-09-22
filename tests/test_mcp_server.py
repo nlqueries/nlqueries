@@ -306,6 +306,33 @@ class TestGetAgentSchema:
         assert "ghost" in out
         assert "not found" in out.lower()
 
+    def test_a_table_is_named_with_its_schema(self, tmp_path: Path) -> None:
+        """The fourth rendering of this list, and the one an MCP client's model
+        is shown.
+
+        It composes no SQL itself, but these are the names that model uses when
+        it asks for some -- so a bare name here undoes, for that client, the
+        qualification the three prompt renderers do.
+        """
+        from nlqueries.mcp_server.server import get_agent_schema
+
+        self._write_kb(
+            tmp_path,
+            """
+            schema:
+              tables:
+                - name: orders
+                  schema: sales
+                  columns:
+                    - name: order_id
+                      type: BIGINT
+            """,
+        )
+        with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
+            out = get_agent_schema("sales")
+
+        assert "sales.orders" in out, out
+
     def test_table_names_present(self, tmp_path: Path) -> None:
         from nlqueries.mcp_server.server import get_agent_schema
 

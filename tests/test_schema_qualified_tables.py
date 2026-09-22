@@ -49,11 +49,8 @@ def test_a_table_without_a_schema_keeps_its_bare_name() -> None:
     """For knowledge bases written before the field existed, and hand-edited
     entries.
 
-    NOT for connectors that report no schema, which this docstring first
-    claimed: none do. `TableSpec.schema` is a required `str`, `sqlite.py` sets
-    "main", `duckdb.py` reads the catalog, and `sqlalchemy_connector.py` uses
-    `inspector.default_schema_name`. A regenerated SQLite base renders
-    `main.orders`, which resolves.
+    Not for connectors: every one reports a schema, since `TableSpec.schema` is
+    a required `str`.
     """
     assert _table_ref({"name": "orders"}) == "orders"
     assert _table_ref({"name": "orders", "schema": ""}) == "orders"
@@ -134,3 +131,30 @@ def test_a_hit_the_kb_does_not_hold_keeps_its_bare_name() -> None:
     kb = _kb({"name": "orders", "schema": "sales", "columns": []})
     out = _format_dynamic_context(kb, 5, ["legacy_audit"], [], [])
     assert "legacy_audit" in out
+
+
+def test_a_duplicated_table_name_stays_bare_in_the_hint_list() -> None:
+    """The regression qualifying the hint list introduced.
+
+    A knowledge base holding both `public.orders` and `sales.orders` is the
+    ordinary multi-schema case, and the Qdrant payload carries no schema -- so
+    nothing here can say which was meant. Naming one would point the model at a
+    definite schema that may be the wrong one, and a query against the wrong
+    table returns a plausible answer rather than an error. Bare leaves the
+    schema block to disambiguate, which is what it did before.
+    """
+    from nlqueries.orchestrator.prompt_assembly import _format_dynamic_context
+
+    kb = {
+        "db_name": "sales",
+        "schema": {
+            "tables": [
+                {"name": "orders", "schema": "public", "columns": []},
+                {"name": "orders", "schema": "sales", "columns": []},
+            ]
+        },
+    }
+    out = _format_dynamic_context(kb, 5, ["orders"], [], [])
+    assert "public.orders" not in out, out
+    assert "sales.orders" not in out, out
+    assert "orders" in out
