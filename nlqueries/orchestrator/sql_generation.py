@@ -52,8 +52,10 @@ class SQLGenerationResult:
         validation_error: Human-readable error message, or ``None`` when
                           valid.
         dialect:          The SQL dialect used for generation and validation.
-        attempt_count:    ``1`` when the first attempt succeeded; ``2`` after
-                          a retry.
+        attempt_count:    ``1`` when the first attempt succeeded, plus one for
+                          each correction: a repair after validation failed,
+                          and a repair after the database rejected the
+                          statement. So at most ``3``.
     """
 
     sql: str
@@ -177,6 +179,52 @@ async def validate_and_repair(
         attempt_count=2,
     )
     return await _apply_explain_gate(result, connector, explain_check, dialect)
+
+
+async def repair_after_execution_error(
+    sql: str,
+    db_error: str,
+    knowledge_base: dict[str, Any],
+    dialect: str,
+    llm: LLMClient,
+    system: str | list[dict[str, Any]],
+    attempt_count: int,
+) -> SQLGenerationResult:
+    """Ask the model once to correct *sql*, which the database rejected.
+
+    Validation above is static: it parses the statement with sqlglot and checks
+    the tables against the knowledge base, so a statement the generic grammar
+    accepts and the engine does not reaches the database. ``... ORDER BY x
+    LIMIT 1 UNION ALL SELECT ...`` is one: sqlglot parses it, Snowflake rejects
+    it with a compilation error that names the fault exactly. That message is
+    the most specific correction the model can be given.
+
+    The corrected statement is validated exactly as a first attempt is --
+    policy, then schema -- because it is model output bound for someone else's
+    database, and the fact that it follows an error earns it nothing. Only a
+    valid result may be executed; the caller checks ``is_valid``.
+
+    *system* is the same prompt the statement was generated with, so the
+    prompt-cache prefix is reused. One call, never self-consistency: this runs
+    after a failure the user is already waiting on.
+    """
+    correction_user = (
+        "The database rejected your SQL when it ran it.\n\n"
+        f"Database error: {db_error}\n"
+        f"SQL that failed:\n{sql}\n\n"
+        f"Please generate a corrected {dialect} SELECT statement that answers the "
+        "same question. Wrap the SQL in <sql>...</sql> markers."
+    )
+    raw = await llm.acomplete(system, correction_user, max_tokens=output_budget("correction"))
+    repaired_sql = _extract_sql(raw)
+    error = _validate_sql(repaired_sql, knowledge_base, dialect)
+    return SQLGenerationResult(
+        sql=repaired_sql,
+        is_valid=error is None,
+        validation_error=error,
+        dialect=dialect,
+        attempt_count=attempt_count + 1,
+    )
 
 
 # ---------------------------------------------------------------------------

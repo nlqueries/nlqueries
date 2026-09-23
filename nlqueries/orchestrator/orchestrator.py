@@ -23,6 +23,7 @@ import asyncio
 import datetime
 import decimal
 import json
+import logging
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -38,8 +39,14 @@ if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's 
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
-from nlqueries.orchestrator.sql_generation import _extract_sql, validate_and_repair
+from nlqueries.orchestrator.sql_generation import (
+    _extract_sql,
+    repair_after_execution_error,
+    validate_and_repair,
+)
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
+
+_log = logging.getLogger(__name__)
 
 # Module-level KB cache: path -> (mtime, parsed_dict).
 # Invalidated automatically when the file's mtime changes (e.g. after export-kb).
@@ -98,6 +105,36 @@ def sql_table_chunk(qr: QueryResult, *, cap: bool = True) -> dict[str, Any]:
     }
 
 
+#: A failed attempt that used at least this share of the statement timeout is
+#: treated as having run out of time, and is not corrected and re-run.
+_TIMED_OUT_SHARE = 0.9
+
+
+def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
+    """Whether a failed execution should be handed back to the model once.
+
+    Only an error the connector reported in the result: the statement reached
+    the database and the database refused it. An exception raised instead --
+    the connector could not be opened, the request may not execute, or
+    enterprise's row filter could not rewrite the statement -- is not the
+    model's to fix, and asking it to rewrite a statement until a filter accepts
+    it is the opposite of what the filter is for.
+
+    Not a timeout. Connectors report one as an ordinary error string, in a
+    wording that differs per driver, so it is recognised by what it cost
+    instead: an attempt that used most of the timeout would, re-run, make the
+    user wait the whole timeout again for a statement the model may have
+    changed only to be faster. The budget mirrors the connectors' own default,
+    ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout.
+    """
+    if not qr.error:
+        return False
+    budget = config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+    if timeout_seconds is not None:
+        budget = timeout_seconds
+    return not (budget > 0 and qr.execution_time_ms >= budget * 1000 * _TIMED_OUT_SHARE)
+
+
 def _json_default(obj: Any) -> Any:
     """Coerce DB-driver types that json.dumps can't handle."""
     if isinstance(obj, decimal.Decimal):
@@ -119,7 +156,10 @@ class Orchestrator:
     3. Makes **one** ``astream()`` call.  Reasoning tokens are yielded
        immediately; SQL content (inside ``<sql>…</sql>``) is collected silently
        and then validated / repaired.
-    4. Yields a structured JSON final chunk with the validated SQL.
+    4. Executes it when the request's policy permits. If the database rejects
+       it, one ``acomplete()`` call corrects it from the database's error, and
+       the correction runs if it passes the same validation.
+    5. Yields a structured JSON final chunk with the SQL that ran last.
     """
 
     async def handle_question(
@@ -294,6 +334,42 @@ class Orchestrator:
                         qr = await asyncio.to_thread(
                             connector.execute_query, result.sql, timeout_seconds
                         )
+                        # One correction when the database refuses the
+                        # statement, on the same connector so the same row
+                        # filters apply. The frame below reports whichever
+                        # statement ran last with that statement's own result,
+                        # so the SQL shown is always the SQL behind the rows or
+                        # the error beside it.
+                        if _retry_after_error(qr, timeout_seconds):
+                            span.set_attribute("execution_retry", True)
+                            corrected = None
+                            try:
+                                corrected = await repair_after_execution_error(
+                                    result.sql,
+                                    qr.error or "",
+                                    kb,
+                                    dialect,
+                                    llm,
+                                    system,
+                                    result.attempt_count,
+                                )
+                            except Exception:  # noqa: BLE001
+                                # The database's error is the answer the user
+                                # needs; a failed repair call must not replace it.
+                                _log.warning(
+                                    "Correcting SQL after a database error failed; "
+                                    "reporting the original error.",
+                                    exc_info=True,
+                                )
+                            if (
+                                corrected is not None
+                                and corrected.is_valid
+                                and corrected.sql.strip() != result.sql.strip()
+                            ):
+                                result = corrected
+                                qr = await asyncio.to_thread(
+                                    connector.execute_query, result.sql, timeout_seconds
+                                )
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
