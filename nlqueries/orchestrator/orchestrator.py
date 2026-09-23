@@ -347,6 +347,7 @@ class Orchestrator:
                                 corrected = await repair_after_execution_error(
                                     result.sql,
                                     qr.error or "",
+                                    prompt.user_content(),
                                     kb,
                                     dialect,
                                     llm,

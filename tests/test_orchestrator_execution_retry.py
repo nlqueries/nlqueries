@@ -172,6 +172,35 @@ def test_the_model_is_given_the_database_error_and_the_failed_statement() -> Non
     assert system == llm.stream_systems[0]
 
 
+def test_the_model_is_given_the_question() -> None:
+    """The system prompt holds the schema, not the question -- that travels in
+    the user turn. Without it, an "invalid identifier" correction picks a
+    column with nothing tying it to what was asked."""
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    _run(llm, [_failed(), _ok([[7]])])
+
+    system, user = llm.complete_calls[0]
+    assert "top and bottom order" in user
+    assert "top and bottom order" not in json.dumps(system), (
+        "premise: the question is not already in the system prompt"
+    )
+
+
+def test_a_long_database_error_is_cut_off() -> None:
+    """Driver text can quote database values; only a bounded amount reaches
+    the prompt."""
+    from nlqueries.orchestrator.sql_generation import _DB_ERROR_MAX_CHARS
+
+    marker = "TAIL-THAT-MUST-NOT-ARRIVE"
+    long_error = "x" * (_DB_ERROR_MAX_CHARS + 50) + marker
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    _run(llm, [_failed(long_error), _ok([[7]])])
+
+    _, user = llm.complete_calls[0]
+    assert marker not in user
+    assert "x" * _DB_ERROR_MAX_CHARS + " [truncated]" in user
+
+
 def test_one_correction_only_and_the_frame_reports_what_ran_last() -> None:
     """A correction that also fails is reported as itself: its SQL, its error."""
     second_error = "SQL compilation error: invalid identifier 'TOTAL_SPEND'"
