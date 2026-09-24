@@ -65,8 +65,9 @@ class _LLM:
 
     supports_prompt_caching = False
 
-    def __init__(self, reply: str | Exception = "") -> None:
+    def __init__(self, reply: str | Exception = "", delay: float = 0.0) -> None:
         self._reply = reply
+        self._delay = delay
         self.stream_systems: list[Any] = []
         self.complete_calls: list[tuple[Any, str]] = []
 
@@ -77,6 +78,8 @@ class _LLM:
 
     async def acomplete(self, system: Any, user: str, **_kw: Any) -> str:
         self.complete_calls.append((system, user))
+        if self._delay:
+            await asyncio.sleep(self._delay)
         if isinstance(self._reply, Exception):
             raise self._reply
         return self._reply
@@ -499,3 +502,35 @@ def test_a_turn_deadline_with_room_left_still_corrects() -> None:
 
     assert connector.execute_query.call_count == 2
     assert frame["sql"] == CORRECTED_SQL
+
+
+def test_the_corrected_statement_gets_only_the_time_left() -> None:
+    """End to end: the second execution is handed the clamped timeout, not the
+    caller's full statement timeout."""
+    import time
+
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    _, connector = _run(
+        llm, [_failed(), _ok([[7]])], timeout_seconds=27.0, deadline=time.monotonic() + 10.0
+    )
+
+    first, second = connector.execute_query.call_args_list
+    assert first.args[1] == 27.0
+    assert 9.0 < second.args[1] <= 10.0, second.args
+
+
+def test_a_correction_with_no_time_left_to_run_keeps_the_original() -> None:
+    """The gate let the correction start; the repair call then used all but
+    half a second of what was left. The frame reports the statement that ran
+    and its error. Real time, because the event loop shares the clock."""
+    import time
+
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>", delay=2.5)
+    frame, connector = _run(
+        llm, [_failed(), _ok([[7]])], timeout_seconds=27.0, deadline=time.monotonic() + 3.0
+    )
+
+    assert len(llm.complete_calls) == 1, "premise: the correction was allowed to start"
+    assert connector.execute_query.call_count == 1
+    assert frame["sql"] == FIRST_SQL
+    assert frame["sql_table"]["error"] == DB_ERROR

@@ -157,3 +157,45 @@ def test_the_hybrid_route_forwards_the_deadline() -> None:
     ):
         asyncio.run(_run_hybrid("q", "agent1", "postgres", deadline=1234.5))
     assert sql_sink["deadline"] == 1234.5
+
+
+# ---------------------------------------------------------------------------
+# The corrected statement is bounded by the deadline too
+# ---------------------------------------------------------------------------
+
+
+def test_without_a_deadline_the_statement_timeout_is_unchanged() -> None:
+    from nlqueries.orchestrator.orchestrator import _correction_budget
+
+    assert _correction_budget(27.0, None) == (True, 27.0)
+    assert _correction_budget(None, None) == (True, None)
+
+
+def test_the_correction_timeout_is_clamped_to_the_time_left() -> None:
+    """The failed attempt's time is almost all generation, so it says nothing
+    about how long the corrected statement will run; given the full statement
+    timeout it could outlast the caller's clock."""
+    from nlqueries.orchestrator.orchestrator import _correction_budget
+
+    runnable, timeout = _correction_budget(27.0, time.monotonic() + 11.0)
+    assert runnable is True
+    assert timeout is not None and 10.0 < timeout <= 11.0
+
+    # A statement timeout shorter than what is left still wins.
+    assert _correction_budget(5.0, time.monotonic() + 60.0) == (True, 5.0)
+
+
+def test_no_statement_timeout_leaves_the_deadline_as_the_bound() -> None:
+    """Zero is the connectors' "no timeout"; the deadline must still apply."""
+    from nlqueries.orchestrator.orchestrator import _correction_budget
+
+    runnable, timeout = _correction_budget(0.0, time.monotonic() + 8.0)
+    assert runnable is True
+    assert timeout is not None and 7.0 < timeout <= 8.0
+
+
+def test_under_a_second_left_the_correction_is_not_run() -> None:
+    from nlqueries.orchestrator.orchestrator import _correction_budget
+
+    assert _correction_budget(27.0, time.monotonic() + 0.5) == (False, None)
+    assert _correction_budget(27.0, time.monotonic() - 1.0) == (False, None)

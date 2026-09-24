@@ -206,6 +206,40 @@ def _retry_after_error(
     return qr.execution_time_ms < _NO_TIMEOUT_CEILING_SECONDS * 1000
 
 
+#: Below this much time before the caller's deadline a correction is not run.
+#: Connectors take the statement timeout in whole seconds (Snowflake passes
+#: ``max(1, int(t))``), so a shorter remainder cannot be enforced as one.
+_MIN_CORRECTION_SECONDS = 1.0
+
+
+def _correction_budget(
+    timeout_seconds: float | None, deadline: float | None
+) -> tuple[bool, float | None]:
+    """Whether to run a correction, and the statement timeout to run it with.
+
+    `_retry_after_error` decides whether a correction may *start*, from the
+    time the failed attempt took. That time is almost all generation -- a
+    statement the engine refuses at compile time costs milliseconds -- so it
+    says nothing about how long the corrected statement, which does execute,
+    will run. Given the full ``timeout_seconds`` it could outlast the caller's
+    deadline and run on with no one waiting, which is what the deadline is
+    for. So the correction's timeout is clamped to the time left, and when
+    less than `_MIN_CORRECTION_SECONDS` is left it is not run at all.
+
+    Without a deadline, ``timeout_seconds`` is returned unchanged.
+    """
+    if deadline is None:
+        return True, timeout_seconds
+    remaining = deadline - time.monotonic()
+    if remaining < _MIN_CORRECTION_SECONDS:
+        return False, None
+    budget = config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+    if timeout_seconds is not None:
+        budget = timeout_seconds
+    # Zero or less is the connectors' "no timeout": the deadline is the only bound.
+    return True, remaining if budget <= 0 else min(budget, remaining)
+
+
 def _json_default(obj: Any) -> Any:
     """Coerce DB-driver types that json.dumps can't handle."""
     if isinstance(obj, decimal.Decimal):
@@ -457,27 +491,38 @@ class Orchestrator:
                                 corrected is not None
                                 and corrected.sql.strip() != result.sql.strip()
                             ):
-                                try:
-                                    retried = await asyncio.to_thread(
-                                        connector.execute_query,
-                                        corrected.sql,
-                                        timeout_seconds,
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    # The correction never ran -- enterprise's
-                                    # row filter refusing to rewrite it, say --
-                                    # so the frame keeps the statement that did
-                                    # run and the error the user can act on.
-                                    _log.warning(
-                                        "A correction after a database error could "
-                                        "not be run; reporting the original error.",
-                                        exc_info=True,
+                                runnable, correction_timeout = _correction_budget(
+                                    timeout_seconds, deadline
+                                )
+                                if not runnable:
+                                    # The repair call used what was left.
+                                    _log.info(
+                                        "A correction after a database error was not "
+                                        "run: the caller's deadline has too little "
+                                        "time left."
                                     )
                                 else:
-                                    result, qr = corrected, retried
-                                    # Set before execution above; re-set so the
-                                    # span agrees with the frame.
-                                    span.set_attribute("attempt_count", result.attempt_count)
+                                    try:
+                                        retried = await asyncio.to_thread(
+                                            connector.execute_query,
+                                            corrected.sql,
+                                            correction_timeout,
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        # The correction never ran -- enterprise's
+                                        # row filter refusing to rewrite it, say --
+                                        # so the frame keeps the statement that did
+                                        # run and the error the user can act on.
+                                        _log.warning(
+                                            "A correction after a database error could "
+                                            "not be run; reporting the original error.",
+                                            exc_info=True,
+                                        )
+                                    else:
+                                        result, qr = corrected, retried
+                                        # Set before execution above; re-set so
+                                        # the span agrees with the frame.
+                                        span.set_attribute("attempt_count", result.attempt_count)
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
