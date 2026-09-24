@@ -123,6 +123,33 @@ _NOT_PERMITTED = re.compile(
     re.IGNORECASE,
 )
 
+#: With no statement timeout, elapsed time cannot be measured against one, so
+#: this absolute ceiling stands in. A statement the engine refuses at compile
+#: or bind time comes back in seconds; an attempt that has already cost a
+#: minute is something else -- Snowflake, with no timeout, waits 300s for its
+#: session lock and then reports "busy ... the query was not run" as an
+#: ordinary error -- and is not re-run.
+_NO_TIMEOUT_CEILING_SECONDS = 60.0
+
+#: Statement text that drivers echo into their errors, which is not part of the
+#: driver's own message: SQLAlchemy appends `[SQL: ...]` and `[parameters: ...]`
+#: after a newline, and Postgres quotes the offending line as `LINE n: ...`
+#: with a caret line under it.
+_SQLALCHEMY_ECHO = "\n[SQL:"
+_ECHOED_LINE = re.compile(r"^(?:LINE \d+:.*|\s*\^\s*)$")
+
+
+def _driver_message(error: str) -> str:
+    """*error* without the statement text a driver echoed into it.
+
+    What the refusal pattern reads. Matching the whole string classified an
+    ordinary error as a refusal whenever the failed statement itself mentioned
+    one -- a table called `access_denied_events`, a `'permission denied'`
+    literal -- and such an error was then never corrected.
+    """
+    message = error.split(_SQLALCHEMY_ECHO, 1)[0]
+    return "\n".join(ln for ln in message.splitlines() if not _ECHOED_LINE.match(ln))
+
 
 def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
     """Whether a failed execution should be handed back to the model once.
@@ -146,14 +173,17 @@ def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
     instead: an attempt that used most of the timeout would, re-run, make the
     user wait the whole timeout again for a statement the model may have
     changed only to be faster. The budget mirrors the connectors' own default,
-    ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout.
+    ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout; with
+    no timeout, `_NO_TIMEOUT_CEILING_SECONDS` stands in for it.
     """
-    if not qr.error or _NOT_PERMITTED.search(qr.error):
+    if not qr.error or _NOT_PERMITTED.search(_driver_message(qr.error)):
         return False
     budget = config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
     if timeout_seconds is not None:
         budget = timeout_seconds
-    return not (budget > 0 and qr.execution_time_ms >= budget * 1000 * _TIMED_OUT_SHARE)
+    if budget > 0:
+        return qr.execution_time_ms < budget * 1000 * _TIMED_OUT_SHARE
+    return qr.execution_time_ms < _NO_TIMEOUT_CEILING_SECONDS * 1000
 
 
 def _json_default(obj: Any) -> Any:
@@ -398,13 +428,27 @@ class Orchestrator:
                                 corrected is not None
                                 and corrected.sql.strip() != result.sql.strip()
                             ):
-                                result = corrected
-                                # Set before execution above; re-set so the
-                                # span agrees with the frame.
-                                span.set_attribute("attempt_count", result.attempt_count)
-                                qr = await asyncio.to_thread(
-                                    connector.execute_query, result.sql, timeout_seconds
-                                )
+                                try:
+                                    retried = await asyncio.to_thread(
+                                        connector.execute_query,
+                                        corrected.sql,
+                                        timeout_seconds,
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    # The correction never ran -- enterprise's
+                                    # row filter refusing to rewrite it, say --
+                                    # so the frame keeps the statement that did
+                                    # run and the error the user can act on.
+                                    _log.warning(
+                                        "A correction after a database error could "
+                                        "not be run; reporting the original error.",
+                                        exc_info=True,
+                                    )
+                                else:
+                                    result, qr = corrected, retried
+                                    # Set before execution above; re-set so the
+                                    # span agrees with the frame.
+                                    span.set_attribute("attempt_count", result.attempt_count)
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001

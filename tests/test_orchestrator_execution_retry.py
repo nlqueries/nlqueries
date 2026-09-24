@@ -319,9 +319,31 @@ def test_the_share_boundary() -> None:
     assert _retry_after_error(_failed(ms=9_000.0), 10.0) is False
 
 
-def test_no_timeout_means_any_failure_is_worth_a_correction() -> None:
-    """Zero is the connectors' "no timeout", so elapsed time proves nothing."""
-    assert _retry_after_error(_failed(ms=10_000_000.0), 0) is True
+def test_with_no_timeout_an_absolute_ceiling_applies() -> None:
+    """Zero is the connectors' "no timeout", so there is nothing to measure a
+    share of; a fixed ceiling stands in rather than the guard switching off."""
+    from nlqueries.orchestrator.orchestrator import _NO_TIMEOUT_CEILING_SECONDS
+
+    ceiling_ms = _NO_TIMEOUT_CEILING_SECONDS * 1000
+    assert _retry_after_error(_failed(ms=ceiling_ms - 1), 0) is True
+    assert _retry_after_error(_failed(ms=ceiling_ms), 0) is False
+
+
+def test_a_wedged_snowflake_session_is_not_run_again() -> None:
+    """With no timeout, Snowflake waits 300s for its session lock and reports
+    that as an ordinary error. The statement never reached the database, and a
+    re-run would wait behind the same session."""
+    busy = (
+        "The Snowflake connector was busy for 300s and the query was not run. "
+        "Queries on one connector run one at a time, because a Snowflake "
+        "transaction belongs to the session rather than the cursor."
+    )
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    frame, connector = _run(llm, [_failed(busy, ms=300_000.0)], default_timeout=0.0)
+
+    assert connector.execute_query.call_count == 1
+    assert llm.complete_calls == []
+    assert frame["sql_table"]["error"] == busy
 
 
 def test_a_result_without_an_error_is_never_retried() -> None:
@@ -338,6 +360,11 @@ REFUSALS = [
     "SQL access control error: Insufficient privileges to operate on table 'ORDERS'",
     "SQL compilation error: Object 'ORDERS' does not exist or not authorized.",
     "Access Denied: Table p:d.orders: User does not have permission to query table p:d.orders",
+    # Snowflake's real shape: the refusal is on the second line.
+    "002003 (42S02): SQL compilation error:\nObject 'ORDERS' does not exist or not authorized.",
+    # A refusal wrapped by SQLAlchemy is still a refusal.
+    "(psycopg2.errors.InsufficientPrivilege) permission denied for table orders\n\n"
+    "[SQL: SELECT id FROM orders]\n(Background on this error at: https://sqlalche.me/e/20/f405)",
 ]
 
 
@@ -362,6 +389,48 @@ def test_a_column_error_is_still_corrected() -> None:
         DB_ERROR,
     ):
         assert _retry_after_error(_failed(error), 10.0) is True, error
+
+
+def test_refusal_words_in_the_echoed_statement_are_not_a_refusal() -> None:
+    """Drivers echo the failed statement into the error: SQLAlchemy appends
+    `[SQL: ...]`, Postgres quotes `LINE n: ...`. A statement that mentions
+    `access_denied_events` or `'permission denied'` must not turn every
+    ordinary error on it into a refusal that is never corrected."""
+    wrapped = (
+        '(psycopg2.errors.UndefinedColumn) column "totl" does not exist\n'
+        "LINE 1: SELECT totl FROM access_denied_events WHERE status = 'permiss...\n"
+        "               ^\n\n"
+        "[SQL: SELECT totl FROM access_denied_events WHERE status = 'permission denied']\n"
+        "(Background on this error at: https://sqlalche.me/e/20/f405)"
+    )
+    assert _retry_after_error(_failed(wrapped), 10.0) is True
+
+
+def test_the_driver_message_is_what_is_matched() -> None:
+    from nlqueries.orchestrator.orchestrator import _driver_message
+
+    wrapped = (
+        '(psycopg2.errors.UndefinedColumn) column "totl" does not exist\n'
+        "LINE 1: SELECT totl FROM access_denied_events\n"
+        "               ^\n\n"
+        "[SQL: SELECT totl FROM access_denied_events]"
+    )
+    message = _driver_message(wrapped)
+    assert 'column "totl" does not exist' in message
+    assert "access_denied_events" not in message
+
+
+def test_a_correction_that_cannot_be_run_keeps_the_original() -> None:
+    """If running the correction raises -- enterprise's row filter refusing to
+    rewrite it -- the frame must not name a statement that never ran beside an
+    error about something else."""
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    frame, connector = _run(llm, [_failed(), ValueError("row filter could not be applied")])
+
+    assert _executed(connector) == [FIRST_SQL, CORRECTED_SQL]
+    assert frame["sql"] == FIRST_SQL
+    assert frame["sql_table"]["error"] == DB_ERROR
+    assert frame["attempt_count"] == 1
 
 
 def test_the_prompt_forbids_routing_around_a_refusal() -> None:
