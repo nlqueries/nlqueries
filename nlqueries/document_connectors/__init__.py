@@ -22,14 +22,19 @@ from nlqueries.document_connectors.pdf import PdfConnector
 from nlqueries.document_connectors.text import MarkdownConnector, TextConnector
 from nlqueries.document_connectors.word import WordConnector
 
+#: Order matters: `doc-ingest` takes the FIRST entry whose `supports()` accepts
+#: the path, and Notion's and Confluence's accept anything -- their sources are
+#: page ids and space keys, not files. So every file connector comes before
+#: them. `test_text_connectors.py` drives the CLI on each file suffix to hold
+#: this, since a new file connector appended at the end would be unreachable.
 DOCUMENT_CONNECTOR_REGISTRY: dict[str, type[DocumentConnector]] = {
     "pdf": PdfConnector,
     "word": WordConnector,
     "excel": ExcelConnector,
-    "notion": NotionConnector,
-    "confluence": ConfluenceConnector,
     "markdown": MarkdownConnector,
     "text": TextConnector,
+    "notion": NotionConnector,
+    "confluence": ConfluenceConnector,
 }
 
 #: `_limits` is private -- the module name says so and it is free to be
