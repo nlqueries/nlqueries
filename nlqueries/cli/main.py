@@ -1379,6 +1379,13 @@ def doc_ingest(source_id: str, file_path: str) -> None:
     \b
     Supported formats (requires the [docs] extra):
       .pdf — PDF documents via pdfplumber
+      .docx — Word documents via python-docx
+      .xlsx — Excel workbooks via openpyxl
+
+    \b
+    Supported on a base install:
+      .md, .markdown — Markdown, sectioned at # and ## headings
+      .txt — plain text (UTF-8)
 
     \b
     Example:
