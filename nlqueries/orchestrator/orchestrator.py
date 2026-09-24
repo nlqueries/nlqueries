@@ -109,6 +109,20 @@ def sql_table_chunk(qr: QueryResult, *, cap: bool = True) -> dict[str, Any]:
 #: treated as having run out of time, and is not corrected and re-run.
 _TIMED_OUT_SHARE = 0.9
 
+#: Error text that means "this role may not read that", which no rewrite of
+#: the statement can legitimately fix. Best-effort: drivers word it
+#: differently and there is no portable code. Covers Postgres/Redshift
+#: ("permission denied for table orders"), SQL Server ("The SELECT permission
+#: was denied on the object"), Snowflake ("Insufficient privileges ...",
+#: "Object 'X' does not exist or not authorized") and BigQuery ("Access
+#: Denied: ... User does not have permission to query table"). A refusal that
+#: slips past this still meets the instruction in the correction prompt.
+_NOT_PERMITTED = re.compile(
+    r"permission\s+(?:was\s+)?denied|insufficient\s+privilege|not\s+authori[sz]ed"
+    r"|access\s+denied|does\s+not\s+have\s+(?:the\s+)?permission",
+    re.IGNORECASE,
+)
+
 
 def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
     """Whether a failed execution should be handed back to the model once.
@@ -120,6 +134,13 @@ def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
     model's to fix, and asking it to rewrite a statement until a filter accepts
     it is the opposite of what the filter is for.
 
+    Not a refusal either, though it does arrive in the result: psycopg2
+    reports "permission denied for table orders" as a string, not an
+    exception. The knowledge base can list a table or column the query role
+    was never granted, so a statement can pass every check here and still be
+    refused. The only "correction" then is a different table or column, which
+    answers a different question and would be reported as the answer.
+
     Not a timeout. Connectors report one as an ordinary error string, in a
     wording that differs per driver, so it is recognised by what it cost
     instead: an attempt that used most of the timeout would, re-run, make the
@@ -127,7 +148,7 @@ def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
     changed only to be faster. The budget mirrors the connectors' own default,
     ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout.
     """
-    if not qr.error:
+    if not qr.error or _NOT_PERMITTED.search(qr.error):
         return False
     budget = config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
     if timeout_seconds is not None:
@@ -362,12 +383,25 @@ class Orchestrator:
                                     "reporting the original error.",
                                     exc_info=True,
                                 )
-                            if (
+                            if corrected is not None and not corrected.is_valid:
+                                # Discarded, and counted: how often this path
+                                # proposes statements the policy or schema
+                                # refuses is worth being able to see.
+                                _log.info(
+                                    "A correction after a database error was refused "
+                                    "by validation and not run: %s",
+                                    corrected.validation_error,
+                                )
+                                if corrected.validation_error:
+                                    record_validator_warning(corrected.validation_error)
+                            elif (
                                 corrected is not None
-                                and corrected.is_valid
                                 and corrected.sql.strip() != result.sql.strip()
                             ):
                                 result = corrected
+                                # Set before execution above; re-set so the
+                                # span agrees with the frame.
+                                span.set_attribute("attempt_count", result.attempt_count)
                                 qr = await asyncio.to_thread(
                                     connector.execute_query, result.sql, timeout_seconds
                                 )

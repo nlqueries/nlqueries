@@ -92,6 +92,11 @@ def _failed(error: str = DB_ERROR, ms: float = 5.0) -> QueryResult:
     return QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=ms, error=error)
 
 
+#: What the last `_run` recorded outside the frame: the tracing span and the
+#: provenance hook, for the tests that check observability.
+_OBSERVED: dict[str, MagicMock] = {}
+
+
 def _run(
     llm: _LLM,
     results: list[QueryResult | Exception],
@@ -119,7 +124,13 @@ def _run(
             patch("nlqueries.connectors.loader.open_connector_for_agent", return_value=connector),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+            patch("nlqueries.orchestrator.orchestrator.get_tracer") as tracer,
+            patch("nlqueries.orchestrator.orchestrator.record_validator_warning") as warned,
         ):
+            _OBSERVED["span"] = (
+                tracer.return_value.start_as_current_span.return_value.__enter__.return_value
+            )
+            _OBSERVED["warned"] = warned
             cfg.KB_PATH = kb_path
             cfg.CONNECTOR_STATEMENT_TIMEOUT_SECONDS = default_timeout
 
@@ -315,3 +326,76 @@ def test_no_timeout_means_any_failure_is_worth_a_correction() -> None:
 
 def test_a_result_without_an_error_is_never_retried() -> None:
     assert _retry_after_error(_ok([[1]]), 10.0) is False
+
+
+# ---------------------------------------------------------------------------
+# A refusal is not a defect in the SQL
+# ---------------------------------------------------------------------------
+
+REFUSALS = [
+    "permission denied for table orders",
+    "The SELECT permission was denied on the object 'orders', database 'db', schema 'dbo'.",
+    "SQL access control error: Insufficient privileges to operate on table 'ORDERS'",
+    "SQL compilation error: Object 'ORDERS' does not exist or not authorized.",
+    "Access Denied: Table p:d.orders: User does not have permission to query table p:d.orders",
+]
+
+
+def test_a_permission_refusal_is_not_corrected() -> None:
+    """The knowledge base can list what the query role was never granted, so a
+    statement passes every check and is still refused. The only "fix" is a
+    different table or column -- an answer to a different question."""
+    for refusal in REFUSALS:
+        llm = _LLM("<sql>SELECT id FROM orders</sql>")
+        frame, connector = _run(llm, [_failed(refusal)])
+        assert connector.execute_query.call_count == 1, refusal
+        assert llm.complete_calls == [], refusal
+        assert frame["sql_table"]["error"] == refusal
+
+
+def test_a_column_error_is_still_corrected() -> None:
+    """Negative control for the refusal pattern: an ordinary defect must not
+    match it, or the retry would never fire on the errors it exists for."""
+    for error in (
+        "SQL compilation error: invalid identifier 'TOTAL_SPEND'",
+        'column "total_spend" does not exist',
+        DB_ERROR,
+    ):
+        assert _retry_after_error(_failed(error), 10.0) is True, error
+
+
+def test_the_prompt_forbids_routing_around_a_refusal() -> None:
+    """The backstop for a driver whose refusal wording the pattern misses."""
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    _run(llm, [_failed(), _ok([[7]])])
+
+    _, user = llm.complete_calls[0]
+    assert "Do not replace a table or column with a different one" in user
+    assert "return the same statement unchanged" in user
+
+
+# ---------------------------------------------------------------------------
+# What an operator can see
+# ---------------------------------------------------------------------------
+
+
+def test_the_span_reports_the_attempt_that_ran() -> None:
+    """attempt_count is set on the span before execution; after a correction
+    runs it is re-set, so the span agrees with the frame."""
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    frame, _ = _run(llm, [_failed(), _ok([[7]])])
+
+    counts = [
+        c.args[1]
+        for c in _OBSERVED["span"].set_attribute.call_args_list
+        if c.args[0] == "attempt_count"
+    ]
+    assert counts[-1] == frame["attempt_count"] == 2
+
+
+def test_a_refused_correction_is_recorded() -> None:
+    llm = _LLM("<sql>DELETE FROM orders</sql>")
+    _run(llm, [_failed()])
+
+    warnings = [c.args[0] for c in _OBSERVED["warned"].call_args_list]
+    assert any("Refused by SQL policy" in w for w in warnings), warnings
