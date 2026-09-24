@@ -9,6 +9,7 @@ from nlqueries.document_connectors import (
     DOCUMENT_CONNECTOR_REGISTRY,
     MarkdownConnector,
     TextConnector,
+    _limits,
 )
 from nlqueries.document_connectors.text import markdown_sections
 
@@ -183,6 +184,37 @@ def test_doc_ingest_reaches_the_new_connectors(tmp_path: Path, name: str, connec
 # ---------------------------------------------------------------------------
 
 
+def test_front_matter_then_prose_is_skipped() -> None:
+    """The usual Obsidian/Hugo/Jekyll shape. The closing `---` sits directly
+    under `tags: [a]`, so read as Markdown it is a setext underline, and the
+    block became the heading of every chunk."""
+    text = "---\ntitle: Refunds\ntags: [a]\n---\nWithin 30 days.\n"
+    assert markdown_sections(text) == [("untitled", "Within 30 days.")]
+
+
+def test_front_matter_then_a_heading_is_skipped() -> None:
+    text = "---\ntitle: Refunds\n---\n# Refunds\nWithin 30 days.\n"
+    assert markdown_sections(text) == [("Refunds", "Within 30 days.")]
+
+
+def test_front_matter_may_close_with_dots() -> None:
+    text = "---\ntitle: x\n...\nBody.\n"
+    assert markdown_sections(text) == [("untitled", "Body.")]
+
+
+def test_a_dash_line_that_is_not_on_line_one_is_markdown() -> None:
+    """Only a block opening the file is front matter. Here the first `---`
+    is a thematic break, and the second underlines `key: value` alone -- the
+    break above ends that paragraph, it is not part of the heading."""
+    text = "Intro.\n\n---\nkey: value\n---\nBody.\n"
+    assert markdown_sections(text) == [("untitled", "Intro.\n\n---"), ("key: value", "Body.")]
+
+
+def test_unclosed_front_matter_is_left_alone() -> None:
+    text = "---\nNo closing fence here.\n"
+    assert markdown_sections(text) == [("untitled", "---\nNo closing fence here.")]
+
+
 def test_setext_underlines_are_headings() -> None:
     text = "Refunds\n=======\nWithin 30 days.\n\nExceptions\n----------\nSale items.\n"
     assert markdown_sections(text) == [
@@ -229,7 +261,7 @@ def test_a_file_over_the_document_limit_is_refused_before_it_is_read(
     from nlqueries.document_connectors import DocumentTooComplexError
     from nlqueries.document_connectors import text as text_module
 
-    monkeypatch.setattr(text_module, "MAX_EXPANDED_BYTES", 10)
+    monkeypatch.setattr(_limits, "MAX_EXPANDED_BYTES", 10)
     path = _write(tmp_path, "big.txt", "x" * 11)
 
     read = []
@@ -240,7 +272,6 @@ def test_a_file_over_the_document_limit_is_refused_before_it_is_read(
 
 
 def test_a_file_at_the_limit_is_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nlqueries.document_connectors import text as text_module
 
-    monkeypatch.setattr(text_module, "MAX_EXPANDED_BYTES", 10)
+    monkeypatch.setattr(_limits, "MAX_EXPANDED_BYTES", 10)
     assert len(TextConnector().ingest(_write(tmp_path, "ok.txt", "x" * 10), "doc")) == 1
