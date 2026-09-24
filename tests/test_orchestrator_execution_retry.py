@@ -128,6 +128,15 @@ def _run(
             patch("nlqueries.connectors.loader.open_connector_for_agent", return_value=connector),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+            # Prompt assembly embeds the question and runs a third search for
+            # verified examples. Live, the first loads a model on first use --
+            # seconds, a gigabyte -- and the second imports qdrant_client and
+            # contacts QDRANT_URL, which may be remote. The deadline tests below
+            # would count either as the attempt's own time, so both are stubbed:
+            # no test here depends on the machine, the network, or which test
+            # ran first.
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
+            patch("nlqueries.orchestrator.prompt_assembly._search_verified", return_value=[]),
             patch("nlqueries.orchestrator.orchestrator.get_tracer") as tracer,
             patch("nlqueries.orchestrator.orchestrator.record_validator_warning") as warned,
         ):
