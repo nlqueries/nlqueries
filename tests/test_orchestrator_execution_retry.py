@@ -128,6 +128,12 @@ def _run(
             patch("nlqueries.connectors.loader.open_connector_for_agent", return_value=connector),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+            # Prompt assembly embeds the question. With no embed daemon the
+            # first call in a process loads the model -- seconds, a gigabyte --
+            # which the deadline tests below would count as the attempt's own
+            # time. Stubbed so no test here depends on the machine or on which
+            # test ran first.
+            patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
             patch("nlqueries.orchestrator.orchestrator.get_tracer") as tracer,
             patch("nlqueries.orchestrator.orchestrator.record_validator_warning") as warned,
         ):
