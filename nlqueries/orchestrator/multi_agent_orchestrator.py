@@ -327,6 +327,7 @@ async def _run_hybrid(
     timeout_seconds: float | None = None,
     extra_dynamic_context: str | None = None,
     execution: ExecutionPolicy = DEFAULT_POLICY,
+    deadline: float | None = None,
 ) -> tuple[list[str], list[str], list[Citation] | None]:
     """Run SQL and Document agents concurrently via ``asyncio.gather``."""
     sql_orch = Orchestrator()
@@ -342,6 +343,7 @@ async def _run_hybrid(
             timeout_seconds=timeout_seconds,
             extra_dynamic_context=extra_dynamic_context,
             execution=execution,
+            deadline=deadline,
         ):
             tokens.append(token)
         return tokens
@@ -500,6 +502,7 @@ class MultiAgentOrchestrator:
         intent_override: str | None = None,
         cache_context: dict[str, str] | None = None,
         execution: ExecutionPolicy = DEFAULT_POLICY,
+        deadline: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -573,6 +576,10 @@ class MultiAgentOrchestrator:
                              is aborted server-side rather than left running
                              orphaned after the caller has given up. Not
                              applied to the LLM call itself.
+            deadline:        When the caller stops waiting for the whole turn
+                             (a ``time.monotonic()`` value). Forwarded to the
+                             SQL agent, where it gates the one correction after
+                             a database error. ``None`` leaves it ungated.
 
         Yields:
             String tokens from the agent response, then a final JSON chunk
@@ -702,6 +709,7 @@ class MultiAgentOrchestrator:
                 timeout_seconds=timeout_seconds,
                 extra_dynamic_context=extra_dynamic_context,
                 execution=execution,
+                deadline=deadline,
             ):
                 seen.append(token)
                 if _is_final_chunk(token):
@@ -749,6 +757,7 @@ class MultiAgentOrchestrator:
                 timeout_seconds,
                 extra_dynamic_context,
                 execution,
+                deadline=deadline,
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 

@@ -151,7 +151,13 @@ def _driver_message(error: str) -> str:
     return "\n".join(ln for ln in message.splitlines() if not _ECHOED_LINE.match(ln))
 
 
-def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
+def _retry_after_error(
+    qr: QueryResult,
+    timeout_seconds: float | None,
+    *,
+    started: float | None = None,
+    deadline: float | None = None,
+) -> bool:
     """Whether a failed execution should be handed back to the model once.
 
     Only an error the connector reported in the result: the statement reached
@@ -175,9 +181,23 @@ def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
     changed only to be faster. The budget mirrors the connectors' own default,
     ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout; with
     no timeout, `_NO_TIMEOUT_CEILING_SECONDS` stands in for it.
+
+    Not past the caller's turn budget. ``timeout_seconds`` bounds one
+    statement, not the turn: a caller that wraps the whole turn in its own
+    wall clock -- enterprise's synchronous ``POST /query`` does -- passes that
+    as *deadline* (a ``time.monotonic()`` value), and *started* is when this
+    attempt began. A correction is one model call and one execution, the same
+    shape as the attempt that just failed, so it is started only when at least
+    that much time remains. Otherwise the caller's clock expires mid-correction:
+    the database's error, which it could have returned, becomes a bare timeout,
+    and the corrected statement is left running with no one waiting for it.
     """
     if not qr.error or _NOT_PERMITTED.search(_driver_message(qr.error)):
         return False
+    if deadline is not None and started is not None:
+        now = time.monotonic()
+        if deadline - now < now - started:
+            return False
     budget = config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
     if timeout_seconds is not None:
         budget = timeout_seconds
@@ -223,6 +243,7 @@ class Orchestrator:
         timeout_seconds: float | None = None,
         extra_dynamic_context: str | None = None,
         execution: ExecutionPolicy = DEFAULT_POLICY,
+        deadline: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """Translate *question* into a reasoning stream followed by a SQL chunk.
 
@@ -247,6 +268,11 @@ class Orchestrator:
             extra_dynamic_context: Optional caller-supplied guidance appended
                       to the prompt's dynamic block (e.g. an enterprise Nexus
                       section). Core stays agnostic to its content.
+            deadline: When the caller stops waiting for the whole turn, as a
+                      ``time.monotonic()`` value, for a caller that bounds the
+                      turn with its own wall clock. It gates only the one
+                      correction after a database error (see
+                      ``_retry_after_error``); ``None`` leaves it ungated.
 
         Yields:
             String tokens from the LLM reasoning response, then a final JSON
@@ -258,6 +284,7 @@ class Orchestrator:
         """
         tracer = get_tracer()
         start_ms = time.perf_counter() * 1000
+        attempt_started = time.monotonic()
         with tracer.start_as_current_span("orchestrator.handle_question") as span:
             span.set_attribute("agent_id", agent_id)
             span.set_attribute("dialect", dialect)
@@ -391,7 +418,9 @@ class Orchestrator:
                         # statement ran last with that statement's own result,
                         # so the SQL shown is always the SQL behind the rows or
                         # the error beside it.
-                        if _retry_after_error(qr, timeout_seconds):
+                        if _retry_after_error(
+                            qr, timeout_seconds, started=attempt_started, deadline=deadline
+                        ):
                             span.set_attribute("execution_retry", True)
                             corrected = None
                             try:

@@ -103,6 +103,7 @@ def _run(
     *,
     timeout_seconds: float | None = None,
     default_timeout: float = 120.0,
+    deadline: float | None = None,
 ) -> tuple[dict[str, Any], MagicMock]:
     """Drive one question through the fresh path; return the frame and the connector."""
     connector = MagicMock()
@@ -142,6 +143,7 @@ def _run(
                     dialect="snowflake",
                     timeout_seconds=timeout_seconds,
                     execution=ExecutionPolicy.execute_read_only(),
+                    deadline=deadline,
                 ):
                     out.append(tok)
                 return out
@@ -468,3 +470,32 @@ def test_a_refused_correction_is_recorded() -> None:
 
     warnings = [c.args[0] for c in _OBSERVED["warned"].call_args_list]
     assert any("Refused by SQL policy" in w for w in warnings), warnings
+
+
+# ---------------------------------------------------------------------------
+# The caller's turn deadline
+# ---------------------------------------------------------------------------
+
+
+def test_an_expired_turn_deadline_stops_the_correction() -> None:
+    """The orchestrator hands its deadline to the rule: with the caller's clock
+    already run out, the database's error is reported as it stands."""
+    import time
+
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    frame, connector = _run(llm, [_failed()], deadline=time.monotonic() - 1)
+
+    assert connector.execute_query.call_count == 1
+    assert llm.complete_calls == []
+    assert frame["sql_table"]["error"] == DB_ERROR
+
+
+def test_a_turn_deadline_with_room_left_still_corrects() -> None:
+    """Negative control: a deadline is not a switch that turns the retry off."""
+    import time
+
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    frame, connector = _run(llm, [_failed(), _ok([[7]])], deadline=time.monotonic() + 600)
+
+    assert connector.execute_query.call_count == 2
+    assert frame["sql"] == CORRECTED_SQL
