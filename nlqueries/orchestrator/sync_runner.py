@@ -206,6 +206,7 @@ async def run_query(
     extra_dynamic_context: str | None = None,
     explain: bool = False,
     execution: ExecutionPolicy = DEFAULT_POLICY,
+    deadline: float | None = None,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -237,6 +238,13 @@ async def run_query(
                          dynamic (non-cached) block. The enterprise layer uses
                          this to inject a Nexus join-paths / Beacons section;
                          core stays agnostic to its content.
+        deadline:        When the caller stops waiting for the whole turn, as a
+                         ``time.monotonic()`` value -- for a caller that wraps
+                         this call in its own wall clock. Unlike
+                         ``timeout_seconds``, which bounds one statement, it
+                         bounds the turn: the SQL sub-agent starts its one
+                         correction after a database error only when enough
+                         of it remains. ``None`` leaves that ungated.
 
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
@@ -269,6 +277,7 @@ async def run_query(
             timeout_seconds=timeout_seconds,
             extra_dynamic_context=extra_dynamic_context,
             execution=execution,
+            deadline=deadline,
         ):
             tokens.append(token)
 
