@@ -23,6 +23,7 @@ import asyncio
 import datetime
 import decimal
 import json
+import logging
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -38,8 +39,14 @@ if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's 
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
-from nlqueries.orchestrator.sql_generation import _extract_sql, validate_and_repair
+from nlqueries.orchestrator.sql_generation import (
+    _extract_sql,
+    repair_after_execution_error,
+    validate_and_repair,
+)
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
+
+_log = logging.getLogger(__name__)
 
 # Module-level KB cache: path -> (mtime, parsed_dict).
 # Invalidated automatically when the file's mtime changes (e.g. after export-kb).
@@ -98,6 +105,87 @@ def sql_table_chunk(qr: QueryResult, *, cap: bool = True) -> dict[str, Any]:
     }
 
 
+#: A failed attempt that used at least this share of the statement timeout is
+#: treated as having run out of time, and is not corrected and re-run.
+_TIMED_OUT_SHARE = 0.9
+
+#: Error text that means "this role may not read that", which no rewrite of
+#: the statement can legitimately fix. Best-effort: drivers word it
+#: differently and there is no portable code. Covers Postgres/Redshift
+#: ("permission denied for table orders"), SQL Server ("The SELECT permission
+#: was denied on the object"), Snowflake ("Insufficient privileges ...",
+#: "Object 'X' does not exist or not authorized") and BigQuery ("Access
+#: Denied: ... User does not have permission to query table"). A refusal that
+#: slips past this still meets the instruction in the correction prompt.
+_NOT_PERMITTED = re.compile(
+    r"permission\s+(?:was\s+)?denied|insufficient\s+privilege|not\s+authori[sz]ed"
+    r"|access\s+denied|does\s+not\s+have\s+(?:the\s+)?permission",
+    re.IGNORECASE,
+)
+
+#: With no statement timeout, elapsed time cannot be measured against one, so
+#: this absolute ceiling stands in. A statement the engine refuses at compile
+#: or bind time comes back in seconds; an attempt that has already cost a
+#: minute is something else -- Snowflake, with no timeout, waits 300s for its
+#: session lock and then reports "busy ... the query was not run" as an
+#: ordinary error -- and is not re-run.
+_NO_TIMEOUT_CEILING_SECONDS = 60.0
+
+#: Statement text that drivers echo into their errors, which is not part of the
+#: driver's own message: SQLAlchemy appends `[SQL: ...]` and `[parameters: ...]`
+#: after a newline, and Postgres quotes the offending line as `LINE n: ...`
+#: with a caret line under it.
+_SQLALCHEMY_ECHO = "\n[SQL:"
+_ECHOED_LINE = re.compile(r"^(?:LINE \d+:.*|\s*\^\s*)$")
+
+
+def _driver_message(error: str) -> str:
+    """*error* without the statement text a driver echoed into it.
+
+    What the refusal pattern reads. Matching the whole string classified an
+    ordinary error as a refusal whenever the failed statement itself mentioned
+    one -- a table called `access_denied_events`, a `'permission denied'`
+    literal -- and such an error was then never corrected.
+    """
+    message = error.split(_SQLALCHEMY_ECHO, 1)[0]
+    return "\n".join(ln for ln in message.splitlines() if not _ECHOED_LINE.match(ln))
+
+
+def _retry_after_error(qr: QueryResult, timeout_seconds: float | None) -> bool:
+    """Whether a failed execution should be handed back to the model once.
+
+    Only an error the connector reported in the result: the statement reached
+    the database and the database refused it. An exception raised instead --
+    the connector could not be opened, the request may not execute, or
+    enterprise's row filter could not rewrite the statement -- is not the
+    model's to fix, and asking it to rewrite a statement until a filter accepts
+    it is the opposite of what the filter is for.
+
+    Not a refusal either, though it does arrive in the result: psycopg2
+    reports "permission denied for table orders" as a string, not an
+    exception. The knowledge base can list a table or column the query role
+    was never granted, so a statement can pass every check here and still be
+    refused. The only "correction" then is a different table or column, which
+    answers a different question and would be reported as the answer.
+
+    Not a timeout. Connectors report one as an ordinary error string, in a
+    wording that differs per driver, so it is recognised by what it cost
+    instead: an attempt that used most of the timeout would, re-run, make the
+    user wait the whole timeout again for a statement the model may have
+    changed only to be faster. The budget mirrors the connectors' own default,
+    ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout; with
+    no timeout, `_NO_TIMEOUT_CEILING_SECONDS` stands in for it.
+    """
+    if not qr.error or _NOT_PERMITTED.search(_driver_message(qr.error)):
+        return False
+    budget = config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
+    if timeout_seconds is not None:
+        budget = timeout_seconds
+    if budget > 0:
+        return qr.execution_time_ms < budget * 1000 * _TIMED_OUT_SHARE
+    return qr.execution_time_ms < _NO_TIMEOUT_CEILING_SECONDS * 1000
+
+
 def _json_default(obj: Any) -> Any:
     """Coerce DB-driver types that json.dumps can't handle."""
     if isinstance(obj, decimal.Decimal):
@@ -119,7 +207,10 @@ class Orchestrator:
     3. Makes **one** ``astream()`` call.  Reasoning tokens are yielded
        immediately; SQL content (inside ``<sql>…</sql>``) is collected silently
        and then validated / repaired.
-    4. Yields a structured JSON final chunk with the validated SQL.
+    4. Executes it when the request's policy permits. If the database rejects
+       it, one ``acomplete()`` call corrects it from the database's error, and
+       the correction runs if it passes the same validation.
+    5. Yields a structured JSON final chunk with the SQL that ran last.
     """
 
     async def handle_question(
@@ -294,6 +385,70 @@ class Orchestrator:
                         qr = await asyncio.to_thread(
                             connector.execute_query, result.sql, timeout_seconds
                         )
+                        # One correction when the database refuses the
+                        # statement, on the same connector so the same row
+                        # filters apply. The frame below reports whichever
+                        # statement ran last with that statement's own result,
+                        # so the SQL shown is always the SQL behind the rows or
+                        # the error beside it.
+                        if _retry_after_error(qr, timeout_seconds):
+                            span.set_attribute("execution_retry", True)
+                            corrected = None
+                            try:
+                                corrected = await repair_after_execution_error(
+                                    result.sql,
+                                    qr.error or "",
+                                    prompt.user_content(),
+                                    kb,
+                                    dialect,
+                                    llm,
+                                    system,
+                                    result.attempt_count,
+                                )
+                            except Exception:  # noqa: BLE001
+                                # The database's error is the answer the user
+                                # needs; a failed repair call must not replace it.
+                                _log.warning(
+                                    "Correcting SQL after a database error failed; "
+                                    "reporting the original error.",
+                                    exc_info=True,
+                                )
+                            if corrected is not None and not corrected.is_valid:
+                                # Discarded, and counted: how often this path
+                                # proposes statements the policy or schema
+                                # refuses is worth being able to see.
+                                _log.info(
+                                    "A correction after a database error was refused "
+                                    "by validation and not run: %s",
+                                    corrected.validation_error,
+                                )
+                                if corrected.validation_error:
+                                    record_validator_warning(corrected.validation_error)
+                            elif (
+                                corrected is not None
+                                and corrected.sql.strip() != result.sql.strip()
+                            ):
+                                try:
+                                    retried = await asyncio.to_thread(
+                                        connector.execute_query,
+                                        corrected.sql,
+                                        timeout_seconds,
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    # The correction never ran -- enterprise's
+                                    # row filter refusing to rewrite it, say --
+                                    # so the frame keeps the statement that did
+                                    # run and the error the user can act on.
+                                    _log.warning(
+                                        "A correction after a database error could "
+                                        "not be run; reporting the original error.",
+                                        exc_info=True,
+                                    )
+                                else:
+                                    result, qr = corrected, retried
+                                    # Set before execution above; re-set so the
+                                    # span agrees with the frame.
+                                    span.set_attribute("attempt_count", result.attempt_count)
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
