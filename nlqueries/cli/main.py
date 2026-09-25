@@ -39,6 +39,7 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
 from nlqueries.connectors import connector_class_for
+from nlqueries.connectors.base import table_sample_sql
 from nlqueries.connectors.loader import credentials_for
 from nlqueries.state_files import private_dir, restrict
 
@@ -1844,8 +1845,13 @@ def export_kb(
                     llm = get_llm_client()
                     llm_column_descriptions = {}
                     for tbl in schema.tables:
+                        # Schema-qualified: a bare name resolves only in the
+                        # connection's default schema, and on Snowflake that
+                        # skipped every table without a word.
                         result = connector.execute_query(
-                            f"SELECT * FROM {tbl.name} LIMIT {sample_rows}"
+                            table_sample_sql(
+                                tbl.name, tbl.schema, sample_rows, cfg.get("db_type") or None
+                            )
                         )
                         if result.error:
                             continue
