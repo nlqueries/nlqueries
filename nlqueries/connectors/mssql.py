@@ -142,7 +142,7 @@ class MSSQLConnector(DatabaseConnector):
         engine = self._require_engine()
 
         with engine.connect() as conn:
-            database = conn.execute(text("SELECT DB_NAME()")).scalar_one()
+            database: str = conn.execute(text("SELECT DB_NAME()")).scalar_one()
             tables_meta = self._fetch_tables(conn)
             cols_by_table = self._fetch_columns(conn)
             # Keys are an enrichment; tables and columns are the schema.

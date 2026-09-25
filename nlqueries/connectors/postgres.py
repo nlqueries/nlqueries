@@ -237,7 +237,7 @@ class PostgresConnector(DatabaseConnector):
         engine = self._require_engine()
 
         with engine.connect() as conn:
-            database = conn.execute(text("SELECT current_database()")).scalar_one()
+            database: str = conn.execute(text("SELECT current_database()")).scalar_one()
 
             tables_meta = self._fetch_tables(conn)
             columns_by_table = self._fetch_columns(conn)
