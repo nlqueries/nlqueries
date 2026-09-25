@@ -79,15 +79,25 @@ def test_a_dialect_sqlglot_does_not_know_renders_as_ansi(dialect: str) -> None:
 
 
 def _export_kb_with_descriptions(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cfg: dict[str, Any]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    cfg: dict[str, Any],
+    *,
+    sample_error: str | None = None,
+    real_connector: bool = False,
 ) -> tuple[Any, list[str]]:
     from click.testing import CliRunner
     from nlqueries.cli import main as cli_main
     from nlqueries.connectors.base import ColumnSpec, QueryResult, SchemaSpec, TableSpec
+    from nlqueries.connectors.sqlite import SQLiteConnector
 
     queries: list[str] = []
 
-    class _Connector:
+    class _Connector(SQLiteConnector):
+        """A real DatabaseConnector: only `_execute_query` is replaced, so the
+        permission check in `execute_query` runs as it does for every shipped
+        connector. A fake defining `execute_query` itself skipped it."""
+
         def connect(self, credentials: Any) -> None:
             pass
 
@@ -96,8 +106,12 @@ def _export_kb_with_descriptions(
             table = TableSpec("orders", "sales", None, [column], None)
             return SchemaSpec(database="db", tables=[table], extracted_at="2026-09-25T00:00:00")
 
-        def execute_query(self, sql: str, *args: Any, **kwargs: Any) -> QueryResult:
+        def _execute_query(
+            self, sql: str, timeout_seconds: float | None = None, max_rows: int | None = None
+        ) -> QueryResult:
             queries.append(sql)
+            if sample_error:
+                return QueryResult([], [], 0, 0.0, sample_error)
             return QueryResult(["region"], [["north"]], 1, 0.0, None)
 
     class _LLM:
@@ -109,8 +123,11 @@ def _export_kb_with_descriptions(
 
     monkeypatch.setattr(cli_main, "_resolve_alias", lambda value: value)
     monkeypatch.setattr(cli_main, "_require_connector", lambda connector_id: cfg)
-    monkeypatch.setattr(cli_main, "connector_class_for", lambda db_type, cfg: _Connector)
-    monkeypatch.setattr(cli_main, "credentials_for", lambda connector_id, cfg: {})
+    if not real_connector:
+        monkeypatch.setattr(cli_main, "connector_class_for", lambda db_type, cfg: _Connector)
+        monkeypatch.setattr(cli_main, "credentials_for", lambda connector_id, cfg: {})
+    else:
+        monkeypatch.setattr(cli_main, "credentials_for", lambda connector_id, cfg: dict(cfg))
     monkeypatch.setattr("nlqueries.config.llm_credentials_available", lambda: True)
     monkeypatch.setattr("nlqueries.llm.get_llm_client", lambda *a, **k: _LLM())
     monkeypatch.setattr("nlqueries.processing.pipeline.load_capsules", _no_capsules)
@@ -147,3 +164,38 @@ def test_export_kb_samples_a_named_connector_in_its_own_grammar(
 
     assert result.exit_code == 0, result.output
     assert queries == ['SELECT * FROM "sales"."orders" LIMIT 3']
+
+
+def test_export_kb_reports_a_table_whose_sample_the_database_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """It used to be dropped without a word, leaving "described 0 column(s)"."""
+    cfg = {"db_type": "sqlserver-ish", "url": "x://u@h/db"}
+    error = "Invalid object name [sales].[orders]."
+
+    result, _ = _export_kb_with_descriptions(monkeypatch, tmp_path, cfg, sample_error=error)
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())  # rich wraps long lines
+    assert f"orders: sampling failed, not described: {error}" in output
+
+
+def test_export_kb_describes_a_real_sqlite_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """End to end through the shipped connector: its schema, its permission
+    check, its driver. Without a bound policy every sample raised."""
+    import sqlite3
+
+    database = tmp_path / "shop.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE orders (region TEXT)")
+        conn.execute("INSERT INTO orders VALUES ('north')")
+    conn.close()
+    cfg = {"db_type": "sqlite", "database": str(database)}
+
+    result, _ = _export_kb_with_descriptions(monkeypatch, tmp_path, cfg, real_connector=True)
+
+    assert result.exit_code == 0, result.output
+    assert "LLM described 1 column(s) across 1 table(s)" in result.output
+    assert "Sales region of the order" in (tmp_path / "kb.yaml").read_text(encoding="utf-8")
