@@ -726,3 +726,23 @@ def test_the_private_alias_still_answers_the_same() -> None:
     col = _make_column("email")
     assert _should_skip_column(col) or True  # unrelated rule; kept apart
     assert is_pii_column(col.name) is True
+
+
+def test_describe_columns_withholds_personal_data_values_from_the_model():
+    """The prompt goes to a third-party model. Values from columns whose names
+    mark them as personal data are not sent; the name and type still are, and
+    other columns keep their samples."""
+    tbl = _make_table(
+        "customers",
+        columns=[_plain_column("customer_email"), _plain_column("phone"), _plain_column("segment")],
+    )
+    llm = _mock_llm({"customer_email": "Customer contact email", "segment": "Marketing segment"})
+    rows = [["ana@example.com", "+44 7700 900123", "retail"]]
+    describe_columns(tbl, rows, ["customer_email", "phone", "segment"], llm)
+
+    prompt = llm.complete.call_args.args[1]
+    assert "ana@example.com" not in prompt
+    assert "+44 7700 900123" not in prompt
+    assert "| customer_email | VARCHAR | (withheld: personal data) |" in prompt
+    assert "| phone | VARCHAR | (withheld: personal data) |" in prompt
+    assert "| segment | VARCHAR | retail |" in prompt

@@ -39,6 +39,7 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
 from nlqueries.connectors import connector_class_for
+from nlqueries.connectors.base import table_sample_sql
 from nlqueries.connectors.loader import credentials_for
 from nlqueries.state_files import private_dir, restrict
 
@@ -1843,11 +1844,34 @@ def export_kb(
 
                     llm = get_llm_client()
                     llm_column_descriptions = {}
+                    # The generic connector's db_type names no grammar; its
+                    # URL names the engine.
+                    sample_dialect: str | None = cfg.get("db_type") or None
+                    if (sample_dialect or "").lower() == "sqlalchemy":
+                        from nlqueries.sql_policy import dialect_from_url  # noqa: PLC0415
+
+                        sample_dialect = dialect_from_url(str(cfg.get("url") or ""))
+                    # The operator asked for sampling, so it reads. A connector
+                    # holds no permission to execute until one is bound, and
+                    # without this every sample raised ExecutionNotPermitted.
+                    from rich.markup import escape as _escape_markup  # noqa: PLC0415
+
+                    from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+
+                    connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
                     for tbl in schema.tables:
+                        # Schema-qualified: a bare name resolves only in the
+                        # connection's default schema, and on Snowflake that
+                        # skipped every table without a word.
                         result = connector.execute_query(
-                            f"SELECT * FROM {tbl.name} LIMIT {sample_rows}"
+                            table_sample_sql(tbl.name, tbl.schema, sample_rows, sample_dialect)
                         )
                         if result.error:
+                            # Escaped: a SQL Server error names [schema].[table].
+                            console.print(
+                                f"  [yellow]⚠ {_escape_markup(tbl.name)}: sampling "
+                                f"failed, not described: {_escape_markup(result.error)}[/yellow]"
+                            )
                             continue
                         descs = _describe_columns(tbl, result.rows, result.columns, llm)
                         if descs:

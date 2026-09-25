@@ -177,9 +177,16 @@ def describe_columns(
 
     col_idx = {name: i for i, name in enumerate(col_names)}
 
-    # Collect up to 3 non-null sample values per eligible column.
+    # Collect up to 3 non-null sample values per eligible column -- except from
+    # columns whose values are personal data (`is_pii_column`: email, phone,
+    # address, date of birth, card and national identifiers, credentials...).
+    # This prompt goes to a third-party model; the knowledge base already refuses
+    # to store these values and this call used to send them anyway. The column's
+    # name and type are usually enough for a description.
     samples: dict[str, list[str]] = {}
     for col in eligible:
+        if is_pii_column(col.name):
+            continue
         idx = col_idx.get(col.name)
         if idx is not None:
             vals = [
@@ -198,7 +205,10 @@ def describe_columns(
         "|--------|------|---------------|",
     ]
     for col in eligible:
-        vals_str = ", ".join(samples.get(col.name, [])[:3]) or "(no samples)"
+        if is_pii_column(col.name):
+            vals_str = "(withheld: personal data)"
+        else:
+            vals_str = ", ".join(samples.get(col.name, [])[:3]) or "(no samples)"
         lines.append(f"| {col.name} | {col.type} | {vals_str} |")
 
     system = (
