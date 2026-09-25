@@ -1844,14 +1844,19 @@ def export_kb(
 
                     llm = get_llm_client()
                     llm_column_descriptions = {}
+                    # The generic connector's db_type names no grammar; its
+                    # URL names the engine.
+                    sample_dialect: str | None = cfg.get("db_type") or None
+                    if (sample_dialect or "").lower() == "sqlalchemy":
+                        from nlqueries.sql_policy import dialect_from_url  # noqa: PLC0415
+
+                        sample_dialect = dialect_from_url(str(cfg.get("url") or ""))
                     for tbl in schema.tables:
                         # Schema-qualified: a bare name resolves only in the
                         # connection's default schema, and on Snowflake that
                         # skipped every table without a word.
                         result = connector.execute_query(
-                            table_sample_sql(
-                                tbl.name, tbl.schema, sample_rows, cfg.get("db_type") or None
-                            )
+                            table_sample_sql(tbl.name, tbl.schema, sample_rows, sample_dialect)
                         )
                         if result.error:
                             continue

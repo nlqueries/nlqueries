@@ -84,17 +84,14 @@ def qualified_table_sql(name: str, schema: str | None, dialect: str | None = Non
 
     Quoted, because the names come from the catalogue exactly as stored -- an
     unquoted `CallCenter` folds to `callcenter` on Postgres and misses. *dialect*
-    is a connector `db_type` or a sqlglot dialect name; without one, ANSI double
-    quotes, which Postgres, Snowflake, DuckDB, Redshift, SQLite and SQL Server
-    accept. MySQL and BigQuery need theirs, so pass it. An empty *schema* (a
-    knowledge base written before the field existed) gives the bare, quoted name.
+    is a connector `db_type` or a sqlglot dialect name; without one, or with one
+    sqlglot does not know, ANSI double quotes, which Postgres, Snowflake, DuckDB,
+    Redshift, SQLite and SQL Server accept. MySQL and BigQuery need theirs, so
+    pass it. An empty *schema* (a knowledge base written before the field
+    existed) gives the bare, quoted name.
     """
-    from sqlglot import exp  # noqa: PLC0415 -- keep sqlglot off this module's import path
-
-    from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
-
-    table = exp.table_(name, db=schema or None, quoted=True)
-    return table.sql(dialect=_sqlglot_dialect(dialect) if dialect else None)
+    table, grammar = _table_expression(name, schema, dialect)
+    return str(table.sql(dialect=grammar))
 
 
 def table_sample_sql(name: str, schema: str | None, limit: int, dialect: str | None = None) -> str:
@@ -106,10 +103,29 @@ def table_sample_sql(name: str, schema: str | None, limit: int, dialect: str | N
     """
     from sqlglot import exp  # noqa: PLC0415
 
+    table, grammar = _table_expression(name, schema, dialect)
+    return str(exp.select(exp.Star()).from_(table).limit(limit).sql(dialect=grammar))
+
+
+def _table_expression(name: str, schema: str | None, dialect: str | None) -> tuple[Any, str | None]:
+    """The quoted table reference both helpers render, and the grammar to render it in.
+
+    A *dialect* sqlglot does not know -- ``sqlalchemy``, the generic connector's
+    ``db_type``, names no grammar -- renders as ANSI rather than raising, so a
+    caller building SQL for such a connector gets the default quoting.
+    """
+    from sqlglot import exp  # noqa: PLC0415 -- keep sqlglot off this module's import path
+    from sqlglot.dialects.dialect import Dialect  # noqa: PLC0415
+
     from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
 
-    select = exp.select(exp.Star()).from_(exp.table_(name, db=schema or None, quoted=True))
-    return select.limit(limit).sql(dialect=_sqlglot_dialect(dialect) if dialect else None)
+    grammar = _sqlglot_dialect(dialect) if dialect else None
+    if grammar is not None:
+        try:
+            Dialect.get_or_raise(grammar)
+        except ValueError:
+            grammar = None
+    return exp.table_(name, db=schema or None, quoted=True), grammar
 
 
 @dataclass
