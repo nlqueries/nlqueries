@@ -22,10 +22,12 @@ from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
+    QueryHistoryUnavailable,
     QueryRecord,
     QueryResult,
     SchemaSpec,
     TableSpec,
+    short_cause,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,17 +271,13 @@ class BigQueryConnector(DatabaseConnector):
                 LIMIT {limit}
                 """,
             )
-        except Exception:
-            logger.warning(
-                "extract_query_history: `%s`.INFORMATION_SCHEMA.JOBS_BY_PROJECT is not "
-                "accessible — returning an empty query history. This typically requires "
-                "the caller to have project-level job-history visibility "
-                "(e.g. the `roles/bigquery.resourceViewer` or `bigquery.jobs.listAll` "
-                "permission).",
-                self._region_qualifier,
-                exc_info=True,
-            )
-            return []
+        except Exception as exc:
+            raise QueryHistoryUnavailable(
+                f"Could not read `{self._region_qualifier}`.INFORMATION_SCHEMA."
+                f"JOBS_BY_PROJECT ({short_cause(exc)}). The caller needs project-level "
+                "job-history visibility, such as the bigquery.jobs.listAll permission "
+                "or the roles/bigquery.resourceViewer role."
+            ) from exc
 
         return [
             QueryRecord(

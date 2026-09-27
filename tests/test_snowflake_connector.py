@@ -485,17 +485,20 @@ def test_extract_query_history_falls_back_to_information_schema(caplog):
     assert "INFORMATION_SCHEMA.QUERY_HISTORY" in second_sql
 
 
-def test_extract_query_history_returns_empty_list_when_both_sources_fail(caplog):
+def test_extract_query_history_names_both_sources_when_both_fail():
+    from nlqueries.connectors.base import QueryHistoryUnavailable
+
     connector, _ = _connector_with_mock_connection()
 
     with (
-        caplog.at_level(logging.WARNING, logger="nlqueries.connectors.snowflake"),
         patch.object(SnowflakeConnector, "_query", side_effect=RuntimeError("nope")),
+        pytest.raises(QueryHistoryUnavailable) as err,
     ):
-        history = connector.extract_query_history(days=30)
+        connector.extract_query_history(days=30)
 
-    assert history == []
-    assert any("returning an empty query history" in r.message for r in caplog.records)
+    assert "ACCOUNT_USAGE.QUERY_HISTORY" in str(err.value)
+    assert "INFORMATION_SCHEMA.QUERY_HISTORY" in str(err.value)
+    assert "IMPORTED PRIVILEGES" in str(err.value)
 
 
 # ---------------------------------------------------------------------------

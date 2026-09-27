@@ -28,10 +28,12 @@ from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
+    QueryHistoryUnavailable,
     QueryRecord,
     QueryResult,
     SchemaSpec,
     TableSpec,
+    short_cause,
 )
 
 logger = logging.getLogger(__name__)
@@ -411,12 +413,13 @@ class RedshiftConnector(DatabaseConnector):
                 (-days, limit),
             )
             rows = cur.fetchall()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "RedshiftConnector.extract_query_history: could not query STL_QUERY "
-                "(requires superuser or pg_read_all_stats). Returning empty history."
-            )
-            rows = []
+        except Exception as exc:  # noqa: BLE001
+            # Raised from inside the try, so the `finally` below still ends the
+            # transaction the failed statement left behind.
+            raise QueryHistoryUnavailable(
+                f"Could not read STL_QUERY ({short_cause(exc)}). The user needs "
+                "superuser or the pg_read_all_stats role."
+            ) from exc
         finally:
             cur.close()
             # The `STL_QUERY` statement opened a transaction, and the swallowed

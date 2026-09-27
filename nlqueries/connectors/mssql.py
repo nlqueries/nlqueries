@@ -33,10 +33,12 @@ from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
+    QueryHistoryUnavailable,
     QueryRecord,
     QueryResult,
     SchemaSpec,
     TableSpec,
+    short_cause,
 )
 
 logger = logging.getLogger(__name__)
@@ -351,13 +353,12 @@ class MSSQLConnector(DatabaseConnector):
                     ),
                     {"neg_days": -days},
                 )
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "MSSQLConnector.extract_query_history: could not query "
-                    "sys.dm_exec_query_stats (requires VIEW SERVER STATE or "
-                    "VIEW DATABASE STATE). Returning empty history."
-                )
-                return []
+            except Exception as exc:  # noqa: BLE001
+                raise QueryHistoryUnavailable(
+                    "Could not read sys.dm_exec_query_stats "
+                    f"({short_cause(exc)}). The login needs VIEW SERVER STATE, "
+                    "or VIEW DATABASE STATE on Azure SQL."
+                ) from exc
 
         return [
             QueryRecord(

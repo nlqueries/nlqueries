@@ -148,16 +148,24 @@ class TestRedshiftConnector:
         assert records[0].execution_count == 10
         assert records[0].avg_duration_ms == pytest.approx(42.5)
 
-    def test_extract_query_history_empty_on_permission_error(self) -> None:
-        """extract_query_history returns [] when STL_QUERY is inaccessible."""
+    def test_extract_query_history_says_why_on_permission_error(self) -> None:
+        """An unreadable STL_QUERY raises with the reason, and the transaction
+        the failed statement left is still ended."""
+        from nlqueries.connectors.base import QueryHistoryUnavailable
         from nlqueries.connectors.redshift import RedshiftConnector
 
         cur = MagicMock()
         cur.execute.side_effect = Exception("permission denied")
         connector = granted(RedshiftConnector())
         connector._conn = _make_conn(cur)
-        records = connector.extract_query_history()
-        assert records == []
+        with (
+            patch.object(RedshiftConnector, "_end_transaction") as end,
+            pytest.raises(QueryHistoryUnavailable) as err,
+        ):
+            connector.extract_query_history()
+        assert "STL_QUERY" in str(err.value)
+        assert "permission denied" in str(err.value)
+        end.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -309,8 +317,9 @@ class TestMSSQLConnector:
         mock_conn.commit.assert_not_called()
         mock_conn.rollback.assert_called_once()
 
-    def test_extract_query_history_empty_on_permission_error(self) -> None:
-        """extract_query_history returns [] when the DMV is inaccessible."""
+    def test_extract_query_history_says_why_on_permission_error(self) -> None:
+        """An unreadable DMV raises with the reason and the grant that fixes it."""
+        from nlqueries.connectors.base import QueryHistoryUnavailable
         from nlqueries.connectors.mssql import MSSQLConnector
 
         mock_engine = MagicMock()
@@ -321,8 +330,10 @@ class TestMSSQLConnector:
 
         connector = granted(MSSQLConnector())
         connector._engine = mock_engine
-        records = connector.extract_query_history()
-        assert records == []
+        with pytest.raises(QueryHistoryUnavailable) as err:
+            connector.extract_query_history()
+        assert "sys.dm_exec_query_stats" in str(err.value)
+        assert "VIEW SERVER STATE" in str(err.value)
 
 
 # ---------------------------------------------------------------------------
@@ -766,8 +777,10 @@ class TestRedshiftSiblingTransactions:
     def test_extract_query_history_closes_its_transaction_when_stl_query_is_denied(
         self,
     ) -> None:
-        """The swallowed failure leaves the block aborted, so this path needs it
-        more than the one that worked."""
+        """The failure leaves the block aborted, so this path needs it more than
+        the one that worked -- and it now raises, which must not skip the
+        rollback in the `finally`."""
+        from nlqueries.connectors.base import QueryHistoryUnavailable
         from nlqueries.connectors.redshift import RedshiftConnector
 
         cur = MagicMock()
@@ -776,7 +789,8 @@ class TestRedshiftSiblingTransactions:
         connector = granted(RedshiftConnector())
         connector._conn = conn
 
-        assert connector.extract_query_history() == []
+        with pytest.raises(QueryHistoryUnavailable):
+            connector.extract_query_history()
 
         cur.close.assert_called_once()
         assert [c[0] for c in conn.mock_calls][-1] == "rollback"

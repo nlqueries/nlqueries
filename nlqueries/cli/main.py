@@ -1581,9 +1581,16 @@ def process_history(
         effective_limit = max_queries if max_queries is not None else QUERY_HISTORY_LIMIT
         raw_limit = min(effective_limit * 3, 10_000)
 
-        # Stage 1 — Extract
-        with console.status(f"  [1] Extracting query history (last {days} days) …"):
-            records = connector.extract_query_history(days=days, limit=raw_limit)
+        # Stage 1 — Extract. A history the database will not let us read is
+        # reported with its reason, not as "0 raw records".
+        from nlqueries.connectors.base import QueryHistoryUnavailable
+
+        try:
+            with console.status(f"  [1] Extracting query history (last {days} days) …"):
+                records = connector.extract_query_history(days=days, limit=raw_limit)
+        except QueryHistoryUnavailable as exc:
+            console.print(f"  [red]✗ Query history unavailable:[/red] {exc}")
+            raise SystemExit(1) from exc
         console.print(f"  [1] Extracted [bold]{len(records)}[/bold] raw records")
 
         # Stage 2 — Filter + deduplicate

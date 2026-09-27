@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 from nlqueries.cli.main import cli
 from nlqueries.connectors.base import DatabaseConnector, QueryRecord, QueryResult, SchemaSpec
@@ -271,3 +272,23 @@ class TestHealthCommand:
         ):
             runner.invoke(cli, ["health", "--connector", "dvdrental"])
         assert captured == ["dvdrental"]
+
+
+class TestProcessHistoryWhenHistoryIsUnavailable:
+    def test_reports_the_reason_and_exits_non_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable history is a failure with its reason, not "0 raw
+        records" followed by an empty run."""
+        from nlqueries.connectors.base import QueryHistoryUnavailable
+
+        def _unavailable(self: Any, days: int = 30, limit: int = 500) -> list[QueryRecord]:
+            raise QueryHistoryUnavailable("The pg_stat_statements extension is not installed.")
+
+        monkeypatch.setattr(_StubConnector, "extract_query_history", _unavailable)
+
+        exit_code, calls = _invoke_process_history(tmp_path)
+
+        assert exit_code == 1
+        assert any("pg_stat_statements extension is not installed" in c for c in calls)
+        assert not any("[2]" in c for c in calls), "the run carried on past the failure"
