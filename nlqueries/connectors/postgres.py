@@ -23,6 +23,7 @@ from nlqueries.connectors.base import (
     POLICY_ROW,
     ColumnSpec,
     DatabaseConnector,
+    QueryHistoryUnavailable,
     QueryRecord,
     QueryResult,
     SchemaSpec,
@@ -442,8 +443,9 @@ class PostgresConnector(DatabaseConnector):
         annotates its SQL does the same — anchoring would discard precisely the
         queries someone ran deliberately.
 
-        If the ``pg_stat_statements`` extension is not installed, this logs
-        a warning and returns an empty list rather than raising.
+        If the ``pg_stat_statements`` extension is not installed, this raises
+        :class:`QueryHistoryUnavailable` saying so -- an empty list would read
+        as "no history" when the history simply cannot be read.
         """
         engine = self._require_engine()
 
@@ -453,14 +455,12 @@ class PostgresConnector(DatabaseConnector):
             ).scalar_one_or_none()
 
             if not installed:
-                logger.warning(
-                    "extract_query_history: the 'pg_stat_statements' extension is not "
-                    "installed on this database — returning an empty query history. "
-                    "Install it with `CREATE EXTENSION pg_stat_statements;` "
-                    "(requires it to be listed in shared_preload_libraries) to enable "
-                    "query history extraction."
+                raise QueryHistoryUnavailable(
+                    "The pg_stat_statements extension is not installed on this "
+                    "database, so its query history cannot be read. Install it with "
+                    "`CREATE EXTENSION pg_stat_statements;` (it must also be listed "
+                    "in shared_preload_libraries)."
                 )
-                return []
 
             try:
                 rows = conn.execute(

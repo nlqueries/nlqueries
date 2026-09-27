@@ -33,10 +33,12 @@ from nlqueries.connectors._budget import collect
 from nlqueries.connectors.base import (
     ColumnSpec,
     DatabaseConnector,
+    QueryHistoryUnavailable,
     QueryRecord,
     QueryResult,
     SchemaSpec,
     TableSpec,
+    short_cause,
 )
 
 logger = logging.getLogger(__name__)
@@ -320,7 +322,8 @@ class MSSQLConnector(DatabaseConnector):
         """Return top queries from ``sys.dm_exec_query_stats``.
 
         Requires ``VIEW SERVER STATE`` (SQL Server) or ``VIEW DATABASE STATE``
-        (Azure SQL).  Returns an empty list if the DMV is inaccessible.
+        (Azure SQL).  Raises :class:`QueryHistoryUnavailable` if the DMV is
+        inaccessible.
         """
         engine = self._require_engine()
         with engine.connect() as conn:
@@ -351,13 +354,12 @@ class MSSQLConnector(DatabaseConnector):
                     ),
                     {"neg_days": -days},
                 )
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "MSSQLConnector.extract_query_history: could not query "
-                    "sys.dm_exec_query_stats (requires VIEW SERVER STATE or "
-                    "VIEW DATABASE STATE). Returning empty history."
-                )
-                return []
+            except Exception as exc:  # noqa: BLE001
+                raise QueryHistoryUnavailable(
+                    "Could not read sys.dm_exec_query_stats "
+                    f"({short_cause(exc)}). The login needs VIEW SERVER STATE, "
+                    "or VIEW DATABASE STATE on Azure SQL."
+                ) from exc
 
         return [
             QueryRecord(

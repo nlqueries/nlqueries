@@ -554,15 +554,20 @@ def test_extract_query_history_handles_null_aggregates():
     ]
 
 
-def test_extract_query_history_returns_empty_list_when_view_is_not_accessible(caplog):
+def test_extract_query_history_says_why_when_the_view_is_not_accessible():
+    """An unreadable history used to come back as an empty list, which reads as
+    "no history" -- "Rebuild from history" then reported 0 patterns for what
+    was a permissions problem."""
+    from nlqueries.connectors.base import QueryHistoryUnavailable
+
     connector, _ = _connector_with_mock_client()
 
     with (
-        caplog.at_level(logging.WARNING, logger="nlqueries.connectors.bigquery"),
         patch.object(BigQueryConnector, "_query", side_effect=RuntimeError("Access Denied")),
+        pytest.raises(QueryHistoryUnavailable) as err,
     ):
-        history = connector.extract_query_history(days=30)
+        connector.extract_query_history(days=30)
 
-    assert history == []
-    assert any("is not accessible" in r.message for r in caplog.records)
-    assert any("returning an empty query history" in r.message for r in caplog.records)
+    assert "JOBS_BY_PROJECT" in str(err.value)
+    assert "Access Denied" in str(err.value)
+    assert "bigquery.jobs.listAll" in str(err.value)

@@ -24,12 +24,14 @@ from nlqueries.connectors.base import (
     POLICY_ROW,
     ColumnSpec,
     DatabaseConnector,
+    QueryHistoryUnavailable,
     QueryRecord,
     QueryResult,
     SchemaSpec,
     SecurityPolicy,
     SecurityPolicyReport,
     TableSpec,
+    short_cause,
 )
 
 logger = logging.getLogger(__name__)
@@ -371,14 +373,15 @@ class SnowflakeConnector(DatabaseConnector):
         to the current account/session context.
 
         Returns up to ``limit`` records, ordered by execution count descending.
-        Returns an empty list (with a logged warning) if both sources are
+        Raises :class:`QueryHistoryUnavailable` if both sources are
         inaccessible.
         """
         connection = self._require_connection()
 
         try:
             return self._fetch_query_history_account_usage(connection, days, limit)
-        except Exception:
+        except Exception as account_usage_exc:
+            first_cause = short_cause(account_usage_exc)
             logger.warning(
                 "extract_query_history: SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY is not "
                 "accessible — falling back to INFORMATION_SCHEMA.QUERY_HISTORY "
@@ -389,12 +392,13 @@ class SnowflakeConnector(DatabaseConnector):
 
         try:
             return self._fetch_query_history_information_schema(connection, days, limit)
-        except Exception:
-            logger.exception(
-                "extract_query_history: INFORMATION_SCHEMA.QUERY_HISTORY is also "
-                "inaccessible — returning an empty query history."
-            )
-            return []
+        except Exception as exc:
+            raise QueryHistoryUnavailable(
+                "Could not read SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY "
+                f"({first_cause}) or INFORMATION_SCHEMA.QUERY_HISTORY "
+                f"({short_cause(exc)}). Grant the role IMPORTED PRIVILEGES on the "
+                "SNOWFLAKE database for account-usage history."
+            ) from exc
 
     @classmethod
     def _fetch_query_history_account_usage(

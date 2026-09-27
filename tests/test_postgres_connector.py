@@ -11,8 +11,6 @@ require no live database.
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 from nlqueries import config
 from nlqueries.connectors import CONNECTOR_REGISTRY
@@ -288,14 +286,17 @@ def test_extract_schema_row_counts_are_present_after_analyze(seeded_connector):
 # ---------------------------------------------------------------------------
 
 
-def test_extract_query_history_returns_empty_list_when_extension_missing(connector, caplog):
+def test_extract_query_history_says_the_extension_is_missing(connector):
     # The default postgres:16-alpine image does not ship pg_stat_statements,
-    # so this exercises the "extension missing" graceful-degradation path.
-    with caplog.at_level(logging.WARNING, logger="nlqueries.connectors.postgres"):
-        history = connector.extract_query_history(days=30)
+    # so this exercises the "extension missing" path: a reason, not an empty
+    # list that reads as "no history".
+    from nlqueries.connectors.base import QueryHistoryUnavailable
 
-    assert history == []
-    assert any("pg_stat_statements" in record.message for record in caplog.records)
+    with pytest.raises(QueryHistoryUnavailable) as err:
+        connector.extract_query_history(days=30)
+
+    assert "pg_stat_statements" in str(err.value)
+    assert "CREATE EXTENSION" in str(err.value)
 
 
 # ---------------------------------------------------------------------------
