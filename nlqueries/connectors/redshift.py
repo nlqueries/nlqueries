@@ -384,8 +384,8 @@ class RedshiftConnector(DatabaseConnector):
         """Return top queries from ``STL_QUERY``, grouped by query text.
 
         Requires access to ``STL_QUERY`` (superuser or granted via
-        ``pg_read_all_stats``).  Returns an empty list if the view is
-        inaccessible or the user lacks permission.
+        ``pg_read_all_stats``).  Raises :class:`QueryHistoryUnavailable` if
+        the view is inaccessible or the user lacks permission.
         """
         conn = self._require_conn()
         cur = conn.cursor()

@@ -322,7 +322,8 @@ class MSSQLConnector(DatabaseConnector):
         """Return top queries from ``sys.dm_exec_query_stats``.
 
         Requires ``VIEW SERVER STATE`` (SQL Server) or ``VIEW DATABASE STATE``
-        (Azure SQL).  Returns an empty list if the DMV is inaccessible.
+        (Azure SQL).  Raises :class:`QueryHistoryUnavailable` if the DMV is
+        inaccessible.
         """
         engine = self._require_engine()
         with engine.connect() as conn:

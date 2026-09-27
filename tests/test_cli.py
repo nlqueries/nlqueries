@@ -6,6 +6,7 @@ filesystem writes are needed.
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ import pytest
 from click.testing import CliRunner
 from nlqueries.cli.main import cli
 from nlqueries.connectors.base import DatabaseConnector, QueryRecord, QueryResult, SchemaSpec
+from rich.console import Console
 
 # ---------------------------------------------------------------------------
 # Minimal stub connector
@@ -275,20 +277,51 @@ class TestHealthCommand:
 
 
 class TestProcessHistoryWhenHistoryIsUnavailable:
-    def test_reports_the_reason_and_exits_non_zero(
+    def test_reports_the_reason_on_stderr_intact_and_exits_non_zero(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An unreadable history is a failure with its reason, not "0 raw
-        records" followed by an empty run."""
+        records" followed by an empty run. The reason reaches the error
+        console with driver brackets intact: Rich markup would otherwise drop
+        them or raise (from #225's review)."""
         from nlqueries.connectors.base import QueryHistoryUnavailable
 
+        # SQLAlchemy's error tail: "[parameters: ...]" starts with a lower-case
+        # letter, which is what Rich reads as a style tag (the upper-case
+        # "[Microsoft]" of an ODBC message is left alone).
+        reason = (
+            "Could not read sys.dm_exec_query_stats (ProgrammingError: permission "
+            "denied [parameters: {'neg_days': -30}]). The login needs VIEW SERVER STATE."
+        )
+
         def _unavailable(self: Any, days: int = 30, limit: int = 500) -> list[QueryRecord]:
-            raise QueryHistoryUnavailable("The pg_stat_statements extension is not installed.")
+            raise QueryHistoryUnavailable(reason)
 
         monkeypatch.setattr(_StubConnector, "extract_query_history", _unavailable)
 
-        exit_code, calls = _invoke_process_history(tmp_path)
+        runner = CliRunner()
+        err = Console(file=io.StringIO(), width=400)
+        with (
+            patch("nlqueries.cli.main.console", MagicMock()) as out,
+            patch("nlqueries.cli.main.err_console", err),
+            patch("nlqueries.cli.main._require_connector", return_value=_FAKE_CFG),
+            patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
+            patch("nlqueries.cli.main._load_password", return_value=None),
+            patch.dict(
+                "nlqueries.connectors.CONNECTOR_REGISTRY",
+                {"postgres": lambda: _StubConnector()},
+                clear=False,
+            ),
+            patch("nlqueries.processing.pipeline.CAPSULES_DIR", tmp_path),
+        ):
+            result = runner.invoke(
+                cli, ["process-history", "dvdrental", "--no-annotate", "--no-embed"]
+            )
 
-        assert exit_code == 1
-        assert any("pg_stat_statements extension is not installed" in c for c in calls)
-        assert not any("[2]" in c for c in calls), "the run carried on past the failure"
+        assert result.exit_code == 1
+        printed = err.file.getvalue()  # type: ignore[attr-defined]
+        assert "[parameters: {'neg_days': -30}]" in printed
+        assert "VIEW SERVER STATE" in printed
+        assert not any("[2]" in str(c) for c in out.print.call_args_list), (
+            "the run carried on past the failure"
+        )

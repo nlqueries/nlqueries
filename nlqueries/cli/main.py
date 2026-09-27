@@ -1589,7 +1589,13 @@ def process_history(
             with console.status(f"  [1] Extracting query history (last {days} days) …"):
                 records = connector.extract_query_history(days=days, limit=raw_limit)
         except QueryHistoryUnavailable as exc:
-            console.print(f"  [red]✗ Query history unavailable:[/red] {exc}")
+            # Escaped: the reason embeds driver text, and a bracket starting
+            # with a lower-case letter -- SQLAlchemy's "[parameters: ...]" tail
+            # -- is read by Rich as a style tag and silently dropped. To stderr,
+            # like this command's other failures.
+            from rich.markup import escape
+
+            err_console.print(f"  [red]✗ Query history unavailable:[/red] {escape(str(exc))}")
             raise SystemExit(1) from exc
         console.print(f"  [1] Extracted [bold]{len(records)}[/bold] raw records")
 

@@ -243,7 +243,7 @@ class BigQueryConnector(DatabaseConnector):
         filtered to completed ``SELECT`` query jobs, grouped by query text,
         and ordered by job count descending. Returns up to ``limit`` records.
 
-        Returns an empty list (with a logged warning) if the view is not
+        Raises :class:`QueryHistoryUnavailable` if the view is not
         accessible — e.g. the caller's IAM role lacks
         ``bigquery.jobs.listAll``/``bigquery.resourceViewer`` at the project
         level required to read project-wide job history.

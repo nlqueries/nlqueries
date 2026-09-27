@@ -265,6 +265,13 @@ class DatabaseConnector(ABC):
 
         At most ``limit`` records are returned, ordered by execution count
         descending so the most-used queries are always included.
+
+        Raise :class:`QueryHistoryUnavailable` when the history source exists
+        but cannot be read here (an extension not installed, a permission not
+        granted), with a message naming the source and the fix. Return an
+        empty list only when there genuinely is no history -- including for a
+        database with no history source at all. An empty list for an
+        unreadable history reads as "no history" to every caller.
         """
         ...
 
