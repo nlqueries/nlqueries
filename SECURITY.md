@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-`nlqueries-core` is pre-1.0 (currently `0.1.x`). Security fixes are released against the latest published version on [PyPI](https://pypi.org/project/nlqueries-core/) — there is no separate long-term-support branch at this stage.
+`nlqueries-core` is pre-1.0 (currently `0.3.x`). Security fixes are released against the latest published version on [PyPI](https://pypi.org/project/nlqueries-core/) — there is no separate long-term-support branch at this stage.
 
 ## Reporting a Vulnerability
 
