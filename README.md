@@ -58,14 +58,22 @@ Pulls the published [`nlqueries/core`](https://hub.docker.com/r/nlqueries/core) 
 curl -O https://raw.githubusercontent.com/nlqueries/nlqueries/main/docker-compose.yml
 ```
 
-Create a `.env` file next to it with one LLM key and a Qdrant key. Both are
-required — compose refuses to start without `QDRANT_API_KEY`:
+Create a `.env` file next to it with one LLM key, a Qdrant key and an MCP
+token. All three are required — compose refuses to start without
+`QDRANT_API_KEY` or `NLQ_MCP_STATIC_TOKEN`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
 # or OPENAI_API_KEY=sk-...
-QDRANT_API_KEY=...   # any random secret: openssl rand -hex 32
+QDRANT_API_KEY=...         # any random secret: openssl rand -hex 32
+NLQ_MCP_STATIC_TOKEN=...   # another one: openssl rand -hex 32
 ```
+
+The MCP server is reachable over the network, so it requires that token:
+an MCP client connects to `http://localhost:8080/sse` and sends
+`Authorization: Bearer <your NLQ_MCP_STATIC_TOKEN>`. The token has full access.
+To give different people different access, see
+[docs/mcp-authentication.md](docs/mcp-authentication.md).
 
 Then start the stack:
 

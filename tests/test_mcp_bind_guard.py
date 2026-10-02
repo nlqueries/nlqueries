@@ -55,6 +55,54 @@ class TestBindGuard:
             _refuse_unauthenticated_exposure("0.0.0.0")
 
 
+class TestBindGuardWithAuthentication:
+    """Same decisions, different words: the guard must not claim "no
+    authentication" on a server that requires a token. The shipped compose
+    file sets the switch and a token, and logged that on every start."""
+
+    def test_the_switch_logs_without_claiming_no_authentication(self, monkeypatch, caplog) -> None:
+        import logging
+
+        monkeypatch.setenv(_INSECURE_BIND_ENV, "1")
+
+        with caplog.at_level(logging.INFO):
+            _refuse_unauthenticated_exposure("0.0.0.0", authenticated=True)
+
+        assert "no authentication" not in caplog.text
+        assert "must authenticate" in caplog.text
+
+    def test_a_wildcard_is_still_refused_without_the_switch(self, monkeypatch) -> None:
+        monkeypatch.delenv(_INSECURE_BIND_ENV, raising=False)
+
+        with pytest.raises(SystemExit) as excinfo:
+            _refuse_unauthenticated_exposure("0.0.0.0", authenticated=True)
+
+        message = str(excinfo.value)
+        assert "no authentication" not in message
+        assert "authentication is on" in message
+        assert _INSECURE_BIND_ENV in message
+
+
+def test_main_tells_the_guard_whether_authentication_is_on(monkeypatch) -> None:
+    """The guard used to run before authentication was resolved, so it could
+    only ever say "no authentication"."""
+    from nlqueries.mcp_server import server
+
+    seen: list[bool] = []
+    monkeypatch.setattr(server, "_require_authentication", lambda transport: True)
+    monkeypatch.setattr(
+        server,
+        "_refuse_unauthenticated_exposure",
+        lambda host, *, authenticated=False: seen.append(authenticated),
+    )
+    monkeypatch.setattr(server, "_build_server", lambda **kwargs: server.mcp)
+    monkeypatch.setattr(server.mcp, "run", lambda transport: None)
+
+    server.main(transport="sse", host="0.0.0.0")
+
+    assert seen == [True]
+
+
 def test_stdio_never_reaches_the_guard(monkeypatch) -> None:
     """Claude Desktop is the documented primary path and opens no socket at all.
 
