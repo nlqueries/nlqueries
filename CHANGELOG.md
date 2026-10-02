@@ -174,9 +174,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   model whose vectors are the wrong width is refused at load. The default is
   unchanged.
 
-- **`REDSHIFT_CONNECT_TIMEOUT_SECONDS`** (default 30), so the first query
-  against a Serverless workgroup resuming from zero does not fail on the
-  connection.
+- **`REDSHIFT_SOCKET_TIMEOUT_SECONDS`** replaces the hardcoded fifteen-second
+  Redshift socket timeout, which capped every query at fifteen seconds and could
+  expire while a Serverless workgroup resumed. It bounds the whole connection,
+  not only the handshake, so its default is derived from
+  `CONNECTOR_STATEMENT_TIMEOUT_SECONDS` with headroom (that plus 30, at least
+  60 — 150 by default) and is `0`, unbounded, when the statement timeout is
+  disabled.
 
 - **Limits on document extraction.** A zip-based document (Excel, Word) is
   refused before parsing if it would expand beyond
@@ -542,5 +546,6 @@ First public release of NLQueries Core.
 - Python 3.14+ is not supported for document ingestion (`doc-ingest`, `doc-sync-notion`, `doc-sync-confluence`) — see [docs/troubleshooting.md](docs/troubleshooting.md#w6--pydantic-v1-incompatibility-python-314)
 - `--days` has no effect on PostgreSQL query history (`pg_stat_statements` doesn't record per-query timestamps) — see [docs/connectors.md](docs/connectors.md#postgresql--enabling-query-history-capture)
 
+[0.3.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.1.0
