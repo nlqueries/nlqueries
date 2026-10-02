@@ -104,9 +104,9 @@ services:
       # mapped to one subject that the grants below give everything. Callers
       # send it as `Authorization: Bearer <token>`.
       NLQ_MCP_STATIC_TOKEN: "${NLQ_MCP_STATIC_TOKEN:?set NLQ_MCP_STATIC_TOKEN in .env, generate one with openssl rand -hex 32}"
-      NLQ_MCP_STATIC_SUBJECT: "operator"
+      NLQ_MCP_STATIC_SUBJECT: "${NLQ_MCP_STATIC_SUBJECT:-operator}"
       NLQ_MCP_RESOURCE_URL: "${NLQ_MCP_RESOURCE_URL:-http://localhost:${MCP_PORT:-8080}}"
-      NLQ_MCP_GRANTS_FILE: /tmp/mcp-grants.yaml
+      NLQ_MCP_GRANTS_FILE: "${NLQ_MCP_GRANTS_FILE:-/tmp/mcp-grants.yaml}"
       # The model cache is written at first use. With a read-only root
       # filesystem the default location under $HOME is not writable, so it is
       # placed on the data volume, where it also survives a restart: measured,
@@ -116,17 +116,20 @@ services:
     # The grants file is written to /tmp at start, so the quickstart stays one
     # downloaded file: compose cannot inject an inline `configs:` entry into a
     # read_only service, and the root filesystem stays read-only. One subject,
-    # everything -- the token above is the only way in. To give different
-    # people different access, mount your own grants file and point
-    # NLQ_MCP_GRANTS_FILE at it (docs/mcp-authentication.md). The last line
-    # starts the server exactly as the image's CMD does.
+    # everything -- the token above is the only way in. The subject is read from
+    # NLQ_MCP_STATIC_SUBJECT when the file is written, so the grant and the
+    # token's subject cannot disagree (`$$` is compose's escape for a `$` the
+    # shell expands). To give different people different access, mount your own
+    # grants file and set NLQ_MCP_GRANTS_FILE to its path in .env
+    # (docs/mcp-authentication.md). The last line starts the server exactly as
+    # the image's CMD does; tests/test_compose_mcp_auth.py holds the two together.
     command:
       - sh
       - -c
       - |
-        cat > /tmp/mcp-grants.yaml <<'GRANTS'
+        cat > /tmp/mcp-grants.yaml <<GRANTS
         grants:
-          - subject: "operator"
+          - subject: "$${NLQ_MCP_STATIC_SUBJECT}"
             agents: ["*"]
             actions: ["*"]
         GRANTS
