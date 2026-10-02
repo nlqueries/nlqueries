@@ -4,28 +4,33 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
-### Changed
+## [0.3.0] — 2026-10-02
 
-- A model whose prefix names a provider other than Anthropic is refused when
-  the provider resolves to the native Anthropic client, rather than being sent
-  to api.anthropic.com and failing there. `AnthropicClient` does not inspect
-  the model id, so `LLM_MODEL=deepseek/deepseek-chat` alongside an Anthropic
-  key used to transmit the system prompt, the schema and the question before
-  the provider reported the model missing. The equivalent check already existed
-  for `bedrock/` only.
+### Upgrading from 0.2.0
 
-  An `anthropic/`-prefixed id is normalised to the bare form rather than
-  refused, so `anthropic/claude-sonnet-4-5` and `claude-sonnet-4-5` behave
-  identically; passing it through had the same leak-then-fail shape, since no
-  Anthropic model id contains a slash.
-
-  Two cases are deliberately left alone. A **bare** model name is not judged:
-  LiteLLM's registry spells DeepSeek's keys bare and Mistral's prefixed, so
-  placing one needs that registry, which this path does not consult. And the
-  check is skipped when `api_base` or `ANTHROPIC_BASE_URL` points the client at
-  a gateway, because the request does not reach api.anthropic.com and prefixed
-  ids may be exactly what that gateway expects. See
-  [docs/configuration.md](docs/configuration.md#provider-and-model-must-agree).
+- **The Docker quickstart needs an MCP token.** Add `NLQ_MCP_STATIC_TOKEN`
+  (generate it like the Qdrant key: `openssl rand -hex 32`) to `.env` next to
+  `QDRANT_API_KEY`. MCP clients send it as `Authorization: Bearer <token>`.
+- **A networked MCP server requires authentication.** `--transport sse` and
+  `--transport streamable-http` refuse to start without an identity provider or
+  a pre-shared token, `NLQ_MCP_RESOURCE_URL`, and a grants file. stdio (Claude
+  Desktop) is unaffected. `NLQ_ALLOW_UNAUTHENTICATED_MCP=1` restores the old
+  behaviour, with a warning on every start. See
+  [docs/mcp-authentication.md](docs/mcp-authentication.md).
+- **Semantic-cache entries are signed.** Entries written by 0.2.0 do not verify
+  and are treated as misses, so the cache refills. Set `NLQ_CACHE_SIGNING_KEY`
+  or `NLQ_CACHE_SIGNING_KEY_FILE` to keep one key across containers and
+  restarts.
+- **The compose file's Qdrant is now v1.18.2**, and a `qdrant-data` volume
+  written by v1.9.x will not open — see *Fixed* below and
+  [docs/qdrant-setup.md](docs/qdrant-setup.md).
+- **Python 3.14 is supported.** 0.1.0 and 0.2.0 declared `<3.14`, so pip on 3.14
+  installed 0.0.1 instead.
+- **`nlqueries process-history` exits 1** when the database's query history
+  cannot be read, and names the grant or install that fixes it, instead of
+  succeeding with nothing.
+- **Feedback whose origin cannot be established is no longer promoted.** Pass
+  `--include-anonymous` to `promote-feedback` to promote it anyway.
 
 ### Added
 
@@ -134,6 +139,64 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   an operator can run exact-match-only caching for a sensitive agent without
   turning the cache off. Existing deployments are unaffected by the defaults.
 
+- **Python 3.14 support.** `requires-python` is now `>=3.11,<3.15`, and CI tests
+  3.11 through 3.14.
+
+- **MCP authentication and authorisation.** A networked transport authenticates
+  callers with an identity provider (`NLQ_MCP_OIDC_DISCOVERY_URL`,
+  `NLQ_MCP_OIDC_CLIENT_ID`) or a pre-shared token (`NLQ_MCP_STATIC_TOKEN` or
+  `NLQ_MCP_STATIC_TOKEN_FILE`), with `NLQ_MCP_RESOURCE_URL`. Every tool call is
+  authorised against a grants file (`NLQ_MCP_GRANTS_FILE`) by subject, agent and
+  action, and audited. Each caller is also limited to
+  `NLQ_MCP_RATE_LIMIT_PER_MINUTE` calls (default 60) and
+  `NLQ_MCP_MAX_CONCURRENT` at once (default 8); `0` disables either. See
+  [docs/mcp-authentication.md](docs/mcp-authentication.md).
+
+- **One correction when the database rejects a generated statement.** The model
+  gets the database's error, the failed SQL and the question once; a correction
+  that passes the same validation as a first attempt runs on the same
+  connector. It starts only when the caller's deadline leaves time for it, and
+  cached-SQL replay does not get it.
+
+- **Markdown and plain-text documents.** `doc-ingest` reads `.md`, `.markdown`
+  and `.txt`.
+
+- **`nlqueries connect sqlalchemy --url <url>`** registers the generic
+  SQLAlchemy connector from the CLI.
+
+- **`NLQ_STATE_DIR`** (default `~/.nlqueries`) is the root for everything kept
+  between runs. The knowledge base, connector file, capsules and feedback
+  default under it and keep their own overrides; the embedding server's pid
+  file, the cache signing key and the CLI's session transcripts now live under
+  it too.
+
+- **`NLQ_EMBED_MODEL`** names the embedding model by hub name or local path. A
+  model whose vectors are the wrong width is refused at load. The default is
+  unchanged.
+
+- **`REDSHIFT_CONNECT_TIMEOUT_SECONDS`** (default 30), so the first query
+  against a Serverless workgroup resuming from zero does not fail on the
+  connection.
+
+- **Limits on document extraction.** A zip-based document (Excel, Word) is
+  refused before parsing if it would expand beyond
+  `NLQ_MAX_DOCUMENT_EXPANDED_BYTES` (400 MiB) or `NLQ_MAX_DOCUMENT_EXPANSION_RATIO`
+  (100×). Extraction is bounded by `NLQ_MAX_DOCUMENT_ROWS` (50,000) and
+  `NLQ_MAX_EXTRACTION_SECONDS` (120). Running out of time raises
+  `DocumentExtractionTimeout`, a subclass of `DocumentTooComplexError`, so it
+  can be retried apart from the final refusals.
+
+- **Table schemas in the knowledge base.** Each table records its `schema`, and
+  the prompt names it `schema.table`.
+
+- **Partial column lists are said so.** When a knowledge-base table lists only
+  some of its columns, the prompt and the MCP `get_agent_schema` tool say to
+  select those columns by name, never with `*`.
+
+- **`connector_class_for` and `set_connector_resolver`**, one seam through which
+  every connector class is resolved, so an embedding application can substitute
+  its own.
+
 ### Changed
 
 - On Bedrock, `LLM_MODEL_FAST` now defaults to whatever `LLM_MODEL` is instead of
@@ -208,6 +271,65 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   follow-up-scoped entry at all. See "Cache partitioning and authorisation" in
   `docs/architecture.md`.
 
+- A model whose prefix names a provider other than Anthropic is refused when
+  the provider resolves to the native Anthropic client, rather than being sent
+  to api.anthropic.com and failing there. `AnthropicClient` does not inspect
+  the model id, so `LLM_MODEL=deepseek/deepseek-chat` alongside an Anthropic
+  key used to transmit the system prompt, the schema and the question before
+  the provider reported the model missing. The equivalent check already existed
+  for `bedrock/` only.
+
+  An `anthropic/`-prefixed id is normalised to the bare form rather than
+  refused, so `anthropic/claude-sonnet-4-5` and `claude-sonnet-4-5` behave
+  identically; passing it through had the same leak-then-fail shape, since no
+  Anthropic model id contains a slash.
+
+  Two cases are deliberately left alone. A **bare** model name is not judged:
+  LiteLLM's registry spells DeepSeek's keys bare and Mistral's prefixed, so
+  placing one needs that registry, which this path does not consult. And the
+  check is skipped when `api_base` or `ANTHROPIC_BASE_URL` points the client at
+  a gateway, because the request does not reach api.anthropic.com and prefixed
+  ids may be exactly what that gateway expects. See
+  [docs/configuration.md](docs/configuration.md#provider-and-model-must-agree).
+
+- **The Docker quickstart configures MCP authentication.** `docker-compose.yml`
+  requires `NLQ_MCP_STATIC_TOKEN` and gives that token full access through a
+  grants file it writes at start; before this, the image's SSE server would
+  have refused to start under the shipped compose file.
+
+- **Postgres query history covers this database's reads only.** Statements from
+  other databases on the server, and writes, no longer use up the history
+  budget.
+
+- **Personal data is not sampled for column descriptions.** Columns whose names
+  mark them as personal data are described from their name and type, without
+  sample values. The sample query names each table with its schema.
+
+- **An unreadable query history is an error.** Postgres, SQL Server, BigQuery,
+  Redshift and Snowflake raise `QueryHistoryUnavailable`, saying what could not
+  be read and the grant or install that fixes it, instead of returning nothing.
+
+- **Schema extraction degrades instead of returning nothing.** Snowflake,
+  Redshift and SQL Server return tables, columns and row counts without key
+  information when key metadata cannot be read, and the generic SQLAlchemy
+  connector keeps a table whose keys cannot be read.
+
+- **Hybrid answers carry their data.** The answer includes the rows the SQL step
+  returned, the statement it ran (under `sql`) and whether the rows were
+  truncated, as the SQL path's answers already did.
+
+- **The generic SQLAlchemy connector applies TLS settings, or refuses them.**
+  For libpq-based PostgreSQL drivers they become connection arguments; for a
+  driver whose TLS parameters are not mapped, connecting raises instead of
+  silently ignoring them.
+
+- **A connector's stored configuration reaches the database** in every CLI path
+  — health check, schema extraction, history and queries — rather than a subset
+  of its fields.
+
+- **The licensor is Theorence Labs Private Limited**, in `LICENSE` and the
+  contributor licence agreement. The licence terms are unchanged.
+
 ### Fixed
 
 - **The shipped `docker-compose.yml` pinned a Qdrant that could not serve any
@@ -258,6 +380,24 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the entity patterns captured the question's quote characters as part of the
   value, so `"East"` compared against `"East"` rather than `East`.
 
+- **`docker compose up` could not start the stack.** The Qdrant healthcheck used
+  `wget`, which the Qdrant image does not ship, so Qdrant never reported healthy
+  and the core service never started.
+
+- **Redshift transactions.** `extract_schema`, `test_connection` and
+  `extract_query_history` end their transaction whether they succeed or fail,
+  and the row-count fallback actually runs.
+
+- **Connectors release the driver handle on close**, not only a SQLAlchemy
+  engine, without cutting off a call still in progress.
+
+- **Snowflake accepts a pasted host** and reduces it to the account identifier.
+
+- **Opening a connector says why it failed**, rather than returning nothing.
+
+- **An authenticated MCP server no longer logs that it has no
+  authentication** when bound to every interface.
+
 ### Security
 
 - The semantic cache no longer stores an entry whose answer is empty or is this
@@ -304,6 +444,36 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   database grant is doing work the connector cannot. MySQL additionally keeps
   the rollback only, since `SET SESSION TRANSACTION READ ONLY` is refused inside
   an open transaction and SQLAlchemy has already begun one.
+
+- **Signed semantic-cache entries.** Entries are signed with HMAC-SHA256 over
+  their contents and the context they were produced in (agent, connector,
+  dialect, schema, policy version) and verified on read; an entry this
+  deployment did not write is a miss. The key comes from
+  `NLQ_CACHE_SIGNING_KEY`, `NLQ_CACHE_SIGNING_KEY_FILE`, or one generated under
+  the state directory.
+
+- **A SQL policy decision is bound to the statement it was made about**, by
+  digest and dialect, so a decision for one statement cannot authorise another.
+
+- **OIDC tokens.** A provider whose discovery document has no `issuer` is
+  refused rather than verified with the issuer check off, and a token with no
+  `sub` is refused rather than becoming an empty identity.
+
+- **Feedback records where it came from**, and promotion skips records whose
+  origin cannot be established.
+
+- **The embedding server validates its requests** and answers malformed ones
+  with `400` instead of dropping the connection; state files are written with
+  restricted permissions.
+
+- **Hardened containers.** The composed core service runs with a read-only root
+  filesystem, a `noexec,nosuid` `/tmp`, all capabilities dropped,
+  `no-new-privileges`, and pid and memory limits. The image installs its
+  dependencies from a hashed lock (`requirements/core.lock`) on a base image
+  pinned by digest.
+
+- **Documented and benchmark services bind to loopback**, and a test keeps
+  every published port naming an interface.
 
 ## [0.2.0] — 2026-07-07
 

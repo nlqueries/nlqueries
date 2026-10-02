@@ -43,6 +43,12 @@ omits `issuer` is refused rather than accepted with the issuer check disabled,
 and a token carrying no `sub` is refused rather than becoming an identity of
 empty string.
 
+With the shipped `docker-compose.yml`, which requires `NLQ_MCP_STATIC_TOKEN`
+for its quickstart, using an identity provider means removing the
+`NLQ_MCP_STATIC_TOKEN` line from the compose file. Setting the provider's
+variables in `.env` alone leaves both options configured, which the server
+refuses.
+
 ### Option 2 — a pre-shared token
 
 For an install with no identity provider:
