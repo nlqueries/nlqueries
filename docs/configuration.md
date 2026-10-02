@@ -169,7 +169,7 @@ Running `docker compose up` from `core/` starts:
 | Service | Port | Purpose |
 |---|---|---|
 | `qdrant` | 6333 (REST), 6334 (gRPC) | Vector store for embeddings, semantic cache, document search |
-| `nlqueries-core` | 8080 | MCP server + CLI engine |
+| `nlqueries-core` | 8080 | MCP server (requires `NLQ_MCP_STATIC_TOKEN`, sent as a bearer token) + CLI engine |
 
 | Volume | Persists |
 |---|---|

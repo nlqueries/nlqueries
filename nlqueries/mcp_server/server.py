@@ -716,8 +716,8 @@ _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # noqa: S104
 _INSECURE_BIND_ENV = "NLQ_ALLOW_INSECURE_BIND"
 
 
-def _refuse_unauthenticated_exposure(host: str) -> None:
-    """Refuse a wildcard bind while the MCP server has no authentication.
+def _refuse_unauthenticated_exposure(host: str, *, authenticated: bool = False) -> None:
+    """Refuse a wildcard bind unless the operator has said they mean it.
 
     Every tool on this server is reachable without credentials — including
     `query`, which runs SQL against a configured database, and
@@ -731,22 +731,42 @@ def _refuse_unauthenticated_exposure(host: str) -> None:
     is a supported deployment that simply is not safe *yet*. The switch is the
     honest way to say "I know, and I am doing it anyway" — and it should be
     deleted, along with this function, once authentication lands.
+
+    Authentication has since landed (a networked transport now refuses to start
+    without it), but what this allows and refuses is unchanged: *authenticated*
+    changes only what it says. Told "no authentication" on a server that
+    requires a token, an operator reasonably concludes the token is not in
+    force -- the shipped compose file, which sets the switch and configures a
+    token, logged exactly that on every start.
     """
     if host not in _WILDCARD_HOSTS:
         return
     if os.getenv(_INSECURE_BIND_ENV, "").strip().lower() in {"1", "true", "yes"}:
-        _log.warning(
-            "MCP server bound to %s with no authentication: every tool, "
-            "including query and invalidate_cache, is reachable by anything "
-            "that can route here.",
-            host,
-        )
+        if authenticated:
+            _log.info(
+                "MCP server bound to %s: reachable from other hosts, and every "
+                "caller must authenticate.",
+                host,
+            )
+        else:
+            _log.warning(
+                "MCP server bound to %s with no authentication: every tool, "
+                "including query and invalidate_cache, is reachable by anything "
+                "that can route here.",
+                host,
+            )
         return
 
+    exposure = (
+        "authentication is on, but this still serves a database-query API on "
+        "every interface of this host"
+        if authenticated
+        else "it has no authentication, so every tool — including query, which "
+        "runs SQL against your database — would be reachable by anything that "
+        "can route to this host"
+    )
     raise SystemExit(
-        f"Refusing to bind the MCP server to {host!r}: it has no authentication, "
-        "so every tool — including query, which runs SQL against your database — "
-        "would be reachable by anything that can route to this host. "
+        f"Refusing to bind the MCP server to {host!r}: {exposure}. "
         "Use --host 127.0.0.1 (the default) and put a proxy in front if you need "
         f"remote access, or set {_INSECURE_BIND_ENV}=1 to bind anyway."
     )
@@ -810,11 +830,12 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
         host:      Bind host for the networked transports (ignored for stdio).
         port:      Port for the networked transports (ignored for stdio).
     """
+    # Authentication first, so the bind guard below can say whether it is on.
+    authenticated = _require_authentication(transport)
     if transport in _NETWORK_TRANSPORTS:
         # In `main`, not in the CLI: `mcp_entry.py` and `nlqueries-mcp` both
         # reach the server without passing through Click.
-        _refuse_unauthenticated_exposure(host)
-    authenticated = _require_authentication(transport)
+        _refuse_unauthenticated_exposure(host, authenticated=authenticated)
     server = (
         _build_server(host=host, port=port, authenticated=authenticated, networked=True)
         if transport in _NETWORK_TRANSPORTS

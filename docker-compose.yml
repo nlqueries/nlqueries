@@ -3,8 +3,8 @@
 #
 # Quickstart:
 #   cp .env.example .env
-#   # edit .env — set DATABASE_URL, your LLM API key, and QDRANT_API_KEY
-#   #   (generate one with: openssl rand -hex 32)
+#   # edit .env — set DATABASE_URL, your LLM API key, QDRANT_API_KEY and
+#   #   NLQ_MCP_STATIC_TOKEN (generate each with: openssl rand -hex 32)
 #   docker compose up
 #
 #   Once running:
@@ -98,12 +98,39 @@ services:
       # deployment's decision, not every `docker run`'s.
       NLQ_ALLOW_INSECURE_BIND: "1"
       QDRANT_API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
+      # The MCP server is served over SSE here, and a networked transport will
+      # not start without authentication (docs/mcp-authentication.md). The
+      # quickstart's answer is a pre-shared token, required like the Qdrant key,
+      # mapped to one subject that the grants below give everything. Callers
+      # send it as `Authorization: Bearer <token>`.
+      NLQ_MCP_STATIC_TOKEN: "${NLQ_MCP_STATIC_TOKEN:?set NLQ_MCP_STATIC_TOKEN in .env, generate one with openssl rand -hex 32}"
+      NLQ_MCP_STATIC_SUBJECT: "operator"
+      NLQ_MCP_RESOURCE_URL: "${NLQ_MCP_RESOURCE_URL:-http://localhost:${MCP_PORT:-8080}}"
+      NLQ_MCP_GRANTS_FILE: /tmp/mcp-grants.yaml
       # The model cache is written at first use. With a read-only root
       # filesystem the default location under $HOME is not writable, so it is
       # placed on the data volume, where it also survives a restart: measured,
       # a second start needs no network.
       XDG_CACHE_HOME: /data/nlqueries/cache
       HF_HOME: /data/nlqueries/cache/huggingface
+    # The grants file is written to /tmp at start, so the quickstart stays one
+    # downloaded file: compose cannot inject an inline `configs:` entry into a
+    # read_only service, and the root filesystem stays read-only. One subject,
+    # everything -- the token above is the only way in. To give different
+    # people different access, mount your own grants file and point
+    # NLQ_MCP_GRANTS_FILE at it (docs/mcp-authentication.md). The last line
+    # starts the server exactly as the image's CMD does.
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/mcp-grants.yaml <<'GRANTS'
+        grants:
+          - subject: "operator"
+            agents: ["*"]
+            actions: ["*"]
+        GRANTS
+        exec python -m nlqueries.mcp_server
     # Nothing here writes outside the data volume and /tmp. Measured: the MCP
     # server starts, listens, and embeds text under all of the following.
     read_only: true
@@ -121,9 +148,9 @@ services:
     volumes:
       - nlqueries-data:/data/nlqueries
     ports:
-      # Loopback, like the Qdrant ports above. The MCP server has no
-      # authentication: published on every interface, this is a database-query
-      # API open to whatever can route to the host.
+      # Loopback, like the Qdrant ports above. The MCP server requires the
+      # token set above, but it is still a database-query API: keep it off
+      # other interfaces unless you mean to serve it to them.
       - "${BIND_ADDR:-127.0.0.1}:${MCP_PORT:-8080}:8080"
     networks:
       - nlqueries
