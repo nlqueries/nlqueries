@@ -198,11 +198,11 @@ class LiteLLMClient(LLMClient):
     The model name follows LiteLLM conventions: ``provider/model-id``.
     Examples::
 
-        anthropic/claude-sonnet-4-5
+        anthropic/claude-sonnet-4-6
         openai/gpt-4o
         gemini/gemini-1.5-pro
         ollama/llama3
-        bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+        bedrock/us.anthropic.claude-sonnet-4-6
 
     API keys are read from environment variables automatically by LiteLLM
     (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.). An explicit

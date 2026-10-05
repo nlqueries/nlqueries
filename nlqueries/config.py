@@ -169,7 +169,7 @@ def _detect_model(provider: str) -> str:
         return explicit
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
         return "openai/gpt-4o"
-    return "claude-sonnet-4-5"
+    return "claude-sonnet-4-6"
 
 
 LLM_PROVIDER: str = _detect_provider()

@@ -131,3 +131,14 @@ def test_the_openai_fast_default_is_unchanged(monkeypatch: pytest.MonkeyPatch) -
 
 def test_the_anthropic_fast_default_is_unchanged() -> None:
     assert config._detect_fast_model("anthropic") == "claude-haiku-4-5-20251001"
+
+
+def test_the_default_model_is_sonnet_4_6() -> None:
+    """Sonnet 4.5 is being deprecated (owner, 2026-10-05)."""
+    assert config._detect_model("anthropic") == "claude-sonnet-4-6"
+
+
+def test_a_configured_older_model_is_still_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the default moved: nothing refuses or rewrites an older model."""
+    monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-5")
+    assert config._detect_model("anthropic") == "claude-sonnet-4-5"

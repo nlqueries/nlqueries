@@ -103,10 +103,15 @@ def get_llm_client(tier: str = "default") -> LLMClient:
         # is the first point at which an LLM is about to be used, so nothing has
         # been sent yet and nothing else breaks.
         setting = "LLM_MODEL_FAST" if tier == "fast" else "LLM_MODEL"
+        example = (
+            "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            if tier == "fast"
+            else "bedrock/us.anthropic.claude-sonnet-4-6"
+        )
         raise ValueError(
             f"Bedrock is configured, but the {tier} model {model!r} is not a Bedrock "
             f"model. Set {setting} to a Bedrock id, e.g. "
-            "bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0. A non-Bedrock model "
+            f"{example}. A non-Bedrock model "
             "here is routed to its own provider, which sends the request outside "
             "your AWS account."
         )

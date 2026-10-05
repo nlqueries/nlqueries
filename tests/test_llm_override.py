@@ -919,3 +919,18 @@ def test_extra_still_refuses_max_tokens() -> None:
     """
     with pytest.raises(ValueError, match="max_tokens"):
         LiteLLMClient(model="m", extra={"max_tokens": 50})
+
+
+@pytest.mark.parametrize(
+    ("tier", "example"),
+    [
+        ("default", "bedrock/us.anthropic.claude-sonnet-4-6"),
+        ("fast", "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+    ],
+)
+def test_the_bedrock_refusal_suggests_a_model_for_its_tier(tier: str, example: str) -> None:
+    """It suggested a Claude 3.5 Haiku id for every tier, the main one included."""
+    override = LLMOverride(provider="bedrock", model="claude-sonnet-4-5", fast_model="claude-x")
+    with use_llm_override(override), pytest.raises(ValueError) as refused:
+        get_llm_client(tier)
+    assert f"e.g. {example}." in str(refused.value)
