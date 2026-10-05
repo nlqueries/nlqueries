@@ -79,6 +79,47 @@ def _deadline(model: str, seconds: object) -> Iterator[None]:
         raise LLMTimeout(model, seconds) from exc
 
 
+def _caches_prompts(model: str) -> bool:
+    """Whether to send Anthropic-style ``cache_control`` blocks for *model*.
+
+    Claude on Amazon Bedrock only (owner, 2026-10-05): LiteLLM turns a
+    ``cache_control`` on a system content block into Bedrock's ``cachePoint``,
+    and Bedrock then serves the stable prefix -- the schema and instructions
+    the SQL prompt repeats for every question -- at the cache-read rate. Other
+    providers on this path either cache on their own (OpenAI) or are not
+    Claude, so they keep the flattened system prompt they always had. The
+    model must also be one LiteLLM knows to support prompt caching.
+    """
+    if not model.startswith("bedrock/"):
+        return False
+    bare = model[len("bedrock/") :]
+    for route in ("converse/", "invoke/"):
+        bare = bare.removeprefix(route)
+    # A cross-region inference profile puts its geography first: us., eu.,
+    # apac., global. -- the model family follows it.
+    family = bare.split(".", 1)[1] if bare.split(".", 1)[0] in _PROFILE_PREFIXES else bare
+    if not family.startswith("anthropic."):
+        return False
+    with contextlib.suppress(Exception):
+        return bool(litellm.utils.supports_prompt_caching(model=model))
+    return False
+
+
+_PROFILE_PREFIXES = frozenset({"us", "eu", "apac", "global", "us-gov", "ca", "jp", "au"})
+
+
+def _system_message(system: SystemParam, *, keep_blocks: bool) -> dict[str, Any]:
+    """The system message for a LiteLLM call.
+
+    With *keep_blocks* and a list of typed blocks, the blocks go through as
+    the message content -- ``cache_control`` and all -- for LiteLLM to turn
+    into the provider's cache marker; otherwise the text, flattened.
+    """
+    if keep_blocks and not isinstance(system, str):
+        return {"role": "system", "content": [dict(b) for b in system if isinstance(b, dict)]}
+    return {"role": "system", "content": _flatten_system(system)}
+
+
 def _flatten_system(system: SystemParam) -> str:
     """Convert a list of typed blocks to a plain string for providers that don't
     support Anthropic-style cache_control blocks."""
@@ -92,7 +133,10 @@ def _record_litellm_usage(model: str, usage: Any) -> None:
 
     ``prompt_tokens`` includes any cached tokens, so the cached count (when the
     provider reports it under ``prompt_tokens_details``) is split out into
-    ``cache_read_tokens`` and subtracted from the regular input. Best-effort.
+    ``cache_read_tokens`` and subtracted from the regular input. So are tokens
+    written to the cache (``cache_creation_tokens``, which Bedrock reports),
+    into ``cache_write_tokens``: they are billed at their own rate, not as
+    plain input. Best-effort.
     """
     if usage is None:
         return
@@ -101,13 +145,14 @@ def _record_litellm_usage(model: str, usage: Any) -> None:
         completion = int(getattr(usage, "completion_tokens", 0) or 0)
         details = getattr(usage, "prompt_tokens_details", None)
         cached = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
+        written = int(getattr(details, "cache_creation_tokens", 0) or 0) if details else 0
         record_usage(
             UsageRecord(
                 model=model,
-                input_tokens=max(0, prompt - cached),
+                input_tokens=max(0, prompt - cached - written),
                 output_tokens=completion,
                 cache_read_tokens=cached,
-                cache_write_tokens=0,
+                cache_write_tokens=written,
                 estimated=False,
             )
         )
@@ -195,6 +240,10 @@ class LiteLLMClient(LLMClient):
                     "api_base=) or the per-call arguments instead."
                 )
         self._model = model if model is not None else config.LLM_MODEL
+        # Per model, not per class: on this path only Claude on Bedrock takes
+        # cache markers (see _caches_prompts). The orchestrator reads it to
+        # decide whether to mark the prompt's stable block.
+        self.supports_prompt_caching = _caches_prompts(self._model)
         self._api_key = api_key
         self._api_base = api_base
         self._extra = extra
@@ -265,7 +314,7 @@ class LiteLLMClient(LLMClient):
             response = litellm.completion(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _flatten_system(system)},
+                    _system_message(system, keep_blocks=self.supports_prompt_caching),
                     {"role": "user", "content": user},
                 ],
                 max_tokens=budget,
@@ -295,7 +344,7 @@ class LiteLLMClient(LLMClient):
             response = litellm.completion(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _flatten_system(system)},
+                    _system_message(system, keep_blocks=self.supports_prompt_caching),
                     {"role": "user", "content": user},
                 ],
                 max_tokens=budget,
@@ -339,7 +388,7 @@ class LiteLLMClient(LLMClient):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _flatten_system(system)},
+                _system_message(system, keep_blocks=self.supports_prompt_caching),
                 {"role": "user", "content": user},
             ],
             "max_tokens": budget,
@@ -367,7 +416,7 @@ class LiteLLMClient(LLMClient):
             response = await litellm.acompletion(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _flatten_system(system)},
+                    _system_message(system, keep_blocks=self.supports_prompt_caching),
                     {"role": "user", "content": user},
                 ],
                 max_tokens=budget,
