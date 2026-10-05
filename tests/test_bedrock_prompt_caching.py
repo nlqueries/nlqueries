@@ -34,6 +34,10 @@ _BLOCKS: list[dict[str, Any]] = [
     ("model", "expected"),
     [
         (_SONNET, True),
+        # The documented default. Bedrock's Sonnet 4.6 inference profiles carry
+        # no date suffix; this one was called live with caching on 2026-10-05.
+        ("bedrock/us.anthropic.claude-sonnet-4-6", True),
+        ("bedrock/global.anthropic.claude-sonnet-4-6", True),
         ("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", True),
         ("bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0", True),
         ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", True),
