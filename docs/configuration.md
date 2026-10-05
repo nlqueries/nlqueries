@@ -6,7 +6,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | One of these two | — | Anthropic API key |
 | `OPENAI_API_KEY` | One of these two | — | OpenAI API key |
-| `LLM_MODEL` | No | `claude-sonnet-4-5` | LLM model identifier |
+| `LLM_MODEL` | No | `claude-sonnet-4-6` | LLM model identifier |
 | `LLM_PROVIDER` | No | Auto-detected | `anthropic`, `openai`, `bedrock`, or any LiteLLM provider. **Setting `OPENAI_API_KEY` alone does not switch the provider** — also set `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/<model>` to use OpenAI. An `LLM_MODEL` starting `bedrock/` selects Bedrock on its own; see [Amazon Bedrock](#amazon-bedrock). |
 | `DATABASE_URL` | No | — | Connection string for the database being queried, e.g. `postgresql+psycopg2://user:password@localhost:5432/mydb` |
 | `SSL_MODE` | No | `require` | TLS mode for the source database connection. `require` encrypts but verifies no certificate; use `verify-full` (with a CA) in production. `disable` restores plaintext, explicitly. |
@@ -59,7 +59,7 @@ the data has gone by the time the error arrives. That combination now raises at
 the first LLM call, naming both settings. The same applies to a `bedrock/`
 model reached through any other provider.
 
-`anthropic/claude-sonnet-4-5` is accepted and treated as `claude-sonnet-4-5`.
+`anthropic/claude-sonnet-4-6` is accepted and treated as `claude-sonnet-4-6`.
 The prefixed spelling is the form LiteLLM documents and a reasonable thing to
 write; passing it through unchanged had the same shape of failure, since no
 Anthropic model id contains a slash.
@@ -81,7 +81,7 @@ Bedrock is reached through LiteLLM, so there is no separate provider to install.
 Set `LLM_MODEL` to a `bedrock/` model id and NLQueries routes there:
 
 ```bash
-LLM_MODEL=bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+LLM_MODEL=bedrock/us.anthropic.claude-sonnet-4-6
 AWS_REGION=us-east-1
 ```
 

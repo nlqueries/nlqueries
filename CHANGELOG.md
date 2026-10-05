@@ -4,6 +4,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Changed
+
+- **The default model is Claude Sonnet 4.6** (`claude-sonnet-4-6`), replacing
+  Sonnet 4.5, which is being deprecated. Only installs that leave `LLM_MODEL`
+  unset change; a configured model, older ones included, is used as before.
+  The fast tier stays on Haiku 4.5 (`claude-haiku-4-5-20251001`), the newest
+  Haiku. The Bedrock examples in the docs, and the example in the error for a
+  non-Bedrock model on a Bedrock install, now name
+  `bedrock/us.anthropic.claude-sonnet-4-6` for the main model and
+  `bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0` for the fast one.
+
 ## [0.3.0] — 2026-10-02
 
 ### Upgrading from 0.2.0
