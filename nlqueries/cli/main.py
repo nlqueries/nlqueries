@@ -271,11 +271,18 @@ def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
     """
     from sqlglot.dialects.dialect import Dialect  # noqa: PLC0415
 
+    from nlqueries.connectors.loader import _find_connector_id  # noqa: PLC0415
     from nlqueries.sql_policy import _sqlglot_dialect, dialect_from_url  # noqa: PLC0415
 
     if explicit:
         return _sqlglot_dialect(explicit)
-    cfg = _load_connectors().get(agent_id) or {}
+    # The entry the loader will open, found the way it finds it: it also
+    # matches an id whose punctuation became underscores (`sqlite:/bird/dev`
+    # as `sqlite__bird_dev`), which a plain `.get` misses -- and missing it
+    # would generate Postgres for a query that then runs against SQLite.
+    connectors = _load_connectors()
+    connector_id = _find_connector_id(agent_id, connectors)
+    cfg = connectors.get(connector_id) or {} if connector_id else {}
     db_type = str(cfg.get("db_type") or "").lower()
     if db_type == "sqlalchemy":
         derived = dialect_from_url(str(cfg.get("url") or ""))

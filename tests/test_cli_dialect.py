@@ -82,6 +82,15 @@ def test_the_dialect_follows_the_flag_then_the_connector_then_postgres(
         assert _resolve_dialect(AGENT, explicit) == expected
 
 
+def test_an_underscored_id_finds_the_connector_the_loader_opens() -> None:
+    """The loader also matches an id whose punctuation became underscores (the
+    MCP form). Looked up with a plain ``.get``, that id found nothing and fell
+    back to Postgres while the query ran against SQLite."""
+    connectors = {"sqlite:/bird/dev.sqlite": {"db_type": "sqlite"}}
+    with patch.object(cli_main, "_load_connectors", return_value=connectors):
+        assert _resolve_dialect("sqlite__bird_dev.sqlite", None) == "sqlite"
+
+
 # ---------------------------------------------------------------------------
 # The three commands, with generation mocked
 # ---------------------------------------------------------------------------
@@ -127,10 +136,12 @@ class _Recorder:
         return _Orchestrator
 
 
-def _invoke(command: str, args: list[str], connectors: dict[str, Any], tmp_path: Path) -> Any:
+def _invoke(
+    command: str, args: list[str], connectors: dict[str, Any], tmp_path: Path, agent: str = AGENT
+) -> Any:
     """Run *command* with generation mocked; returns (result, dialects handed down)."""
     recorder = _Recorder()
-    (tmp_path / f"{AGENT}.yaml").write_text("{}", encoding="utf-8")
+    (tmp_path / f"{agent}.yaml").write_text("{}", encoding="utf-8")
 
     def _run_eval(kb: Any, cases: Any, generate: Any, *, dialect: str) -> list[Any]:
         recorder.dialects.append(dialect)
@@ -138,9 +149,9 @@ def _invoke(command: str, args: list[str], connectors: dict[str, Any], tmp_path:
         return []
 
     argv = {
-        "ask": ["ask", AGENT, "How many schools are there?"],
-        "query": ["query", AGENT, "How many schools are there?", "--no-execute", "--no-session"],
-        "eval": ["eval", AGENT],
+        "ask": ["ask", agent, "How many schools are there?"],
+        "query": ["query", agent, "How many schools are there?", "--no-execute", "--no-session"],
+        "eval": ["eval", agent],
     }[command]
     with (
         patch.object(cli_main, "_load_connectors", return_value=connectors),
@@ -173,6 +184,15 @@ def test_an_unknown_dialect_is_still_refused(command: str, tmp_path: Path) -> No
 def test_a_sqlite_connector_needs_no_flag(command: str, tmp_path: Path) -> None:
     sqlite = {AGENT: {"db_type": "sqlite", "database": "/bird/dev.sqlite"}}
     result, dialects = _invoke(command, [], sqlite, tmp_path)
+    assert result.exit_code == 0, result.output
+    assert dialects and set(dialects) == {"sqlite"}
+
+
+@pytest.mark.parametrize("command", ["ask", "query", "eval"])
+def test_an_underscored_id_gets_its_connector_s_dialect(command: str, tmp_path: Path) -> None:
+    sqlite = {"sqlite:/bird/dev.sqlite": {"db_type": "sqlite"}}
+    with patch.object(cli_main, "_resolve_alias", side_effect=lambda value: value):
+        result, dialects = _invoke(command, [], sqlite, tmp_path, agent="sqlite__bird_dev.sqlite")
     assert result.exit_code == 0, result.output
     assert dialects and set(dialects) == {"sqlite"}
 
