@@ -149,3 +149,35 @@ def test_the_listings_call_an_empty_entry_empty(tmp_path: Path) -> None:
     with patch("nlqueries.mcp_server.server.config.CONNECTORS_FILE", f):
         listed = list_connectors()
     assert "**blank** (empty entry)" in listed
+
+
+# --- A mapping whose `db_type:` has no value -----------------------------------
+
+NO_TYPE: dict[str, Any] = {"untyped": {"db_type": None, "host": "h", "database": "db"}}
+
+
+def test_doctor_checks_an_entry_whose_db_type_is_blank() -> None:
+    """`db_type:` with no value parses to None, and `.get("db_type", "")` only
+    covers an absent key: `.lower()` raised out of the whole health check."""
+    with patch.object(cli_main, "_load_connectors", return_value=NO_TYPE):
+        (result,) = _check_connectors(None)
+    assert result.status == "skip"
+    assert "no connector class for db_type ''" in result.detail
+
+
+@pytest.mark.parametrize("command", ["extract-schema", "process-history", "export-kb"])
+def test_a_command_on_an_entry_whose_db_type_is_blank_does_not_raise(command: str) -> None:
+    with patch.object(cli_main, "_load_connectors", return_value=NO_TYPE):
+        result = CliRunner().invoke(cli, [command, "untyped"])
+    assert not isinstance(result.exception, AttributeError), result.exception
+
+
+def test_the_listing_shows_an_entry_whose_db_type_is_blank() -> None:
+    out = io.StringIO()
+    with (
+        patch.object(cli_main, "_load_connectors", return_value=NO_TYPE),
+        patch.object(cli_main, "console", Console(file=out, width=200)),
+    ):
+        result = CliRunner().invoke(cli, ["connectors"])
+    assert result.exit_code == 0, result.output
+    assert "untyped" in out.getvalue()

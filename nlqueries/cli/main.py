@@ -483,7 +483,7 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
                 )
             )
             continue
-        db_type = cfg.get("db_type", "")
+        db_type = str(cfg.get("db_type") or "")
         alias = cfg.get("alias", "")
         label_name = alias if alias else cid
         service = f"Database ({label_name})"
@@ -1341,7 +1341,7 @@ def list_connectors() -> None:
             tbl.add_row(cid, f"[red]{shown}[/red]", "[dim]—[/dim]")
             continue
         alias = cfg.get("alias", "")
-        db_type = cfg.get("db_type", "")
+        db_type = str(cfg.get("db_type") or "")
         tbl.add_row(cid, db_type, f"[bold]{alias}[/bold]" if alias else "[dim]—[/dim]")
 
     console.print(tbl)
@@ -1373,7 +1373,7 @@ def extract_schema(connector_id: str) -> None:
 
     console.print(f"[bold]Extracting schema[/bold] for connector [cyan]{connector_id}[/cyan] …")
 
-    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+    connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
 
     if connector_cls is not None:
         # Use the registered DatabaseConnector implementation (e.g. PostgresConnector).
@@ -1662,7 +1662,7 @@ def process_history(
         f"(last [bold]{days}[/bold] days) …"
     )
 
-    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+    connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
     if connector_cls is None:
         err_console.print(
             f"[bold red]✗ No connector registered for db_type '{cfg.get('db_type')}'.[/bold red]"
@@ -1891,7 +1891,7 @@ def export_kb(
 
     console.print(f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …")
 
-    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+    connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
 
     if connector_cls is not None:
         # Registered connector path — use SchemaSpec + kb_generator
@@ -2758,7 +2758,7 @@ def query(
     ):
         try:
             cfg = _require_connector(agent_id)
-            connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+            connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
             if connector_cls is None:
                 err_console.print(
                     f"[yellow]⚠ No connector registered for db_type "
