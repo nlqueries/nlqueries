@@ -197,8 +197,9 @@ class LLMClient(ABC):
                          ``LLM_MAX_OUTPUT_TOKENS`` or the bound ``LLMOverride``.
             temperature: Sampling temperature (0.0–1.0).  ``None`` uses the
                          provider default.  Passed through on provider clients
-                         that override this method; ignored by the default
-                         thread-bridge implementation.
+                         that override this method, except to a model that
+                         rejects one (Claude 5 and later); ignored by the
+                         default thread-bridge implementation.
         """
         # Resolved here, not forwarded as ``None``. This bridge used to hand a
         # subclass the literal 1024, and an out-of-tree ``LLMClient`` typed the

@@ -10,6 +10,7 @@ import litellm
 import litellm.exceptions
 
 from nlqueries import config
+from nlqueries.llm.claude import accepts_temperature, effort_for
 from nlqueries.llm.client import (
     TRUNCATED,
     LLMClient,
@@ -108,6 +109,16 @@ def _caches_prompts(model: str) -> bool:
 _PROFILE_PREFIXES = frozenset({"us", "eu", "apac", "global", "us-gov", "ca", "jp", "au"})
 
 
+def _reaches_anthropic_api(model: str) -> bool:
+    """Whether LiteLLM sends *model* to the Anthropic API in its own shape.
+
+    ``anthropic/claude-...``, and a bare ``claude-...``, which LiteLLM routes
+    there too. Not ``bedrock/``, ``vertex_ai/`` or ``openrouter/``: each takes
+    an effort in its own request shape, and none of those has been checked.
+    """
+    return model.startswith(("anthropic/", "claude-"))
+
+
 def _system_message(system: SystemParam, *, keep_blocks: bool) -> dict[str, Any]:
     """The system message for a LiteLLM call.
 
@@ -188,7 +199,7 @@ def _record_estimated(model: str, prompt_text: str, output_text: str) -> None:
 #: owns: a host that sets one in ``extra`` is making a per-client choice, and
 #: ``_call_kwargs()`` lets it win rather than rejecting it.
 _RESERVED_COMPLETION_KWARGS = frozenset(
-    {"model", "messages", "max_tokens", "stream", "temperature"}
+    {"model", "messages", "max_tokens", "stream", "temperature", "output_config"}
 )
 
 
@@ -198,7 +209,7 @@ class LiteLLMClient(LLMClient):
     The model name follows LiteLLM conventions: ``provider/model-id``.
     Examples::
 
-        anthropic/claude-sonnet-4-6
+        anthropic/claude-sonnet-5-5
         openai/gpt-4o
         gemini/gemini-1.5-pro
         ollama/llama3
@@ -217,9 +228,9 @@ class LiteLLMClient(LLMClient):
     vocabulary while still supporting it.
 
     ``extra`` may not carry the names this class passes itself —
-    ``model``, ``messages``, ``max_tokens``, ``stream``, ``temperature`` — and
-    the constructor rejects them rather than letting the collision through. See
-    :data:`_RESERVED_COMPLETION_KWARGS`.
+    ``model``, ``messages``, ``max_tokens``, ``stream``, ``temperature``,
+    ``output_config`` — and the constructor rejects them rather than letting
+    the collision through. See :data:`_RESERVED_COMPLETION_KWARGS`.
     """
 
     def __init__(
@@ -303,6 +314,22 @@ class LiteLLMClient(LLMClient):
             kwargs.setdefault("timeout", config.LLM_TIMEOUT_SECONDS)
         return kwargs
 
+    def _model_kwargs(self, temperature: float | None = None) -> dict[str, Any]:
+        """This model's own arguments: its effort, and a temperature it accepts.
+
+        ``output_config`` goes in as a keyword argument, which LiteLLM maps into
+        the Anthropic request. ``extra_body`` would not work on this route:
+        LiteLLM forwards it as a field literally named ``extra_body``, and
+        Anthropic rejects the request with a 400.
+        """
+        kwargs: dict[str, Any] = {}
+        effort = effort_for(self._model) if _reaches_anthropic_api(self._model) else None
+        if effort is not None:
+            kwargs["output_config"] = {"effort": effort}
+        if temperature is not None and accepts_temperature(self._model):
+            kwargs["temperature"] = temperature
+        return kwargs
+
     # ------------------------------------------------------------------
     # Sync API
     # ------------------------------------------------------------------
@@ -318,6 +345,7 @@ class LiteLLMClient(LLMClient):
                     {"role": "user", "content": user},
                 ],
                 max_tokens=budget,
+                **self._model_kwargs(),
                 **auth,
             )
         content = response.choices[0].message.content or ""
@@ -349,6 +377,7 @@ class LiteLLMClient(LLMClient):
                 ],
                 max_tokens=budget,
                 stream=True,
+                **self._model_kwargs(),
                 **auth,
             )
             collected: list[str] = []
@@ -392,10 +421,9 @@ class LiteLLMClient(LLMClient):
                 {"role": "user", "content": user},
             ],
             "max_tokens": budget,
+            **self._model_kwargs(temperature),
             **self._call_kwargs(),
         }
-        if temperature is not None:
-            kwargs["temperature"] = temperature
         with _deadline(self._model, _configured_deadline(kwargs)):
             response = await litellm.acompletion(**kwargs)
         content = response.choices[0].message.content or ""
@@ -421,6 +449,7 @@ class LiteLLMClient(LLMClient):
                 ],
                 max_tokens=budget,
                 stream=True,
+                **self._model_kwargs(),
                 **auth,
             )
             collected: list[str] = []

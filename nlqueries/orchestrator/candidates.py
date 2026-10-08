@@ -54,6 +54,8 @@ _HARD_TABLE_THRESHOLD = 20
 # Temperatures to use for the N candidate calls.  The first call uses None
 # (provider default, typically 1.0) so it is identical to a non-consistency
 # run — ensuring reproducibility when only 1 candidate is requested.
+# Claude 5 and later reject a temperature, so the clients drop it for them and
+# every candidate samples at the default; they still differ, just not by design.
 _CANDIDATE_TEMPERATURES: list[float | None] = [None, 0.4, 0.8, 0.2, 0.6]
 
 

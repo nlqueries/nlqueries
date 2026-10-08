@@ -169,7 +169,7 @@ def _detect_model(provider: str) -> str:
         return explicit
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
         return "openai/gpt-4o"
-    return "claude-sonnet-4-6"
+    return "claude-sonnet-5-5"
 
 
 LLM_PROVIDER: str = _detect_provider()
@@ -203,7 +203,7 @@ def _output_budget() -> int:
     Ignored rather than clamped to 1, because a one-token answer is useless and
     the documented default is the behaviour the deployment already had.
     """
-    default = 1024
+    default = 4096
     written = os.getenv("LLM_MAX_OUTPUT_TOKENS", str(default))
     try:
         raw = int(written)
@@ -234,8 +234,15 @@ def _output_budget() -> int:
 LLM_MAX_OUTPUT_TOKENS: int = _output_budget()
 """Tokens an answer may generate. The one budget; every other one derives from it.
 
-1024 is what the answer path was hard-coded to, so an unset variable behaves
-exactly as before.
+4096 since the defaults moved to Claude Sonnet 5.5 and Haiku 5.5, which think
+before they answer whenever a question warrants it. It was 1024, what the answer
+path used to hard-code. On the hardest question of a ten-question comparison,
+Sonnet 5.5 thought, then ran out of that 1024 part-way through its SQL. Its
+correction ran out of the 512 the same way, and the question failed on invalid
+SQL. Given room, the same ten questions peaked at 1,368 tokens at the model's
+default effort and at 596 at the ``low`` effort these defaults send (see
+:data:`LLM_EFFORT`). The allowance is a ceiling, not a charge: tokens are billed
+as generated, so a model that stops early costs what it did before.
 
 It is a budget, not a length. A **reasoning** model bills its private reasoning
 from the same allowance, and spends it first: measured on `deepseek-v4-pro`, a
@@ -243,12 +250,60 @@ question classification asked for 200 tokens, used 56, and 52 of those were
 reasoning. At 5 tokens -- what the CLI and MCP health checks ask for -- all five
 went to reasoning and the content came back empty with `finish_reason=length`.
 Over a thousand of the models LiteLLM knows are flagged as reasoning models, so
-this is the common case now rather than an exotic one. A deployment on one of
-them needs this raised, and :func:`nlqueries.llm.output_budget` is how that
-reaches the calls that ask for less than an answer.
+this is the common case now rather than an exotic one. A deployment on one that
+thinks at length may need this higher still, and
+:func:`nlqueries.llm.output_budget` is how that reaches the calls that ask for
+less than an answer.
 
 A non-positive value is ignored, with a warning naming this setting -- see
 :func:`_output_budget` for why the warning matters more than the correction.
+"""
+
+#: The levels Claude's ``output_config.effort`` accepts.
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _effort() -> str | None:
+    """``LLM_EFFORT``, validated the way :func:`_output_budget` validates its value.
+
+    Unset means ``low``. Blank means send nothing, so the model applies its own
+    default. A value that is not a level is ignored with a warning naming the
+    setting, and ``low`` applies. Falling back to "nothing" instead would
+    quietly raise every request to the model's default effort, which is slower
+    and dearer.
+    """
+    default = "low"
+    written = os.getenv("LLM_EFFORT")
+    if written is None:
+        return default
+    value = written.strip().lower()
+    if not value:
+        return None
+    if value in _EFFORTS:
+        return value
+    logging.getLogger(__name__).warning(
+        "LLM_EFFORT=%r is not one of %s and is being ignored; using %r.",
+        written,
+        ", ".join(_EFFORTS),
+        default,
+    )
+    return default
+
+
+LLM_EFFORT: str | None = _effort()
+"""How hard Claude 5 and later think before answering: ``output_config.effort``.
+
+``low`` by default. Claude Sonnet 5.5 and Haiku 5.5 think adaptively, deciding
+per request whether to think at all, and the effort caps how much. Left to
+their own defaults (``high`` and ``medium``), the ten-question comparison that
+chose them answered all ten correctly in 4.8 s on average. At ``low`` they also
+answered all ten, in 3.8 s, for two thirds of the cost.
+
+Sent only to Claude 5 and later, and only through the Anthropic API: the
+Anthropic client, and LiteLLM with an ``anthropic/`` or bare ``claude-`` id.
+Bedrock, Vertex and OpenRouter take effort in their own request shapes, which
+have not been checked, so those routes keep each model's default. Other models
+are sent nothing. Blank sends nothing to any model.
 """
 
 
@@ -382,7 +437,7 @@ def _detect_fast_model(provider: str) -> str:
         return default_model
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
         return "openai/gpt-4o-mini"
-    return "claude-haiku-4-5-20251001"
+    return "claude-haiku-5-5"
 
 
 LLM_MODEL_FAST: str = _detect_fast_model(LLM_PROVIDER)
