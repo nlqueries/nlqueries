@@ -97,7 +97,7 @@ _DEFAULT_PORTS: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_connectors() -> dict[str, dict[str, Any]]:
+def _load_connectors() -> dict[str, Any]:
     """The connectors file, read through the loader's hardened reader.
 
     This used to be a second implementation of the same read, with the same
@@ -108,7 +108,10 @@ def _load_connectors() -> dict[str, dict[str, Any]]:
     """
     from nlqueries.connectors.loader import _load_connectors as _load  # noqa: PLC0415
 
-    loaded: dict[str, dict[str, Any]] = _load()
+    # `Any` values, as the loader declares them: an entry is meant to be a
+    # mapping, but a hand-edit can make it anything, and the readers here guard
+    # for that -- a narrower type would let mypy treat those guards as dead.
+    loaded: dict[str, Any] = _load()
     return loaded
 
 

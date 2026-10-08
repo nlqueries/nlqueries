@@ -484,9 +484,8 @@ def list_connectors() -> str:
         return "No connectors registered. Use 'nlqueries connect' to add one."
 
     try:
-        raw: dict[str, Any] = (
-            yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
-        )
+        # `object`: YAML can hold any shape, and the checks below are for that.
+        raw: object = yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
     except Exception as exc:  # noqa: BLE001
         return f"Failed to read connectors file: {exc}"
 
