@@ -282,7 +282,13 @@ def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
     # would generate Postgres for a query that then runs against SQLite.
     connectors = _load_connectors()
     connector_id = _find_connector_id(agent_id, connectors)
-    cfg = connectors.get(connector_id) or {} if connector_id else {}
+    cfg = connectors.get(connector_id) if connector_id else None
+    if not isinstance(cfg, dict):
+        # Absent, or not a mapping: `agent-a: postgresql://host/db` is a
+        # plausible hand-edit, and the loader reports it where it opens the
+        # connector. Here it names no dialect, rather than raising before
+        # that report can be made.
+        cfg = {}
     db_type = str(cfg.get("db_type") or "").lower()
     if db_type == "sqlalchemy":
         derived = dialect_from_url(str(cfg.get("url") or ""))

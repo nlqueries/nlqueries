@@ -91,6 +91,14 @@ def test_an_underscored_id_finds_the_connector_the_loader_opens() -> None:
         assert _resolve_dialect("sqlite__bird_dev.sqlite", None) == "sqlite"
 
 
+def test_an_entry_that_is_not_a_mapping_names_no_dialect() -> None:
+    """`agent-a: postgresql://host/db` is a plausible hand-edit. The loader
+    reports it where it opens the connector; choosing a dialect must not raise
+    first, which ``ask`` did before it had any connector lookup at all."""
+    with patch.object(cli_main, "_load_connectors", return_value={AGENT: "postgresql://h/db"}):
+        assert _resolve_dialect(AGENT, None) == "postgres"
+
+
 # ---------------------------------------------------------------------------
 # The three commands, with generation mocked
 # ---------------------------------------------------------------------------
