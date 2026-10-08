@@ -6,14 +6,31 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
-- **The default model is Claude Sonnet 4.6** (`claude-sonnet-4-6`), replacing
-  Sonnet 4.5, which is being deprecated. Only installs that leave `LLM_MODEL`
-  unset change; a configured model, older ones included, is used as before.
-  The fast tier stays on Haiku 4.5 (`claude-haiku-4-5-20251001`), the newest
-  Haiku. The Bedrock examples in the docs, and the example in the error for a
-  non-Bedrock model on a Bedrock install, now name
+- **The default models are Claude Sonnet 5.5** (`claude-sonnet-5-5`) **and
+  Haiku 5.5** (`claude-haiku-5-5`, the fast tier), replacing Sonnet 4.5 and
+  Haiku 4.5. Only installs that leave `LLM_MODEL` / `LLM_MODEL_FAST` unset
+  change; a configured model, older ones included, is used as before. On ten
+  real questions the pair answered all ten correctly, against eight for Sonnet
+  4.6 with Haiku 4.5, in a third of the time and for about two thirds of the
+  cost. The Bedrock examples in the docs, and the example in the error for a
+  non-Bedrock model on a Bedrock install, name
   `bedrock/us.anthropic.claude-sonnet-4-6` for the main model and
   `bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0` for the fast one.
+- **Claude 5 and later are sent an effort, and no temperature.** They think
+  adaptively, and `output_config.effort` caps how much: the new `LLM_EFFORT`
+  setting, `low` by default, applied through the Anthropic API only. They also
+  reject a `temperature` with a 400, so the self-consistency candidates no
+  longer send them one.
+- **`LLM_MAX_OUTPUT_TOKENS` defaults to 4096** (was 1024). Thinking is billed
+  from the same allowance, and at 1024 Sonnet 5.5 can run out part-way through
+  its SQL. Set it to 1024 to keep the old ceiling.
+
+### Fixed
+
+- **A temperature no longer fails the Anthropic client on anthropic 1.x.** The
+  SDK dropped `temperature` from `messages.create()`, so the self-consistency
+  candidates that pass one raised `TypeError` before sending anything, and
+  each such candidate was silently dropped. It is now sent in the request body.
 
 ## [0.3.0] — 2026-10-02
 

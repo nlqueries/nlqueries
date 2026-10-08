@@ -11,6 +11,7 @@ import anthropic
 import httpx
 
 from nlqueries import config
+from nlqueries.llm.claude import accepts_temperature, effort_for
 from nlqueries.llm.client import (
     TRUNCATED,
     LLMClient,
@@ -193,6 +194,29 @@ class AnthropicClient(LLMClient):
             return [{"type": "text", "text": system}]
         return system
 
+    def _body_extras(self, temperature: float | None = None) -> dict[str, Any]:
+        """``extra_body`` for this model: its effort, and a temperature it accepts.
+
+        Neither goes in as an argument to ``messages.create()``, because the
+        SDK's signature cannot be relied on for either. anthropic 1.x (1.2.0 in
+        this package's lock, 1.8.0 in the enterprise image) no longer accepts
+        ``temperature`` there and raises ``TypeError`` before sending anything.
+        The self-consistency candidates, the one caller that passes a
+        temperature, swallow that error and drop the candidate. ``output_config``
+        is newer than the oldest SDK this package allows. ``extra_body`` is in
+        every version and is merged into the request as written.
+
+        Empty, and so not sent at all, for a model before Claude 5 that was
+        given no temperature: those requests are exactly what they were.
+        """
+        extras: dict[str, Any] = {}
+        effort = effort_for(self._model)
+        if effort is not None:
+            extras["output_config"] = {"effort": effort}
+        if temperature is not None and accepts_temperature(self._model):
+            extras["temperature"] = temperature
+        return {"extra_body": extras} if extras else {}
+
     # ------------------------------------------------------------------
     # Sync API
     # ------------------------------------------------------------------
@@ -208,6 +232,7 @@ class AnthropicClient(LLMClient):
                         max_tokens=budget,
                         system=cast(Any, sys_blocks),
                         messages=[{"role": "user", "content": user}],
+                        **self._body_extras(),
                     )
                 _record_anthropic_usage(self._model, response.usage)
                 text = _text_of(response)
@@ -236,6 +261,7 @@ class AnthropicClient(LLMClient):
                 max_tokens=budget,
                 system=cast(Any, sys_blocks),
                 messages=[{"role": "user", "content": user}],
+                **self._body_extras(),
             ) as stream,
         ):
             for text in stream.text_stream:
@@ -275,9 +301,8 @@ class AnthropicClient(LLMClient):
             "max_tokens": budget,
             "system": cast(Any, sys_blocks),
             "messages": [{"role": "user", "content": user}],
+            **self._body_extras(temperature),
         }
-        if temperature is not None:
-            kwargs["temperature"] = temperature
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 with _deadline(self._model, self._httpx_timeout):
@@ -306,6 +331,7 @@ class AnthropicClient(LLMClient):
                 max_tokens=budget,
                 system=cast(Any, sys_blocks),
                 messages=[{"role": "user", "content": user}],
+                **self._body_extras(),
             ) as stream:
                 async for text in stream.text_stream:
                     collected.append(text)

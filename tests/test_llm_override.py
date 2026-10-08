@@ -209,7 +209,7 @@ def test_extra_may_not_carry_a_kwarg_the_client_already_passes() -> None:
     it silently wins instead. A host that put `max_tokens` in `extra` would get
     an exception from one method and a quietly capped answer from the other.
     """
-    for reserved in ("model", "messages", "max_tokens", "stream", "temperature"):
+    for reserved in ("model", "messages", "max_tokens", "stream", "temperature", "output_config"):
         with pytest.raises(ValueError, match="may not contain"):
             LiteLLMClient(model="bedrock/x", extra={reserved: "anything"})
 
@@ -668,17 +668,28 @@ def test_nothing_naming_a_provider_still_lets_the_model_decide() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_budget_defaults_are_what_the_call_sites_used_to_hard_code() -> None:
-    """The default must be a no-op, or this change moves every deployment's bill.
-
-    1024 / 512 / 200 are the numbers that were written at the call sites before
-    the budget was configurable. At the default they are what comes back, so an
-    operator who sets nothing sees exactly the behaviour they had.
+def test_budget_at_1024_is_what_the_call_sites_used_to_hard_code() -> None:
+    """1024 / 512 / 200 are the numbers written at the call sites before the
+    budget was configurable, and 1024 was its default until the 5.5 models.
+    An operator who pins 1024 still gets exactly those.
     """
     with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 1024):
         assert output_budget("answer") == 1024
         assert output_budget("correction") == 512
         assert output_budget("classification") == 200
+
+
+def test_budget_defaults_leave_the_5_5_models_room_to_think() -> None:
+    """4096 / 2048 / 512 at the default of 4096.
+
+    The default moved with the models: at 1024, Sonnet 5.5 ran out part-way
+    through its SQL on the hardest question of the comparison that chose it.
+    Classification, which only the floor held at 200 before, gets 512.
+    """
+    with patch.object(config, "LLM_MAX_OUTPUT_TOKENS", 4096):
+        assert output_budget("answer") == 4096
+        assert output_budget("correction") == 2048
+        assert output_budget("classification") == 512
 
 
 def test_raising_the_budget_raises_the_short_calls_too() -> None:
@@ -740,7 +751,7 @@ def test_a_nonpositive_environment_value_is_ignored_not_clamped() -> None:
     try:
         with patch.dict(os.environ, {"LLM_MAX_OUTPUT_TOKENS": "0"}):
             importlib.reload(config)
-            assert config.LLM_MAX_OUTPUT_TOKENS == 1024
+            assert config.LLM_MAX_OUTPUT_TOKENS == 4096
     finally:
         importlib.reload(config)
 
@@ -759,7 +770,7 @@ def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type:
     # environment. Nested the other way -- which is how this was written -- the
     # reload still saw `LLM_MAX_OUTPUT_TOKENS=0` and left the module pinned at
     # the default, so on a machine whose `.env` raises the budget every test
-    # after this one ran against 1024. Exactly the cascade the sibling test's
+    # after this one ran against the default. Exactly the cascade the sibling test's
     # docstring is about, introduced by the test written to describe it.
     try:
         with (
@@ -767,7 +778,7 @@ def test_a_clamped_environment_value_names_the_setting(caplog) -> None:  # type:
             caplog.at_level(logging.WARNING),
         ):
             importlib.reload(config)
-            assert config.LLM_MAX_OUTPUT_TOKENS == 1024
+            assert config.LLM_MAX_OUTPUT_TOKENS == 4096
             assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text
             # The message has to describe what actually happens. The first
             # version said "using the tier floor ... answers will be a single
@@ -796,7 +807,7 @@ def test_a_non_numeric_budget_does_not_abort_the_import(caplog) -> None:  # type
             ):
                 caplog.clear()
                 importlib.reload(config)
-                assert config.LLM_MAX_OUTPUT_TOKENS == 1024, written
+                assert config.LLM_MAX_OUTPUT_TOKENS == 4096, written
                 assert "LLM_MAX_OUTPUT_TOKENS" in caplog.text, written
         finally:
             importlib.reload(config)
