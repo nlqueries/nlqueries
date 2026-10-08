@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
-from nlqueries.sql_policy import ALLOWED_ANONYMOUS, POLICY_VERSION, evaluate
+from nlqueries.sql_policy import POLICY_VERSION, allowed_anonymous, evaluate
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ class InventoryReport:
         These would have to be added for the refused statements to run.
         Ordered by usage.
         """
-        permitted = ALLOWED_ANONYMOUS.get(self.dialect.lower(), frozenset())
+        permitted = allowed_anonymous(self.dialect)
         return [
             (name, n) for name, n in self.anonymous_counts.most_common() if name not in permitted
         ]

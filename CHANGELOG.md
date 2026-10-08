@@ -6,6 +6,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **SQL policy version 2: the function allowlist answers to every spelling of
+  a dialect.** `ALLOWED_ANONYMOUS` is keyed by sqlglot's names (`tsql`, not
+  `mssql`; `mysql` gains an entry) and read through the same aliases the parser
+  uses, so `mssql` and `tsql` share an entry, as do `postgresql` and `postgres`.
+  The one decision that changes: `postgresql` now gets Postgres's allowlist
+  (`age`, `jsonb_agg`, `regexp_matches`, `every`, `date_part`) where it used to
+  get none. Semantic-cache entries are signed with the policy version, so
+  those made under version 1 stop verifying: each such question misses once
+  and is cached again.
 - **`--dialect` accepts every engine `nlqueries connect` registers, and
   defaults to the connector's.** On `ask`, `query` and `eval` it used to offer
   only `postgres`, `snowflake` and `bigquery`, so a SQLite connector, a BIRD-SQL

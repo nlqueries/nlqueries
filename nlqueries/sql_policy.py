@@ -32,7 +32,11 @@ from sqlglot.errors import SqlglotError
 
 #: Incremented when a decision made by this module could change. Recorded on
 #: every decision so a stored verdict can be told apart from a current one.
-POLICY_VERSION = "1"
+#:
+#: 2: the anonymous-function allowlist is keyed by sqlglot's dialect names and
+#: looked up through the aliases below, so ``postgresql`` now gets Postgres's
+#: entry, where it used to miss the table and be allowed nothing.
+POLICY_VERSION = "2"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -62,12 +66,19 @@ _FORBIDDEN_NODES: tuple[type[exp.Expression], ...] = (
 #: Functions sqlglot does not model that are safe to run, per dialect. Each
 #: entry records that the named function reads data and performs no other
 #: action.
+#:
+#: Keyed by sqlglot's dialect names, and read through :func:`allowed_anonymous`,
+#: which resolves the other spellings first. Keyed by the callers' spellings it
+#: drifted: the CLI hands SQL Server down as ``tsql``, the name sqlglot parses,
+#: and an entry under ``mssql`` was out of its reach -- as it already was for
+#: an enterprise SQLAlchemy connector, whose dialect comes from its URL.
 ALLOWED_ANONYMOUS: dict[str, frozenset[str]] = {
     "postgres": frozenset({"age", "jsonb_agg", "regexp_matches", "every", "date_part"}),
     "redshift": frozenset({"age", "regexp_matches", "every", "date_part"}),
     "snowflake": frozenset({"every"}),
     "bigquery": frozenset(),
-    "mssql": frozenset(),
+    "tsql": frozenset(),
+    "mysql": frozenset(),
     "sqlite": frozenset(),
     "duckdb": frozenset({"every"}),
 }
@@ -88,6 +99,15 @@ _DIALECT_ALIASES = {
 
 def _sqlglot_dialect(dialect: str) -> str:
     return _DIALECT_ALIASES.get(dialect.lower(), dialect.lower())
+
+
+def allowed_anonymous(dialect: str) -> frozenset[str]:
+    """The unmodelled functions *dialect* may call, whichever spelling names it.
+
+    ``mssql`` and ``tsql`` share an entry, as do ``postgresql`` and
+    ``postgres``. A dialect with no entry may call none.
+    """
+    return ALLOWED_ANONYMOUS.get(_sqlglot_dialect(dialect), frozenset())
 
 
 def digest_of(sql: str) -> str:
@@ -293,7 +313,7 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         reasons.append(f"contains {', '.join(forbidden)}")
 
     anonymous = tuple(sorted({n.name.lower() for n in tree.find_all(exp.Anonymous) if n.name}))
-    permitted = ALLOWED_ANONYMOUS.get(dialect.lower(), frozenset())
+    permitted = allowed_anonymous(dialect)
     refused = [name for name in anonymous if name not in permitted]
     if refused:
         reasons.append(f"calls unrecognised function(s): {', '.join(refused)}")
