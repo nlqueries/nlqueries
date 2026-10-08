@@ -44,6 +44,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `list_connectors` tool. The listings now name the entry. `doctor` reports it
   as a failed check, and a command that opens the connector refuses with a
   message that names it and says to register it again.
+- **A connector whose `db_type:` is blank, or not text, no longer crashes the
+  CLI either.** A key present with no value read as None past the `""`
+  default, and `.lower()` on it took down `doctor`'s health check and
+  `extract-schema`, `process-history`, `export-kb`, `kb-stats` and `query`'s
+  execution step. Each now reads the type as text, so a blank one reaches the
+  command's own "no connector class" or "unsupported db-type" message.
 - **A temperature no longer fails the Anthropic client on anthropic 1.x.** The
   SDK dropped `temperature` from `messages.create()`, so the self-consistency
   candidates that pass one raised `TypeError` before sending anything, and

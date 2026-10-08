@@ -3405,7 +3405,7 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
     cfg = _load_connectors().get(agent_id)
     # Best-effort, like the connection below: a malformed entry skips it.
     if isinstance(cfg, dict):
-        connector_cls = connector_class_for((cfg.get("db_type") or "").lower(), cfg)
+        connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
         if connector_cls is not None:
             try:
                 connector = connector_cls()

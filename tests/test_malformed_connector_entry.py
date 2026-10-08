@@ -181,3 +181,15 @@ def test_the_listing_shows_an_entry_whose_db_type_is_blank() -> None:
         result = CliRunner().invoke(cli, ["connectors"])
     assert result.exit_code == 0, result.output
     assert "untyped" in out.getvalue()
+
+
+def test_kb_stats_reads_a_db_type_that_is_not_text(tmp_path: Path) -> None:
+    """`db_type: 2024` is truthy, so `or ""` let it through to `.lower()`."""
+    entry = {"numbered": {"db_type": 2024, "host": "h", "database": "db"}}
+    with (
+        patch.object(cli_main, "_load_connectors", return_value=entry),
+        patch.object(cli_main, "KB_PATH", tmp_path),
+    ):
+        result = CliRunner().invoke(cli, ["kb-stats", "numbered"])
+    assert not isinstance(result.exception, AttributeError), result.exception
+    assert result.exit_code == 1
