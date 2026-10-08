@@ -165,11 +165,26 @@ def test_doctor_checks_an_entry_whose_db_type_is_blank() -> None:
     assert "no connector class for db_type ''" in result.detail
 
 
-@pytest.mark.parametrize("command", ["extract-schema", "process-history", "export-kb"])
-def test_a_command_on_an_entry_whose_db_type_is_blank_does_not_raise(command: str) -> None:
+@pytest.mark.parametrize(
+    ("args", "after_the_read"),
+    [
+        (["extract-schema", "untyped"], "Schema extraction failed"),
+        # `--annotate` is the default, and without an LLM credential its
+        # preflight exits before the read -- which "not an AttributeError" also
+        # accepts, so whether the read ran depended on the machine's environment.
+        (["process-history", "untyped", "--no-annotate"], "No connector registered for db_type"),
+        (["export-kb", "untyped"], "Knowledge base generation failed"),
+    ],
+)
+def test_a_command_on_an_entry_whose_db_type_is_blank_does_not_raise(
+    args: list[str], after_the_read: str
+) -> None:
+    """Each command reaches its own message for a type it has no connector for,
+    printed only after the `db_type` read, so the read is shown to have run."""
     with patch.object(cli_main, "_load_connectors", return_value=NO_TYPE):
-        result = CliRunner().invoke(cli, [command, "untyped"])
+        result = CliRunner().invoke(cli, args)
     assert not isinstance(result.exception, AttributeError), result.exception
+    assert after_the_read in result.output, result.output
 
 
 def test_the_listing_shows_an_entry_whose_db_type_is_blank() -> None:
