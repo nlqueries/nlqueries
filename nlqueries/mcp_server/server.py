@@ -484,17 +484,30 @@ def list_connectors() -> str:
         return "No connectors registered. Use 'nlqueries connect' to add one."
 
     try:
-        raw: dict[str, Any] = (
-            yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
-        )
+        # `object`: YAML can hold any shape, and the checks below are for that.
+        raw: object = yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
     except Exception as exc:  # noqa: BLE001
         return f"Failed to read connectors file: {exc}"
 
     if not raw:
         return "No connectors registered. Use 'nlqueries connect' to add one."
+    if not isinstance(raw, dict):
+        return (
+            f"Failed to read connectors file: its top level is a {type(raw).__name__}, "
+            "not a mapping of connector ids to settings."
+        )
 
     lines = ["## Registered Connectors\n"]
     for connector_id, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            # Listed, so the entry to fix is named; reading it raised.
+            shown = (
+                "empty entry"
+                if cfg is None
+                else f"not a mapping of connection settings: {type(cfg).__name__}"
+            )
+            lines.append(f"- **{connector_id}** ({shown})")
+            continue
         db_type = cfg.get("db_type", cfg.get("type", "unknown"))
         host = cfg.get("host", "")
         database = cfg.get("database", "")

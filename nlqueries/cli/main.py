@@ -97,7 +97,7 @@ _DEFAULT_PORTS: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_connectors() -> dict[str, dict[str, Any]]:
+def _load_connectors() -> dict[str, Any]:
     """The connectors file, read through the loader's hardened reader.
 
     This used to be a second implementation of the same read, with the same
@@ -108,7 +108,10 @@ def _load_connectors() -> dict[str, dict[str, Any]]:
     """
     from nlqueries.connectors.loader import _load_connectors as _load  # noqa: PLC0415
 
-    loaded: dict[str, dict[str, Any]] = _load()
+    # `Any` values, as the loader declares them: an entry is meant to be a
+    # mapping, but a hand-edit can make it anything, and the readers here guard
+    # for that -- a narrower type would let mypy treat those guards as dead.
+    loaded: dict[str, Any] = _load()
     return loaded
 
 
@@ -239,9 +242,24 @@ def _resolve_alias(value: str) -> str:
     if value in connectors:
         return value
     for cid, cfg in connectors.items():
-        if cfg.get("alias") == value:
+        # An entry that is not a mapping -- `agent-a: postgresql://host/db`, a
+        # plausible hand-edit -- has no alias. Skipped rather than read: the
+        # loader reports it where it opens the connector, and reading it here
+        # raised AttributeError out of every command given an alias.
+        if isinstance(cfg, dict) and cfg.get("alias") == value:
             return cid
     return value
+
+
+def _what_the_entry_is(cfg: object) -> str:
+    """A malformed connectors entry, described for the person fixing the file.
+
+    ``agent-a:`` with nothing after it parses to ``None``; "a NoneType" is
+    Python's word for that, not theirs, and the loader calls it empty.
+    """
+    if cfg is None:
+        return "empty"
+    return f"a {type(cfg).__name__}, not a mapping of connection settings"
 
 
 def _require_connector(connector_id: str) -> dict[str, Any]:
@@ -253,7 +271,18 @@ def _require_connector(connector_id: str) -> dict[str, Any]:
             f"--database <db> --user <u> --password <p>\n"
             f"  List connectors:    nlqueries connectors"
         )
-    return connectors[connector_id]
+    cfg = connectors[connector_id]
+    if not isinstance(cfg, dict):
+        # Every caller reads settings off this with `.get`, so a hand-edited
+        # `id: postgresql://host/db` raised AttributeError out of seven
+        # commands -- or, inside `query`'s execution step, surfaced as "'str'
+        # object has no attribute 'get'". Named here, with the fix.
+        raise click.ClickException(
+            f"Connector '{connector_id}' in {CONNECTORS_FILE} is "
+            f"{_what_the_entry_is(cfg)}.\n"
+            f"  Register it again:  nlqueries connect <db-type> ... --alias <alias>"
+        )
+    return cfg
 
 
 def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
@@ -442,7 +471,19 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
 
     results: list[_CheckResult] = []
     for cid, cfg in connectors.items():
-        db_type = cfg.get("db_type", "")
+        if not isinstance(cfg, dict):
+            # Reported, not raised: one hand-edited entry used to take down the
+            # whole health check, which is the command an operator runs to
+            # find out what is wrong.
+            results.append(
+                _CheckResult(
+                    f"Database ({cid})",
+                    "fail",
+                    f"the entry in {CONNECTORS_FILE.name} is {_what_the_entry_is(cfg)}",
+                )
+            )
+            continue
+        db_type = str(cfg.get("db_type") or "")
         alias = cfg.get("alias", "")
         label_name = alias if alias else cid
         service = f"Database ({label_name})"
@@ -1294,8 +1335,13 @@ def list_connectors() -> None:
     tbl.add_column("Alias")
 
     for cid, cfg in connectors.items():
+        if not isinstance(cfg, dict):
+            # Listed, so the operator can see which entry to fix.
+            shown = "empty" if cfg is None else f"not a mapping ({type(cfg).__name__})"
+            tbl.add_row(cid, f"[red]{shown}[/red]", "[dim]—[/dim]")
+            continue
         alias = cfg.get("alias", "")
-        db_type = cfg.get("db_type", "")
+        db_type = str(cfg.get("db_type") or "")
         tbl.add_row(cid, db_type, f"[bold]{alias}[/bold]" if alias else "[dim]—[/dim]")
 
     console.print(tbl)
@@ -1327,7 +1373,7 @@ def extract_schema(connector_id: str) -> None:
 
     console.print(f"[bold]Extracting schema[/bold] for connector [cyan]{connector_id}[/cyan] …")
 
-    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+    connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
 
     if connector_cls is not None:
         # Use the registered DatabaseConnector implementation (e.g. PostgresConnector).
@@ -1616,7 +1662,7 @@ def process_history(
         f"(last [bold]{days}[/bold] days) …"
     )
 
-    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+    connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
     if connector_cls is None:
         err_console.print(
             f"[bold red]✗ No connector registered for db_type '{cfg.get('db_type')}'.[/bold red]"
@@ -1845,7 +1891,7 @@ def export_kb(
 
     console.print(f"[bold]Generating knowledge base[/bold] for [cyan]{connector_id}[/cyan] …")
 
-    connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+    connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
 
     if connector_cls is not None:
         # Registered connector path — use SchemaSpec + kb_generator
@@ -2712,7 +2758,7 @@ def query(
     ):
         try:
             cfg = _require_connector(agent_id)
-            connector_cls = connector_class_for(cfg.get("db_type", "").lower(), cfg)
+            connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
             if connector_cls is None:
                 err_console.print(
                     f"[yellow]⚠ No connector registered for db_type "
@@ -3357,8 +3403,9 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
     # Try to connect to the live DB — best-effort; skip gracefully on failure.
     connector: Any = None
     cfg = _load_connectors().get(agent_id)
-    if cfg is not None:
-        connector_cls = connector_class_for((cfg.get("db_type") or "").lower(), cfg)
+    # Best-effort, like the connection below: a malformed entry skips it.
+    if isinstance(cfg, dict):
+        connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
         if connector_cls is not None:
             try:
                 connector = connector_cls()
