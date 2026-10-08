@@ -108,3 +108,44 @@ def test_kb_stats_skips_the_connection_for_a_malformed_entry(tmp_path: Path) -> 
         result = CliRunner().invoke(cli, ["kb-stats", "bad"])
     assert not isinstance(result.exception, AttributeError), result.exception
     assert result.exit_code == 1
+
+
+# --- An empty entry, `agent-a:` with nothing after it, reads as empty ----------
+
+EMPTY: dict[str, Any] = {"blank": None, **CONNECTORS}
+
+
+def test_an_empty_entry_is_called_empty_not_a_nonetype() -> None:
+    """The loader calls this file state empty; "a NoneType" is Python's word."""
+    with (
+        patch.object(cli_main, "_load_connectors", return_value=EMPTY),
+        pytest.raises(click.ClickException) as refused,
+    ):
+        _require_connector("blank")
+    assert "is empty" in refused.value.message
+    assert "NoneType" not in refused.value.message
+
+    with (
+        patch.object(cli_main, "_load_connectors", return_value=EMPTY),
+        patch.object(cli_main, "connector_class_for", return_value=None),
+    ):
+        blank = {r.service: r for r in _check_connectors(None)}["Database (blank)"]
+    assert blank.status == "fail" and blank.detail.endswith("is empty")
+
+
+def test_the_listings_call_an_empty_entry_empty(tmp_path: Path) -> None:
+    out = io.StringIO()
+    with (
+        patch.object(cli_main, "_load_connectors", return_value=EMPTY),
+        patch.object(cli_main, "console", Console(file=out, width=200)),
+    ):
+        CliRunner().invoke(cli, ["connectors"])
+    assert "empty" in out.getvalue() and "NoneType" not in out.getvalue()
+
+    from nlqueries.mcp_server.server import list_connectors
+
+    f = tmp_path / "connectors.yaml"
+    f.write_text("blank:\ngood:\n  db_type: postgres\n", encoding="utf-8")
+    with patch("nlqueries.mcp_server.server.config.CONNECTORS_FILE", f):
+        listed = list_connectors()
+    assert "**blank** (empty entry)" in listed

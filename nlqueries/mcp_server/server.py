@@ -501,9 +501,12 @@ def list_connectors() -> str:
     for connector_id, cfg in raw.items():
         if not isinstance(cfg, dict):
             # Listed, so the entry to fix is named; reading it raised.
-            lines.append(
-                f"- **{connector_id}** (not a mapping of connection settings: {type(cfg).__name__})"
+            shown = (
+                "empty entry"
+                if cfg is None
+                else f"not a mapping of connection settings: {type(cfg).__name__}"
             )
+            lines.append(f"- **{connector_id}** ({shown})")
             continue
         db_type = cfg.get("db_type", cfg.get("type", "unknown"))
         host = cfg.get("host", "")

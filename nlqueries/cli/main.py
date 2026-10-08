@@ -251,6 +251,17 @@ def _resolve_alias(value: str) -> str:
     return value
 
 
+def _what_the_entry_is(cfg: object) -> str:
+    """A malformed connectors entry, described for the person fixing the file.
+
+    ``agent-a:`` with nothing after it parses to ``None``; "a NoneType" is
+    Python's word for that, not theirs, and the loader calls it empty.
+    """
+    if cfg is None:
+        return "empty"
+    return f"a {type(cfg).__name__}, not a mapping of connection settings"
+
+
 def _require_connector(connector_id: str) -> dict[str, Any]:
     connectors = _load_connectors()
     if connector_id not in connectors:
@@ -267,8 +278,8 @@ def _require_connector(connector_id: str) -> dict[str, Any]:
         # commands -- or, inside `query`'s execution step, surfaced as "'str'
         # object has no attribute 'get'". Named here, with the fix.
         raise click.ClickException(
-            f"Connector '{connector_id}' in {CONNECTORS_FILE} is a "
-            f"{type(cfg).__name__}, not a mapping of connection settings.\n"
+            f"Connector '{connector_id}' in {CONNECTORS_FILE} is "
+            f"{_what_the_entry_is(cfg)}.\n"
             f"  Register it again:  nlqueries connect <db-type> ... --alias <alias>"
         )
     return cfg
@@ -468,8 +479,7 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
                 _CheckResult(
                     f"Database ({cid})",
                     "fail",
-                    f"the entry in {CONNECTORS_FILE.name} is a {type(cfg).__name__}, "
-                    "not a mapping of connection settings",
+                    f"the entry in {CONNECTORS_FILE.name} is {_what_the_entry_is(cfg)}",
                 )
             )
             continue
@@ -1327,7 +1337,8 @@ def list_connectors() -> None:
     for cid, cfg in connectors.items():
         if not isinstance(cfg, dict):
             # Listed, so the operator can see which entry to fix.
-            tbl.add_row(cid, f"[red]not a mapping ({type(cfg).__name__})[/red]", "[dim]—[/dim]")
+            shown = "empty" if cfg is None else f"not a mapping ({type(cfg).__name__})"
+            tbl.add_row(cid, f"[red]{shown}[/red]", "[dim]—[/dim]")
             continue
         alias = cfg.get("alias", "")
         db_type = cfg.get("db_type", "")
