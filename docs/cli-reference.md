@@ -263,6 +263,7 @@ Output includes agent type, answer, generated SQL, and latency. The orchestrator
 | `--execute` / `--no-execute` | on | Execute the generated SQL and display rows |
 | `--session` / `--no-session` | on | Carry conversation context across queries for follow-up questions |
 | `--new-session` | off | Start a fresh conversation, discarding prior context |
+| `--dialect` | the connector's type, else `postgres` | SQL dialect used for generation: `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`. Without it, the agent's connector type decides (for a `sqlalchemy` connector, the engine its URL names), and `postgres` when that names none |
 
 Conversational context is persisted per agent in `~/.nlqueries/sessions/` and carried forward automatically between calls.
 
@@ -281,7 +282,7 @@ nlqueries eval <connector-or-alias> --json        # machine-readable per-case re
 | Flag | Default | Description |
 |---|---|---|
 | `--golden PATH` | none | A golden questions YAML (`- q: … / agent: … / expect_tables: […]`); cases scoped to this agent are added on top of the KB's capsules |
-| `--dialect` | `postgres` | SQL dialect used for generation + parsing (`postgres`, `snowflake`, `bigquery`) |
+| `--dialect` | the connector's type, else `postgres` | SQL dialect used for generation + parsing: `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`. Without it, the agent's connector type decides (for a `sqlalchemy` connector, the engine its URL names), and `postgres` when that names none |
 | `--max-cases N` | `50` | Cap on cases evaluated per run |
 | `--json` | off | Emit JSON: `{total, passed, failed, cases: [{question, source, ok, reason, sql}]}` |
 
@@ -297,7 +298,7 @@ Generates and validates SQL **without executing it** — no database connection 
 nlqueries ask <connector-or-alias> "Top 10 customers by revenue"
 ```
 
-Streams reasoning tokens, then a JSON chunk with the validated SQL.
+Streams reasoning tokens, then a JSON chunk with the validated SQL. `--dialect` works as it does for [`query`](#query): any of `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`, defaulting to the connector's type, else `postgres`.
 
 ---
 

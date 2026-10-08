@@ -61,6 +61,26 @@ _DB_SCHEMES: dict[str, str] = {
     "sqlite": "sqlite",
 }
 
+#: What ``--dialect`` accepts on ``ask``, ``query`` and ``eval``: the grammar of
+#: each database ``nlqueries connect`` registers (``_DB_SCHEMES`` without its
+#: ``postgresql`` spelling). One tuple for all three options, which were three
+#: copies of ``postgres`` / ``snowflake`` / ``bigquery`` and had not followed
+#: the connectors added since -- SQLite among them.
+DIALECT_CHOICES: tuple[str, ...] = (
+    "postgres",
+    "mysql",
+    "snowflake",
+    "bigquery",
+    "redshift",
+    "mssql",
+    "duckdb",
+    "sqlite",
+)
+
+#: The dialect when neither ``--dialect`` nor the connector names one: the
+#: option's default before it learned to read the connector.
+_FALLBACK_DIALECT = "postgres"
+
 _DEFAULT_PORTS: dict[str, int] = {
     "postgres": 5432,
     "postgresql": 5432,
@@ -234,6 +254,55 @@ def _require_connector(connector_id: str) -> dict[str, Any]:
             f"  List connectors:    nlqueries connectors"
         )
     return connectors[connector_id]
+
+
+def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
+    """The SQL dialect a command on *agent_id* generates and parses in.
+
+    ``--dialect`` when it was given. Otherwise the connector's own type, as
+    ``nlqueries connect`` saved it -- or, for the generic ``sqlalchemy``
+    connector, whose type names no grammar, the engine its URL names -- and
+    ``postgres`` when neither says, which is what the option used to default to.
+    So a SQLite connector generates SQLite without a flag.
+
+    Returned as sqlglot spells it (``mssql`` is ``tsql``): the orchestrator, the
+    candidate ranker and ``eval`` hand it to ``sqlglot.parse_one`` as it is, and
+    sqlglot has no dialect called ``mssql``.
+    """
+    from sqlglot.dialects.dialect import Dialect  # noqa: PLC0415
+
+    from nlqueries.connectors.loader import _find_connector_id  # noqa: PLC0415
+    from nlqueries.sql_policy import _sqlglot_dialect, dialect_from_url  # noqa: PLC0415
+
+    if explicit:
+        return _sqlglot_dialect(explicit)
+    # The entry the loader will open, found the way it finds it: it also
+    # matches an id whose punctuation became underscores (`sqlite:/bird/dev`
+    # as `sqlite__bird_dev`), which a plain `.get` misses -- and missing it
+    # would generate Postgres for a query that then runs against SQLite.
+    connectors = _load_connectors()
+    connector_id = _find_connector_id(agent_id, connectors)
+    cfg = connectors.get(connector_id) if connector_id else None
+    if not isinstance(cfg, dict):
+        # Absent, or not a mapping: `agent-a: postgresql://host/db` is a
+        # plausible hand-edit, and the loader reports it where it opens the
+        # connector. Here it names no dialect, rather than raising before
+        # that report can be made.
+        cfg = {}
+    db_type = str(cfg.get("db_type") or "").lower()
+    if db_type == "sqlalchemy":
+        derived = dialect_from_url(str(cfg.get("url") or ""))
+    else:
+        derived = _sqlglot_dialect(db_type) if db_type else None
+    if derived:
+        try:
+            Dialect.get_or_raise(derived)
+        except ValueError:
+            # A URL backend sqlglot has no grammar for: generating in one it
+            # does not know would fail at the first parse, so fall back.
+            return _FALLBACK_DIALECT
+        return derived
+    return _FALLBACK_DIALECT
 
 
 def _build_url(
@@ -2256,12 +2325,15 @@ def verify_oidc_token(discovery_url: str, client_id: str, id_token: str) -> None
 @click.argument("question")
 @click.option(
     "--dialect",
-    default="postgres",
-    show_default=True,
-    type=click.Choice(["postgres", "snowflake", "bigquery"]),
-    help="SQL dialect used for generation and AST validation.",
+    default=None,
+    type=click.Choice(DIALECT_CHOICES),
+    help=(
+        "SQL dialect used for generation and AST validation. Defaults to the "
+        "agent's connector type (for a sqlalchemy connector, the engine its URL "
+        "names), else postgres."
+    ),
 )
-def ask(agent_id: str, question: str, dialect: str) -> None:
+def ask(agent_id: str, question: str, dialect: str | None) -> None:
     """Ask an agent a natural-language question and stream the response.
 
     \b
@@ -2283,6 +2355,7 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
       nlqueries ask my_agent "Top customers by revenue" --dialect snowflake
     """
     agent_id = _resolve_alias(agent_id)
+    resolved_dialect = _resolve_dialect(agent_id, dialect)
     import json as _json
 
     from nlqueries.orchestrator import Orchestrator
@@ -2295,7 +2368,7 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
                 # TTY: buffer tokens, strip the final JSON chunk, print cleanly.
                 tokens: list[str] = []
                 async for token in orchestrator.handle_question(
-                    question, agent_id, dialect=dialect
+                    question, agent_id, dialect=resolved_dialect
                 ):
                     tokens.append(token)
                 sql: str | None = None
@@ -2314,7 +2387,7 @@ def ask(agent_id: str, question: str, dialect: str) -> None:
             else:
                 # Pipe / redirected: emit raw tokens including the JSON chunk.
                 async for token in orchestrator.handle_question(
-                    question, agent_id, dialect=dialect
+                    question, agent_id, dialect=resolved_dialect
                 ):
                     click.echo(token, nl=False)
                 click.echo()
@@ -2497,10 +2570,12 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
 @click.argument("question")
 @click.option(
     "--dialect",
-    default="postgres",
-    show_default=True,
-    type=click.Choice(["postgres", "snowflake", "bigquery"]),
-    help="SQL dialect used for generation.",
+    default=None,
+    type=click.Choice(DIALECT_CHOICES),
+    help=(
+        "SQL dialect used for generation. Defaults to the agent's connector type "
+        "(for a sqlalchemy connector, the engine its URL names), else postgres."
+    ),
 )
 @click.option(
     "--execute/--no-execute",
@@ -2546,7 +2621,7 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
 def query(
     agent_id: str,
     question: str,
-    dialect: str,
+    dialect: str | None,
     execute_sql: bool,
     output_json: bool,
     session: bool,
@@ -2572,6 +2647,7 @@ def query(
       nlqueries query my_agent "Top customers by revenue" --json
     """
     agent_id = _resolve_alias(agent_id)
+    resolved_dialect = _resolve_dialect(agent_id, dialect)
 
     from rich.table import Table
 
@@ -2599,7 +2675,7 @@ def query(
         result: AgentQueryResult = run_query_sync(
             question,
             agent_id,
-            dialect=dialect,
+            dialect=resolved_dialect,
             history=history,
             explain=explain,
             execution=execution,
@@ -2656,7 +2732,7 @@ def query(
     if paraphrase and result.sql:
         from nlqueries.verbalizer import verbalize
 
-        paraphrase_result = verbalize(result.sql, dialect)
+        paraphrase_result = verbalize(result.sql, resolved_dialect)
 
     if output_json:
         output = {
@@ -2737,15 +2813,18 @@ def query(
 )
 @click.option(
     "--dialect",
-    default="postgres",
-    show_default=True,
-    type=click.Choice(["postgres", "snowflake", "bigquery"]),
-    help="SQL dialect used for generation + parsing.",
+    default=None,
+    type=click.Choice(DIALECT_CHOICES),
+    help=(
+        "SQL dialect used for generation + parsing. Defaults to the agent's "
+        "connector type (for a sqlalchemy connector, the engine its URL names), "
+        "else postgres."
+    ),
 )
 @click.option("--max-cases", default=50, show_default=True, help="Cap on cases per run.")
 @click.option("--json", "output_json", is_flag=True, default=False, help="Emit JSON.")
 def eval_cmd(
-    agent_id: str, golden_path: str | None, dialect: str, max_cases: int, output_json: bool
+    agent_id: str, golden_path: str | None, dialect: str | None, max_cases: int, output_json: bool
 ) -> None:
     """Regression-check an agent's knowledge.
 
@@ -2768,6 +2847,7 @@ def eval_cmd(
     from nlqueries.orchestrator.sync_runner import run_query_sync  # noqa: PLC0415
 
     agent_id = _resolve_alias(agent_id)
+    resolved_dialect = _resolve_dialect(agent_id, dialect)
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
     kb_path = KB_PATH / f"{safe_id}.yaml"
     if not kb_path.exists():
@@ -2799,7 +2879,7 @@ def eval_cmd(
             result = run_query_sync(
                 question,
                 agent_id,
-                dialect=dialect,
+                dialect=resolved_dialect,
                 execution=ExecutionPolicy.generate_only(),
             )
             sql: str | None = result.sql
@@ -2807,7 +2887,7 @@ def eval_cmd(
         except Exception:  # noqa: BLE001 — a generation failure is a case failure
             return None
 
-    outcomes = run_eval(kb, cases, _generate, dialect=dialect)
+    outcomes = run_eval(kb, cases, _generate, dialect=resolved_dialect)
     passed = sum(1 for o in outcomes if o.ok)
     failed = len(outcomes) - passed
 

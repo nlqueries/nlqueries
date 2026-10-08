@@ -6,6 +6,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **`--dialect` accepts every engine `nlqueries connect` registers, and
+  defaults to the connector's.** On `ask`, `query` and `eval` it used to offer
+  only `postgres`, `snowflake` and `bigquery`, so a SQLite connector, a BIRD-SQL
+  database for instance, could not be asked for SQLite SQL at all. It now takes
+  `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` and
+  `sqlite`. Without the flag, the dialect is the connector's type (for a
+  `sqlalchemy` connector, the engine its URL names), and `postgres` only when
+  that names none. An explicit `--dialect` still wins. A non-Postgres connector
+  used without the flag therefore now gets its own dialect where it used to
+  get Postgres; pass `--dialect postgres` to keep the old behaviour.
 - **The default models are Claude Sonnet 5.5** (`claude-sonnet-5-5`) **and
   Haiku 5.5** (`claude-haiku-5-5`, the fast tier), replacing Sonnet 4.5 and
   Haiku 4.5. Only installs that leave `LLM_MODEL` / `LLM_MODEL_FAST` unset
