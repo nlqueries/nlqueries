@@ -37,6 +37,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A hand-edited connector entry that is not a mapping no longer crashes the
+  CLI.** `agent-a: postgresql://host/db` (the URL where its settings belong)
+  raised `AttributeError` from alias resolution, so from every command given an
+  alias, and from `doctor`, `nlqueries connectors`, `kb-stats` and the MCP
+  `list_connectors` tool. The listings now name the entry. `doctor` reports it
+  as a failed check, and a command that opens the connector refuses with a
+  message that names it and says to register it again.
 - **A temperature no longer fails the Anthropic client on anthropic 1.x.** The
   SDK dropped `temperature` from `messages.create()`, so the self-consistency
   candidates that pass one raised `TypeError` before sending anything, and

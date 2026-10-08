@@ -492,9 +492,20 @@ def list_connectors() -> str:
 
     if not raw:
         return "No connectors registered. Use 'nlqueries connect' to add one."
+    if not isinstance(raw, dict):
+        return (
+            f"Failed to read connectors file: its top level is a {type(raw).__name__}, "
+            "not a mapping of connector ids to settings."
+        )
 
     lines = ["## Registered Connectors\n"]
     for connector_id, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            # Listed, so the entry to fix is named; reading it raised.
+            lines.append(
+                f"- **{connector_id}** (not a mapping of connection settings: {type(cfg).__name__})"
+            )
+            continue
         db_type = cfg.get("db_type", cfg.get("type", "unknown"))
         host = cfg.get("host", "")
         database = cfg.get("database", "")
