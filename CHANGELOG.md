@@ -20,7 +20,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   - "the highest / lowest / latest ..." is `ORDER BY ... LIMIT 1`, unless every
     tie is asked for;
   - a quoted value in a hint is used exactly as written;
-  - no filter (such as `IS NOT NULL`) is added unasked;
+  - no filter (such as `IS NOT NULL`) is added unless the question or its hint
+    asks for it;
   - yes/no and true/false questions are answered with the literal text.
 
   The counting rule is the one that trades: the benchmark's reference answers

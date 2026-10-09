@@ -777,7 +777,8 @@ ANSWER_RULE_PHRASES = [
     "unless the question asks for every tie",
     # Literals and filters.
     "A quoted value in the hint is exact: use it as written",
-    "Add no filter the question does not ask for, such as IS NOT NULL",
+    # "or hint": a hint that defines a valid value as non-null is an explicit ask.
+    "Add no filter the question or hint does not ask for, such as IS NOT NULL",
     "with the text 'YES' or 'NO'",
     "with 'True' or 'False', not a boolean expression",
 ]

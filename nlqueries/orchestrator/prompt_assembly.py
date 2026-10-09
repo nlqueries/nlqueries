@@ -82,7 +82,7 @@ when the question or hint says distinct, unique or different.
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
 - A quoted value in the hint is exact: use it as written, in the column the hint names.
-- Add no filter the question does not ask for, such as IS NOT NULL.
+- Add no filter the question or hint does not ask for, such as IS NOT NULL.
 - Answer a yes/no question with the text 'YES' or 'NO', and a true/false question \
 with 'True' or 'False', not a boolean expression."""
 
