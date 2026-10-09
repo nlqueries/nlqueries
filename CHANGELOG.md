@@ -50,6 +50,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **A column the hint names is the one the SQL uses.** Given a hint such as
+  "the cheapest refers to MIN(price)", the model sometimes ordered by another
+  column holding the same measure in another form, a number of milliseconds
+  for a time or a duration, and so answered a different question from the one
+  the hint defines. The answer rules now say to use the column the hint names
+  for what it names.
+
 - **`export-kb` stores column values, so the prompt shows how they are
   spelled.** Until now it stored none. With `--include-samples`, which is on
   by default, it now stores:

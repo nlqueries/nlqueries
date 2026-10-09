@@ -777,6 +777,9 @@ ANSWER_RULE_PHRASES = [
     "unless the question asks for every tie",
     # Literals.
     "A quoted value in the hint is exact: use it as written",
+    # Columns the hint names.
+    "A column the hint names for something in the question is the column to use for it",
+    "even where another column seems to hold the same thing in another form",
     # YES/NO only when the question offers the choice; otherwise the stored value.
     'Only when the question itself offers the choice, as in "yes or no?" or "true or false?"',
     "answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean expression",

@@ -87,6 +87,9 @@ when the question or hint says distinct, unique or different.
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
 - A quoted value in the hint is exact: use it as written, in the column the hint names.
+- A column the hint names for something in the question is the column to use for it \
+("the cheapest refers to MIN(price)" means order by price), even where another \
+column seems to hold the same thing in another form.
 - Only when the question itself offers the choice, as in "yes or no?" or "true or \
 false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean \
 expression. A question that only asks whether something holds ("is the order \
