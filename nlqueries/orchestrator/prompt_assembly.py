@@ -53,10 +53,29 @@ _ROLE_PREAMBLE = (
     "Use the schema and example queries below to translate the user's question into valid SQL."
 )
 
-_SQL_FORMAT_RULES = """\
+#: Which columns to SELECT. On BIRD dev (2026-10-09, core b3ebdc7,
+#: claude-sonnet-5-5, 67.08 EX) 108 of the 505 misses -- 21% -- returned the
+#: right rows with extra columns, which a set-of-rows comparison scores as wrong:
+#: the column it ranked by, a name added for context, every numbered variant of
+#: a column, a label column splitting one count into a GROUP BY. Shared with
+#: `sql_generation`, whose prompt also drives the repair step, so a repaired
+#: statement cannot add them back.
+_PROJECTION_RULE = """\
+- SELECT only the columns the question asks for. Do not add the column you sorted, \
+filtered or ranked by, an id, a name or a label column for context, or a count \
+alongside a requested list.
+- Fields the question names, as in "include X" or "along with Y", are requested \
+columns: select them.
+- A question asking how many, or for a total or an average, returns a single number \
+with no grouping column, unless it asks for a breakdown.
+- "The name" or "the administrator" means one set of columns, not every numbered \
+variant of it (Name1, Name2, Name3) in the table."""
+
+_SQL_FORMAT_RULES = f"""\
 ## Instructions
 - Generate only a single SELECT SQL statement.
 - Use only tables and columns present in the schema above.
+{_PROJECTION_RULE}
 - First, briefly explain your reasoning in 2-4 sentences (plain text).
 - Then output the SQL between EXACTLY these markers — nothing before or after:
 

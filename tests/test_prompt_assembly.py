@@ -749,3 +749,37 @@ def test_extra_dynamic_context_async_appended() -> None:
         assemble_prompt_async("q", _make_kb(), extra_dynamic_context=_NEXUS_SECTION)
     )
     assert _NEXUS_SECTION in prompt.dynamic_context
+
+
+# ---------------------------------------------------------------------------
+# The projection rule (BIRD dev, 2026-10-09: 21% of misses were right answers
+# returned with extra columns)
+# ---------------------------------------------------------------------------
+
+
+def test_static_system_carries_the_projection_rule() -> None:
+    """In the Instructions block, before the output format.
+
+    Checked by its wording as well as by the constant: `_PROJECTION_RULE in`
+    would pass on an empty constant."""
+    from nlqueries.orchestrator.prompt_assembly import _PROJECTION_RULE
+
+    static = assemble_prompt("How many orders?", _make_kb()).static_system
+
+    assert _PROJECTION_RULE and _PROJECTION_RULE in static
+    assert "SELECT only the columns the question asks for" in static
+    assert '"include X" or "along with Y", are requested columns' in static
+    assert "returns a single number with no grouping column" in static
+    instructions = static.index("## Instructions")
+    rule = static.index("SELECT only the columns the question asks for")
+    assert instructions < rule < static.index("First, briefly explain your reasoning")
+
+
+def test_static_system_with_the_rule_is_identical_across_questions() -> None:
+    """Prompt caching needs the static block byte-identical for one KB."""
+    kb = _make_kb(tables=[_TABLE, _TABLE2])
+
+    first = assemble_prompt("How many orders?", kb).static_system
+    second = assemble_prompt("Which customer spent the most last month?", kb).static_system
+
+    assert first == second
