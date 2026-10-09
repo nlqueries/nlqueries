@@ -77,20 +77,63 @@ def is_pid_alive(pid: int) -> bool:
     Uses tasklist on Windows because os.kill(pid, 0) maps to CTRL_C_EVENT
     (value 0) there, which sends Ctrl+C to the whole console group instead of
     checking process existence.
+
+    Never true for 0 or a negative *pid*: tasklist lists PID 0 (the System Idle
+    Process), and on POSIX ``os.kill(0, 0)`` signals the caller's own process
+    group, so either would read a junk PID file as a running daemon.
     """
+    if pid <= 0:
+        return False
     if sys.platform == "win32":
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            # Unknown, so assumed running: guessing "gone" would let a caller
+            # remove the PID file of a live daemon. A slow tasklist is
+            # transient, and `embed-server stop` asks again on its next poll.
+            # Not an OSError, so uncaught it surfaced as a traceback.
+            return True
         return str(pid) in result.stdout
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def read_pid_file() -> tuple[int | None, str | None]:
+    """The running daemon's PID, read from the PID file and checked.
+
+    Returns ``(pid, None)`` when the file names a running process, and
+    ``(None, None)`` when there is no file. A stale file -- its process gone,
+    or its content not a PID at all -- is removed, and ``(None, reason)`` says
+    why, for the caller to report.
+
+    ``start``, ``stop`` and ``status`` all read the file through this. Only
+    ``status`` used to check the PID: ``start`` took the file's existence to mean
+    a daemon was running, and ``stop`` signalled whatever PID it held, so a file
+    left behind by a reboot or a killed terminal blocked the one and crashed the
+    other on Windows.
+    """
+    try:
+        raw = _PID_FILE.read_text().strip()
+    except FileNotFoundError:
+        return None, None
+    try:
+        pid = int(raw)
+    except ValueError:
+        pid = 0
+    if pid > 0 and is_pid_alive(pid):
+        return pid, None
+    _PID_FILE.unlink(missing_ok=True)
+    if pid > 0:
+        return None, f"process {pid} not found"
+    return None, f"it holds {raw!r}, not a PID" if raw else "it is empty"
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +590,10 @@ def serve(port: int = _DEFAULT_PORT, backend: str | None = None) -> None:
         )
 
         def _shutdown(signum: int, frame: object) -> None:  # noqa: ARG001
-            server.shutdown()
+            # On another thread: the handler runs on this one, inside
+            # `serve_forever`, and `shutdown()` waits for that loop to finish --
+            # called here it waited forever, so SIGTERM never stopped the daemon.
+            threading.Thread(target=server.shutdown, daemon=True).start()
 
         signal.signal(signal.SIGTERM, _shutdown)
         server.serve_forever()

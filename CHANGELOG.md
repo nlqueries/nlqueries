@@ -73,6 +73,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   SDK dropped `temperature` from `messages.create()`, so the self-consistency
   candidates that pass one raised `TypeError` before sending anything, and
   each such candidate was silently dropped. It is now sent in the request body.
+- **`embed-server start` and `stop` handle a PID file left behind.** After an
+  unclean shutdown (a reboot, a killed terminal), `start` took the leftover
+  file to mean a daemon was running and told you to stop it, and `stop` then
+  crashed on Windows with `OSError: [WinError 87]` on the dead PID. All three
+  commands now check the PID: a stale file, or one that does not hold a PID, is
+  removed with a one-line note, and `start` goes on to start the daemon. `stop`
+  waits up to 5 s for the daemon to exit. If it cannot stop a live one, it says
+  so in one line and exits 1.
+- **SIGTERM stops the embedding daemon.** Its handler called
+  `server.shutdown()` on the thread running the server loop, which waits for
+  that loop to finish, so on Linux and macOS the daemon hung instead of
+  exiting, and `stop` reported it stopped regardless.
 
 ## [0.3.0] — 2026-10-02
 
