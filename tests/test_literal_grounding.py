@@ -28,7 +28,7 @@ from nlqueries.connectors.loader import LookupSource, lookup_source
 from nlqueries.connectors.sqlite import SQLiteConnector
 from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator import literal_grounding
-from nlqueries.orchestrator.literal_grounding import GroundingResult, ground_literals
+from nlqueries.orchestrator.literal_grounding import GroundingResult, _fold, ground_literals
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult, validate_and_repair
 
@@ -124,9 +124,11 @@ def src(tmp_path: Path) -> _Source:
     return _Source(_schools_db(tmp_path / "schools.db"))
 
 
-def _ground(sql: str, source: _Source | LookupSource | None) -> GroundingResult:
+def _ground(
+    sql: str, source: _Source | LookupSource | None, kb: dict[str, Any] = KB
+) -> GroundingResult:
     lookups = source.source if isinstance(source, _Source) else source
-    return asyncio.run(ground_literals(sql, KB, "sqlite", lookups))
+    return asyncio.run(ground_literals(sql, kb, "sqlite", lookups))
 
 
 # --- Substitutions ---------------------------------------------------------------
@@ -174,6 +176,129 @@ def test_a_value_that_exists_as_written_is_left_after_one_lookup(src: _Source) -
 
     assert result.sql == sql and result.substitutions == [] and result.notes == []
     assert len(src.statements) == 1
+
+
+# --- Punctuation at either end -----------------------------------------------------
+
+POSTS_KB: dict[str, Any] = {
+    "schema": {
+        "tables": [
+            {
+                "name": "posts",
+                "columns": [
+                    {"name": "id", "type": "INTEGER", "is_primary_key": True},
+                    {"name": "title", "type": "TEXT"},
+                ],
+            }
+        ]
+    }
+}
+
+
+def _posts(tmp_path: Path, *titles: str) -> _Source:
+    db = tmp_path / "posts.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)")
+        conn.executemany("INSERT INTO posts (title) VALUES (?)", [(t,) for t in titles])
+    conn.close()
+    return _Source(db)
+
+
+@pytest.mark.parametrize(
+    ("value", "folded"),
+    [
+        (
+            "Open source tools for visualizing multi-dimensional data?",
+            "open source tools for visualizing multi-dimensional data",
+        ),
+        ("  (Hello,   World!) ", "hello, world"),
+        ("'quoted'", "quoted"),
+        ("[a] {b}", "a] {b"),
+        ("tab\there.", "tab here"),
+        ("a.b", "a.b"),
+        ("?", ""),
+        ("-", ""),
+    ],
+)
+def test_fold_lowercases_collapses_spaces_and_strips_punctuation_only_at_the_ends(
+    value: str, folded: str
+) -> None:
+    assert _fold(value) == folded
+
+
+def test_a_literal_missing_the_stored_question_mark_takes_the_stored_value(
+    tmp_path: Path,
+) -> None:
+    stored = "Open source tools for visualizing multi-dimensional data?"
+    src = _posts(tmp_path, stored, "Help understand kNN for multi-dimensional data")
+    collected = Provenance()
+
+    with use_provenance(collected):
+        result = _ground(
+            "SELECT id FROM posts WHERE title = "
+            "'Open source tools for visualizing multi-dimensional data'",
+            src,
+            POSTS_KB,
+        )
+
+    assert result.sql == f"SELECT id FROM posts WHERE title = '{stored}'"
+    assert result.substitutions == [
+        ("posts", "title", "Open source tools for visualizing multi-dimensional data", stored)
+    ]
+    assert collected.literals_grounded == [
+        {
+            "table": "posts",
+            "column": "title",
+            "before": "Open source tools for visualizing multi-dimensional data",
+            "after": stored,
+        }
+    ]
+
+
+def test_a_literal_differing_in_case_and_end_punctuation_is_grounded(tmp_path: Path) -> None:
+    src = _posts(tmp_path, "(The Art of Statistics)", "The Art of Statistics, Revisited")
+
+    result = _ground("SELECT id FROM posts WHERE title = 'the art of statistics'", src, POSTS_KB)
+
+    assert result.sql == "SELECT id FROM posts WHERE title = '(The Art of Statistics)'"
+
+
+def test_several_values_equal_once_folded_are_left_alone_with_a_note(tmp_path: Path) -> None:
+    src = _posts(tmp_path, "Why use R?", "Why use R!", "Why use Rust?")
+    sql = "SELECT id FROM posts WHERE title = 'why use r'"
+
+    result = _ground(sql, src, POSTS_KB)
+
+    assert result.sql == sql and result.substitutions == []
+    assert len(result.notes) == 1
+    assert "several stored values" in result.notes[0]
+    assert "'Why use R?'" in result.notes[0] and "'Why use R!'" in result.notes[0]
+    assert "Rust" not in result.notes[0]
+
+
+def test_a_literal_under_three_characters_once_folded_is_not_folded(tmp_path: Path) -> None:
+    """'ab' folds to two characters: matched exactly or not at all, so the stored
+    'ab.' is offered in a note, not substituted."""
+    src = _posts(tmp_path, "ab.", "abc")
+    sql = "SELECT id FROM posts WHERE title = 'ab'"
+
+    result = _ground(sql, src, POSTS_KB)
+
+    assert result.sql == sql and result.substitutions == []
+    assert result.notes and "'ab.'" in result.notes[0]
+
+
+def test_with_no_match_the_containing_values_are_fetched_once_for_the_note(
+    tmp_path: Path,
+) -> None:
+    src = _posts(tmp_path, "Statistics for data science, part one", "Data science in R")
+    sql = "SELECT id FROM posts WHERE title = 'data science'"
+
+    result = _ground(sql, src, POSTS_KB)
+
+    assert result.sql == sql and result.substitutions == []
+    assert result.notes and "'Data science in R'" in result.notes[0]
+    assert sum(" LIKE " in s for s in src.statements) == 1, src.statements
 
 
 # --- Left alone, with a note ------------------------------------------------------
@@ -841,7 +966,7 @@ def test_the_source_key_follows_the_entry(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_literals_grounded_reaches_the_run_query_result(src: _Source) -> None:
     """What a caller of `run_query(explain=True)` captures: the record has to
-    arrive on the result's provenance -- including through `dataclasses.asdict`,
+    arrive on the result's provenance, including through `dataclasses.asdict`,
     which is how a caller serialises it."""
     import dataclasses
 

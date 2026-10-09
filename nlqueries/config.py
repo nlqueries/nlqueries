@@ -458,8 +458,9 @@ LITERAL_GROUNDING: bool = os.getenv("LITERAL_GROUNDING", "true").lower() in (
 )
 """Check the string literals a statement compares columns to against the values the
 column stores, before the statement runs. A literal that matches exactly one stored
-value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``) is replaced
-with it; one that matches none is left, with nearby values offered to the repair step.
+value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``), or failing
+that also punctuation at either end, is replaced with it; one that matches none is
+left, with nearby values offered to the repair step.
 Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
 for any agent with a registered connector, on a read-only connector of its own that it
 closes afterwards; a generate-only request's statement is never run. On by default; set

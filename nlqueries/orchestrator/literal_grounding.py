@@ -5,13 +5,14 @@ Match string literals in a statement's WHERE clause to what the column stores.
 
 A model writes ``status = 'legal'`` where the data has ``'Legal'``, or copies
 ``' = '`` from a hint where the column holds ``'='``. The statement is valid,
-runs, and returns no rows -- a wrong answer with nothing to say so. Before the
+runs, and returns no rows: a wrong answer with nothing to say so. Before the
 statement runs, each such comparison is checked against the database:
 
 - the literal exists as written: left alone;
-- exactly one stored value matches it ignoring case and surrounding spaces:
-  the literal is replaced with that value, and the substitution is recorded
-  in provenance;
+- exactly one stored value matches it ignoring case and surrounding spaces,
+  or failing that, also ignoring punctuation at either end (see
+  :func:`_fold`): the literal is replaced with that value, and the
+  substitution is recorded in provenance;
 - none, or several: the statement is left alone, and a note lists up to five
   nearby stored values for the LLM repair step, if one runs.
 
@@ -70,6 +71,13 @@ _MAX_LITERAL_CHARS = 100
 _MAX_NEARBY = 5
 #: Above this many distinct values, no similarity pass over the column.
 _MAX_DISTINCT_FOR_SIMILARITY = 2000
+#: Stored values containing the literal that the punctuation pass compares.
+_MAX_CONTAINING = 20
+#: What :func:`_fold` strips from either end of a value, besides whitespace.
+_FOLD_ENDS = ".,;:!?'\"()[]{}-"
+#: Shorter than this once folded, a literal is matched exactly or not at all:
+#: "?" or "-" folds to nothing, and "nothing" is not a match.
+_MIN_FOLDED_CHARS = 3
 
 #: Outcomes kept, across databases; the least recently used goes first.
 _MAX_CACHED = 10_000
@@ -136,7 +144,7 @@ async def ground_literals(
 
     Returns *sql* unchanged when *source* is ``None``, when nothing needs
     grounding, or on any error. Opens a connector from *source* only for a
-    literal the cache cannot answer, and closes it before returning -- or, if a
+    literal the cache cannot answer, and closes it before returning or, if a
     lookup was abandoned, when that lookup returns.
     """
     if source is None or not sql.strip():
@@ -225,8 +233,9 @@ def _apply(
     elif outcome.kind == "many":
         several = ", ".join(_quote(v) for v in outcome.values)
         result.notes.append(
-            f"No row has {column.name} = {_quote(literal)} exactly; ignoring case "
-            f"and spaces it matches several stored values: {several}."
+            f"No row has {column.name} = {_quote(literal)} exactly; ignoring case, "
+            f"spacing and punctuation at either end it matches several stored values: "
+            f"{several}."
         )
     return False
 
@@ -484,6 +493,32 @@ def _normalised(expression: exp.Expr) -> exp.Expr:
     return exp.Lower(this=exp.Trim(this=expression))
 
 
+def _fold(value: str) -> str:
+    """*value* lowercased, its runs of whitespace collapsed to one space, and
+    the characters of ``_FOLD_ENDS`` and spaces stripped from both ends.
+
+    Only the ends: ``'multi-dimensional data?'`` folds to
+    ``'multi-dimensional data'``, hyphen kept.
+    """
+    return " ".join(value.lower().split()).strip(_FOLD_ENDS + " ")
+
+
+def _containing(source: exp.Table, col: exp.Column, literal: str, limit: int) -> exp.Expr:
+    """Distinct stored values that contain *literal*, ignoring case."""
+    return (
+        exp.select(col.copy())
+        .distinct()
+        .from_(source.copy())
+        .where(
+            exp.Like(
+                this=exp.Lower(this=col.copy()),
+                expression=exp.Literal.string(f"%{literal.strip().lower()}%"),
+            )
+        )
+        .limit(limit)
+    )
+
+
 async def _look_up(
     session: _Session,
     dialect: str,
@@ -518,7 +553,25 @@ async def _look_up(
     if len(matches) > 1:
         return _Outcome("many", tuple(matches))
 
-    nearby = await _nearby(session, dialect, source, col, literal)
+    # Third pass: the stored value differs by punctuation at an end, as a
+    # title stored with its question mark does from the same title quoted
+    # without it. Compared in Python, over the values that contain the literal.
+    containing: list[str] | None = None
+    folded = _fold(literal)
+    if len(folded) >= _MIN_FOLDED_CHARS:
+        rows = await session.run(
+            _containing(source, col, literal, _MAX_CONTAINING), dialect, _MAX_CONTAINING
+        )
+        if rows is None:
+            return None
+        containing = [str(v) for v in rows if v is not None]
+        same = [v for v in containing if _fold(v) == folded]
+        if len(same) == 1:
+            return _Outcome("one", (same[0],))
+        if len(same) > 1:
+            return _Outcome("many", tuple(same[:_MAX_NEARBY]))
+
+    nearby = await _nearby(session, dialect, source, col, literal, containing)
     # Not "none" without its nearby values: cached, the note would stay that
     # way for as long as the outcome is kept.
     return None if nearby is None else _Outcome("none", nearby)
@@ -530,25 +583,20 @@ async def _nearby(
     source: exp.Table,
     col: exp.Column,
     literal: str,
+    containing: list[str] | None = None,
 ) -> tuple[str, ...] | None:
     """Up to five stored values near *literal*: containing it, then similar to
-    it. ``None`` if time ran out before the first pass."""
-    containing = (
-        exp.select(col.copy())
-        .distinct()
-        .from_(source.copy())
-        .where(
-            exp.Like(
-                this=exp.Lower(this=col.copy()),
-                expression=exp.Literal.string(f"%{literal.strip().lower()}%"),
-            )
+    it. *containing* is the first pass's values when the caller has already
+    fetched them, so the query is not run twice. ``None`` if time ran out
+    before the first pass."""
+    if containing is None:
+        rows = await session.run(
+            _containing(source, col, literal, _MAX_NEARBY), dialect, _MAX_NEARBY
         )
-        .limit(_MAX_NEARBY)
-    )
-    rows = await session.run(containing, dialect, _MAX_NEARBY)
-    if rows is None:
-        return None
-    found = [str(v) for v in rows if v is not None]
+        if rows is None:
+            return None
+        containing = [str(v) for v in rows if v is not None]
+    found = list(containing[:_MAX_NEARBY])
     if len(found) >= _MAX_NEARBY:
         return tuple(found[:_MAX_NEARBY])
 
