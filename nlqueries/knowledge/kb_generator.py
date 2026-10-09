@@ -45,6 +45,125 @@ def _is_pii_column(col_name: str) -> bool:
     return is_pii_column(col_name)
 
 
+# ---------------------------------------------------------------------------
+# Column values for the knowledge base
+# ---------------------------------------------------------------------------
+
+#: A text column with at most this many distinct values is stored whole.
+_MAX_COMPLETE_VALUES = 20
+#: ...and only if they come to no more than this many characters together.
+_MAX_COMPLETE_CHARS = 200
+#: A column whose sampled values average longer than this is free text; a
+#: sample of it costs prompt tokens and spells nothing worth copying.
+_MAX_AVG_SAMPLE_CHARS = 80
+#: Per query, so one slow DISTINCT on a large table does not hold up an export.
+_VALUES_TIMEOUT_S = 10.0
+
+_TEXT_TYPE_MARKERS = ("CHAR", "TEXT", "STRING", "CLOB")
+
+
+def _is_text_type(col_type: str) -> bool:
+    upper = (col_type or "").upper()
+    return not upper or any(marker in upper for marker in _TEXT_TYPE_MARKERS)
+
+
+def collect_column_values(
+    connector: Any,
+    schema: SchemaSpec,
+    sample_rows: int,
+    dialect: str | None = None,
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, set[str]]]:
+    """Values to store per column: ``(column_samples, column_values_complete)``.
+
+    A text column with at most :data:`_MAX_COMPLETE_VALUES` distinct values
+    (and :data:`_MAX_COMPLETE_CHARS` characters) gets every value, sorted, so
+    the prompt shows ``'Legal'`` and ``'Directly funded'`` as they are stored
+    and the model has no spelling to guess. Any other column gets up to
+    *sample_rows* distinct values from the table's first rows, unless they
+    average more than :data:`_MAX_AVG_SAMPLE_CHARS` characters.
+
+    Keys and personal-data columns get nothing: an identifier's value tells
+    the model nothing, and :func:`is_pii_column` values never leave the
+    database. Read-only; a query that fails or times out leaves that column, or
+    table, without values.
+    """
+    from nlqueries.connectors.base import table_sample_sql  # noqa: PLC0415
+
+    samples: dict[str, dict[str, list[str]]] = {}
+    complete: dict[str, set[str]] = {}
+    for table in schema.tables:
+        eligible = [
+            col
+            for col in table.columns
+            if not (col.is_primary_key or col.is_foreign_key or _is_pii_column(col.name))
+        ]
+        if not eligible:
+            continue
+        rows: list[list[Any]] = []
+        index: dict[str, int] = {}
+        try:
+            sampled = connector.execute_query(
+                table_sample_sql(table.name, table.schema, sample_rows, dialect),
+                _VALUES_TIMEOUT_S,
+            )
+            if not sampled.error:
+                rows = sampled.rows
+                index = {name: i for i, name in enumerate(sampled.columns)}
+        except Exception:  # noqa: BLE001
+            logger.debug("Sampling %s failed; no samples stored.", table.name, exc_info=True)
+        for col in eligible:
+            if _is_text_type(col.type):
+                values = _all_values(connector, table, col, dialect)
+                if values is not None:
+                    samples.setdefault(table.name, {})[col.name] = values
+                    complete.setdefault(table.name, set()).add(col.name)
+                    continue
+            position = index.get(col.name)
+            if position is None:
+                continue
+            picked: list[str] = []
+            for row in rows:
+                value = row[position] if position < len(row) else None
+                if value is None:
+                    continue
+                text = str(value)
+                if text not in picked:
+                    picked.append(text)
+                if len(picked) >= sample_rows:
+                    break
+            if picked and sum(len(v) for v in picked) / len(picked) <= _MAX_AVG_SAMPLE_CHARS:
+                samples.setdefault(table.name, {})[col.name] = picked
+    return samples, complete
+
+
+def _all_values(
+    connector: Any, table: TableSpec, col: ColumnSpec, dialect: str | None
+) -> list[str] | None:
+    """Every value *col* holds, sorted, if they are few and short enough; else ``None``."""
+    from nlqueries.connectors.base import column_values_sql  # noqa: PLC0415
+
+    try:
+        result = connector.execute_query(
+            column_values_sql(
+                table.name, table.schema, col.name, _MAX_COMPLETE_VALUES + 1, dialect
+            ),
+            _VALUES_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Reading %s.%s's values failed.", table.name, col.name, exc_info=True)
+        return None
+    if result.error:
+        return None
+    values = sorted({str(row[0]) for row in result.rows if row and row[0] is not None})
+    if (
+        not values
+        or len(result.rows) > _MAX_COMPLETE_VALUES
+        or sum(len(v) for v in values) > _MAX_COMPLETE_CHARS
+    ):
+        return None
+    return values
+
+
 # Column name suffixes that indicate surrogate/technical keys with no business meaning.
 _SKIP_SUFFIXES = ("_id", "_key", "_uuid", "_hash", "_token", "_code", "_pk", "_fk")
 
@@ -323,6 +442,7 @@ def generate_knowledge_base(
     llm_column_descriptions: dict[str, dict[str, str]] | None = None,
     column_samples: dict[str, dict[str, list[str]]] | None = None,
     dbt_docs: dict[str, Any] | None = None,
+    column_values_complete: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     """Build a structured knowledge-base dict from a schema and query capsules.
 
@@ -349,6 +469,12 @@ def generate_knowledge_base(
     five non-PII sample values are stored per column for use by the M-Schema
     renderer.  PII columns (name matches :data:`_PII_COLUMN_RE`) are silently
     skipped.
+
+    When *column_values_complete* names a column (``{table: {col, ...}}``), its
+    *column_samples* entry is every value the column holds rather than a sample:
+    it is stored whole (up to :data:`_MAX_COMPLETE_VALUES`) and marked
+    ``values_complete: true``, so the prompt can say "values" and the model can
+    rely on the spelling. :func:`collect_column_values` produces both maps.
     """
     existing_table_descs: dict[str, str] = {}
     existing_table_srcs: dict[str, str] = {}
@@ -374,6 +500,7 @@ def generate_knowledge_base(
 
     llm_descs = llm_column_descriptions or {}
     col_samples_map = column_samples or {}
+    complete_map = column_values_complete or {}
     dbt = dbt_docs or {}
 
     # Collect foreign-key relationships for the M-Schema FK section.
@@ -409,11 +536,16 @@ def generate_knowledge_base(
                 "is_foreign_key": col.is_foreign_key,
                 "references": col.references,
             }
-            # Sample values: store up to 5 for non-PII columns.
+            # Sample values: store up to 5 for non-PII columns -- or, for a
+            # column whose values were read in full, all of them, marked so.
             if not _is_pii_column(col.name):
                 raw_samples = col_samples_map.get(table.name, {}).get(col.name, [])
                 if raw_samples:
-                    col_dict["samples"] = [str(s) for s in raw_samples[:5]]
+                    if col.name in complete_map.get(table.name, set()):
+                        col_dict["samples"] = [str(s) for s in raw_samples[:_MAX_COMPLETE_VALUES]]
+                        col_dict["values_complete"] = True
+                    else:
+                        col_dict["samples"] = [str(s) for s in raw_samples[:5]]
 
             if col.is_foreign_key and col.references:
                 foreign_keys.append({"from": f"{table.name}.{col.name}", "to": col.references})

@@ -451,6 +451,20 @@ EXPLAIN_VALIDATION: bool = os.getenv("NLQ_EXPLAIN_VALIDATION", "false").lower() 
 """When True, validate_and_repair() runs EXPLAIN on the final SQL via the caller-supplied
 connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
 
+LITERAL_GROUNDING: bool = os.getenv("LITERAL_GROUNDING", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""Check the string literals a statement compares columns to against the values the
+column stores, before the statement runs. A literal that matches exactly one stored
+value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``) is replaced
+with it; one that matches none is left, with nearby values offered to the repair step.
+Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
+for any agent with a registered connector, on a read-only connector of its own that it
+closes afterwards; a generate-only request's statement is never run. On by default; set
+LITERAL_GROUNDING=false to turn it off."""
+
 # ---------------------------------------------------------------------------
 # Embedding daemon
 # ---------------------------------------------------------------------------

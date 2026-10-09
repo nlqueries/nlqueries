@@ -775,13 +775,27 @@ ANSWER_RULE_PHRASES = [
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
-    # Literals and filters.
+    # Literals.
     "A quoted value in the hint is exact: use it as written",
-    # "or hint": a hint that defines a valid value as non-null is an explicit ask.
-    "Add no filter the question or hint does not ask for, such as IS NOT NULL",
-    "with the text 'YES' or 'NO'",
-    "with 'True' or 'False', not a boolean expression",
+    # YES/NO only when the question offers the choice; otherwise the stored value.
+    'Only when the question itself offers the choice, as in "yes or no?" or "true or false?"',
+    "answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean expression",
+    "returns the value the data stores for it",
 ]
+
+#: Measured and removed: each cost more correct answers than it gained. Pinned
+#: absent, so one is not put back without a measurement of its own.
+REMOVED_RULE_PHRASES = [
+    "Add no filter",
+    "Answer a yes/no question with the text 'YES' or 'NO'",
+]
+
+
+@pytest.mark.parametrize("phrase", REMOVED_RULE_PHRASES)
+def test_rules_measured_and_removed_stay_out(phrase: str) -> None:
+    static = assemble_prompt("How many orders?", _make_kb()).static_system
+
+    assert phrase not in static
 
 
 @pytest.mark.parametrize("phrase", ANSWER_RULE_PHRASES)

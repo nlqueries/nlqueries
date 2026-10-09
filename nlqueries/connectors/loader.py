@@ -18,6 +18,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -354,6 +355,56 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return credentials
+
+
+@dataclass(frozen=True)
+class LookupSource:
+    """A database to read stored values from, and a way to reach it that is
+    not shared with anything else."""
+
+    #: Identifies the configuration the connector is built from: the cache
+    #: fingerprint, which covers the password. Two agents on one entry share
+    #: it, and an edited entry gets a new one.
+    key: str
+    #: Opens a new connector, outside the cache, with read permission bound to
+    #: it. Blocking. The caller owns it and closes it.
+    open: Callable[[], DatabaseConnector]
+
+
+def lookup_source(agent_id: str) -> LookupSource | None:
+    """Where literal grounding reads *agent_id*'s stored values, or None.
+
+    Quiet: an agent with no usable connector logs nothing. Grounding is an extra,
+    and must not log the warning :func:`open_connector_for_agent` gives a
+    request that needed a connector.
+
+    Not the pooled connector. Grounding looks values up from worker threads
+    while other requests use the same database, and the pooled connector is one
+    handle for all of them. SQLite's is one ``sqlite3`` connection with a Python
+    authorizer, and two threads on it deadlock the process: one holds the
+    connection's mutex and waits for the GIL to call the authorizer, the other
+    holds the GIL and waits for the mutex. Opening a connector per grounding
+    call gives each its own handle.
+    """
+    connectors = _load_connectors()
+    connector_id = _find_connector_id(agent_id, connectors) if connectors else None
+    cfg = connectors.get(connector_id) if connector_id is not None else None
+    if connector_id is None or not isinstance(cfg, dict):
+        return None
+    connector_cls, _degraded = _resolve(str(cfg.get("db_type") or "").lower(), cfg)
+    if connector_cls is None:
+        return None
+    resolved_id, resolved_cfg, resolved_cls = connector_id, cfg, connector_cls
+
+    def _open() -> DatabaseConnector:
+        connector = resolved_cls()
+        connector.connect(credentials_for(resolved_id, resolved_cfg))
+        # On the connector itself, which is safe here and nowhere else: nothing
+        # else ever holds this one. See PermittedConnector for the pooled case.
+        connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
+        return connector
+
+    return LookupSource(key=_fingerprint(connector_id, cfg), open=_open)
 
 
 def reopen_connector(connector_id: str) -> DatabaseConnector | None:

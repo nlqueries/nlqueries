@@ -4,14 +4,54 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Added
+
+- **String literals are checked against the stored values before a statement
+  runs (`LITERAL_GROUNDING`, on by default).** A model writes `status = 'legal'`
+  where the column holds `'Legal'`, or copies `' = '` from a hint where it
+  holds `'='`. The statement is valid, runs, and returns no rows, a wrong
+  answer with nothing to say so.
+  - **The check.** Each literal compared to a text column with `=`, `IN` or a
+    wildcard-free `LIKE` is looked up first.
+  - **Exactly one stored value matches**, ignoring case and surrounding spaces:
+    the literal is replaced with it, and the substitution is recorded in the
+    answer's provenance (`literals_grounded`).
+  - **None or several match:** the statement is left alone, and an LLM repair,
+    if one runs, is told the nearby stored values.
+  - **Scope.** Keys and columns the knowledge base does not know are skipped.
+    The check is read-only and bounded: 8 literals, 1 s a lookup, 3 s in all.
+    No lookup is waited for past the 3 s: one still running then is
+    abandoned. Outcomes are cached per database for 15 minutes, and any error
+    skips the check.
+  - **When it runs.** Whatever the execution policy, for any agent with a
+    registered connector. Generate-only forbids running the statement, not
+    reading a column's values, and the statement is never run by the check.
+    An agent with no registered connector opens nothing.
+  - **Its own connector.** Each check opens a connector of its own, with
+    read-only permission, and closes it, rather than using the pooled one the
+    request executes on. The pooled SQLite connector is one connection, and
+    concurrent requests looking values up on it deadlocked the process.
+
 ### Changed
 
+- **`export-kb` stores column values, so the prompt shows how they are
+  spelled.** Until now it stored none. With `--include-samples`, which is on
+  by default, it now stores:
+  - **every value** of a text column with at most 20 distinct values (200
+    characters in all), marked `values_complete: true` and shown in the prompt
+    as `values: [...]`;
+  - **up to `--sample-rows` samples** (3 by default) of any other column,
+    shown as `samples: [...]`, unless they average over 80 characters.
+
+  Keys and personal-data columns get none. Export now runs one sample query
+  per table and one `SELECT DISTINCT` per text column, each bounded to 10 s. A
+  knowledge base has to be exported again for its prompt to show the values.
 - **SQL prompt: benchmark-measured idioms.** Covers COUNT over joined rows,
   ORDER BY LIMIT 1 for superlatives, projecting requested aggregates in the
-  requested column order, hint literals as authoritative, no defensive null
-  filters, and YES/NO literals. These come from re-running a text-to-SQL
-  benchmark's misses, where the statement ran and was defensible but answered
-  in a different shape than expected. The prompts now say:
+  requested column order, hint literals as authoritative, and YES/NO literals
+  where the question offers the choice. These come from re-running a
+  text-to-SQL benchmark's misses, where the statement ran and was defensible
+  but answered in a different shape than expected. The prompts now say:
   - a count, total, average or rank the question names is a column to select;
   - columns come in the order the question or its hint lists them;
   - a person's full name is first and last name;
@@ -20,9 +60,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   - "the highest / lowest / latest ..." is `ORDER BY ... LIMIT 1`, unless every
     tie is asked for;
   - a quoted value in a hint is used exactly as written;
-  - no filter (such as `IS NOT NULL`) is added unless the question or its hint
-    asks for it;
-  - yes/no and true/false questions are answered with the literal text.
+  - a question that offers the choice ("yes or no?", "true or false?") is
+    answered with that literal text. One that only asks whether something
+    holds returns the value the data stores.
+
+  A rule against adding filters nobody asked for (such as `IS NOT NULL`) was
+  measured and left out: it lost about twice as many correct answers as it
+  gained.
 
   The counting rule is the one that trades: the benchmark's reference answers
   are themselves inconsistent on entities counted through a child table, some

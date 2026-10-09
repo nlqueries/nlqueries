@@ -1955,6 +1955,35 @@ def export_kb(
             except Exception:  # noqa: BLE001
                 pass
 
+            # Column values, so the prompt shows how they are spelled: every
+            # value of a text column that has few of them, and a few samples of
+            # the rest. Keys and personal-data columns get none.
+            column_samples: dict[str, dict[str, list[str]]] | None = None
+            column_values_complete: dict[str, set[str]] | None = None
+            if include_samples and sample_rows > 0:
+                from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+                from nlqueries.knowledge.kb_generator import (  # noqa: PLC0415
+                    collect_column_values,
+                )
+
+                # The generic connector's db_type names no grammar; its URL
+                # names the engine.
+                values_dialect: str | None = cfg.get("db_type") or None
+                if (values_dialect or "").lower() == "sqlalchemy":
+                    from nlqueries.sql_policy import dialect_from_url  # noqa: PLC0415
+
+                    values_dialect = dialect_from_url(str(cfg.get("url") or ""))
+                connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
+                column_samples, column_values_complete = collect_column_values(
+                    connector, schema, sample_rows, values_dialect
+                )
+                listed = sum(len(cols) for cols in column_values_complete.values())
+                sampled = sum(len(cols) for cols in column_samples.values()) - listed
+                console.print(
+                    f"  [dim]Stored every value of {listed} column(s), "
+                    f"and samples of {sampled} more.[/dim]"
+                )
+
             # Optional: LLM-generated column descriptions from sample data
             llm_column_descriptions: dict[str, dict[str, str]] | None = None
             if describe_columns:
@@ -2016,6 +2045,8 @@ def export_kb(
                 agent_name=connector_id,
                 existing_kb=existing_kb,
                 llm_column_descriptions=llm_column_descriptions,
+                column_samples=column_samples,
+                column_values_complete=column_values_complete,
             )
             save_knowledge_base(kb, str(out_path))
 

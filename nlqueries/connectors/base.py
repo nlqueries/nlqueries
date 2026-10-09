@@ -107,6 +107,29 @@ def table_sample_sql(name: str, schema: str | None, limit: int, dialect: str | N
     return str(exp.select(exp.Star()).from_(table).limit(limit).sql(dialect=grammar))
 
 
+def column_values_sql(
+    name: str, schema: str | None, column: str, limit: int, dialect: str | None = None
+) -> str:
+    """``SELECT DISTINCT <column> FROM <schema>.<table> WHERE <column> IS NOT NULL``,
+    bounded to *limit* rows, for *dialect*.
+
+    Quoted and bounded as :func:`table_sample_sql` is, and the column quoted
+    too: a column named ``Academic Year`` is only reachable that way.
+    """
+    from sqlglot import exp  # noqa: PLC0415
+
+    table, grammar = _table_expression(name, schema, dialect)
+    col = exp.column(column, quoted=True)
+    return str(
+        exp.select(col)
+        .distinct()
+        .from_(table)
+        .where(exp.not_(exp.Is(this=col.copy(), expression=exp.Null())))
+        .limit(limit)
+        .sql(dialect=grammar)
+    )
+
+
 def _table_expression(name: str, schema: str | None, dialect: str | None) -> tuple[Any, str | None]:
     """The quoted table reference both helpers render, and the grammar to render it in.
 

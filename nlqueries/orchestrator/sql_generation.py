@@ -29,6 +29,7 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import get_llm_client, output_budget
+from nlqueries.orchestrator.literal_grounding import ground_literals
 from nlqueries.orchestrator.prompt_assembly import (
     _ANSWER_RULES,
     _PARTIAL_COLUMNS_NOTE,
@@ -38,6 +39,7 @@ from nlqueries.orchestrator.prompt_assembly import (
 from nlqueries.sql_policy import evaluate
 
 if TYPE_CHECKING:
+    from nlqueries.connectors.loader import LookupSource
     from nlqueries.llm.client import LLMClient
 
 
@@ -79,6 +81,7 @@ async def validate_and_repair(
     system: str | list[dict[str, Any]] | None = None,
     connector: Any = None,
     explain_check: bool = False,
+    lookups: LookupSource | None = None,
 ) -> SQLGenerationResult:
     """Validate *sql* extracted from a streaming response; repair if invalid.
 
@@ -106,14 +109,40 @@ async def validate_and_repair(
         explain_check:  When ``True`` (and *connector* is not ``None``), run
                         ``EXPLAIN`` on the final SQL to catch plan-time errors.
                         Defaults to ``False``.
+        lookups:        Where literal grounding reads stored values; see below.
 
     Returns:
         :class:`SQLGenerationResult`.
+
+    **Literal grounding** (when *lookups* is given and ``LITERAL_GROUNDING`` is
+    on): every statement this returns as valid has had its string literals
+    checked against the values their columns store, and a literal that matches
+    exactly one of them ignoring case and spaces replaced with it. A wrong
+    literal is valid SQL, so this runs on the valid path too, not only in the
+    repair steps; before an LLM repair, the literals no stored value matches go
+    into the correction prompt with nearby values. Without *lookups* it never
+    runs. The orchestrator supplies them for any agent with a registered
+    connector, whatever the request's execution policy: the lookups read
+    through a connector of their own, with read permission, and nothing here
+    executes *sql*.
     """
+    from nlqueries import config as _cfg  # noqa: PLC0415
+
+    async def _ground(statement_sql: str) -> str:
+        """*statement_sql* with its literals grounded, or unchanged."""
+        if lookups is None or not _cfg.LITERAL_GROUNDING:
+            return statement_sql
+        grounded = await ground_literals(statement_sql, knowledge_base, dialect, lookups)
+        # Only a literal's value changes, but the statement is re-rendered: a
+        # rewrite that costs validity is not worth the literal it fixes.
+        if grounded.sql != statement_sql and _validate_sql(grounded.sql, knowledge_base, dialect):
+            return statement_sql
+        return grounded.sql
+
     error = _validate_sql(sql, knowledge_base, dialect)
     if error is None:
         result = SQLGenerationResult(
-            sql=sql,
+            sql=await _ground(sql),
             is_valid=True,
             validation_error=None,
             dialect=dialect,
@@ -125,7 +154,7 @@ async def validate_and_repair(
     repaired, mech_error = _try_mechanical_repair(sql, knowledge_base, dialect)
     if mech_error is None:
         result = SQLGenerationResult(
-            sql=repaired,
+            sql=await _ground(repaired),
             is_valid=True,
             validation_error=None,
             dialect=dialect,
@@ -137,16 +166,28 @@ async def validate_and_repair(
     if system is None:
         system = _build_sql_system_prompt(knowledge_base, dialect)
 
+    # The statement is invalid, but its literals can still be checked: a value
+    # no row holds is worth telling the repair about, with what the column does
+    # hold, so the corrected statement does not keep it.
+    value_notes: list[str] = []
+    if lookups is not None and _cfg.LITERAL_GROUNDING:
+        value_notes = (await ground_literals(sql, knowledge_base, dialect, lookups)).notes
     correction_user = (
         "Your SQL had a validation error and needs correction.\n\n"
         f"Error: {error}\n"
         f"SQL with error:\n{sql}\n\n"
-        f"Please generate a corrected {dialect} SELECT statement. "
+        + (
+            "Value check against the database:\n"
+            + "".join(f"- {note}\n" for note in value_notes)
+            + "\n"
+            if value_notes
+            else ""
+        )
+        + f"Please generate a corrected {dialect} SELECT statement. "
         "Wrap the SQL in <sql>...</sql> markers."
     )
 
     # --- Phase 6A: self-consistency for hard queries -----------------------
-    from nlqueries import config as _cfg  # noqa: PLC0415
     from nlqueries.orchestrator.candidates import (  # noqa: PLC0415
         _is_hard,
         generate_candidates,
@@ -173,7 +214,7 @@ async def validate_and_repair(
 
     repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)
     result = SQLGenerationResult(
-        sql=repaired_sql,
+        sql=await _ground(repaired_sql) if repair_error is None else repaired_sql,
         is_valid=repair_error is None,
         validation_error=repair_error,
         dialect=dialect,

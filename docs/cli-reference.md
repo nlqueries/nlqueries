@@ -177,8 +177,8 @@ Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` repl
 | Flag | Default | Description |
 |---|---|---|
 | `--output` / `-o` | `~/.nlqueries/knowledge_base/<id>.yaml` | Path to write the YAML KB |
-| `--include-samples` / `--no-include-samples` | on | Include sample rows per table |
-| `--sample-rows` | `3` | Number of sample rows per table |
+| `--include-samples` / `--no-include-samples` | on | Store column values in the KB, so the prompt shows how they are spelled. A text column with at most 20 distinct values (and 200 characters in all) is stored whole, marked `values_complete: true` and shown as `values: [...]`; any other column gets up to `--sample-rows` samples, shown as `samples: [...]`, unless they average over 80 characters. Keys and personal-data columns (email, phone, address, ...) never get values. Read-only; a query that fails or takes over 10 s leaves that column without values |
+| `--sample-rows` | `3` | Rows sampled per table, and so the most sample values stored per column |
 | `--describe-columns` | off | Use the LLM to auto-populate column descriptions from sample data (skips surrogate-key columns; requires LLM key) |
 
 ---

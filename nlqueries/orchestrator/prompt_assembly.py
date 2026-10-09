@@ -58,8 +58,13 @@ _ROLE_PREAMBLE = (
 #: benchmark's misses (2026-10-09), where the statement ran and was defensible
 #: but answered in another shape. The largest classes were extra or missing
 #: columns (a fifth of the misses), COUNT(DISTINCT) where the joined rows were
-#: meant, a MAX/MIN subquery where ORDER BY ... LIMIT 1 was, a hint's literal
-#: not used as written, and filters nobody asked for.
+#: meant, a MAX/MIN subquery where ORDER BY ... LIMIT 1 was, and a hint's
+#: literal not used as written.
+#:
+#: Measured, not assumed. A rule against filters nobody asked for (IS NOT NULL)
+#: lost twice as many correct answers as it gained and was taken out; the
+#: YES/NO rule is limited to questions that offer the choice, because applied
+#: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
@@ -82,9 +87,10 @@ when the question or hint says distinct, unique or different.
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
 - A quoted value in the hint is exact: use it as written, in the column the hint names.
-- Add no filter the question or hint does not ask for, such as IS NOT NULL.
-- Answer a yes/no question with the text 'YES' or 'NO', and a true/false question \
-with 'True' or 'False', not a boolean expression."""
+- Only when the question itself offers the choice, as in "yes or no?" or "true or \
+false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean \
+expression. A question that only asks whether something holds ("is the order \
+shipped?") returns the value the data stores for it."""
 
 _SQL_FORMAT_RULES = f"""\
 ## Instructions
@@ -376,8 +382,14 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
 
             samples: list[str] = col.get("samples", [])
             if samples:
-                sample_str = ", ".join(f"'{s}'" for s in samples[:5])
-                flags.append(f"samples: [{sample_str}]")
+                # "values" when they are every value the column holds, so the
+                # model can rely on the spelling; "samples" when they are a few.
+                if col.get("values_complete"):
+                    value_str = ", ".join(f"'{s}'" for s in samples)
+                    flags.append(f"values: [{value_str}]")
+                else:
+                    sample_str = ", ".join(f"'{s}'" for s in samples[:5])
+                    flags.append(f"samples: [{sample_str}]")
 
             inner = f"{col_name}:{col_type}"
             if flags:

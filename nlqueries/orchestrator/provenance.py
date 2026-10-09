@@ -60,6 +60,9 @@ class Provenance:
     cache: CacheInfo | None = None
     validator: list[str] = field(default_factory=list)  # validator / nexus warnings
     timings: dict[str, float] = field(default_factory=dict)  # phase -> milliseconds
+    # String literals replaced with the value the column stores, each
+    # {"table", "column", "before", "after"} (literal grounding).
+    literals_grounded: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +82,7 @@ class Provenance:
             ),
             "validator": list(self.validator),
             "timings": dict(self.timings),
+            "literals_grounded": [dict(entry) for entry in self.literals_grounded],
         }
 
 
@@ -149,3 +153,12 @@ def record_timing(key: str, ms: float) -> None:
     p = _collector.get()
     if p is not None:
         p.timings[key] = float(ms)
+
+
+def record_literal_grounded(table: str, column: str, before: str, after: str) -> None:
+    """A literal the statement compared *column* to, replaced with the stored value."""
+    p = _collector.get()
+    if p is not None:
+        p.literals_grounded.append(
+            {"table": table, "column": column, "before": before, "after": after}
+        )
