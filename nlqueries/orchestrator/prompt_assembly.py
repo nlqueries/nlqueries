@@ -53,29 +53,44 @@ _ROLE_PREAMBLE = (
     "Use the schema and example queries below to translate the user's question into valid SQL."
 )
 
-#: Which columns to SELECT. On BIRD dev (2026-10-09, core b3ebdc7,
-#: claude-sonnet-5-5, 67.08 EX) 108 of the 505 misses -- 21% -- returned the
-#: right rows with extra columns, which a set-of-rows comparison scores as wrong:
-#: the column it ranked by, a name added for context, every numbered variant of
-#: a column, a label column splitting one count into a GROUP BY. Shared with
-#: `sql_generation`, whose prompt also drives the repair step, so a repaired
-#: statement cannot add them back.
-_PROJECTION_RULE = """\
-- SELECT only the columns the question asks for. Do not add the column you sorted, \
-filtered or ranked by, an id, a name or a label column for context, or a count \
-alongside a requested list.
-- Fields the question names, as in "include X" or "along with Y", are requested \
-columns: select them.
-- A question asking how many, or for a total or an average, returns a single number \
-with no grouping column, unless it asks for a breakdown.
-- "The name" or "the administrator" means one set of columns, not every numbered \
-variant of it (Name1, Name2, Name3) in the table."""
+#: What the answer looks like: which columns, in what order, and the idioms a
+#: correct result is expected in. Each rule comes from re-running a text-to-SQL
+#: benchmark's misses (2026-10-09), where the statement ran and was defensible
+#: but answered in another shape. The largest classes were extra or missing
+#: columns (a fifth of the misses), COUNT(DISTINCT) where the joined rows were
+#: meant, a MAX/MIN subquery where ORDER BY ... LIMIT 1 was, a hint's literal
+#: not used as written, and filters nobody asked for.
+#:
+#: One block, kept short: it sits in the prompt-cached Instructions and costs
+#: tokens on every call. Shared with `sql_generation`, whose prompt also drives
+#: the repair step, so a repaired statement cannot undo it.
+_ANSWER_RULES = """\
+- SELECT only the columns the question asks for, in the order the question or its \
+hint lists them: "street, city, state and zip" is four columns in that order. Do \
+not add the column you sorted, filtered or ranked by, an id, or a name, label or \
+count column for context.
+- A field, count, total, average or rank the question names is a requested column: \
+"the top five cities and their number of stores" returns the city and the count.
+- "How many", or "what is the total" or "the average", with no breakdown asked for \
+returns a single number with no grouping column.
+- A person's full name is the first name and the last name, as two columns in that \
+order. "The name" means one set of name columns, not every numbered variant (Name1, \
+Name2, Name3).
+- Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
+when the question or hint says distinct, unique or different.
+- For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
+... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
+for every tie.
+- A quoted value in the hint is exact: use it as written, in the column the hint names.
+- Add no filter the question does not ask for, such as IS NOT NULL.
+- Answer a yes/no question with the text 'YES' or 'NO', and a true/false question \
+with 'True' or 'False', not a boolean expression."""
 
 _SQL_FORMAT_RULES = f"""\
 ## Instructions
 - Generate only a single SELECT SQL statement.
 - Use only tables and columns present in the schema above.
-{_PROJECTION_RULE}
+{_ANSWER_RULES}
 - First, briefly explain your reasoning in 2-4 sentences (plain text).
 - Then output the SQL between EXACTLY these markers — nothing before or after:
 

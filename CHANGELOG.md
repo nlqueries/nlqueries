@@ -6,16 +6,39 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
-- **SQL prompt: project only the requested columns.** On BIRD dev (core
-  b3ebdc7, Sonnet 5.5, 67.08 execution accuracy) 21% of the misses were correct
-  answers returned with extra columns, which a set-of-rows comparison scores as
-  wrong. Examples were the column it ranked by, a name added for context, every
-  numbered variant of a column, or a count split into a labelled GROUP BY. Both
-  SQL system prompts now tell the model to select only what the question asks
-  for, and to count a field the question names ("include X", "along with Y") as
-  asked for. That covers the one `run_query` caches and the one `generate_sql`
-  and the repair step use. The cached block changes once, so the first
-  question for each knowledge base after upgrading writes the cache again.
+- **SQL prompt: benchmark-measured idioms.** Covers COUNT over joined rows,
+  ORDER BY LIMIT 1 for superlatives, projecting requested aggregates in the
+  requested column order, hint literals as authoritative, no defensive null
+  filters, and YES/NO literals. These come from re-running a text-to-SQL
+  benchmark's misses, where the statement ran and was defensible but answered
+  in a different shape than expected. The prompts now say:
+  - a count, total, average or rank the question names is a column to select;
+  - columns come in the order the question or its hint lists them;
+  - a person's full name is first and last name;
+  - count the rows the joins produce, with `COUNT(DISTINCT)` only when the
+    question or hint says distinct, unique or different;
+  - "the highest / lowest / latest ..." is `ORDER BY ... LIMIT 1`, unless every
+    tie is asked for;
+  - a quoted value in a hint is used exactly as written;
+  - no filter (such as `IS NOT NULL`) is added unasked;
+  - yes/no and true/false questions are answered with the literal text.
+
+  The counting rule is the one that trades: the benchmark's reference answers
+  are themselves inconsistent on entities counted through a child table, some
+  using `DISTINCT` and some not. Measured, keying `DISTINCT` to the wording
+  fixed about twice as many misses as it lost, and no wording-based exception for
+  that shape did better.
+- **SQL prompt: project only the requested columns.** In a benchmark run
+  (core b3ebdc7, Sonnet 5.5, 67.08 execution accuracy), 21% of the misses were
+  correct answers returned with extra columns. A set-of-rows comparison scores
+  those as wrong. Examples were the column it ranked by, a name added for
+  context, every numbered variant of a column, or a count split into a
+  labelled GROUP BY. Both SQL system prompts now tell the model to select only
+  what the question asks for, and to count a field the question names
+  ("include X", "along with Y") as asked for. That covers the one `run_query`
+  caches and the one `generate_sql` and the repair step use. The cached block
+  changes once, so the first question for each knowledge base after upgrading
+  writes the cache again.
 - **SQL policy version 2: the function allowlist answers to every spelling of
   a dialect.** `ALLOWED_ANONYMOUS` is keyed by sqlglot's names (`tsql`, not
   `mssql`; `mysql` gains an entry) and read through the same aliases the parser

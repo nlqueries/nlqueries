@@ -17,6 +17,7 @@ import time
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from nlqueries.orchestrator.prompt_assembly import (
     AssembledPrompt,
     assemble_prompt,
@@ -752,27 +753,54 @@ def test_extra_dynamic_context_async_appended() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The projection rule (BIRD dev, 2026-10-09: 21% of misses were right answers
-# returned with extra columns)
+# The answer rules: which columns, in what order, and the idioms a correct
+# result is expected in (from re-running a benchmark's misses, 2026-10-09)
 # ---------------------------------------------------------------------------
 
+#: One phrase per rule, checked by its wording: `_ANSWER_RULES in` alone would
+#: pass on an empty constant. tests/test_sql_generation.py checks the repair
+#: path's prompt for the same phrases.
+ANSWER_RULE_PHRASES = [
+    # Projection: only what is asked for, in the order it is asked for.
+    "SELECT only the columns the question asks for",
+    "in the order the question or its hint lists them",
+    "Do not add the column you sorted, filtered or ranked by",
+    "A field, count, total, average or rank the question names is a requested column",
+    "with no breakdown asked for returns a single number with no grouping column",
+    "A person's full name is the first name and the last name, as two columns",
+    "not every numbered variant",
+    # Counting the joined rows, not distinct ones, unless asked.
+    "Count the rows the joins produce with COUNT(column)",
+    "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # Superlatives.
+    "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
+    "unless the question asks for every tie",
+    # Literals and filters.
+    "A quoted value in the hint is exact: use it as written",
+    "Add no filter the question does not ask for, such as IS NOT NULL",
+    "with the text 'YES' or 'NO'",
+    "with 'True' or 'False', not a boolean expression",
+]
 
-def test_static_system_carries_the_projection_rule() -> None:
-    """In the Instructions block, before the output format.
 
-    Checked by its wording as well as by the constant: `_PROJECTION_RULE in`
-    would pass on an empty constant."""
-    from nlqueries.orchestrator.prompt_assembly import _PROJECTION_RULE
+@pytest.mark.parametrize("phrase", ANSWER_RULE_PHRASES)
+def test_static_system_carries_each_answer_rule(phrase: str) -> None:
+    static = assemble_prompt("How many orders?", _make_kb()).static_system
+
+    assert phrase in static
+
+
+def test_the_answer_rules_sit_in_the_instructions_block() -> None:
+    """Before the output format, and the constant is what is there."""
+    from nlqueries.orchestrator.prompt_assembly import _ANSWER_RULES
 
     static = assemble_prompt("How many orders?", _make_kb()).static_system
 
-    assert _PROJECTION_RULE and _PROJECTION_RULE in static
-    assert "SELECT only the columns the question asks for" in static
-    assert '"include X" or "along with Y", are requested columns' in static
-    assert "returns a single number with no grouping column" in static
+    assert _ANSWER_RULES and _ANSWER_RULES in static
     instructions = static.index("## Instructions")
-    rule = static.index("SELECT only the columns the question asks for")
-    assert instructions < rule < static.index("First, briefly explain your reasoning")
+    first = static.index("SELECT only the columns the question asks for")
+    last = static.index("not a boolean expression")
+    assert instructions < first < last < static.index("First, briefly explain your reasoning")
 
 
 def test_static_system_with_the_rule_is_identical_across_questions() -> None:

@@ -30,8 +30,8 @@ import sqlglot.expressions as exp
 
 from nlqueries.llm import get_llm_client, output_budget
 from nlqueries.orchestrator.prompt_assembly import (
+    _ANSWER_RULES,
     _PARTIAL_COLUMNS_NOTE,
-    _PROJECTION_RULE,
     _columns_omitted,
     _table_ref,
 )
@@ -455,9 +455,10 @@ async def _apply_explain_gate(
 def _build_sql_system_prompt(knowledge_base: dict[str, Any], dialect: str) -> str:
     """Build the system prompt for SQL generation from *knowledge_base*.
 
-    Carries the projection rule as well as `prompt_assembly`'s static block:
-    this prompt also drives `validate_and_repair`, and a repair that put the
-    extra columns back would undo the rule just when a statement was wrong.
+    Carries the answer rules as well as `prompt_assembly`'s static block: this
+    prompt also drives `validate_and_repair`, and a repair that put extra
+    columns back, or rewrote a count or a superlative into the other idiom,
+    would undo the rules just when a statement was wrong.
     """
     schema_ctx = _format_schema_for_prompt(knowledge_base)
     return (
@@ -466,7 +467,7 @@ def _build_sql_system_prompt(knowledge_base: dict[str, Any], dialect: str) -> st
         "Do not include any explanation or comments.\n"
         "Do not use markdown code blocks.\n"
         "Output only the raw SQL statement.\n\n"
-        f"{_PROJECTION_RULE}\n\n"
+        f"{_ANSWER_RULES}\n\n"
     ) + schema_ctx
 
 
