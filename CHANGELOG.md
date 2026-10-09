@@ -57,6 +57,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the hint defines. The answer rules now say to use the column the hint names
   for what it names.
 
+- **The compact schema shows each column's description.** The default
+  schema format (M-Schema) rendered a column's name, type, keys and values
+  but never the description the knowledge base holds for it, so an
+  abbreviated or repeated name (`CRE`, `TG`, a `position` in two tables) was
+  all the model had to choose by. A description now follows the column's
+  keys, on one line and cut at 160 characters, and one that only repeats the
+  column's name (`points` for `points`) is left out. The verbose format
+  already showed them.
+
 - **`export-kb` stores column values, so the prompt shows how they are
   spelled.** Until now it stored none. With `--include-samples`, which is on
   by default, it now stores:

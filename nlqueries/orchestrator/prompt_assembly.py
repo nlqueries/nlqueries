@@ -337,6 +337,28 @@ def _columns_omitted(table: dict[str, Any]) -> bool:
     return bool(table.get("columns_omitted"))
 
 
+#: Longest column description the compact schema renders; a longer one is cut
+#: at a word boundary. A description says what an abbreviated or ambiguous name
+#: cannot, but a paragraph for every column would crowd out the schema itself.
+_MAX_COLUMN_DESCRIPTION_CHARS = 160
+
+
+def _column_description(col: dict[str, Any]) -> str:
+    """*col*'s description on one line for the compact schema, or ``""`` when it
+    has none or only repeats the column's name ("points" for ``points``)."""
+    text = " ".join(str(col.get("description") or "").split())
+    if not text or _letters_and_digits(text) == _letters_and_digits(str(col.get("name", ""))):
+        return ""
+    if len(text) > _MAX_COLUMN_DESCRIPTION_CHARS:
+        cut = text[:_MAX_COLUMN_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
+        text = cut.rstrip(" ,;:") + "..."
+    return text
+
+
+def _letters_and_digits(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
 def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     """Render the KB as a compact M-Schema string (Phase 6B).
 
@@ -345,9 +367,15 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
         【DB_ID】 sales
         【Table】 orders — one row per order
         (order_id:BIGINT, PK), (customer_id:BIGINT, FK->customers.customer_id),
-        (status:TEXT, samples: ['pending', 'shipped', 'cancelled']), ...
+        (st:TEXT, order status, samples: ['pending', 'shipped', 'cancelled']), ...
         【Foreign keys】
         orders.customer_id = customers.customer_id
+
+    A column's description, when the KB has one that says more than the
+    column's name, follows its keys and precedes its values (see
+    :func:`_column_description`). Without it the model has only the name to go
+    on, and a name such as ``CRE`` or ``position`` (in two tables) does not say
+    which column a question means.
 
     Falls back gracefully when KB lacks v2 fields (``is_primary_key``,
     ``is_foreign_key``, ``references``, ``samples``) — columns are rendered
@@ -382,6 +410,9 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
                 flags.append("PK")
             if col.get("is_foreign_key") and col.get("references"):
                 flags.append(f"FK->{col['references']}")
+            description = _column_description(col)
+            if description:
+                flags.append(description)
 
             samples: list[str] = col.get("samples", [])
             if samples:
