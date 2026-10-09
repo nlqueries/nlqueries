@@ -43,8 +43,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     run and return no rows, the notes discarded. When a note offers nearby
     values, one LLM call with the question, the statement and the notes asks
     for the same statement with only the literal corrected. The answer is used
-    only if it validates and differs, and is grounded again without a second
-    call. Recorded in provenance as `literal_repair`.
+    only if it validates and differs in string literal values and nothing
+    else, and is grounded again without a second call. Recorded in provenance
+    as `literal_repair`, with the reason `rejected: non-literal change` when
+    the answer changed more than literals.
 
 ### Changed
 

@@ -64,8 +64,9 @@ class Provenance:
     # {"table", "column", "before", "after"} (literal grounding).
     literals_grounded: list[dict[str, str]] = field(default_factory=list)
     # The one LLM call made when a valid statement kept a literal no stored
-    # value matches: {"attempted": True, "changed": bool, "notes": [...]}, or
-    # None when no such call was made.
+    # value matches: {"attempted": True, "changed": bool, "notes": [...],
+    # "reason": str | None}, or None when no such call was made. "reason" is
+    # "rejected: non-literal change" when the answer changed more than literals.
     literal_repair: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -164,12 +165,17 @@ def record_timing(key: str, ms: float) -> None:
         p.timings[key] = float(ms)
 
 
-def record_literal_repair(changed: bool, notes: list[str]) -> None:
+def record_literal_repair(changed: bool, notes: list[str], reason: str | None = None) -> None:
     """The literal-repair call was made with *notes*; *changed* when its
-    statement replaced the original."""
+    statement replaced the original, and *reason* why one was refused."""
     p = _collector.get()
     if p is not None:
-        p.literal_repair = {"attempted": True, "changed": changed, "notes": list(notes)}
+        p.literal_repair = {
+            "attempted": True,
+            "changed": changed,
+            "notes": list(notes),
+            "reason": reason,
+        }
 
 
 def record_literal_grounded(table: str, column: str, before: str, after: str) -> None:

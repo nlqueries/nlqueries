@@ -265,10 +265,13 @@ async def _repair_literals(
     matches, given grounding's *notes*.
 
     Returns the model's statement when it validates and differs from
-    *statement_sql*, else ``None``: an invalid answer, the same statement, or a
-    failed call all keep the original. Exactly one call, never repeated, made
-    through *llm* like any other so its usage is recorded, and recorded in
-    provenance as ``literal_repair``. Does not count as an attempt.
+    *statement_sql* in the values of its string literals and nothing else (see
+    :func:`_only_literals_differ`), else ``None``: an invalid answer, the same
+    statement, any other change, or a failed call all keep the original. Any
+    other change is recorded with the reason ``"rejected: non-literal change"``.
+    Exactly one call, never repeated, made through *llm* like any other so its
+    usage is recorded, and recorded in provenance as ``literal_repair``. Does
+    not count as an attempt.
     """
     user = (
         "Your SQL is valid but at least one WHERE literal matches no stored value.\n\n"
@@ -281,6 +284,7 @@ async def _repair_literals(
         "statement unchanged. Wrap the SQL in <sql>...</sql>."
     )
     corrected: str | None = None
+    reason: str | None = None
     try:
         raw = await llm.acomplete(system, user, max_tokens=output_budget("correction"))
         candidate = _extract_sql(raw).strip()
@@ -289,11 +293,33 @@ async def _repair_literals(
             and _validate_sql(candidate, knowledge_base, dialect) is None
             and not _same_statement(candidate, statement_sql, dialect)
         ):
-            corrected = candidate
+            if _only_literals_differ(candidate, statement_sql, dialect):
+                corrected = candidate
+            else:
+                reason = "rejected: non-literal change"
     except Exception:  # noqa: BLE001 - the original statement stands
         _log.warning("The literal repair call failed; the statement is kept.", exc_info=True)
-    record_literal_repair(changed=corrected is not None, notes=notes)
+    record_literal_repair(changed=corrected is not None, notes=notes, reason=reason)
     return corrected
+
+
+def _only_literals_differ(a: str, b: str, dialect: str) -> bool:
+    """Whether *a* and *b* are one statement but for the values of their string
+    literals: both parsed, every string literal replaced with a placeholder, and
+    the two trees equal. A changed column, join, aggregate or number, or a
+    predicate added or removed, makes them differ."""
+    try:
+        masked = [_strings_masked(sqlglot.parse_one(s, read=dialect)) for s in (a, b)]
+    except Exception:  # noqa: BLE001 - unparsable: not shown to be literals only
+        return False
+    return bool(masked[0] == masked[1])
+
+
+def _strings_masked(tree: exp.Expr) -> exp.Expr:
+    for literal in list(tree.find_all(exp.Literal)):
+        if literal.is_string:
+            literal.replace(exp.Placeholder())
+    return tree
 
 
 def _same_statement(a: str, b: str, dialect: str) -> bool:

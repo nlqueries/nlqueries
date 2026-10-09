@@ -885,6 +885,7 @@ def test_a_corrected_literal_from_the_one_repair_call_replaces_the_statement(
     assert collected.literal_repair is not None
     assert collected.literal_repair["attempted"] is True
     assert collected.literal_repair["changed"] is True
+    assert collected.literal_repair["reason"] is None
     assert collected.literal_repair["notes"] and all(
         note in user for note in collected.literal_repair["notes"]
     )
@@ -917,6 +918,47 @@ def test_the_same_statement_back_keeps_the_original(src: _Source, reply: str) ->
     assert llm.acomplete.call_count == 1
     assert collected.literal_repair is not None
     assert collected.literal_repair["changed"] is False
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # The literal fixed, and the selected column changed too.
+        "SELECT status FROM schools WHERE soc = 'Youth Authority Facilities'",
+        # The literal fixed, and a predicate added.
+        "SELECT id FROM schools WHERE soc = 'Youth Authority Facilities' AND enrolment > 50",
+        # The literal fixed, and an aggregate in place of the column.
+        "SELECT COUNT(id) FROM schools WHERE soc = 'Youth Authority Facilities'",
+    ],
+    ids=["column-changed", "predicate-added", "aggregate"],
+)
+def test_an_answer_that_changes_more_than_literals_keeps_the_original(
+    src: _Source, reply: str
+) -> None:
+    llm = _replying(f"<sql>{reply}</sql>")
+
+    result, collected = _repair(UNMATCHED, src, llm)
+
+    assert result.is_valid and result.sql == UNMATCHED
+    assert llm.acomplete.call_count == 1
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["changed"] is False
+    assert collected.literal_repair["reason"] == "rejected: non-literal change"
+
+
+def test_a_changed_number_beside_the_literal_keeps_the_original(src: _Source) -> None:
+    """Only string literals may differ: a number is not one."""
+    original = "SELECT id FROM schools WHERE soc = 'Youth Authority School' AND enrolment > 50"
+    llm = _replying(
+        "<sql>SELECT id FROM schools WHERE soc = 'Youth Authority Facilities' "
+        "AND enrolment > 60</sql>"
+    )
+
+    result, collected = _repair(original, src, llm)
+
+    assert result.sql == original
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["reason"] == "rejected: non-literal change"
 
 
 def test_an_invalid_statement_back_keeps_the_original(src: _Source) -> None:
