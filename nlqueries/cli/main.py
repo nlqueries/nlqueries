@@ -3746,18 +3746,19 @@ def embed_server_stop() -> None:
     while _es.is_pid_alive(pid) and _time.monotonic() < deadline:
         # Each check on Windows is a tasklist process, so not too often.
         _time.sleep(0.5)
-    exited = not _es.is_pid_alive(pid)
-    # Removed whether or not it has exited yet. On Windows the process is gone
-    # and never cleaned up after itself; on POSIX it removes the file on its way
-    # out, and a daemon that ignored SIGTERM is better found by `status` than
-    # left behind a file that blocks the next `start`.
-    _es._PID_FILE.unlink(missing_ok=True)
-    if exited:
+    if not _es.is_pid_alive(pid):
+        # Removed only once the daemon is known to be gone. On Windows it never
+        # cleans up after itself; on POSIX it removes the file on its way out.
+        _es._PID_FILE.unlink(missing_ok=True)
         console.print(f"  [green]✓[/green] Daemon stopped (PID {pid})")
         return
+    # Kept, as when the signal itself fails: the daemon still holds the port,
+    # and the file is how `status`, `start` and the next `stop` find it.
+    # Removing it orphaned a live process (from #235's review).
     err_console.print(
         f"  [bold red]✗[/bold red] Daemon (PID {pid}) did not exit within "
-        f"{_EMBED_STOP_WAIT_SECONDS:g} s of being signalled."
+        f"{_EMBED_STOP_WAIT_SECONDS:g} s of being signalled; it is still running. "
+        f"Stop it by hand (PID {pid})."
     )
     sys.exit(1)
 

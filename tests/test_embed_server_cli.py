@@ -188,9 +188,12 @@ def test_a_daemon_that_exits_before_it_is_signalled_is_not_running(
     assert not pid_file.exists()
 
 
-def test_a_daemon_that_outlives_the_wait_is_reported(
+def test_a_daemon_that_outlives_the_wait_is_reported_and_kept(
     pid_file: Path, out: io.StringIO, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Still running, so its PID file stays: removing it orphaned the process,
+    `status` saying "not running" and `start` launching a second daemon onto
+    the busy port (from #235's review)."""
     monkeypatch.setattr(cli_main, "_EMBED_STOP_WAIT_SECONDS", 0.0)
     pid_file.write_text("4242")
     daemon = _Daemon(exits_on_sigterm=False)
@@ -202,7 +205,8 @@ def test_a_daemon_that_outlives_the_wait_is_reported(
 
     assert result.exit_code == 1
     assert "Daemon (PID 4242) did not exit within 0 s of being signalled" in out.getvalue()
-    assert not pid_file.exists()
+    assert "Stop it by hand (PID 4242)" in out.getvalue()
+    assert pid_file.read_text() == "4242"
 
 
 # --- A PID file that does not hold a PID ------------------------------------------
@@ -314,3 +318,5 @@ def test_stop_survives_a_slow_tasklist(
     assert isinstance(result.exception, SystemExit)
     assert "Traceback" not in out.getvalue() + result.output
     assert "Daemon (PID 4242) did not exit" in out.getvalue()
+    # Assumed running, so not forgotten.
+    assert pid_file.read_text() == "4242"
