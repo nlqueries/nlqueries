@@ -3744,7 +3744,8 @@ def embed_server_stop() -> None:
 
     deadline = _time.monotonic() + _EMBED_STOP_WAIT_SECONDS
     while _es.is_pid_alive(pid) and _time.monotonic() < deadline:
-        _time.sleep(0.2)
+        # Each check on Windows is a tasklist process, so not too often.
+        _time.sleep(0.5)
     exited = not _es.is_pid_alive(pid)
     # Removed whether or not it has exited yet. On Windows the process is gone
     # and never cleaned up after itself; on POSIX it removes the file on its way

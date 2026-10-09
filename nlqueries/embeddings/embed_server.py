@@ -85,12 +85,19 @@ def is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if sys.platform == "win32":
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            # Unknown, so assumed running: guessing "gone" would let a caller
+            # remove the PID file of a live daemon. A slow tasklist is
+            # transient, and `embed-server stop` asks again on its next poll.
+            # Not an OSError, so uncaught it surfaced as a traceback.
+            return True
         return str(pid) in result.stdout
     try:
         os.kill(pid, 0)

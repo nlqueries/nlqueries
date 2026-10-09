@@ -284,3 +284,33 @@ def test_sigterm_stops_the_daemon(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     assert "served and stopped" in done.stdout
     assert not pid_path.exists(), "serve() removes its own PID file on the way out"
+
+
+# --- A tasklist that does not answer in time (from #235's review) ----------------
+
+
+def test_a_slow_tasklist_is_taken_as_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unknown, so assumed running: guessing "gone" could remove a live
+    daemon's PID file. TimeoutExpired is not an OSError, so it used to escape."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("tasklist", 5)):
+        assert embed_server.is_pid_alive(4242) is True
+
+
+def test_stop_survives_a_slow_tasklist(
+    pid_file: Path, out: io.StringIO, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the real `is_pid_alive`, which `stop` calls on every poll."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(cli_main, "_EMBED_STOP_WAIT_SECONDS", 0.0)
+    pid_file.write_text("4242")
+    with (
+        patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("tasklist", 5)),
+        patch("os.kill"),
+    ):
+        result = _run("stop")
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "Traceback" not in out.getvalue() + result.output
+    assert "Daemon (PID 4242) did not exit" in out.getvalue()
