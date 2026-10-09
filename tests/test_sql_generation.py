@@ -748,3 +748,61 @@ def test_prose_never_becomes_valid_sql_end_to_end() -> None:
     for prose in (PROSE_WITH, PROSE_APOSTROPHE):
         result = _validate_sql(_extract_sql(prose), _make_kb(), "postgres")
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# The projection rule: in this prompt too, because it drives the repair step
+# ---------------------------------------------------------------------------
+
+
+def test_the_sql_system_prompt_carries_the_projection_rule() -> None:
+    from nlqueries.orchestrator.prompt_assembly import _PROJECTION_RULE
+    from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
+
+    system = _build_sql_system_prompt(_make_kb(), "postgres")
+
+    assert _PROJECTION_RULE and _PROJECTION_RULE in system
+    assert "SELECT only the columns the question asks for" in system
+
+
+def test_the_rule_is_shared_with_prompt_assembly_not_restated() -> None:
+    """One sentence in two places is how the two prompts come to disagree."""
+    import inspect
+
+    import nlqueries.orchestrator.sql_generation as sql_generation
+
+    assert "SELECT only the columns the question asks for" not in inspect.getsource(sql_generation)
+
+
+def test_generate_sql_sends_the_projection_rule() -> None:
+    mock_llm = _make_mock_llm("SELECT id FROM orders")
+    with patch("nlqueries.orchestrator.sql_generation.get_llm_client", return_value=mock_llm):
+        generate_sql("show orders", _make_kb(), "postgres")
+
+    system_prompt: str = mock_llm.complete.call_args_list[0].args[0]
+    assert "SELECT only the columns the question asks for" in system_prompt
+
+
+def test_the_repair_step_sends_the_projection_rule() -> None:
+    """A repaired statement must not put the extra columns back."""
+    seen: list[Any] = []
+
+    async def _run() -> SQLGenerationResult:
+        mock_llm = MagicMock()
+
+        async def _acomplete(system: Any, user: str, **kw: Any) -> str:
+            seen.append(system)
+            return "<sql>SELECT id FROM orders</sql>"
+
+        mock_llm.acomplete = _acomplete
+        mock_llm.supports_prompt_caching = False
+        return await validate_and_repair(
+            "SELECT * FROM ghost_table", _make_kb(), "postgres", mock_llm
+        )
+
+    with patch("nlqueries.config.SELF_CONSISTENCY", "off"):
+        result = asyncio.run(_run())
+
+    assert result.attempt_count == 2, "the LLM repair must have run"
+    assert len(seen) == 1
+    assert "SELECT only the columns the question asks for" in seen[0]

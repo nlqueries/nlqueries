@@ -6,6 +6,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **SQL prompt: project only the requested columns.** On BIRD dev (core
+  b3ebdc7, Sonnet 5.5, 67.08 execution accuracy) 21% of the misses were correct
+  answers returned with extra columns, which a set-of-rows comparison scores as
+  wrong. Examples were the column it ranked by, a name added for context, every
+  numbered variant of a column, or a count split into a labelled GROUP BY. Both
+  SQL system prompts now tell the model to select only what the question asks
+  for, and to count a field the question names ("include X", "along with Y") as
+  asked for. That covers the one `run_query` caches and the one `generate_sql`
+  and the repair step use. The cached block changes once, so the first
+  question for each knowledge base after upgrading writes the cache again.
 - **SQL policy version 2: the function allowlist answers to every spelling of
   a dialect.** `ALLOWED_ANONYMOUS` is keyed by sqlglot's names (`tsql`, not
   `mssql`; `mysql` gains an entry) and read through the same aliases the parser
