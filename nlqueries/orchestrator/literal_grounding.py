@@ -493,6 +493,23 @@ def _normalised(expression: exp.Expr) -> exp.Expr:
     return exp.Lower(this=exp.Trim(this=expression))
 
 
+def _loose_match(col: exp.Column, value: exp.Literal, dialect: str) -> exp.Expr:
+    """*col* equal to *value* ignoring case and surrounding spaces.
+
+    On SQLite, ``TRIM(col) = TRIM(value) COLLATE NOCASE`` rather than ``LOWER``
+    on both sides. ``LOWER`` scaled badly with concurrent scans on separate
+    connections: on a 200,000-row table, four threads took 9.8 s for 20 scans
+    each where one thread took 0.6 s for its 20, and with the collation four
+    took 0.28 s. NOCASE folds ASCII letters only, as SQLite's ``LOWER`` does.
+    """
+    if dialect == "sqlite":
+        return exp.EQ(
+            this=exp.Trim(this=col),
+            expression=exp.Collate(this=exp.Trim(this=value), expression=exp.Var(this="NOCASE")),
+        )
+    return exp.EQ(this=_normalised(col), expression=_normalised(value))
+
+
 def _fold(value: str) -> str:
     """*value* lowercased, its runs of whitespace collapsed to one space, and
     the characters of ``_FOLD_ENDS`` and spaces stripped from both ends.
@@ -541,7 +558,7 @@ async def _look_up(
         exp.select(col.copy())
         .distinct()
         .from_(source.copy())
-        .where(exp.EQ(this=_normalised(col.copy()), expression=_normalised(value.copy())))
+        .where(_loose_match(col.copy(), value.copy(), dialect))
         .limit(2)
     )
     rows = await session.run(loose, dialect, max_rows=2)

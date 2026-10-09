@@ -178,6 +178,48 @@ def test_a_value_that_exists_as_written_is_left_after_one_lookup(src: _Source) -
     assert len(src.statements) == 1
 
 
+# --- How the loose pass is written --------------------------------------------------
+
+
+def test_on_sqlite_the_loose_pass_compares_with_nocase(src: _Source) -> None:
+    result = _ground("SELECT id FROM schools WHERE status = 'legal'", src)
+
+    loose = src.statements[1]
+    assert "COLLATE NOCASE" in loose and "LOWER(" not in loose, loose
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+
+
+def test_the_loose_pass_ignores_spaces_around_the_stored_value_too(tmp_path: Path) -> None:
+    """Answered by the loose pass itself: no containing query is needed."""
+    src = _posts(tmp_path, "  Spaced Title  ")
+
+    result = _ground("SELECT id FROM posts WHERE title = 'spaced title'", src, POSTS_KB)
+
+    assert result.sql == "SELECT id FROM posts WHERE title = '  Spaced Title  '"
+    assert not any(" LIKE " in s for s in src.statements), src.statements
+
+
+def test_on_postgres_the_loose_pass_lowercases_both_sides() -> None:
+    statements: list[str] = []
+    empty = QueryResult(columns=["x"], rows=[], row_count=0, execution_time_ms=0.0, error=None)
+    connector = MagicMock()
+
+    def _execute_query(sql: str, *args: Any, **kwargs: Any) -> QueryResult:
+        statements.append(sql)
+        return empty
+
+    connector.execute_query.side_effect = _execute_query
+    source = LookupSource(key="postgres", open=lambda: connector)
+
+    asyncio.run(
+        ground_literals("SELECT id FROM schools WHERE status = 'legal'", KB, "postgres", source)
+    )
+
+    loose = statements[1]
+    assert "LOWER(TRIM(status)) = LOWER(TRIM('legal'))" in loose, loose
+    assert "COLLATE" not in loose
+
+
 # --- Punctuation at either end -----------------------------------------------------
 
 POSTS_KB: dict[str, Any] = {
