@@ -813,6 +813,193 @@ def test_the_llm_repair_is_told_what_the_column_holds(
     assert "'Youth Authority Facilities'" in correction_user
 
 
+# --- Literal repair on the valid path ------------------------------------------------
+
+UNMATCHED = "SELECT id FROM schools WHERE soc = 'Youth Authority School'"
+CORRECTED = "SELECT id FROM schools WHERE soc = 'Youth Authority Facilities'"
+QUESTION = "Which schools are youth authority facilities?"
+
+
+def _replying(*replies: Any) -> MagicMock:
+    """An LLM whose acomplete returns *replies* in turn (an exception is raised)."""
+    llm = MagicMock()
+    llm.acomplete = AsyncMock(side_effect=list(replies))
+    return llm
+
+
+def _repair(
+    sql: str, src: _Source, llm: Any, question: str | None = QUESTION
+) -> tuple[SQLGenerationResult, Provenance]:
+    collected = Provenance()
+    with use_provenance(collected):
+        result = asyncio.run(
+            validate_and_repair(sql, KB, "sqlite", llm, lookups=src.source, question=question)
+        )
+    return result, collected
+
+
+def test_a_corrected_literal_from_the_one_repair_call_replaces_the_statement(
+    src: _Source,
+) -> None:
+    llm = _replying(f"<sql>{CORRECTED}</sql>")
+
+    result, collected = _repair(UNMATCHED, src, llm)
+
+    assert result.is_valid and result.sql == CORRECTED
+    assert result.attempt_count == 1
+    assert llm.acomplete.call_count == 1
+    user = llm.acomplete.call_args.args[1]
+    assert user.startswith(
+        "Your SQL is valid but at least one WHERE literal matches no stored value."
+    )
+    assert f"Question: {QUESTION}" in user and UNMATCHED in user
+    assert "Value check against the database:" in user
+    assert "'Youth Authority Facilities'" in user
+    assert "Wrap the SQL in <sql>...</sql>." in user
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["attempted"] is True
+    assert collected.literal_repair["changed"] is True
+    assert collected.literal_repair["notes"] and all(
+        note in user for note in collected.literal_repair["notes"]
+    )
+    assert collected.to_dict()["literal_repair"] == collected.literal_repair
+
+
+def test_the_repair_call_reuses_the_cached_system_prefix(src: _Source) -> None:
+    llm = _replying(f"<sql>{CORRECTED}</sql>")
+    system = [{"type": "text", "text": "the cached prefix", "cache_control": {"type": "ephemeral"}}]
+
+    asyncio.run(validate_and_repair(UNMATCHED, KB, "sqlite", llm, system, lookups=src.source))
+
+    assert llm.acomplete.call_args.args[0] is system
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        f"<sql>{UNMATCHED}</sql>",
+        # The same statement, laid out differently.
+        "<sql>select id\nfrom schools\nwhere soc = 'Youth Authority School';</sql>",
+    ],
+)
+def test_the_same_statement_back_keeps_the_original(src: _Source, reply: str) -> None:
+    llm = _replying(reply)
+
+    result, collected = _repair(UNMATCHED, src, llm)
+
+    assert result.sql == UNMATCHED
+    assert llm.acomplete.call_count == 1
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["changed"] is False
+
+
+def test_an_invalid_statement_back_keeps_the_original(src: _Source) -> None:
+    llm = _replying("<sql>SELECT id FROM ghost WHERE soc = 'Youth Authority Facilities'</sql>")
+
+    result, collected = _repair(UNMATCHED, src, llm)
+
+    assert result.is_valid and result.sql == UNMATCHED
+    assert llm.acomplete.call_count == 1
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["changed"] is False
+
+
+def test_a_failed_call_keeps_the_original(src: _Source) -> None:
+    llm = _replying(RuntimeError("provider down"))
+
+    result, collected = _repair(UNMATCHED, src, llm)
+
+    assert result.is_valid and result.sql == UNMATCHED
+    assert llm.acomplete.call_count == 1
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["changed"] is False
+
+
+def test_the_corrected_statement_is_grounded_again_without_a_second_call(
+    src: _Source,
+) -> None:
+    llm = _replying(
+        "<sql>SELECT id FROM schools WHERE soc = 'youth authority facilities'</sql>",
+        "<sql>SELECT 1</sql>",
+    )
+
+    result, _ = _repair(UNMATCHED, src, llm)
+
+    assert result.sql == CORRECTED
+    assert llm.acomplete.call_count == 1
+
+
+def test_a_corrected_statement_still_unmatched_gets_no_second_call(src: _Source) -> None:
+    """Valid and different, so it is kept; grounded again, it still matches no
+    stored value, and that does not start another call."""
+    still_wrong = "SELECT id FROM schools WHERE soc = 'Youth Authority Schools'"
+    llm = _replying(f"<sql>{still_wrong}</sql>", f"<sql>{CORRECTED}</sql>")
+
+    result, _ = _repair(UNMATCHED, src, llm)
+
+    assert result.sql == still_wrong
+    assert llm.acomplete.call_count == 1
+
+
+def test_the_mechanical_repair_path_gets_the_repair_too(src: _Source) -> None:
+    """Valid only once mechanically repaired: a string LIMIT."""
+    llm = _replying(f"<sql>{CORRECTED} LIMIT 5</sql>")
+
+    result, collected = _repair(f"{UNMATCHED} LIMIT '5'", src, llm)
+
+    assert result.sql == f"{CORRECTED} LIMIT 5"
+    assert llm.acomplete.call_count == 1
+    assert collected.literal_repair is not None and collected.literal_repair["changed"]
+
+
+def test_with_the_setting_off_no_repair_call_is_made(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("nlqueries.config.LITERAL_GROUNDING_REPAIR", False)
+    llm = _replying(f"<sql>{CORRECTED}</sql>")
+
+    result, collected = _repair(UNMATCHED, src, llm)
+
+    assert result.sql == UNMATCHED
+    llm.acomplete.assert_not_called()
+    assert collected.literal_repair is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # No row has it, and nothing near it: a note with no values to offer.
+        "SELECT id FROM schools WHERE soc = 'zzzz qqqq'",
+        # Several values match: grounding leaves it, and so does the repair.
+        "SELECT id FROM schools WHERE status = 'active'",
+    ],
+)
+def test_notes_without_nearby_values_make_no_call(src: _Source, sql: str) -> None:
+    llm = _replying(f"<sql>{CORRECTED}</sql>")
+
+    result, collected = _repair(sql, src, llm)
+
+    assert result.sql == sql
+    llm.acomplete.assert_not_called()
+    assert collected.literal_repair is None
+
+
+def test_every_note_goes_into_the_call(src: _Source) -> None:
+    """The literal with nearby values triggers it; the call also carries the note
+    for a literal with none."""
+    sql = "SELECT id FROM schools WHERE soc = 'Youth Authority School' OR funding = 'zzzz qqqq'"
+    llm = _replying(f"<sql>{sql}</sql>")
+
+    _, collected = _repair(sql, src, llm)
+
+    assert collected.literal_repair is not None
+    notes = collected.literal_repair["notes"]
+    assert len(notes) == 2
+    assert any("'zzzz qqqq'" in note for note in notes)
+    user = llm.acomplete.call_args.args[1]
+    assert all(note in user for note in notes)
+
+
 # --- The orchestrator: lookups, whatever the policy ----------------------------------
 
 
@@ -908,6 +1095,14 @@ def test_validation_gets_lookups_whatever_the_policy(execution: ExecutionPolicy)
     assert opener.call_count == (1 if execution.may_execute else 0)
     if not execution.may_execute:
         assert frame["sql_table"] is None and frame["execution_mode"] == "generate_only"
+
+
+def test_validation_is_given_the_question() -> None:
+    validate = _validated()
+
+    _drive(ExecutionPolicy.generate_only(), validate=validate)
+
+    assert validate.call_args.kwargs["question"] == "how many legal schools"
 
 
 def test_an_agent_with_no_connector_gets_no_lookups() -> None:

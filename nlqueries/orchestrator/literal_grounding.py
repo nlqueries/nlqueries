@@ -96,6 +96,9 @@ class GroundingResult:
     substitutions: list[tuple[str, str, str, str]] = field(default_factory=list)
     #: One line per literal no stored value matched, for the repair prompt.
     notes: list[str] = field(default_factory=list)
+    #: Whether a literal that matched no stored value came with nearby ones:
+    #: the case a repair can act on.
+    offers_nearby: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,7 @@ def _apply(
         record_literal_grounded(table.name, column.name, literal, stored)
         return True
     if outcome.kind == "none":
+        result.offers_nearby = result.offers_nearby or bool(outcome.values)
         nearby = ", ".join(_quote(v) for v in outcome.values)
         result.notes.append(
             f"No row has {column.name} = {_quote(literal)}"

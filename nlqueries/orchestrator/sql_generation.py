@@ -20,6 +20,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -29,18 +30,21 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import get_llm_client, output_budget
-from nlqueries.orchestrator.literal_grounding import ground_literals
+from nlqueries.orchestrator.literal_grounding import GroundingResult, ground_literals
 from nlqueries.orchestrator.prompt_assembly import (
     _ANSWER_RULES,
     _PARTIAL_COLUMNS_NOTE,
     _columns_omitted,
     _table_ref,
 )
+from nlqueries.orchestrator.provenance import record_literal_repair
 from nlqueries.sql_policy import evaluate
 
 if TYPE_CHECKING:
     from nlqueries.connectors.loader import LookupSource
     from nlqueries.llm.client import LLMClient
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +86,7 @@ async def validate_and_repair(
     connector: Any = None,
     explain_check: bool = False,
     lookups: LookupSource | None = None,
+    question: str | None = None,
 ) -> SQLGenerationResult:
     """Validate *sql* extracted from a streaming response; repair if invalid.
 
@@ -110,6 +115,8 @@ async def validate_and_repair(
                         ``EXPLAIN`` on the final SQL to catch plan-time errors.
                         Defaults to ``False``.
         lookups:        Where literal grounding reads stored values; see below.
+        question:       The question the statement answers, for the literal
+                        repair below to judge a stored value against.
 
     Returns:
         :class:`SQLGenerationResult`.
@@ -125,24 +132,46 @@ async def validate_and_repair(
     connector, whatever the request's execution policy: the lookups read
     through a connector of their own, with read permission, and nothing here
     executes *sql*.
+
+    **Literal repair** (``LITERAL_GROUNDING_REPAIR``, on the valid paths only):
+    a valid statement whose literal matches no stored value would run and
+    return no rows. When grounding offers nearby values for such a literal, one
+    LLM call asks for the same statement with only the literal corrected; see
+    :func:`_repair_literals`.
     """
     from nlqueries import config as _cfg  # noqa: PLC0415
 
-    async def _ground(statement_sql: str) -> str:
-        """*statement_sql* with its literals grounded, or unchanged."""
+    async def _ground(statement_sql: str) -> tuple[str, GroundingResult | None]:
+        """*statement_sql* with its literals grounded, or unchanged, and what
+        grounding found; ``None`` when it did not run."""
         if lookups is None or not _cfg.LITERAL_GROUNDING:
-            return statement_sql
+            return statement_sql, None
         grounded = await ground_literals(statement_sql, knowledge_base, dialect, lookups)
         # Only a literal's value changes, but the statement is re-rendered: a
         # rewrite that costs validity is not worth the literal it fixes.
         if grounded.sql != statement_sql and _validate_sql(grounded.sql, knowledge_base, dialect):
-            return statement_sql
-        return grounded.sql
+            return statement_sql, grounded
+        return grounded.sql, grounded
+
+    async def _ground_valid(statement_sql: str) -> str:
+        """Grounding on a valid path, then the literal repair if it applies."""
+        grounded_sql, grounded = await _ground(statement_sql)
+        if grounded is None or not grounded.offers_nearby or not _cfg.LITERAL_GROUNDING_REPAIR:
+            return grounded_sql
+        prefix = system if system is not None else _build_sql_system_prompt(knowledge_base, dialect)
+        corrected = await _repair_literals(
+            grounded_sql, grounded.notes, question, prefix, llm, knowledge_base, dialect
+        )
+        if corrected is None:
+            return grounded_sql
+        # Grounded once more, so a literal now within case or spacing of a
+        # stored value takes it; no second call, whatever this finds.
+        return (await _ground(corrected))[0]
 
     error = _validate_sql(sql, knowledge_base, dialect)
     if error is None:
         result = SQLGenerationResult(
-            sql=await _ground(sql),
+            sql=await _ground_valid(sql),
             is_valid=True,
             validation_error=None,
             dialect=dialect,
@@ -154,7 +183,7 @@ async def validate_and_repair(
     repaired, mech_error = _try_mechanical_repair(sql, knowledge_base, dialect)
     if mech_error is None:
         result = SQLGenerationResult(
-            sql=await _ground(repaired),
+            sql=await _ground_valid(repaired),
             is_valid=True,
             validation_error=None,
             dialect=dialect,
@@ -214,13 +243,68 @@ async def validate_and_repair(
 
     repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)
     result = SQLGenerationResult(
-        sql=await _ground(repaired_sql) if repair_error is None else repaired_sql,
+        sql=(await _ground(repaired_sql))[0] if repair_error is None else repaired_sql,
         is_valid=repair_error is None,
         validation_error=repair_error,
         dialect=dialect,
         attempt_count=2,
     )
     return await _apply_explain_gate(result, connector, explain_check, dialect)
+
+
+async def _repair_literals(
+    statement_sql: str,
+    notes: list[str],
+    question: str | None,
+    system: str | list[dict[str, Any]],
+    llm: LLMClient,
+    knowledge_base: dict[str, Any],
+    dialect: str,
+) -> str | None:
+    """One LLM call to correct a valid statement's literal that no stored value
+    matches, given grounding's *notes*.
+
+    Returns the model's statement when it validates and differs from
+    *statement_sql*, else ``None``: an invalid answer, the same statement, or a
+    failed call all keep the original. Exactly one call, never repeated, made
+    through *llm* like any other so its usage is recorded, and recorded in
+    provenance as ``literal_repair``. Does not count as an attempt.
+    """
+    user = (
+        "Your SQL is valid but at least one WHERE literal matches no stored value.\n\n"
+        + (f"Question: {question}\n\n" if question else "")
+        + f"SQL:\n{statement_sql}\n\n"
+        + "Value check against the database:\n"
+        + "".join(f"- {note}\n" for note in notes)
+        + "\nReturn the same statement with only the literal(s) corrected to one of "
+        "the stored values if one clearly matches the question; otherwise return the "
+        "statement unchanged. Wrap the SQL in <sql>...</sql>."
+    )
+    corrected: str | None = None
+    try:
+        raw = await llm.acomplete(system, user, max_tokens=output_budget("correction"))
+        candidate = _extract_sql(raw).strip()
+        if (
+            candidate
+            and _validate_sql(candidate, knowledge_base, dialect) is None
+            and not _same_statement(candidate, statement_sql, dialect)
+        ):
+            corrected = candidate
+    except Exception:  # noqa: BLE001 - the original statement stands
+        _log.warning("The literal repair call failed; the statement is kept.", exc_info=True)
+    record_literal_repair(changed=corrected is not None, notes=notes)
+    return corrected
+
+
+def _same_statement(a: str, b: str, dialect: str) -> bool:
+    """Whether *a* and *b* are one statement, however each is laid out."""
+    try:
+        return bool(
+            sqlglot.parse_one(a, read=dialect).sql(dialect=dialect)
+            == sqlglot.parse_one(b, read=dialect).sql(dialect=dialect)
+        )
+    except Exception:  # noqa: BLE001
+        return a.strip() == b.strip()
 
 
 #: How much of a database error is passed back to the model. Enough for any

@@ -466,6 +466,18 @@ for any agent with a registered connector, on a read-only connector of its own t
 closes afterwards; a generate-only request's statement is never run. On by default; set
 LITERAL_GROUNDING=false to turn it off."""
 
+LITERAL_GROUNDING_REPAIR: bool = os.getenv("NLQ_LITERAL_GROUNDING_REPAIR", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""When grounding leaves a valid statement with a literal no stored value matches, and
+offers nearby values for it, make one LLM call with the grounding notes asking for the
+same statement with only that literal corrected. The answer replaces the statement only
+when it validates and differs; it is grounded again, with no second call. Recorded in
+provenance as ``literal_repair``. Only meaningful when LITERAL_GROUNDING is on. On by
+default; set NLQ_LITERAL_GROUNDING_REPAIR=false to turn it off."""
+
 # ---------------------------------------------------------------------------
 # Embedding daemon
 # ---------------------------------------------------------------------------

@@ -36,6 +36,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     read-only permission, and closes it, rather than using the pooled one the
     request executes on. The pooled SQLite connector is one connection, and
     concurrent requests looking values up on it deadlocked the process.
+  - **A valid statement whose literal matches nothing gets one repair call
+    (`NLQ_LITERAL_GROUNDING_REPAIR`, on by default).** Such a statement used to
+    run and return no rows, the notes discarded. When a note offers nearby
+    values, one LLM call with the question, the statement and the notes asks
+    for the same statement with only the literal corrected. The answer is used
+    only if it validates and differs, and is grounded again without a second
+    call. Recorded in provenance as `literal_repair`.
 
 ### Changed
 

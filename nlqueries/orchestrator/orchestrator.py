@@ -431,6 +431,7 @@ class Orchestrator:
                 llm,
                 system,
                 lookups=lookups,
+                question=question,
             )
 
             span.set_attribute("sql_valid", result.is_valid)
