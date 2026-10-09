@@ -524,8 +524,9 @@ def _fold(value: str) -> str:
     return " ".join(value.lower().split()).strip(_FOLD_ENDS + " ")
 
 
-def _containing(source: exp.Table, col: exp.Column, literal: str, limit: int) -> exp.Expr:
-    """Distinct stored values that contain *literal*, ignoring case."""
+def _containing(source: exp.Table, col: exp.Column, needle: str, limit: int) -> exp.Expr:
+    """Distinct stored values that contain *needle*, which is lowercase, ignoring
+    case."""
     return (
         exp.select(col.copy())
         .distinct()
@@ -533,7 +534,7 @@ def _containing(source: exp.Table, col: exp.Column, literal: str, limit: int) ->
         .where(
             exp.Like(
                 this=exp.Lower(this=col.copy()),
-                expression=exp.Literal.string(f"%{literal.strip().lower()}%"),
+                expression=exp.Literal.string(f"%{needle}%"),
             )
         )
         .limit(limit)
@@ -576,12 +577,14 @@ async def _look_up(
 
     # Third pass: the stored value differs by punctuation at an end, as a
     # title stored with its question mark does from the same title quoted
-    # without it. Compared in Python, over the values that contain the literal.
+    # without it, or the other way round. Compared in Python, over the values
+    # that contain the folded literal: searching for the literal as written
+    # would never find 'Foo' for 'Foo?'.
     containing: list[str] | None = None
     folded = _fold(literal)
     if len(folded) >= _MIN_FOLDED_CHARS:
         rows = await session.run(
-            _containing(source, col, literal, _MAX_CONTAINING), dialect, _MAX_CONTAINING
+            _containing(source, col, folded, _MAX_CONTAINING), dialect, _MAX_CONTAINING
         )
         if rows is None:
             return None
@@ -612,7 +615,7 @@ async def _nearby(
     before the first pass."""
     if containing is None:
         rows = await session.run(
-            _containing(source, col, literal, _MAX_NEARBY), dialect, _MAX_NEARBY
+            _containing(source, col, literal.strip().lower(), _MAX_NEARBY), dialect, _MAX_NEARBY
         )
         if rows is None:
             return None

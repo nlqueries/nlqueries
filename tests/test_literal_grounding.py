@@ -297,6 +297,19 @@ def test_a_literal_missing_the_stored_question_mark_takes_the_stored_value(
     ]
 
 
+def test_a_literal_with_a_question_mark_the_stored_value_lacks_takes_the_stored_value(
+    tmp_path: Path,
+) -> None:
+    """The other direction: the literal carries the punctuation, so a search for
+    it as written would never find the stored value."""
+    src = _posts(tmp_path, "Bayesian inference", "Bayesian inference in practice")
+
+    result = _ground("SELECT id FROM posts WHERE title = 'Bayesian inference?'", src, POSTS_KB)
+
+    assert result.sql == "SELECT id FROM posts WHERE title = 'Bayesian inference'"
+    assert result.substitutions == [("posts", "title", "Bayesian inference?", "Bayesian inference")]
+
+
 def test_a_literal_differing_in_case_and_end_punctuation_is_grounded(tmp_path: Path) -> None:
     src = _posts(tmp_path, "(The Art of Statistics)", "The Art of Statistics, Revisited")
 

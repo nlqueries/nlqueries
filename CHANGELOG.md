@@ -15,8 +15,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     wildcard-free `LIKE` is looked up first.
   - **Exactly one stored value matches**, ignoring case and surrounding spaces
     or, failing that, also punctuation at either end (a title stored with its
-    question mark, quoted without it): the literal is replaced with it, and the
-    substitution is recorded in the answer's provenance (`literals_grounded`).
+    question mark and quoted without it, or the reverse): the literal is
+    replaced with it, and the substitution is recorded in the answer's
+    provenance (`literals_grounded`).
     A literal shorter than three characters without its end punctuation gets
     no punctuation pass.
   - **None or several match:** the statement is left alone, and an LLM repair,
