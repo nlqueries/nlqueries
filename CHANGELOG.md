@@ -156,6 +156,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The SQLite connector no longer deadlocks when threads share it.** The
+  loader pools one connector per database and hands it to every thread that
+  asks, and SQLite's is one `sqlite3` connection with a Python authorizer.
+  Two threads on it at once could stop the whole process: one held the
+  connection's mutex waiting for the GIL to run the authorizer, the other
+  held the GIL waiting for the mutex. The connector now lets one thread use
+  the connection at a time; SQLite never ran two statements on one
+  connection at once anyway. A statement's timeout now starts when its
+  thread has the connection, so a timeout running out while waiting can no
+  longer interrupt another thread's statement.
+
 - **A hand-edited connector entry that is not a mapping no longer crashes the
   CLI.** `agent-a: postgresql://host/db` (the URL where its settings belong)
   raised `AttributeError` from alias resolution, so from every command given an
