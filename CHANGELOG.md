@@ -27,8 +27,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     No lookup is waited for past the 3 s: one still running then is
     abandoned. Outcomes are cached per database for 15 minutes, and any error
     skips the check. On SQLite the case-insensitive comparison is written
-    `TRIM(col) = TRIM('x') COLLATE NOCASE`, which stays fast when several
-    lookups run at once, where `LOWER()` on both sides did not.
+    `TRIM(col) = TRIM('x') COLLATE NOCASE` and the search for values
+    containing a literal `col LIKE '%x%'`, which stay fast when several
+    lookups run at once, where `LOWER()` on the column did not.
   - **When it runs.** Whatever the execution policy, for any agent with a
     registered connector. Generate-only forbids running the statement, not
     reading a column's values, and the statement is never run by the check.

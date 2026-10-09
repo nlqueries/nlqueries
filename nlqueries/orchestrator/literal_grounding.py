@@ -524,19 +524,23 @@ def _fold(value: str) -> str:
     return " ".join(value.lower().split()).strip(_FOLD_ENDS + " ")
 
 
-def _containing(source: exp.Table, col: exp.Column, needle: str, limit: int) -> exp.Expr:
+def _containing(
+    source: exp.Table, col: exp.Column, needle: str, limit: int, dialect: str
+) -> exp.Expr:
     """Distinct stored values that contain *needle*, which is lowercase, ignoring
-    case."""
+    case.
+
+    On SQLite, ``col LIKE '%needle%'`` with no ``LOWER`` on the column: SQLite's
+    ``LIKE`` ignores ASCII case by default, which is all its ``LOWER`` folds,
+    and ``LOWER`` on every row is what scaled badly with concurrent scans (see
+    :func:`_loose_match`). Other dialects lowercase the column.
+    """
+    stored = col.copy() if dialect == "sqlite" else exp.Lower(this=col.copy())
     return (
         exp.select(col.copy())
         .distinct()
         .from_(source.copy())
-        .where(
-            exp.Like(
-                this=exp.Lower(this=col.copy()),
-                expression=exp.Literal.string(f"%{needle}%"),
-            )
-        )
+        .where(exp.Like(this=stored, expression=exp.Literal.string(f"%{needle}%")))
         .limit(limit)
     )
 
@@ -584,7 +588,7 @@ async def _look_up(
     folded = _fold(literal)
     if len(folded) >= _MIN_FOLDED_CHARS:
         rows = await session.run(
-            _containing(source, col, folded, _MAX_CONTAINING), dialect, _MAX_CONTAINING
+            _containing(source, col, folded, _MAX_CONTAINING, dialect), dialect, _MAX_CONTAINING
         )
         if rows is None:
             return None
@@ -615,7 +619,9 @@ async def _nearby(
     before the first pass."""
     if containing is None:
         rows = await session.run(
-            _containing(source, col, literal.strip().lower(), _MAX_NEARBY), dialect, _MAX_NEARBY
+            _containing(source, col, literal.strip().lower(), _MAX_NEARBY, dialect),
+            dialect,
+            _MAX_NEARBY,
         )
         if rows is None:
             return None

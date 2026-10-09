@@ -199,6 +199,17 @@ def test_the_loose_pass_ignores_spaces_around_the_stored_value_too(tmp_path: Pat
     assert not any(" LIKE " in s for s in src.statements), src.statements
 
 
+def test_on_sqlite_the_containing_search_leaves_the_column_as_stored(src: _Source) -> None:
+    """SQLite's LIKE ignores ASCII case already; no LOWER on every row."""
+    result = _ground("SELECT id FROM schools WHERE soc = 'youth authority school'", src)
+
+    likes = [s for s in src.statements if " LIKE " in s]
+    assert likes and all("LOWER(" not in s for s in likes), likes
+    assert "soc LIKE '%youth authority school%'" in likes[0]
+    # Still case-insensitive: the stored value differs in case from the search.
+    assert result.notes and "'Youth Authority Facilities'" in result.notes[0]
+
+
 def test_on_postgres_the_loose_pass_lowercases_both_sides() -> None:
     statements: list[str] = []
     empty = QueryResult(columns=["x"], rows=[], row_count=0, execution_time_ms=0.0, error=None)
@@ -218,6 +229,8 @@ def test_on_postgres_the_loose_pass_lowercases_both_sides() -> None:
     loose = statements[1]
     assert "LOWER(TRIM(status)) = LOWER(TRIM('legal'))" in loose, loose
     assert "COLLATE" not in loose
+    likes = [s for s in statements if " LIKE " in s]
+    assert likes and all("LOWER(status) LIKE '%legal%'" in s for s in likes), likes
 
 
 # --- Punctuation at either end -----------------------------------------------------
