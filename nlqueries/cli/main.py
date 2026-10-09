@@ -3634,6 +3634,9 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
 # embed-server command group (#32 — persistent embedding daemon)
 # ---------------------------------------------------------------------------
 
+#: How long `embed-server stop` waits for the daemon to exit after signalling it.
+_EMBED_STOP_WAIT_SECONDS = 5.0
+
 
 @cli.group("embed-server")
 def embed_server_group() -> None:
@@ -3671,14 +3674,16 @@ def embed_server_start(port: int, foreground: bool) -> None:
     import subprocess
     import sys
 
-    from nlqueries.embeddings.embed_server import _PID_FILE
+    from nlqueries.embeddings.embed_server import read_pid_file
 
-    if _PID_FILE.exists():
-        pid = int(_PID_FILE.read_text().strip())
+    pid, stale = read_pid_file()
+    if pid is not None:
         console.print(
             f"  Daemon already running (PID {pid}). Use [bold]embed-server stop[/bold] first."
         )
         return
+    if stale:
+        console.print(f"  Removing stale PID file ({stale})")
 
     if foreground:
         from nlqueries.embeddings.embed_server import serve
@@ -3708,21 +3713,52 @@ def embed_server_stop() -> None:
     """
     import os as _os
     import signal as _sig
+    import time as _time
 
-    from nlqueries.embeddings.embed_server import _PID_FILE
+    from nlqueries.embeddings import embed_server as _es
 
-    if not _PID_FILE.exists():
+    pid, stale = _es.read_pid_file()
+    if pid is None:
+        if stale:
+            console.print(f"  Removing stale PID file ({stale})")
         console.print("  Daemon is not running.")
         return
 
-    pid = int(_PID_FILE.read_text().strip())
     try:
+        # TerminateProcess on Windows. A PID that has gone, or that this user
+        # may not touch, raises a plain OSError there (winerror 87, or 5 as
+        # PermissionError) rather than ProcessLookupError -- which crashed this
+        # command with a traceback.
         _os.kill(pid, _sig.SIGTERM)
+    except OSError as exc:
+        if not _es.is_pid_alive(pid):
+            _es._PID_FILE.unlink(missing_ok=True)
+            console.print(f"  Daemon is not running (process {pid} exited before it was stopped).")
+            return
+        # Kept: the daemon is still running, and the file is how start and
+        # status know it.
+        err_console.print(
+            f"  [bold red]✗[/bold red] Could not stop the daemon (PID {pid}): {exc.strerror or exc}"
+        )
+        sys.exit(1)
+
+    deadline = _time.monotonic() + _EMBED_STOP_WAIT_SECONDS
+    while _es.is_pid_alive(pid) and _time.monotonic() < deadline:
+        _time.sleep(0.2)
+    exited = not _es.is_pid_alive(pid)
+    # Removed whether or not it has exited yet. On Windows the process is gone
+    # and never cleaned up after itself; on POSIX it removes the file on its way
+    # out, and a daemon that ignored SIGTERM is better found by `status` than
+    # left behind a file that blocks the next `start`.
+    _es._PID_FILE.unlink(missing_ok=True)
+    if exited:
         console.print(f"  [green]✓[/green] Daemon stopped (PID {pid})")
-    except ProcessLookupError:
-        console.print(f"  Process {pid} not found — removing stale PID file.")
-    finally:
-        _PID_FILE.unlink(missing_ok=True)
+        return
+    err_console.print(
+        f"  [bold red]✗[/bold red] Daemon (PID {pid}) did not exit within "
+        f"{_EMBED_STOP_WAIT_SECONDS:g} s of being signalled."
+    )
+    sys.exit(1)
 
 
 @embed_server_group.command("status")
@@ -3736,24 +3772,19 @@ def embed_server_status() -> None:
     import urllib.error
     import urllib.request
 
-    from nlqueries.embeddings.embed_server import _DEFAULT_PORT, _PID_FILE
+    from nlqueries.embeddings.embed_server import _DEFAULT_PORT, read_pid_file
 
-    if not _PID_FILE.exists():
+    # Verifies the OS process is actually alive before checking HTTP, and
+    # removes a stale file.
+    pid, stale = read_pid_file()
+    if pid is None:
+        if stale:
+            console.print(f"  Removing stale PID file ({stale})")
         console.print(
             "  Daemon [red]not running[/red]. "
             "Start with [bold]nlqueries embed-server start[/bold]. "
             "Queries will load the model per-invocation (~9 s)."
         )
-        return
-
-    pid = int(_PID_FILE.read_text().strip())
-
-    # Verify the OS process is actually alive before checking HTTP.
-    from nlqueries.embeddings.embed_server import is_pid_alive
-
-    if not is_pid_alive(pid):
-        console.print(f"  Process {pid} not found — removing stale PID file.")
-        _PID_FILE.unlink(missing_ok=True)
         return
 
     # Process alive — check whether HTTP server is ready yet.
