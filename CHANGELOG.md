@@ -71,6 +71,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt says to clean numbers stored as text before casting them.**
+  A column of text such as '$1,200' or '45 min' casts to 0 or NULL without an
+  error, so rows drop out of a filter or a total unnoticed, and times stored as
+  text sort '10:00' before '9:00'. The prompts now say to remove what the
+  sample values show around the digits, and to parse such times, first.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

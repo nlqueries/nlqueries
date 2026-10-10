@@ -66,6 +66,9 @@ _ROLE_PREAMBLE = (
 #: YES/NO rule is limited to questions that offer the choice, because applied
 #: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
+#: The clean-before-cast rule: numbers stored as decorated text cast to 0 and drop
+#: out of a result without an error, and text sorts times and amounts wrongly.
+#:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
 #: the repair step, so a repaired statement cannot undo it.
@@ -83,6 +86,10 @@ order. "The name" means one set of name columns, not every numbered variant (Nam
 Name2, Name3).
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
+- Before comparing, sorting or adding a text column as a number or a date, remove \
+what its sample values show around the digits (a currency sign, a unit, a word or \
+separator) and parse times written as text such as '12:05'; a plain CAST of such a \
+value gives 0 or NULL, and text sorts '10:00' before '9:00'.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
