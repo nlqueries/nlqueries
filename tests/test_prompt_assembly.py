@@ -772,6 +772,9 @@ ANSWER_RULE_PHRASES = [
     # Counting the joined rows, not distinct ones, unless asked.
     "Count the rows the joins produce with COUNT(column)",
     "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # A join that repeats the rows being totalled: aggregate them first.
+    "When a join repeats the rows whose values you total or count",
+    "total or count them per join key in a subquery first, then join the result",
     # Join type follows the question's wording.
     "Join with an inner join unless the question keeps the rows that have no match",
     "count the ones with none, so join those with LEFT JOIN and count them as 0",
