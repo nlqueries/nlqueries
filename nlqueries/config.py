@@ -476,7 +476,8 @@ rows than this: a literal that matches nothing costs up to four queries, most of
 scans, and on a large table they are slow, and on a warehouse billed. A column of such a
 table whose complete value list the knowledge base holds is still grounded from the list
 alone, where no row filter applies. A table whose size the knowledge base does not record
-is looked up. ``0`` removes the cap."""
+is looked up, and the generic SQLAlchemy connector records none, so on the engines it
+serves this cap skips nothing. ``0`` removes the cap."""
 
 LITERAL_GROUNDING_REPAIR: bool = os.getenv("NLQ_LITERAL_GROUNDING_REPAIR", "true").lower() in (
     "1",

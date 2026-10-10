@@ -2006,6 +2006,18 @@ def export_kb(
                         f"{values_max_rows:,} rows (--values-max-rows).[/dim]"
                     )
 
+            # Both row caps decide from the size the connector reports. The
+            # generic SQLAlchemy connector reports none, so on MySQL, MariaDB,
+            # Oracle and the rest neither cap can skip a table: say so, rather
+            # than leave the operator to infer it from a cap that never fires.
+            unsized = sum(table.row_count is None for table in schema.tables)
+            if unsized:
+                console.print(
+                    f"  [yellow]{unsized} of {len(schema.tables)} table(s) report no row "
+                    "count, so no row cap can skip them: neither --values-max-rows here "
+                    "nor NLQ_LITERAL_GROUNDING_MAX_ROWS when grounding literals.[/yellow]"
+                )
+
             # Optional: LLM-generated column descriptions from sample data
             llm_column_descriptions: dict[str, dict[str, str]] | None = None
             if describe_columns:

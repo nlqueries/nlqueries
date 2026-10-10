@@ -105,6 +105,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   values and none of these queries. A table of unknown size is collected. A
   knowledge base has to be exported again for its prompt to show the values.
 
+  **Both row caps go by the size the connector reports.** The generic
+  SQLAlchemy connector (MySQL, MariaDB, Oracle and the rest) reports none, so
+  on those engines neither `--values-max-rows` nor
+  `NLQ_LITERAL_GROUNDING_MAX_ROWS` skips a table; a Postgres table never
+  analysed and a Redshift role without access to `SVV_TABLE_INFO` report
+  none either. `export-kb` says how many tables report no row count.
+
   **An existing deployment starts storing values on its next `export-kb`.**
   `--include-samples` was on by default but stored nothing, so no export
   until now copied database values into a knowledge base. From this release
