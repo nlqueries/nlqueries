@@ -30,7 +30,11 @@ from enum import StrEnum
 class ExecutionMode(StrEnum):
     """What a caller is permitted to do with the SQL that comes back."""
 
-    #: Produce SQL only. No connector is opened and no statement is executed.
+    #: Produce SQL only. The generated statement is never executed. One
+    #: exception touches the database: literal grounding (``LITERAL_GROUNDING``)
+    #: reads the values a literal is compared to, through the agent's connector
+    #: with a read-only policy of its own, and runs nothing else. Set
+    #: ``NLQ_LITERAL_GROUNDING=false`` for a mode that opens no connector at all.
     GENERATE_ONLY = "generate_only"
 
     #: Execute as a read. The read-only transaction and the database's own
@@ -45,7 +49,14 @@ class ExecutionPolicy:
 
     Frozen so that receiving code cannot widen it in place. No escalation
     method or setter is provided: a sub-agent, retry or cache replay that
-    executes must have been passed a policy that already permitted it.
+    executes the generated statement must have been passed a policy that
+    already permitted it.
+
+    The one place a policy is minted below the entry point is literal
+    grounding's value lookups (``connectors.loader.lookup_source``), which
+    bind :meth:`execute_read_only` whatever the request carries. They read the
+    stored values of the columns a literal is compared to and never run the
+    generated statement; see ``ExecutionMode.GENERATE_ONLY``.
     """
 
     mode: ExecutionMode
