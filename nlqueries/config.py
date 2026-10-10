@@ -451,6 +451,47 @@ EXPLAIN_VALIDATION: bool = os.getenv("NLQ_EXPLAIN_VALIDATION", "false").lower() 
 """When True, validate_and_repair() runs EXPLAIN on the final SQL via the caller-supplied
 connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
 
+LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""Check the string literals a statement compares columns to against the values the
+column stores, before the statement runs. A literal that matches exactly one stored
+value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``), or failing
+that also punctuation at either end, is replaced with it; one that matches none is
+left, with nearby values offered to the repair step. Columns whose names mark their
+values as personal data are skipped, as export-kb skips them; a column's complete value
+list in the knowledge base answers in place of most queries; and a table larger than
+LITERAL_GROUNDING_MAX_ROWS is not queried.
+Read-only and bounded: 3 s of lookups a pass, and at most two passes for a statement,
+one before a repair and one on the repaired statement. Runs whatever the execution policy,
+for any agent with a registered connector, reading through the agent's connector with
+read-only permission; a generate-only request's statement is never run. On by default; set
+NLQ_LITERAL_GROUNDING=false to turn it off."""
+
+LITERAL_GROUNDING_MAX_ROWS: int = int(os.getenv("NLQ_LITERAL_GROUNDING_MAX_ROWS", "1000000"))
+"""Literal grounding does not query a table the knowledge base records as having more
+rows than this: a literal that matches nothing costs up to four queries, most of them
+scans, and on a large table they are slow, and on a warehouse billed. A column of such a
+table whose complete value list the knowledge base holds is still grounded from the list
+alone, where no row filter applies. A table whose size the knowledge base does not record
+is looked up. ``0`` removes the cap."""
+
+LITERAL_GROUNDING_REPAIR: bool = os.getenv("NLQ_LITERAL_GROUNDING_REPAIR", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""When grounding leaves a valid statement with a literal no stored value matches, and
+offers nearby values for it, make one LLM call with the grounding notes asking for the
+same statement with only that literal corrected. The answer replaces the statement only
+when it validates and differs from it in nothing but the values of the literals grounding
+flagged, those no stored value matches or several do; it is grounded again, with no
+second call. Recorded in provenance as ``literal_repair``. Only
+meaningful when NLQ_LITERAL_GROUNDING is on. On by default; set
+NLQ_LITERAL_GROUNDING_REPAIR=false to turn it off."""
+
 # ---------------------------------------------------------------------------
 # Embedding daemon
 # ---------------------------------------------------------------------------

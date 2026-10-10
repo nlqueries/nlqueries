@@ -159,7 +159,10 @@ def get_agent_schema(agent_id: str) -> str:
             if col.get("foreign_key"):
                 flags.append(f"FK→{col['foreign_key']}")
             samples = col.get("samples", [])
-            sample_str = f" samples: {samples[:3]}" if samples else ""
+            if samples and col.get("values_complete"):
+                sample_str = f" values: {samples}"
+            else:
+                sample_str = f" samples: {samples[:3]}" if samples else ""
             flag_str = f" [{', '.join(flags)}]" if flags else ""
             col_parts.append(f"  {col_name}: {col_type}{flag_str}{sample_str}")
 

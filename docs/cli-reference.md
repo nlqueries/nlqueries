@@ -169,7 +169,7 @@ A fresh or lightly-used database will produce few or zero capsules until it has 
 Reads the capsules saved by `process-history` together with the live schema and writes the KB YAML that `query`/`ask` read. **Required before `query`/`ask` will work**, and must be re-run after every `process-history` run.
 
 ```bash
-nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3] [--no-include-samples] [--describe-columns]
+nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3] [--no-include-samples] [--values-max-rows 10000000] [--describe-columns]
 ```
 
 Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` replaced with `_`).
@@ -177,8 +177,9 @@ Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` repl
 | Flag | Default | Description |
 |---|---|---|
 | `--output` / `-o` | `~/.nlqueries/knowledge_base/<id>.yaml` | Path to write the YAML KB |
-| `--include-samples` / `--no-include-samples` | on | Include sample rows per table |
-| `--sample-rows` | `3` | Number of sample rows per table |
+| `--include-samples` / `--no-include-samples` | on | Store column values in the KB, so the prompt shows how they are spelled. A text column with at most 20 distinct values (and 200 characters in all) is stored whole, marked `values_complete: true` and shown as `values: [...]`; any other column gets up to `--sample-rows` samples, shown as `samples: [...]`, unless they average over 80 characters. Keys and personal-data columns (email, phone, address, ...) never get values. Read-only; a query that fails or takes over 10 s leaves that column without values. **What it costs:** one sample query per table and one `SELECT DISTINCT` per text column, and the `DISTINCT` reads every row of a column with few values. On a warehouse billed by bytes read, BigQuery for one, each is charged for the whole column it names, or the whole table for the sample query, whatever its `LIMIT`. `--values-max-rows` skips the largest tables, and `--no-include-samples` runs none of these queries |
+| `--sample-rows` | `3` | Rows sampled per table, and so the most sample values stored per column |
+| `--values-max-rows` | `10000000` | A table the schema records as having more rows than this gets no column values, and none of the queries that collect them. `0` for no cap; a table whose size the connector does not report is collected |
 | `--describe-columns` | off | Use the LLM to auto-populate column descriptions from sample data (skips surrogate-key columns; requires LLM key) |
 
 ---

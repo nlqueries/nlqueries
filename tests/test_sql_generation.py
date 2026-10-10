@@ -18,6 +18,8 @@ from nlqueries.orchestrator.sql_generation import (
     validate_and_repair,
 )
 
+from tests.test_prompt_assembly import ANSWER_RULE_PHRASES
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -751,18 +753,26 @@ def test_prose_never_becomes_valid_sql_end_to_end() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The projection rule: in this prompt too, because it drives the repair step
+# The answer rules: in this prompt too, because it drives the repair step
 # ---------------------------------------------------------------------------
 
 
-def test_the_sql_system_prompt_carries_the_projection_rule() -> None:
-    from nlqueries.orchestrator.prompt_assembly import _PROJECTION_RULE
+def test_the_sql_system_prompt_carries_the_answer_rules() -> None:
+    from nlqueries.orchestrator.prompt_assembly import _ANSWER_RULES
     from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
 
     system = _build_sql_system_prompt(_make_kb(), "postgres")
 
-    assert _PROJECTION_RULE and _PROJECTION_RULE in system
-    assert "SELECT only the columns the question asks for" in system
+    assert _ANSWER_RULES and _ANSWER_RULES in system
+
+
+@pytest.mark.parametrize("phrase", ANSWER_RULE_PHRASES)
+def test_the_sql_system_prompt_carries_each_answer_rule(phrase: str) -> None:
+    """The phrases the cached block is checked for, so both prompts are held to
+    one list."""
+    from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
+
+    assert phrase in _build_sql_system_prompt(_make_kb(), "postgres")
 
 
 def test_the_rule_is_shared_with_prompt_assembly_not_restated() -> None:

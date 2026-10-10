@@ -9,12 +9,18 @@ Covers:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.kb_generator import _is_pii_column, generate_knowledge_base
-from nlqueries.orchestrator.prompt_assembly import _render_m_schema, assemble_prompt
+from nlqueries.orchestrator.prompt_assembly import (
+    _MAX_COLUMN_DESCRIPTION_CHARS,
+    _render_m_schema,
+    assemble_prompt,
+)
 from nlqueries.processing.parameterizer import QueryCapsule
 
 # ---------------------------------------------------------------------------
@@ -297,6 +303,65 @@ class TestRenderMSchema:
         result = _render_m_schema(kb)
         assert "【Foreign keys】" in result
         assert "orders.customer_id = customers.id" in result
+
+    def _described(self, name: str, description: object, **extra: object) -> str:
+        column = {
+            "name": name,
+            "type": "INTEGER",
+            "is_primary_key": False,
+            "is_foreign_key": False,
+            "references": None,
+            "description": description,
+            **extra,
+        }
+        return _render_m_schema(self._simple_kb(columns=[column]))
+
+    def test_a_column_description_is_rendered_between_keys_and_values(self) -> None:
+        """An abbreviated name says nothing about what the column holds; its
+        description does, so the compact schema carries it."""
+        result = self._described(
+            "GOT",
+            "AST glutamic oxaloacetic transaminase",
+            samples=["34", "29"],
+            is_foreign_key=True,
+            references="patients.id",
+        )
+
+        assert (
+            "(GOT:INTEGER, FK->patients.id, AST glutamic oxaloacetic transaminase, "
+            "samples: ['34', '29'])" in result
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "description"),
+        [("points", "points"), ("Examination Date", "examination date"), ("race_id", "Race ID")],
+    )
+    def test_a_description_that_only_repeats_the_name_is_left_out(
+        self, name: str, description: str
+    ) -> None:
+        assert f"({name}:INTEGER)" in self._described(name, description)
+
+    @pytest.mark.parametrize("description", ["", None, "   "])
+    def test_no_description_adds_nothing(self, description: object) -> None:
+        assert "(points:INTEGER)" in self._described("points", description)
+
+    def test_a_description_is_put_on_one_line(self) -> None:
+        result = self._described("UA", "uric acid\n  normal range:\tN > 8.0")
+
+        assert "(UA:INTEGER, uric acid normal range: N > 8.0)" in result
+
+    def test_a_long_description_is_cut_at_a_word_boundary(self) -> None:
+        words = " ".join(f"word{i}" for i in range(60))
+
+        result = self._described("q1", words)
+
+        match = re.search(r"\(q1:INTEGER, (.*)\)$", result, re.MULTILINE)
+        assert match, result
+        rendered = match.group(1)
+        assert rendered.endswith("...")
+        assert len(rendered) <= _MAX_COLUMN_DESCRIPTION_CHARS + 3
+        assert rendered[:-3] in words and words.startswith(rendered[:-3])
+        assert rendered[:-3].split()[-1] in words.split()
 
     def test_no_foreign_keys_section_when_empty(self) -> None:
         kb = self._simple_kb(foreign_keys=[])

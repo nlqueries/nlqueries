@@ -107,6 +107,29 @@ def table_sample_sql(name: str, schema: str | None, limit: int, dialect: str | N
     return str(exp.select(exp.Star()).from_(table).limit(limit).sql(dialect=grammar))
 
 
+def column_values_sql(
+    name: str, schema: str | None, column: str, limit: int, dialect: str | None = None
+) -> str:
+    """``SELECT DISTINCT <column> FROM <schema>.<table> WHERE <column> IS NOT NULL``,
+    bounded to *limit* rows, for *dialect*.
+
+    Quoted and bounded as :func:`table_sample_sql` is, and the column quoted
+    too: a column named ``Academic Year`` is only reachable that way.
+    """
+    from sqlglot import exp  # noqa: PLC0415
+
+    table, grammar = _table_expression(name, schema, dialect)
+    col = exp.column(column, quoted=True)
+    return str(
+        exp.select(col)
+        .distinct()
+        .from_(table)
+        .where(exp.not_(exp.Is(this=col.copy(), expression=exp.Null())))
+        .limit(limit)
+        .sql(dialect=grammar)
+    )
+
+
 def _table_expression(name: str, schema: str | None, dialect: str | None) -> tuple[Any, str | None]:
     """The quoted table reference both helpers render, and the grammar to render it in.
 
@@ -576,6 +599,17 @@ class PermittedConnector(DatabaseConnector):
     require; refusing construction would prevent a ``--no-execute`` run from
     describing the tables it generates SQL against. Execution is what is
     permitted, and execution is therefore what is checked.
+
+    **Restricting rows per request: declare ``cache_scope``.** A wrapper that
+    narrows what a connector returns for a request (a row filter, a tenant
+    scope), whether it wraps this class or subclasses it, must declare
+    ``cache_scope``: a string naming the restriction, equal for two requests
+    only when they may see the same rows. Literal grounding caches the values
+    it looks up and shares them across requests. Exactly this class restricts
+    nothing, so its lookups are shared per database; any other connector's are
+    shared only among requests with the same ``cache_scope``, and not cached at
+    all without one. Do not declare it on this class: a wrapper that forwards
+    unknown attributes to it would then appear to declare it too.
     """
 
     def __init__(

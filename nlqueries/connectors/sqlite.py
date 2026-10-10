@@ -16,10 +16,12 @@ returns an empty list.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -99,6 +101,7 @@ class SQLiteConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._conn: sqlite3.Connection | None = None
         self._database: str = ":memory:"
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -113,8 +116,8 @@ class SQLiteConnector(DatabaseConnector):
         credential dict shape as server connectors works unchanged.
 
         ``check_same_thread=False`` lets the timeout watchdog call ``interrupt``
-        from its thread (and keeps the connector usable across Celery worker
-        threads); access is otherwise single-threaded per query.
+        from its thread and lets the pooled connector serve any thread; one
+        thread at a time, see :meth:`_using`.
         """
         self._database = str(credentials.get("database") or ":memory:")
 
@@ -142,6 +145,22 @@ class SQLiteConnector(DatabaseConnector):
             raise RuntimeError("SQLiteConnector.connect() must be called before use.")
         return self._conn
 
+    @contextlib.contextmanager
+    def _using(self) -> Iterator[sqlite3.Connection]:
+        """The connection, used by this thread alone until the block ends.
+
+        The loader pools this connector and hands it to every thread that asks,
+        and it is one ``sqlite3`` connection with a Python authorizer. Two
+        threads on it at once deadlocked the process: one held the connection's
+        mutex and waited for the GIL to call the authorizer, the other held the
+        GIL and waited for the mutex, reading a row. Waiting for this lock
+        releases the GIL, so taking it first cannot deadlock that way. Nothing
+        runs slower for it: SQLite never runs two statements on one connection
+        at the same moment anyway.
+        """
+        with self._lock:
+            yield self._require_conn()
+
     # ------------------------------------------------------------------
     # test_connection
     # ------------------------------------------------------------------
@@ -149,7 +168,8 @@ class SQLiteConnector(DatabaseConnector):
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds."""
         try:
-            self._require_conn().execute("SELECT 1").fetchone()
+            with self._using() as conn:
+                conn.execute("SELECT 1").fetchone()
             return True
         except Exception:  # noqa: BLE001
             logger.exception("SQLiteConnector.test_connection failed")
@@ -167,31 +187,31 @@ class SQLiteConnector(DatabaseConnector):
         keeps no cheap row-count estimate). Internal ``sqlite_*`` tables are
         skipped. Every table lives in the single implicit ``main`` schema.
         """
-        conn = self._require_conn()
         tables: list[TableSpec] = []
-        for name in self._table_names(conn):
-            fk_by_col = self._foreign_keys(conn, name)
-            columns = [
-                ColumnSpec(
-                    name=str(col["name"]),
-                    type=str(col["type"] or ""),
-                    nullable=not bool(col["notnull"]),
-                    is_primary_key=bool(col["pk"]),
-                    is_foreign_key=str(col["name"]) in fk_by_col,
-                    references=fk_by_col.get(str(col["name"])),
-                    description=None,
+        with self._using() as conn:
+            for name in self._table_names(conn):
+                fk_by_col = self._foreign_keys(conn, name)
+                columns = [
+                    ColumnSpec(
+                        name=str(col["name"]),
+                        type=str(col["type"] or ""),
+                        nullable=not bool(col["notnull"]),
+                        is_primary_key=bool(col["pk"]),
+                        is_foreign_key=str(col["name"]) in fk_by_col,
+                        references=fk_by_col.get(str(col["name"])),
+                        description=None,
+                    )
+                    for col in self._columns(conn, name)
+                ]
+                tables.append(
+                    TableSpec(
+                        name=name,
+                        schema="main",
+                        row_count=self._row_count(conn, name),
+                        columns=columns,
+                        description=None,
+                    )
                 )
-                for col in self._columns(conn, name)
-            ]
-            tables.append(
-                TableSpec(
-                    name=name,
-                    schema="main",
-                    row_count=self._row_count(conn, name),
-                    columns=columns,
-                    description=None,
-                )
-            )
 
         return SchemaSpec(
             database=self._database,
@@ -260,6 +280,12 @@ class SQLiteConnector(DatabaseConnector):
         ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default (0 disables). The interrupt
         surfaces as an error rather than a hang.
 
+        The watchdog starts once this thread holds the connection (see
+        :meth:`_using`), not before: ``interrupt`` stops whatever is running on
+        the connection, so a watchdog running out while its thread waited would
+        stop another thread's statement. The budget is therefore the statement's
+        own, and time spent waiting behind another statement is not counted.
+
         Exceptions are caught and surfaced via ``QueryResult.error``.
         """
         effective_timeout = (
@@ -269,23 +295,23 @@ class SQLiteConnector(DatabaseConnector):
         )
         start = time.perf_counter()
         try:
-            conn = self._require_conn()
-            watchdog: threading.Timer | None = None
-            if effective_timeout is not None and effective_timeout > 0:
-                watchdog = threading.Timer(effective_timeout, conn.interrupt)
-                watchdog.daemon = True
-                watchdog.start()
-            try:
-                cursor = conn.execute(sql)
-                _truncated, _reason = False, None
-                if cursor.description:
-                    columns = [desc[0] for desc in cursor.description]
-                    rows, _truncated, _reason = collect(cursor, max_rows)
-                else:
-                    columns, rows = [], []
-            finally:
-                if watchdog is not None:
-                    watchdog.cancel()
+            with self._using() as conn:
+                watchdog: threading.Timer | None = None
+                if effective_timeout is not None and effective_timeout > 0:
+                    watchdog = threading.Timer(effective_timeout, conn.interrupt)
+                    watchdog.daemon = True
+                    watchdog.start()
+                try:
+                    cursor = conn.execute(sql)
+                    _truncated, _reason = False, None
+                    if cursor.description:
+                        columns = [desc[0] for desc in cursor.description]
+                        rows, _truncated, _reason = collect(cursor, max_rows)
+                    else:
+                        columns, rows = [], []
+                finally:
+                    if watchdog is not None:
+                        watchdog.cancel()
             elapsed_ms = (time.perf_counter() - start) * 1000
             return QueryResult(
                 columns=columns,
