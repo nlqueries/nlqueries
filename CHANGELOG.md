@@ -83,6 +83,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   Keys and personal-data columns get none. Export now runs one sample query
   per table and one `SELECT DISTINCT` per text column, each bounded to 10 s. A
   knowledge base has to be exported again for its prompt to show the values.
+
+  **An existing deployment starts storing values on its next `export-kb`.**
+  `--include-samples` was on by default but stored nothing, so no export
+  until now copied database values into a knowledge base. From this release
+  the next export does, and from there they go to the model provider in every
+  SQL prompt whose schema includes the column, and out through the MCP schema
+  tool. The personal-data guard goes by column name only (passwords, secrets,
+  tokens, hashes and salts, SSNs, card numbers and CVVs, dates of birth,
+  email, phone, address), so a column whose values are sensitive under any
+  other name, such as a diagnosis, an ethnicity or a disciplinary outcome, is
+  stored like any other. Export with `--no-include-samples` to store no
+  values.
 - **SQL prompt: benchmark-measured idioms.** Covers COUNT over joined rows,
   ORDER BY LIMIT 1 for superlatives, projecting requested aggregates in the
   requested column order, hint literals as authoritative, and YES/NO literals
