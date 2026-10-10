@@ -83,6 +83,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the rows it asks about. The prompts now say to join with an inner join unless
   the question keeps the rows with no match, and that such a row counts as 0
   where the question asks for a count.
+- **The SQL prompt asks for the name, not the id, of the thing asked about.**
+  "Which customer" answered with customer ids is right and of no use to the
+  person asking. The prompts now say to return the thing's name or title
+  column instead of the id, or a description where it has neither, unless
+  the question asks for the id.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

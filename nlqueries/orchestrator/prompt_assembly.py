@@ -73,6 +73,9 @@ _ROLE_PREAMBLE = (
 #: The join-type rule: an outer join adds zero-count rows nobody asked for, and an
 #: inner join drops the zero a question about "at most" or "none" is asking about.
 #:
+#: The display-column rule: an answer of ids is right and useless to the person who
+#: asked which customer it was. Instead of the id, not beside it.
+#:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
 #: the repair step, so a repaired statement cannot undo it.
@@ -88,6 +91,9 @@ returns a single number with no grouping column.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
+- When the question asks which customer, product or other thing, return its name or \
+title column instead of the id, or a description where it has neither, unless the \
+question asks for the id.
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
 - When a join repeats the rows whose values you total or count (a customer's invoices \
