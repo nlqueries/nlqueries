@@ -71,6 +71,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt says to total before a join that repeats rows.** A sum or
+  count over one table, joined to another with several rows per key (a
+  customer's invoices joined to the same customer's shipments), counts each
+  row once per match on the other side and still looks plausible. The prompts
+  now say to total or count those rows per join key in a subquery first, then
+  join the result.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds
