@@ -71,6 +71,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt prefers joins and window functions to per-row subqueries.**
+  A subquery that refers to the outer row runs once per row, and on a table of
+  hundreds of thousands of rows a correct statement of that shape did not finish
+  in two minutes. The prompts now say to prefer joins, GROUP BY and window
+  functions.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

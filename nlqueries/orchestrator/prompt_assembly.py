@@ -66,6 +66,9 @@ _ROLE_PREAMBLE = (
 #: YES/NO rule is limited to questions that offer the choice, because applied
 #: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
+#: The correlated-subquery rule: a statement that is right but runs once per row
+#: of a large table does not finish within a request's timeout.
+#:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
 #: the repair step, so a repaired statement cannot undo it.
@@ -83,6 +86,8 @@ order. "The name" means one set of name columns, not every numbered variant (Nam
 Name2, Name3).
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
+- Prefer joins, GROUP BY and window functions to a subquery that refers to the outer \
+row and so runs once per row: on a large table it can take minutes.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
