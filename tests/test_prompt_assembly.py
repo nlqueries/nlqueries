@@ -792,7 +792,7 @@ ANSWER_RULE_PHRASES = [
     "but keep the decimal mark, as a point",
     # Joins and window functions over per-row subqueries.
     "Prefer joins, GROUP BY and window functions to a subquery that refers to the outer",
-    "row and so runs once per row: on a large table it can take minutes",
+    "which some databases run once per row of the outer query",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",

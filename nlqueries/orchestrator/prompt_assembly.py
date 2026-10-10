@@ -84,8 +84,9 @@ _ROLE_PREAMBLE = (
 #: of a result unnoticed; other databases reject the cast. Text also sorts times
 #: and amounts wrongly.
 #:
-#: The correlated-subquery rule: a statement that is right but runs once per row
-#: of a large table does not finish within a request's timeout.
+#: The correlated-subquery rule: a statement that is right but, as some databases
+#: run it, repeats a subquery for every row of a large table does not finish within
+#: a request's timeout.
 #:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
@@ -122,7 +123,8 @@ comma, '1.234,56' is 1234.56. Parse durations and times written as text such as 
 plain CAST fails on some databases and on others quietly keeps the leading digits or \
 gives 0 ('1,200' becomes 1, '$1,200' becomes 0), and as text '10:00' sorts before '9:00'.
 - Prefer joins, GROUP BY and window functions to a subquery that refers to the outer \
-row and so runs once per row: on a large table it can take minutes.
+row, which some databases run once per row of the outer query: on a large table that \
+can take minutes.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
