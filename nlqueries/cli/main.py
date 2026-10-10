@@ -1847,6 +1847,18 @@ def process_history(
     help="Number of sample rows to include per table.",
 )
 @click.option(
+    "--values-max-rows",
+    # kb_generator.VALUES_MAX_ROWS; not imported here, to keep the CLI's start fast.
+    default=10_000_000,
+    show_default=True,
+    type=int,
+    help=(
+        "Store no column values for a table the schema records as having more rows "
+        "than this; 0 for no cap. Values cost a sample query per table and a SELECT "
+        "DISTINCT per text column, which reads every row of a column with few values."
+    ),
+)
+@click.option(
     "--describe-columns/--no-describe-columns",
     default=False,
     show_default=True,
@@ -1862,6 +1874,7 @@ def export_kb(
     output: str | None,
     include_samples: bool,
     sample_rows: int,
+    values_max_rows: int,
     describe_columns: bool,
 ) -> None:
     """Generate and save the YAML knowledge base for a connector.
@@ -1964,6 +1977,7 @@ def export_kb(
                 from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
                 from nlqueries.knowledge.kb_generator import (  # noqa: PLC0415
                     collect_column_values,
+                    too_large_for_values,
                 )
 
                 # The generic connector's db_type names no grammar; its URL
@@ -1975,7 +1989,7 @@ def export_kb(
                     values_dialect = dialect_from_url(str(cfg.get("url") or ""))
                 connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
                 column_samples, column_values_complete = collect_column_values(
-                    connector, schema, sample_rows, values_dialect
+                    connector, schema, sample_rows, values_dialect, values_max_rows
                 )
                 listed = sum(len(cols) for cols in column_values_complete.values())
                 sampled = sum(len(cols) for cols in column_samples.values()) - listed
@@ -1983,6 +1997,14 @@ def export_kb(
                     f"  [dim]Stored every value of {listed} column(s), "
                     f"and samples of {sampled} more.[/dim]"
                 )
+                skipped = sum(
+                    too_large_for_values(table, values_max_rows) for table in schema.tables
+                )
+                if skipped:
+                    console.print(
+                        f"  [dim]No values for {skipped} table(s) of more than "
+                        f"{values_max_rows:,} rows (--values-max-rows).[/dim]"
+                    )
 
             # Optional: LLM-generated column descriptions from sample data
             llm_column_descriptions: dict[str, dict[str, str]] | None = None

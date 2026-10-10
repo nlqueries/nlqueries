@@ -9,6 +9,7 @@ personal-data columns get nothing.
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,11 @@ import pytest
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec, column_values_sql
 from nlqueries.connectors.sqlite import SQLiteConnector
 from nlqueries.execution import ExecutionPolicy
-from nlqueries.knowledge.kb_generator import collect_column_values, generate_knowledge_base
+from nlqueries.knowledge.kb_generator import (
+    VALUES_MAX_ROWS,
+    collect_column_values,
+    generate_knowledge_base,
+)
 
 STATUSES = ["Active", "Closed", "Legal", "Merged", "Pending"]
 
@@ -197,3 +202,121 @@ def test_the_values_query_quotes_the_column_and_bounds_for_the_dialect(
     dialect: str, expected: str
 ) -> None:
     assert column_values_sql("frpm", "main", "Academic Year", 21, dialect) == expected
+
+
+# --- Large tables -------------------------------------------------------------------
+
+
+def _sized(row_count: int | None) -> SchemaSpec:
+    """SCHEMA with the table's size as the connector reported it."""
+    table = dataclasses.replace(SCHEMA.tables[0], row_count=row_count)
+    return dataclasses.replace(SCHEMA, tables=[table])
+
+
+class _Counting:
+    """A connector that records each query and returns nothing."""
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    def execute_query(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        self.queries.append(sql)
+        raise RuntimeError("no rows here")
+
+
+def test_a_table_larger_than_the_cap_gets_no_values_and_no_queries() -> None:
+    """Its values cost a sample query and a SELECT DISTINCT per text column, and
+    the DISTINCT reads every row of a column with few values."""
+    counting = _Counting()
+
+    assert collect_column_values(counting, _sized(501), 3, "sqlite", 500) == ({}, {})
+    assert counting.queries == []
+
+
+@pytest.mark.parametrize("row_count", [500, None])
+def test_a_table_at_the_cap_or_of_unknown_size_is_collected(
+    connector: Any, row_count: int | None
+) -> None:
+    samples, complete = collect_column_values(connector, _sized(row_count), 3, "sqlite", 500)
+
+    assert samples["schools"]["status"] == STATUSES and "status" in complete["schools"]
+
+
+def test_a_cap_of_zero_collects_any_table(connector: Any) -> None:
+    samples, _ = collect_column_values(connector, _sized(10**12), 3, "sqlite", 0)
+
+    assert samples["schools"]["status"] == STATUSES
+
+
+def test_the_default_cap_is_ten_million_rows_and_the_cli_s_default(connector: Any) -> None:
+    from nlqueries.cli import main as cli_main
+
+    option = next(p for p in cli_main.export_kb.params if p.name == "values_max_rows")
+    counting = _Counting()
+
+    assert VALUES_MAX_ROWS == 10_000_000 and option.default == VALUES_MAX_ROWS
+    assert collect_column_values(counting, _sized(VALUES_MAX_ROWS + 1), 3, "sqlite") == ({}, {})
+    assert counting.queries == []
+    assert collect_column_values(connector, _sized(VALUES_MAX_ROWS), 3, "sqlite")[1]
+
+
+def _export(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, row_count: int | None, *args: str
+) -> tuple[Any, list[str]]:
+    """Run ``export-kb`` against one table of *row_count* rows; the output and
+    the queries it ran."""
+    from click.testing import CliRunner
+    from nlqueries.cli import main as cli_main
+    from nlqueries.connectors.base import QueryResult
+
+    queries: list[str] = []
+
+    class _Connector(SQLiteConnector):
+        def connect(self, credentials: Any) -> None:
+            pass
+
+        def extract_schema(self) -> SchemaSpec:
+            column = ColumnSpec("region", "text", True, False, False, None, None)
+            table = TableSpec("orders", "sales", row_count, [column], None)
+            return SchemaSpec(database="db", tables=[table], extracted_at="2026-10-10T00:00:00")
+
+        def _execute_query(
+            self, sql: str, timeout_seconds: float | None = None, max_rows: int | None = None
+        ) -> QueryResult:
+            queries.append(sql)
+            return QueryResult(["region"], [["north"]], 1, 0.0, None)
+
+    def _no_capsules(connector_id: str) -> list[Any]:
+        raise FileNotFoundError(connector_id)
+
+    monkeypatch.setattr(cli_main, "_resolve_alias", lambda value: value)
+    monkeypatch.setattr(cli_main, "_require_connector", lambda connector_id: {"db_type": "sqlite"})
+    monkeypatch.setattr(cli_main, "connector_class_for", lambda db_type, cfg: _Connector)
+    monkeypatch.setattr(cli_main, "credentials_for", lambda connector_id, cfg: {})
+    monkeypatch.setattr("nlqueries.processing.pipeline.load_capsules", _no_capsules)
+    monkeypatch.setattr("nlqueries.feedback.store.load_feedback", lambda connector_id: [])
+
+    result = CliRunner().invoke(
+        cli_main.cli, ["export-kb", "c1", "--output", str(tmp_path / "kb.yaml"), *args]
+    )
+    return result, queries
+
+
+def test_export_kb_skips_a_table_over_values_max_rows_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, queries = _export(monkeypatch, tmp_path, 101, "--values-max-rows", "100")
+
+    assert result.exit_code == 0, result.output
+    assert not any("DISTINCT" in q or "LIMIT" in q for q in queries)
+    assert "No values for 1 table(s) of more than 100 rows" in result.output
+
+
+def test_export_kb_collects_a_table_within_values_max_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, queries = _export(monkeypatch, tmp_path, 100, "--values-max-rows", "100")
+
+    assert result.exit_code == 0, result.output
+    assert any("DISTINCT" in q for q in queries)
+    assert "No values for" not in result.output

@@ -67,11 +67,23 @@ def _is_text_type(col_type: str) -> bool:
     return not upper or any(marker in upper for marker in _TEXT_TYPE_MARKERS)
 
 
+#: Above this many rows, a table gets no column values unless the caller says
+#: otherwise (``export-kb --values-max-rows``).
+VALUES_MAX_ROWS = 10_000_000
+
+
+def too_large_for_values(table: TableSpec, max_rows: int) -> bool:
+    """Whether the schema records *table* as having more than *max_rows* rows.
+    ``0`` is no cap, and a table whose size is not recorded is not too large."""
+    return max_rows > 0 and table.row_count is not None and table.row_count > max_rows
+
+
 def collect_column_values(
     connector: Any,
     schema: SchemaSpec,
     sample_rows: int,
     dialect: str | None = None,
+    max_rows: int = VALUES_MAX_ROWS,
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, set[str]]]:
     """Values to store per column: ``(column_samples, column_values_complete)``.
 
@@ -86,12 +98,21 @@ def collect_column_values(
     the model nothing, and :func:`is_pii_column` values never leave the
     database. Read-only; a query that fails or times out leaves that column, or
     table, without values.
+
+    A table the schema records as having more than *max_rows* rows gets nothing
+    either (see :func:`too_large_for_values`). Its values cost one sample query
+    and one ``SELECT DISTINCT`` per text column, and for a column with few
+    values, the case the list is for, the ``DISTINCT`` reads every row: nothing
+    less shows there are no more. On a warehouse billed by bytes read, BigQuery
+    for one, a ``LIMIT`` does not reduce the charge.
     """
     from nlqueries.connectors.base import table_sample_sql  # noqa: PLC0415
 
     samples: dict[str, dict[str, list[str]]] = {}
     complete: dict[str, set[str]] = {}
     for table in schema.tables:
+        if too_large_for_values(table, max_rows):
+            continue
         eligible = [
             col
             for col in table.columns

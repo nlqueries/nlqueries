@@ -95,7 +95,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     shown as `samples: [...]`, unless they average over 80 characters.
 
   Keys and personal-data columns get none. Export now runs one sample query
-  per table and one `SELECT DISTINCT` per text column, each bounded to 10 s. A
+  per table and one `SELECT DISTINCT` per text column, each bounded to 10 s.
+  The `DISTINCT` reads every row of a column with few values, and on a
+  warehouse billed by bytes read, BigQuery for one, a `LIMIT` does not reduce
+  the charge, so a table the schema records as having more than
+  `--values-max-rows` rows (10,000,000 by default; `0` for no cap) gets no
+  values and none of these queries. A table of unknown size is collected. A
   knowledge base has to be exported again for its prompt to show the values.
 
   **An existing deployment starts storing values on its next `export-kb`.**
