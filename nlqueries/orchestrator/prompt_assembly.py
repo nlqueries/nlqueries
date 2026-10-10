@@ -70,6 +70,9 @@ _ROLE_PREAMBLE = (
 #: silent error: a total over one table, joined to another that has several
 #: rows per key, is multiplied by the join and still looks plausible.
 #:
+#: The join-type rule: an outer join adds zero-count rows nobody asked for, and an
+#: inner join drops the zero a question about "at most" or "none" is asking about.
+#:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
 #: the repair step, so a repaired statement cannot undo it.
@@ -90,6 +93,10 @@ when the question or hint says distinct, unique or different.
 - When a join repeats the rows whose values you total or count (a customer's invoices \
 joined to the same customer's shipments repeat each invoice once per shipment), total \
 or count them per join key in a subquery first, then join the result.
+- Join with an inner join unless the question keeps the rows that have no match: \
+"at most two", "fewer than three", "with no orders" or "including those without" \
+keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
+count, such a row counts as 0.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.

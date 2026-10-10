@@ -775,6 +775,10 @@ ANSWER_RULE_PHRASES = [
     # A join that repeats the rows being totalled: aggregate them first.
     "When a join repeats the rows whose values you total or count",
     "total or count them per join key in a subquery first, then join the result",
+    # Join type follows the question's wording.
+    "Join with an inner join unless the question keeps the rows that have no match",
+    "keep the ones with none, so join those with LEFT JOIN",
+    "Where the question asks for a count, such a row counts as 0",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
