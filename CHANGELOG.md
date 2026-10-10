@@ -216,6 +216,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   base has carried; the generator writes `is_primary_key`, `is_foreign_key`
   and `references`. So no column ever showed a key flag. It now reads those,
   and, like the prompt, shows a foreign key only when its target is recorded.
+- **The MCP schema tool no longer fails on a table that lists its foreign
+  keys.** It read a per-table `foreign_keys` list of strings, which the
+  generator never writes (it writes one list of `from`/`to` mappings under
+  `schema`), so the line never showed anything, and a list in the
+  generator's shape copied onto a table raised `TypeError`. The line is gone;
+  each foreign key shows as its column's `FK→` flag.
 
 - **A hand-edited connector entry that is not a mapping no longer crashes the
   CLI.** `agent-a: postgresql://host/db` (the URL where its settings belong)

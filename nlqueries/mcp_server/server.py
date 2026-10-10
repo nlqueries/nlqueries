@@ -176,10 +176,12 @@ def get_agent_schema(agent_id: str) -> str:
         if _columns_omitted(tbl):
             lines.append(f"  Note: {_PARTIAL_COLUMNS_NOTE}.")
 
-        fks = tbl.get("foreign_keys", [])
-        if fks:
-            lines.append("  FK: " + ", ".join(fks))
-
+        # No per-table foreign-key line: each foreign key shows as its column's
+        # FK flag above. This used to read a `foreign_keys` list of strings
+        # from the table, which the generator never writes (it writes one list
+        # of {from, to} mappings under `schema`), so it never showed anything,
+        # and a list in the generator's shape copied onto a table raised
+        # TypeError in the join.
         lines.append("")
 
     return "\n".join(lines)
