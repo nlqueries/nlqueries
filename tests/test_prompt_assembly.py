@@ -772,6 +772,9 @@ ANSWER_RULE_PHRASES = [
     # Counting the joined rows, not distinct ones, unless asked.
     "Count the rows the joins produce with COUNT(column)",
     "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # A join that repeats the rows being totalled: aggregate them first.
+    "When a join repeats the rows whose values you total or count",
+    "total or count them per join key in a subquery first, then join the result",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
