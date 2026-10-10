@@ -345,7 +345,7 @@ class TestGetAgentSchema:
                   columns:
                     - name: order_id
                       type: BIGINT
-                      primary_key: true
+                      is_primary_key: true
                     - name: customer_id
                       type: BIGINT
             """,
@@ -356,6 +356,37 @@ class TestGetAgentSchema:
         assert "orders" in out
         assert "order_id" in out
         assert "customer_id" in out
+
+    def test_a_foreign_keys_list_on_a_table_is_not_read(self, tmp_path: Path) -> None:
+        """The generator writes `foreign_keys` once, under `schema`, as
+        `{from, to}` mappings, and each one already shows as its column's flag.
+        A list in that shape copied onto a table made the tool raise TypeError."""
+        from nlqueries.mcp_server.server import get_agent_schema
+
+        self._write_kb(
+            tmp_path,
+            """
+            schema:
+              foreign_keys:
+                - from: orders.customer_id
+                  to: customers.id
+              tables:
+                - name: orders
+                  foreign_keys:
+                    - from: orders.customer_id
+                      to: customers.id
+                  columns:
+                    - name: customer_id
+                      type: BIGINT
+                      is_foreign_key: true
+                      references: customers.id
+            """,
+        )
+        with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
+            out = get_agent_schema("sales")
+
+        assert "customer_id: BIGINT [FK→customers.id]" in out, out
+        assert "FK:" not in out, out
 
     def test_key_flags_show_from_the_knowledge_base_fields(self, tmp_path: Path) -> None:
         """`is_primary_key`, `is_foreign_key` and `references`: what the
