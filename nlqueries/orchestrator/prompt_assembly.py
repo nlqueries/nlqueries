@@ -91,8 +91,8 @@ returns a single number with no grouping column.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
-- When the question asks which customer, product or other thing, and its table has a \
-name, title or description column, return that column instead of the id, unless the \
+- When the question asks which customer, product or other thing, return its name or \
+title column instead of the id, or a description where it has neither, unless the \
 question asks for the id.
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.

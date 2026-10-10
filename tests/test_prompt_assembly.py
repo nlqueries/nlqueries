@@ -781,8 +781,8 @@ ANSWER_RULE_PHRASES = [
     "Where the question asks for a count, such a row counts as 0",
     # The name of what was asked about, not its id.
     "When the question asks which customer, product or other thing",
-    "name, title or description column, return that column instead of the id",
-    "instead of the id, unless the question asks for the id",
+    "return its name or title column instead of the id",
+    "or a description where it has neither, unless the question asks for the id",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
