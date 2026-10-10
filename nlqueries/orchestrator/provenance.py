@@ -60,6 +60,16 @@ class Provenance:
     cache: CacheInfo | None = None
     validator: list[str] = field(default_factory=list)  # validator / nexus warnings
     timings: dict[str, float] = field(default_factory=dict)  # phase -> milliseconds
+    # String literals replaced with the value the column stores, each
+    # {"table", "column", "before", "after"} (literal grounding).
+    literals_grounded: list[dict[str, str]] = field(default_factory=list)
+    # The one LLM call made when a valid statement kept a literal no stored
+    # value matches: {"attempted": True, "changed": bool, "notes": [...],
+    # "reason": str | None}, or None when no such call was made. "reason" is
+    # "rejected: non-literal change" when the answer changed more than literals,
+    # and "rejected: changed a literal grounding did not flag" when it changed a
+    # literal other than those grounding flagged.
+    literal_repair: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +89,12 @@ class Provenance:
             ),
             "validator": list(self.validator),
             "timings": dict(self.timings),
+            "literals_grounded": [dict(entry) for entry in self.literals_grounded],
+            "literal_repair": (
+                None
+                if self.literal_repair is None
+                else {**self.literal_repair, "notes": list(self.literal_repair["notes"])}
+            ),
         }
 
 
@@ -149,3 +165,25 @@ def record_timing(key: str, ms: float) -> None:
     p = _collector.get()
     if p is not None:
         p.timings[key] = float(ms)
+
+
+def record_literal_repair(changed: bool, notes: list[str], reason: str | None = None) -> None:
+    """The literal-repair call was made with *notes*; *changed* when its
+    statement replaced the original, and *reason* why one was refused."""
+    p = _collector.get()
+    if p is not None:
+        p.literal_repair = {
+            "attempted": True,
+            "changed": changed,
+            "notes": list(notes),
+            "reason": reason,
+        }
+
+
+def record_literal_grounded(table: str, column: str, before: str, after: str) -> None:
+    """A literal the statement compared *column* to, replaced with the stored value."""
+    p = _collector.get()
+    if p is not None:
+        p.literals_grounded.append(
+            {"table": table, "column": column, "before": before, "after": after}
+        )

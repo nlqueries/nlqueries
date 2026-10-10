@@ -150,7 +150,13 @@ def test_export_kb_samples_a_generic_connector_in_its_url_s_grammar(
     result, queries = _export_kb_with_descriptions(monkeypatch, tmp_path, cfg)
 
     assert result.exit_code == 0, result.output
-    assert queries == ["SELECT * FROM `sales`.`orders` LIMIT 3"]
+    # The column values first (the sample, then the text column's values),
+    # then the description's own sample: every one in the URL's grammar.
+    assert queries == [
+        "SELECT * FROM `sales`.`orders` LIMIT 3",
+        "SELECT DISTINCT `region` FROM `sales`.`orders` WHERE NOT `region` IS NULL LIMIT 21",
+        "SELECT * FROM `sales`.`orders` LIMIT 3",
+    ]
     assert "LLM described 1 column(s)" in result.output
     assert (tmp_path / "kb.yaml").exists()
 
@@ -163,7 +169,11 @@ def test_export_kb_samples_a_named_connector_in_its_own_grammar(
     result, queries = _export_kb_with_descriptions(monkeypatch, tmp_path, cfg)
 
     assert result.exit_code == 0, result.output
-    assert queries == ['SELECT * FROM "sales"."orders" LIMIT 3']
+    assert queries == [
+        'SELECT * FROM "sales"."orders" LIMIT 3',
+        'SELECT DISTINCT "region" FROM "sales"."orders" WHERE NOT "region" IS NULL LIMIT 21',
+        'SELECT * FROM "sales"."orders" LIMIT 3',
+    ]
 
 
 def test_export_kb_reports_a_table_whose_sample_the_database_refused(

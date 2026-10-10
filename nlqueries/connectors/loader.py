@@ -18,6 +18,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -354,6 +355,52 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return credentials
+
+
+@dataclass(frozen=True)
+class LookupSource:
+    """A database to read stored values from, and how to reach it."""
+
+    #: Identifies the configuration the connector is built from: the cache
+    #: fingerprint, which covers the password. Two agents on one entry share
+    #: it, and an edited entry gets a new one.
+    key: str
+    #: Opens the connector to read through, with read permission. Blocking.
+    #: Closing what it returns is safe and releases nothing the pool holds.
+    open: Callable[[], DatabaseConnector | None]
+
+
+def lookup_source(agent_id: str) -> LookupSource | None:
+    """Where literal grounding reads *agent_id*'s stored values, or None.
+
+    Quiet: an agent with no usable connector logs nothing. Grounding is an extra,
+    and must not log the warning :func:`open_connector_for_agent` gives a
+    request that needed a connector.
+
+    Read through :func:`open_connector_for_agent`, the seam every query to the
+    agent's database passes, so whatever is wrapped around that function for a
+    request applies to the lookups as well: the enterprise layer applies an
+    agent's row filters exactly so, from a ContextVar bound for the request,
+    and a lookup that went around it would read rows the user cannot see. The
+    name is looked up when called, so a wrapper installed on this module after
+    import is the one that runs.
+
+    With read permission whatever the request's own policy: generate-only
+    forbids running the generated statement, not reading the values a literal
+    is compared to (see :class:`~nlqueries.execution.ExecutionMode`). The pooled
+    connector is shared with the request's other threads, which is safe: the
+    SQLite connector lets one thread use its connection at a time.
+    """
+    connectors = _load_connectors()
+    connector_id = _find_connector_id(agent_id, connectors) if connectors else None
+    cfg = connectors.get(connector_id) if connector_id is not None else None
+    if connector_id is None or not isinstance(cfg, dict):
+        return None
+
+    def _open() -> DatabaseConnector | None:
+        return open_connector_for_agent(agent_id, ExecutionPolicy.execute_read_only())
+
+    return LookupSource(key=_fingerprint(connector_id, cfg), open=_open)
 
 
 def reopen_connector(connector_id: str) -> DatabaseConnector | None:

@@ -406,13 +406,33 @@ class Orchestrator:
             # Validate (and repair if needed) the extracted SQL.
             # validate_and_repair() reuses the same `system` blocks so Anthropic
             # prompt-cache tokens are credited on the repair call too.
+            #
+            # Given where to look values up, so it can ground the statement's
+            # literals against what the columns store (LITERAL_GROUNDING):
+            # read-only lookups, never the statement, and whatever the execution
+            # policy, since generate-only forbids running the generated
+            # statement and a value lookup is not that. The lookups read through
+            # the agent's connector as every query does, so a per-request
+            # wrapper such as a row filter applies to them too; see
+            # `lookup_source`. An agent with no registered connector gets none,
+            # and nothing is logged for it.
             # ------------------------------------------------------------------
+            from nlqueries.connectors.loader import lookup_source  # noqa: PLC0415
+
+            lookups = None
+            if config.LITERAL_GROUNDING:
+                try:
+                    lookups = await asyncio.to_thread(lookup_source, agent_id)
+                except Exception:  # noqa: BLE001
+                    _log.debug("No lookups for literal grounding.", exc_info=True)
             result = await validate_and_repair(
                 sql_buf.strip(),
                 kb,
                 dialect,
                 llm,
                 system,
+                lookups=lookups,
+                question=question,
             )
 
             span.set_attribute("sql_valid", result.is_valid)

@@ -53,29 +53,53 @@ _ROLE_PREAMBLE = (
     "Use the schema and example queries below to translate the user's question into valid SQL."
 )
 
-#: Which columns to SELECT. On BIRD dev (2026-10-09, core b3ebdc7,
-#: claude-sonnet-5-5, 67.08 EX) 108 of the 505 misses -- 21% -- returned the
-#: right rows with extra columns, which a set-of-rows comparison scores as wrong:
-#: the column it ranked by, a name added for context, every numbered variant of
-#: a column, a label column splitting one count into a GROUP BY. Shared with
-#: `sql_generation`, whose prompt also drives the repair step, so a repaired
-#: statement cannot add them back.
-_PROJECTION_RULE = """\
-- SELECT only the columns the question asks for. Do not add the column you sorted, \
-filtered or ranked by, an id, a name or a label column for context, or a count \
-alongside a requested list.
-- Fields the question names, as in "include X" or "along with Y", are requested \
-columns: select them.
-- A question asking how many, or for a total or an average, returns a single number \
-with no grouping column, unless it asks for a breakdown.
-- "The name" or "the administrator" means one set of columns, not every numbered \
-variant of it (Name1, Name2, Name3) in the table."""
+#: What the answer looks like: which columns, in what order, and the idioms a
+#: correct result is expected in. Each rule comes from re-running a text-to-SQL
+#: benchmark's misses (2026-10-09), where the statement ran and was defensible
+#: but answered in another shape. The largest classes were extra or missing
+#: columns (a fifth of the misses), COUNT(DISTINCT) where the joined rows were
+#: meant, a MAX/MIN subquery where ORDER BY ... LIMIT 1 was, and a hint's
+#: literal not used as written.
+#:
+#: Measured, not assumed. A rule against filters nobody asked for (IS NOT NULL)
+#: lost twice as many correct answers as it gained and was taken out; the
+#: YES/NO rule is limited to questions that offer the choice, because applied
+#: to every "is it ...?" it replaced the value the data holds with 'YES'.
+#:
+#: One block, kept short: it sits in the prompt-cached Instructions and costs
+#: tokens on every call. Shared with `sql_generation`, whose prompt also drives
+#: the repair step, so a repaired statement cannot undo it.
+_ANSWER_RULES = """\
+- SELECT only the columns the question asks for, in the order the question or its \
+hint lists them: "street, city, state and zip" is four columns in that order. Do \
+not add the column you sorted, filtered or ranked by, an id, or a name, label or \
+count column for context.
+- A field, count, total, average or rank the question names is a requested column: \
+"the top five cities and their number of stores" returns the city and the count.
+- "How many", or "what is the total" or "the average", with no breakdown asked for \
+returns a single number with no grouping column.
+- A person's full name is the first name and the last name, as two columns in that \
+order. "The name" means one set of name columns, not every numbered variant (Name1, \
+Name2, Name3).
+- Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
+when the question or hint says distinct, unique or different.
+- For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
+... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
+for every tie.
+- A quoted value in the hint is exact: use it as written, in the column the hint names.
+- A column the hint names for something in the question is the column to use for it \
+("the cheapest refers to MIN(price)" means order by price), even where another \
+column seems to hold the same thing in another form.
+- Only when the question itself offers the choice, as in "yes or no?" or "true or \
+false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean \
+expression. A question that only asks whether something holds ("is the order \
+shipped?") returns the value the data stores for it."""
 
 _SQL_FORMAT_RULES = f"""\
 ## Instructions
 - Generate only a single SELECT SQL statement.
 - Use only tables and columns present in the schema above.
-{_PROJECTION_RULE}
+{_ANSWER_RULES}
 - First, briefly explain your reasoning in 2-4 sentences (plain text).
 - Then output the SQL between EXACTLY these markers — nothing before or after:
 
@@ -313,6 +337,28 @@ def _columns_omitted(table: dict[str, Any]) -> bool:
     return bool(table.get("columns_omitted"))
 
 
+#: Longest column description the compact schema renders; a longer one is cut
+#: at a word boundary. A description says what an abbreviated or ambiguous name
+#: cannot, but a paragraph for every column would crowd out the schema itself.
+_MAX_COLUMN_DESCRIPTION_CHARS = 160
+
+
+def _column_description(col: dict[str, Any]) -> str:
+    """*col*'s description on one line for the compact schema, or ``""`` when it
+    has none or only repeats the column's name ("points" for ``points``)."""
+    text = " ".join(str(col.get("description") or "").split())
+    if not text or _letters_and_digits(text) == _letters_and_digits(str(col.get("name", ""))):
+        return ""
+    if len(text) > _MAX_COLUMN_DESCRIPTION_CHARS:
+        cut = text[:_MAX_COLUMN_DESCRIPTION_CHARS].rsplit(" ", 1)[0]
+        text = cut.rstrip(" ,;:") + "..."
+    return text
+
+
+def _letters_and_digits(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
 def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     """Render the KB as a compact M-Schema string (Phase 6B).
 
@@ -321,9 +367,15 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
         【DB_ID】 sales
         【Table】 orders — one row per order
         (order_id:BIGINT, PK), (customer_id:BIGINT, FK->customers.customer_id),
-        (status:TEXT, samples: ['pending', 'shipped', 'cancelled']), ...
+        (st:TEXT, order status, samples: ['pending', 'shipped', 'cancelled']), ...
         【Foreign keys】
         orders.customer_id = customers.customer_id
+
+    A column's description, when the KB has one that says more than the
+    column's name, follows its keys and precedes its values (see
+    :func:`_column_description`). Without it the model has only the name to go
+    on, and a name such as ``CRE`` or ``position`` (in two tables) does not say
+    which column a question means.
 
     Falls back gracefully when KB lacks v2 fields (``is_primary_key``,
     ``is_foreign_key``, ``references``, ``samples``) — columns are rendered
@@ -358,11 +410,20 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
                 flags.append("PK")
             if col.get("is_foreign_key") and col.get("references"):
                 flags.append(f"FK->{col['references']}")
+            description = _column_description(col)
+            if description:
+                flags.append(description)
 
             samples: list[str] = col.get("samples", [])
             if samples:
-                sample_str = ", ".join(f"'{s}'" for s in samples[:5])
-                flags.append(f"samples: [{sample_str}]")
+                # "values" when they are every value the column holds, so the
+                # model can rely on the spelling; "samples" when they are a few.
+                if col.get("values_complete"):
+                    value_str = ", ".join(f"'{s}'" for s in samples)
+                    flags.append(f"values: [{value_str}]")
+                else:
+                    sample_str = ", ".join(f"'{s}'" for s in samples[:5])
+                    flags.append(f"samples: [{sample_str}]")
 
             inner = f"{col_name}:{col_type}"
             if flags:

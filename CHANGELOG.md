@@ -4,18 +4,156 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Added
+
+- **String literals are checked against the stored values before a statement
+  runs (`NLQ_LITERAL_GROUNDING`, on by default).** A model writes `status = 'legal'`
+  where the column holds `'Legal'`, or copies `' = '` from a hint where it
+  holds `'='`. The statement is valid, runs, and returns no rows, a wrong
+  answer with nothing to say so.
+  - **The check.** Each literal compared to a text column with `=`, `IN` or a
+    wildcard-free `LIKE` is looked up first.
+  - **Exactly one stored value matches**, ignoring case and surrounding spaces
+    or, failing that, also punctuation at either end (a title stored with its
+    question mark and quoted without it, or the reverse): the literal is
+    replaced with it, and the substitution is recorded in the answer's
+    provenance (`literals_grounded`).
+    A literal shorter than three characters without its end punctuation gets
+    no punctuation pass.
+  - **None or several match:** the statement is left alone, and an LLM repair,
+    if one runs, is told the nearby stored values.
+  - **Scope.** Keys and columns the knowledge base does not know are skipped,
+    and so are columns whose names mark them as personal data, the ones
+    `export-kb` will not sample (email, phone, address, tokens, secrets and
+    the like): a lookup would copy other people's values into the repair
+    prompt and provenance.
+  - **Cost.** Where the knowledge base holds a column's complete value list,
+    the list answers: a literal in it needs no query, and one that is not
+    gets one exact-match query, in case it was stored since the export.
+    The list was read with no row restriction, so under a per-request row
+    filter the lookups go through the filter instead. Otherwise a literal
+    that matches nothing costs up to four queries, most of them scans, so a
+    table the knowledge base records as larger than
+    `NLQ_LITERAL_GROUNDING_MAX_ROWS` (1,000,000 by default; `0` for no cap)
+    is not queried, and only a stored list grounds its columns. A table of
+    unknown size is queried.
+    The check is read-only and bounded per pass: 8 literals, 1 s a lookup,
+    3 s in all. No lookup is waited for past the 3 s: one still running then
+    is abandoned. A statement gets at most two passes, one before a repair
+    and one on the repaired statement, so up to 16 literals and 6 s.
+    Outcomes are cached per database for 15 minutes, and any error skips the
+    check, as does a statement whose literals would not come back unchanged
+    from its re-render. On SQLite the case-insensitive comparison is written
+    `TRIM(col) = TRIM('x') COLLATE NOCASE` and the search for values
+    containing a literal `col LIKE '%x%'`, which stay fast when several
+    lookups run at once, where `LOWER()` on the column did not.
+  - **When it runs.** Whatever the execution policy, for any agent with a
+    registered connector. Generate-only forbids running the statement, not
+    reading a column's values, and the statement is never run by the check.
+    An agent with no registered connector opens nothing.
+  - **The agent's connector, as every query reads it.** The lookups go through
+    `open_connector_for_agent` with read-only permission, so whatever wraps that
+    function for a request, such as a row filter, applies to them too; their
+    threads run in the caller's context so request-bound state reaches them.
+    Outcomes are shared only where no such wrapper restricts rows, or within
+    the `cache_scope` a restricting wrapper declares.
+  - **A valid statement whose literal matches nothing gets one repair call
+    (`NLQ_LITERAL_GROUNDING_REPAIR`, on by default).** Such a statement used to
+    run and return no rows, the notes discarded. When a note offers nearby
+    values, one LLM call with the question, the statement and the notes asks
+    for the same statement with only the literal corrected. The answer is used
+    only if it validates and differs in nothing but the values of the literals
+    grounding flagged, and is grounded again without a second call. Recorded
+    in provenance as `literal_repair`, with the reason
+    `rejected: non-literal change` when the answer changed more than literals,
+    and `rejected: changed a literal grounding did not flag` when it changed
+    any other literal.
+
 ### Changed
 
-- **SQL prompt: project only the requested columns.** On BIRD dev (core
-  b3ebdc7, Sonnet 5.5, 67.08 execution accuracy) 21% of the misses were correct
-  answers returned with extra columns, which a set-of-rows comparison scores as
-  wrong. Examples were the column it ranked by, a name added for context, every
-  numbered variant of a column, or a count split into a labelled GROUP BY. Both
-  SQL system prompts now tell the model to select only what the question asks
-  for, and to count a field the question names ("include X", "along with Y") as
-  asked for. That covers the one `run_query` caches and the one `generate_sql`
-  and the repair step use. The cached block changes once, so the first
-  question for each knowledge base after upgrading writes the cache again.
+- **A column the hint names is the one the SQL uses.** Given a hint such as
+  "the cheapest refers to MIN(price)", the model sometimes ordered by another
+  column holding the same measure in another form, a number of milliseconds
+  for a time or a duration, and so answered a different question from the one
+  the hint defines. The answer rules now say to use the column the hint names
+  for what it names.
+
+- **The compact schema shows each column's description.** The default
+  schema format (M-Schema) rendered a column's name, type, keys and values
+  but never the description the knowledge base holds for it, so an
+  abbreviated or repeated name (`CRE`, `TG`, a `position` in two tables) was
+  all the model had to choose by. A description now follows the column's
+  keys, on one line and cut at 160 characters, and one that only repeats the
+  column's name (`points` for `points`) is left out. The verbose format
+  already showed them.
+
+- **`export-kb` stores column values, so the prompt shows how they are
+  spelled.** Until now it stored none. With `--include-samples`, which is on
+  by default, it now stores:
+  - **every value** of a text column with at most 20 distinct values (200
+    characters in all), marked `values_complete: true` and shown in the prompt
+    as `values: [...]`;
+  - **up to `--sample-rows` samples** (3 by default) of any other column,
+    shown as `samples: [...]`, unless they average over 80 characters.
+
+  Keys and personal-data columns get none. Export now runs one sample query
+  per table and one `SELECT DISTINCT` per text column, each bounded to 10 s.
+  The `DISTINCT` reads every row of a column with few values, and on a
+  warehouse billed by bytes read, BigQuery for one, a `LIMIT` does not reduce
+  the charge, so a table the schema records as having more than
+  `--values-max-rows` rows (10,000,000 by default; `0` for no cap) gets no
+  values and none of these queries. A table of unknown size is collected. A
+  knowledge base has to be exported again for its prompt to show the values.
+
+  **An existing deployment starts storing values on its next `export-kb`.**
+  `--include-samples` was on by default but stored nothing, so no export
+  until now copied database values into a knowledge base. From this release
+  the next export does, and from there they go to the model provider in every
+  SQL prompt whose schema includes the column, and out through the MCP schema
+  tool. The personal-data guard goes by column name only (passwords, secrets,
+  tokens, hashes and salts, SSNs, card numbers and CVVs, dates of birth,
+  email, phone, address), so a column whose values are sensitive under any
+  other name, such as a diagnosis, an ethnicity or a disciplinary outcome, is
+  stored like any other. Export with `--no-include-samples` to store no
+  values.
+- **SQL prompt: benchmark-measured idioms.** Covers COUNT over joined rows,
+  ORDER BY LIMIT 1 for superlatives, projecting requested aggregates in the
+  requested column order, hint literals as authoritative, and YES/NO literals
+  where the question offers the choice. These come from re-running a
+  text-to-SQL benchmark's misses, where the statement ran and was defensible
+  but answered in a different shape than expected. The prompts now say:
+  - a count, total, average or rank the question names is a column to select;
+  - columns come in the order the question or its hint lists them;
+  - a person's full name is first and last name;
+  - count the rows the joins produce, with `COUNT(DISTINCT)` only when the
+    question or hint says distinct, unique or different;
+  - "the highest / lowest / latest ..." is `ORDER BY ... LIMIT 1`, unless every
+    tie is asked for;
+  - a quoted value in a hint is used exactly as written;
+  - a question that offers the choice ("yes or no?", "true or false?") is
+    answered with that literal text. One that only asks whether something
+    holds returns the value the data stores.
+
+  A rule against adding filters nobody asked for (such as `IS NOT NULL`) was
+  measured and left out: it lost about twice as many correct answers as it
+  gained.
+
+  The counting rule is the one that trades: the benchmark's reference answers
+  are themselves inconsistent on entities counted through a child table, some
+  using `DISTINCT` and some not. Measured, keying `DISTINCT` to the wording
+  fixed about twice as many misses as it lost, and no wording-based exception for
+  that shape did better.
+- **SQL prompt: project only the requested columns.** In a benchmark run
+  (core b3ebdc7, Sonnet 5.5, 67.08 execution accuracy), 21% of the misses were
+  correct answers returned with extra columns. A set-of-rows comparison scores
+  those as wrong. Examples were the column it ranked by, a name added for
+  context, every numbered variant of a column, or a count split into a
+  labelled GROUP BY. Both SQL system prompts now tell the model to select only
+  what the question asks for, and to count a field the question names
+  ("include X", "along with Y") as asked for. That covers the one `run_query`
+  caches and the one `generate_sql` and the repair step use. The cached block
+  changes once, so the first question for each knowledge base after upgrading
+  writes the cache again.
 - **SQL policy version 2: the function allowlist answers to every spelling of
   a dialect.** `ALLOWED_ANONYMOUS` is keyed by sqlglot's names (`tsql`, not
   `mssql`; `mysql` gains an entry) and read through the same aliases the parser
@@ -56,6 +194,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The SQLite connector no longer deadlocks when threads share it.** The
+  loader pools one connector per database and hands it to every thread that
+  asks, and SQLite's is one `sqlite3` connection with a Python authorizer.
+  Two threads on it at once could stop the whole process: one held the
+  connection's mutex waiting for the GIL to run the authorizer, the other
+  held the GIL waiting for the mutex. The connector now lets one thread use
+  the connection at a time; SQLite never ran two statements on one
+  connection at once anyway. A statement's timeout now starts when its
+  thread has the connection, so a timeout running out while waiting can no
+  longer interrupt another thread's statement.
 - **The MCP schema tool shows primary and foreign keys.** `get_agent_schema`
   read `primary_key` and `foreign_key` from each column, names no knowledge
   base has carried; the generator writes `is_primary_key`, `is_foreign_key`
