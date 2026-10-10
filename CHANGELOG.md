@@ -100,7 +100,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   to 0 or to 1, so rows drop out of a filter or a total unnoticed; other
   databases reject the cast. Durations stored as text sort '10:00' before
   '9:00'. The prompts now say to remove what the sample values show around or
-  between the digits, and to parse such durations and times, first.
+  between the digits, keeping the decimal mark (a decimal comma becomes a
+  point), and to parse such durations and times, first.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

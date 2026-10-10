@@ -113,7 +113,9 @@ keep the ones with none, so join those with LEFT JOIN. Where the question asks f
 count, such a row counts as 0.
 - Before comparing, sorting or adding a text column as a number, remove what its sample \
 values show around or between the digits (a currency sign, a thousands separator, a \
-unit or a word), and parse durations and times written as text such as '12:05'. A \
+unit or a word) but keep the decimal mark, as a point: where the samples use a decimal \
+comma, '1.234,56' is 1234.56. Parse durations and times written as text such as \
+'12:05'. A \
 plain CAST fails on some databases and on others quietly keeps the leading digits or \
 gives 0 ('1,200' becomes 1, '$1,200' becomes 0), and as text '10:00' sorts before '9:00'.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
