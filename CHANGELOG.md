@@ -71,6 +71,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt treats a given definition as exact.** A user who spells out
+  how a segment, a rate or a period is worked out, in the question, a document
+  quoted with it or the business rules, wants that calculation, but the model
+  sometimes applied the usual meaning of the term. The prompts now say to apply
+  every condition and boundary as written.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

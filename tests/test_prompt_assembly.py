@@ -772,6 +772,9 @@ ANSWER_RULE_PHRASES = [
     # Counting the joined rows, not distinct ones, unless asked.
     "Count the rows the joins produce with COUNT(column)",
     "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # A definition given is exact.
+    "A definition the question, a document quoted with it or the business rules give",
+    "apply every condition and boundary as written, not the usual meaning of the term",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
