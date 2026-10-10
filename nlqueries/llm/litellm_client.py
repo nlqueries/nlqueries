@@ -245,13 +245,17 @@ def _record_estimated(model: str, prompt_text: str, output_text: str) -> None:
 #: the names ``extra`` may not carry.
 #:
 #: Rejected at construction because the collision is otherwise inconsistent and
-#: half of it is silent. ``_call_kwargs()`` is spread into the call directly in
-#: the sync and streaming paths, where a duplicate keyword is a loud
-#: ``TypeError``; in ``acomplete`` it is merged into a dict literal *after* these
-#: keys, where it quietly wins. A host that put ``max_tokens`` in ``extra`` would
-#: get an exception from one method and a silently capped answer from the other.
-#: Core does not otherwise inspect ``extra`` — this is the one constraint it has
-#: to enforce, because it is the one it creates.
+#: mostly silent. ``extra`` reaches every call through :meth:`_request_kwargs`,
+#: which merges it over this model's own arguments, so a ``temperature`` or
+#: ``output_config`` in ``extra`` would quietly replace this class's on every
+#: path. ``model``, ``messages`` and ``max_tokens`` (and ``stream`` on the
+#: streaming calls) are keywords of the call itself: in ``complete``, ``stream``
+#: and ``astream`` a duplicate is a loud ``TypeError``, while ``acomplete`` puts
+#: them in a dict literal *before* ``extra``, which quietly wins. A host that put
+#: ``max_tokens`` in ``extra`` would get an exception from one method and a
+#: silently capped answer from another. Core does not otherwise inspect
+#: ``extra``: this is the one constraint it has to enforce, because it is the one
+#: it creates.
 #:
 #: ``timeout`` is deliberately absent from this set. It is not a name this class
 #: owns: a host that sets one in ``extra`` is making a per-client choice, and
