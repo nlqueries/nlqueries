@@ -81,7 +81,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   join where none was asked for adds rows with a count of 0, and an inner join
   where the question is about "at most two" or "with no orders" drops exactly
   the rows it asks about. The prompts now say to join with an inner join unless
-  the question keeps the rows with no match, and to count those as 0.
+  the question keeps the rows with no match, and that such a row counts as 0
+  where the question asks for a count.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

@@ -95,7 +95,8 @@ joined to the same customer's shipments repeat each invoice once per shipment), 
 or count them per join key in a subquery first, then join the result.
 - Join with an inner join unless the question keeps the rows that have no match: \
 "at most two", "fewer than three", "with no orders" or "including those without" \
-count the ones with none, so join those with LEFT JOIN and count them as 0.
+keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
+count, such a row counts as 0.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
