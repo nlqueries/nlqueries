@@ -37,7 +37,7 @@ from nlqueries.orchestrator.prompt_assembly import (
     _columns_omitted,
     _table_ref,
 )
-from nlqueries.orchestrator.provenance import record_literal_repair
+from nlqueries.orchestrator.provenance import record_literal_grounded, record_literal_repair
 from nlqueries.sql_policy import evaluate
 
 if TYPE_CHECKING:
@@ -141,6 +141,10 @@ async def validate_and_repair(
     """
     from nlqueries import config as _cfg  # noqa: PLC0415
 
+    # Substitutions in statements kept along the way; recorded at the end only
+    # if the statement returned still carries them (see `_finish`).
+    kept: list[tuple[str, str, str, str]] = []
+
     async def _ground(statement_sql: str) -> tuple[str, GroundingResult | None]:
         """*statement_sql* with its literals grounded, or unchanged, and what
         grounding found; ``None`` when it did not run."""
@@ -151,7 +155,12 @@ async def validate_and_repair(
         # rewrite that costs validity is not worth the literal it fixes.
         if grounded.sql != statement_sql and _validate_sql(grounded.sql, knowledge_base, dialect):
             return statement_sql, grounded
+        kept.extend(grounded.substitutions)
         return grounded.sql, grounded
+
+    async def _finish(result: SQLGenerationResult) -> SQLGenerationResult:
+        _record_substitutions(kept, result.sql, dialect)
+        return await _apply_explain_gate(result, connector, explain_check, dialect)
 
     async def _ground_valid(statement_sql: str) -> str:
         """Grounding on a valid path, then the literal repair if it applies."""
@@ -177,7 +186,7 @@ async def validate_and_repair(
             dialect=dialect,
             attempt_count=1,
         )
-        return await _apply_explain_gate(result, connector, explain_check, dialect)
+        return await _finish(result)
 
     # --- Mechanical repair (no LLM) ------------------------------------------
     repaired, mech_error = _try_mechanical_repair(sql, knowledge_base, dialect)
@@ -189,7 +198,7 @@ async def validate_and_repair(
             dialect=dialect,
             attempt_count=1,
         )
-        return await _apply_explain_gate(result, connector, explain_check, dialect)
+        return await _finish(result)
 
     # --- LLM repair (reuses cached system prefix) ----------------------------
     if system is None:
@@ -247,7 +256,7 @@ async def validate_and_repair(
         dialect=dialect,
         attempt_count=2,
     )
-    return await _apply_explain_gate(result, connector, explain_check, dialect)
+    return await _finish(result)
 
 
 async def _repair_literals(
@@ -318,6 +327,30 @@ def _strings_masked(tree: exp.Expr) -> exp.Expr:
         if literal.is_string:
             literal.replace(exp.Placeholder())
     return tree
+
+
+def _record_substitutions(
+    substitutions: list[tuple[str, str, str, str]], sql: str, dialect: str
+) -> None:
+    """Record in provenance each substitution whose stored value is a string
+    literal of *sql*, the statement returned, once each.
+
+    A statement grounded and then replaced, by an LLM repair or a literal
+    repair that changed that literal, does not carry its substitution, and
+    provenance must not claim it."""
+    if not substitutions:
+        return
+    try:
+        present = {
+            node.this
+            for node in sqlglot.parse_one(sql, read=dialect).find_all(exp.Literal)
+            if node.is_string
+        }
+    except Exception:  # noqa: BLE001 - unparsable: nothing is shown to be there
+        return
+    for table, column, before, after in dict.fromkeys(substitutions):
+        if after in present:
+            record_literal_grounded(table, column, before, after)
 
 
 def _same_statement(a: str, b: str, dialect: str) -> bool:

@@ -60,7 +60,6 @@ import sqlglot.expressions as exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from nlqueries.connectors.base import PermittedConnector
-from nlqueries.orchestrator.provenance import record_literal_grounded
 
 if TYPE_CHECKING:
     from nlqueries.connectors.loader import LookupSource
@@ -104,7 +103,9 @@ class GroundingResult:
     """The statement after grounding, and what happened on the way."""
 
     sql: str
-    #: ``(table, column, before, after)`` for each literal replaced.
+    #: ``(table, column, before, after)`` for each literal replaced. Not
+    #: recorded in provenance here: only the caller knows whether it keeps
+    #: :attr:`sql`, and a substitution in a statement it discards is not one.
     substitutions: list[tuple[str, str, str, str]] = field(default_factory=list)
     #: One line per literal no stored value matched, for the repair prompt.
     notes: list[str] = field(default_factory=list)
@@ -251,7 +252,6 @@ def _apply(
         stored = outcome.values[0]
         literal_node.set("this", stored)
         result.substitutions.append((table.name, column.name, literal, stored))
-        record_literal_grounded(table.name, column.name, literal, stored)
         return True
     if outcome.kind == "none":
         result.offers_nearby = result.offers_nearby or bool(outcome.values)

@@ -296,27 +296,17 @@ def test_a_literal_missing_the_stored_question_mark_takes_the_stored_value(
 ) -> None:
     stored = "Open source tools for visualizing multi-dimensional data?"
     src = _posts(tmp_path, stored, "Help understand kNN for multi-dimensional data")
-    collected = Provenance()
 
-    with use_provenance(collected):
-        result = _ground(
-            "SELECT id FROM posts WHERE title = "
-            "'Open source tools for visualizing multi-dimensional data'",
-            src,
-            POSTS_KB,
-        )
+    result = _ground(
+        "SELECT id FROM posts WHERE title = "
+        "'Open source tools for visualizing multi-dimensional data'",
+        src,
+        POSTS_KB,
+    )
 
     assert result.sql == f"SELECT id FROM posts WHERE title = '{stored}'"
     assert result.substitutions == [
         ("posts", "title", "Open source tools for visualizing multi-dimensional data", stored)
-    ]
-    assert collected.literals_grounded == [
-        {
-            "table": "posts",
-            "column": "title",
-            "before": "Open source tools for visualizing multi-dimensional data",
-            "after": stored,
-        }
     ]
 
 
@@ -899,14 +889,104 @@ def test_four_concurrent_run_query_calls_on_their_own_loops_all_finish(
 # --- Provenance ------------------------------------------------------------------
 
 
-def test_a_substitution_is_recorded_in_provenance(src: _Source) -> None:
+LEGAL_RECORD = [{"table": "schools", "column": "status", "before": "legal", "after": "Legal"}]
+
+
+def _recorded(sql: str, src: _Source, llm: Any = None) -> tuple[SQLGenerationResult, Provenance]:
     collected = Provenance()
     with use_provenance(collected):
-        _ground("SELECT id FROM schools WHERE status = 'legal'", src)
+        result = _validate(sql, src, llm)
+    return result, collected
 
-    expected = [{"table": "schools", "column": "status", "before": "legal", "after": "Legal"}]
-    assert collected.literals_grounded == expected
-    assert collected.to_dict()["literals_grounded"] == expected
+
+def test_a_substitution_in_the_returned_statement_is_recorded(src: _Source) -> None:
+    result, collected = _recorded("SELECT id FROM schools WHERE status = 'legal'", src)
+
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+    assert collected.literals_grounded == LEGAL_RECORD
+    assert collected.to_dict()["literals_grounded"] == LEGAL_RECORD
+
+
+def test_grounding_alone_records_nothing(src: _Source) -> None:
+    """Only the caller knows whether it keeps the grounded statement."""
+    collected = Provenance()
+    with use_provenance(collected):
+        result = _ground("SELECT id FROM schools WHERE status = 'legal'", src)
+
+    assert result.substitutions and collected.literals_grounded == []
+
+
+def test_the_notes_pass_before_an_llm_repair_records_nothing(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invalid statement is grounded for its notes and then discarded."""
+    monkeypatch.setattr("nlqueries.config.SELF_CONSISTENCY", "off")
+    llm = MagicMock()
+    llm.acomplete = AsyncMock(return_value="<sql>SELECT id FROM schools</sql>")
+    invalid = "SELECT id FROM schools JOIN ghost ON 1 = 1 WHERE status = 'legal'"
+
+    result, collected = _recorded(invalid, src, llm)
+
+    assert result.sql == "SELECT id FROM schools"
+    assert collected.literals_grounded == []
+
+
+def test_a_grounded_statement_reverted_for_validity_records_nothing(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nlqueries.orchestrator import sql_generation
+
+    real = sql_generation._validate_sql
+
+    def _refuses_the_grounded_one(sql: str, *args: Any, **kwargs: Any) -> str | None:
+        return "re-render rejected" if "'Legal'" in sql else real(sql, *args, **kwargs)
+
+    monkeypatch.setattr(sql_generation, "_validate_sql", _refuses_the_grounded_one)
+
+    result, collected = _recorded("SELECT id FROM schools WHERE status = 'legal'", src)
+
+    assert result.sql == "SELECT id FROM schools WHERE status = 'legal'"
+    assert collected.literals_grounded == []
+
+
+def test_a_reverted_statement_records_nothing_even_where_the_value_appears(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stored value is already in the statement, so only knowing the
+    grounded statement was not kept rules the substitution out."""
+    from nlqueries.orchestrator import sql_generation
+
+    real = sql_generation._validate_sql
+    grounded = "status = 'Legal' OR status = 'Legal'"
+
+    def _refuses_the_grounded_one(sql: str, *args: Any, **kwargs: Any) -> str | None:
+        return "re-render rejected" if grounded in sql else real(sql, *args, **kwargs)
+
+    monkeypatch.setattr(sql_generation, "_validate_sql", _refuses_the_grounded_one)
+    sql = "SELECT id FROM schools WHERE status = 'legal' OR status = 'Legal'"
+
+    result, collected = _recorded(sql, src)
+
+    assert result.sql == sql
+    assert collected.literals_grounded == []
+
+
+def test_a_substitution_the_literal_repair_replaced_is_not_recorded(src: _Source) -> None:
+    """Grounded to 'Legal', then the repair, correcting the other literal, also
+    changed this one: the returned statement does not carry the substitution."""
+    sql = "SELECT id FROM schools WHERE status = 'legal' AND soc = 'Youth Authority School'"
+    llm = MagicMock()
+    llm.acomplete = AsyncMock(
+        return_value=(
+            "<sql>SELECT id FROM schools WHERE status = 'Active' "
+            "AND soc = 'Youth Authority Facilities'</sql>"
+        )
+    )
+
+    result, collected = _recorded(sql, src, llm)
+
+    assert "'Active'" in result.sql and "'Legal'" not in result.sql
+    assert collected.literals_grounded == []
 
 
 # --- Through validate_and_repair -----------------------------------------------------
