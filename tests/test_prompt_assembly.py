@@ -784,7 +784,7 @@ ANSWER_RULE_PHRASES = [
     "return its name or title column instead of the id",
     "or a description where it has neither, unless the question asks for the id",
     # A definition given is exact.
-    "A definition given in the question, the Business Rules, the Glossary or the Document",
+    "A definition given in the question, the Business Rules or the Glossary",
     "apply every condition and boundary as written, not the usual meaning of the term",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",

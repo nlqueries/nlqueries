@@ -113,9 +113,9 @@ for every tie.
 - A column the hint names for something in the question is the column to use for it \
 ("the cheapest refers to MIN(price)" means order by price), even where another \
 column seems to hold the same thing in another form.
-- A definition given in the question, the Business Rules, the Glossary or the Document \
-Context (how a segment, a rate or a period is worked out) is exact: apply every \
-condition and boundary as written, not the usual meaning of the term.
+- A definition given in the question, the Business Rules or the Glossary (how a \
+segment, a rate or a period is worked out) is exact: apply every condition and \
+boundary as written, not the usual meaning of the term.
 - Only when the question itself offers the choice, as in "yes or no?" or "true or \
 false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean \
 expression. A question that only asks whether something holds ("is the order \
