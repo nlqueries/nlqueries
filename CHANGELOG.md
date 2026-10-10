@@ -195,6 +195,24 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   setting, `low` by default, applied through the Anthropic API only. They also
   reject a `temperature` with a 400, so the self-consistency candidates no
   longer send them one.
+- **DeepSeek is sent the effort too, and can be told not to think.** A
+  `deepseek/` model through LiteLLM gets `LLM_EFFORT` as DeepSeek's
+  `reasoning_effort` (`low` and `medium` send `low`, `high` sends `high`,
+  `xhigh` and `max` send `max`), in `extra_body`: LiteLLM turns a top-level
+  `reasoning_effort` for DeepSeek into thinking on or off and drops the
+  level. The new `LLM_THINKING` setting, `on` by default, sends
+  `thinking: {"type": "disabled"}` when `off`, and no effort with it. A host's
+  own `extra_body` is merged with these, its keys winning.
+- **Streamed answers on OpenAI-compatible routes record their real usage.**
+  Such a stream reports no usage unless asked, so every streamed answer was
+  recorded as an estimate. LiteLLM is now asked for it
+  (`stream_options={"include_usage": True}`) on the routes it lists as
+  OpenAI-compatible and accepting the option, DeepSeek and OpenAI among them,
+  and the last chunk's usage is recorded. Other routes keep the estimate.
+- **Reasoning tokens are visible on their own.** `UsageRecord` gains
+  `reasoning_tokens`, read from `completion_tokens_details.reasoning_tokens`
+  where the provider reports it, as DeepSeek does. They stay counted in
+  `output_tokens`, which is what output is billed on.
 - **`LLM_MAX_OUTPUT_TOKENS` defaults to 4096** (was 1024). Thinking is billed
   from the same allowance, and at 1024 Sonnet 5.5 can run out part-way through
   its SQL. Set it to 1024 to keep the old ceiling.
