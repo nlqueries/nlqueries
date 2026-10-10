@@ -78,6 +78,9 @@ _TOTAL_BUDGET_S = 3.0
 _MAX_LITERAL_CHARS = 100
 #: Nearby values offered in a note.
 _MAX_NEARBY = 5
+#: Longest stored value quoted in a note; a longer one is cut and marked. Notes
+#: go into repair prompts, and a free-text column could otherwise fill one.
+_MAX_NOTE_VALUE_CHARS = 100
 #: Above this many distinct values, no similarity pass over the column.
 _MAX_DISTINCT_FOR_SIMILARITY = 2000
 #: Stored values containing the literal that the punctuation pass compares.
@@ -252,13 +255,13 @@ def _apply(
         return True
     if outcome.kind == "none":
         result.offers_nearby = result.offers_nearby or bool(outcome.values)
-        nearby = ", ".join(_quote(v) for v in outcome.values)
+        nearby = ", ".join(_quote_stored(v) for v in outcome.values)
         result.notes.append(
             f"No row has {column.name} = {_quote(literal)}"
             + (f"; nearby values: {nearby}." if nearby else ".")
         )
     elif outcome.kind == "many":
-        several = ", ".join(_quote(v) for v in outcome.values)
+        several = ", ".join(_quote_stored(v) for v in outcome.values)
         result.notes.append(
             f"No row has {column.name} = {_quote(literal)} exactly; ignoring case, "
             f"spacing and punctuation at either end it matches several stored values: "
@@ -698,3 +701,11 @@ async def _nearby(
 
 def _quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _quote_stored(value: str) -> str:
+    """A stored value for a note: quoted, and cut at ``_MAX_NOTE_VALUE_CHARS``
+    with the cut marked, so it is not mistaken for the whole value."""
+    if len(value) > _MAX_NOTE_VALUE_CHARS:
+        return _quote(value[:_MAX_NOTE_VALUE_CHARS]) + " [cut]"
+    return _quote(value)
