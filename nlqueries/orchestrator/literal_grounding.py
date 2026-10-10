@@ -42,6 +42,17 @@ columns whose name marks their values as personal data
 (:func:`~nlqueries.knowledge.kb_generator.is_pii_column`), the refusal
 ``export-kb`` makes: a lookup on ``email`` would copy other people's addresses
 into a note, the repair prompt and provenance.
+
+Where the knowledge base has a column's complete value list
+(``values_complete``, stored by ``export-kb``), the list answers: a literal in
+it needs no lookup, and for one that is not, a single exact-match query checks
+the list has not gone stale before the list supplies the match or the nearby
+values. The list was read with no row restriction, so it answers only where the
+connector restricts none per request; under a row filter the lookups go through
+the filter as before. Without a list, a literal that matches nothing costs up
+to four queries, most of them scans, so a table the knowledge base records as
+larger than ``LITERAL_GROUNDING_MAX_ROWS`` rows is not looked up at all, and
+there a list is used alone. A table whose size is unknown is looked up.
 """
 
 from __future__ import annotations
@@ -172,8 +183,8 @@ async def ground_literals(
     """Ground the string literals *sql* compares columns to; see the module docstring.
 
     Returns *sql* unchanged when *source* is ``None``, when nothing needs
-    grounding, or on any error. When the statement has a literal to check, it
-    opens the agent's connector through *source* before consulting the cache,
+    grounding, or on any error. When a literal needs the database, it opens the
+    agent's connector through *source* before consulting the cache,
     since which outcomes may be shared depends on that connector (see
     :meth:`_Session.cache_scope`), and releases it before returning or, if a
     lookup was abandoned, when that lookup returns.
@@ -191,25 +202,48 @@ async def ground_literals(
     tables = _kb_tables(knowledge_base)
     if not tables:
         return GroundingResult(sql=sql)
+    row_counts = _row_counts(knowledge_base)
+    from nlqueries import config as _cfg  # noqa: PLC0415
+
+    cap = _cfg.LITERAL_GROUNDING_MAX_ROWS
 
     result = GroundingResult(sql=sql)
     flagged: list[exp.Literal] = []
     session = _Session(source, time.monotonic() + _TOTAL_BUDGET_S)
     changed = False
     try:
-        for count, (table_node, column_node, literal_node) in enumerate(
+        for count, (table_node, column_node, literal_node, entry) in enumerate(
             _comparisons(statement, tables)
         ):
             if count >= _MAX_LITERALS or not session.usable:
                 break
+            literal = literal_node.this
+            stored = _stored_values(entry)
+            if stored is not None and literal in stored:
+                continue
+            rows = row_counts.get(table_node.name.lower())
+            # Too large to scan for every question: a stored list, if there is
+            # one, is all there is to go on.
+            too_large = cap > 0 and rows is not None and rows > cap
+            if too_large and stored is None:
+                continue
             try:
                 scope = await session.cache_scope()
             except Exception:  # noqa: BLE001
                 _log.debug("Literal grounding skipped: no connector.", exc_info=True)
                 break
-            outcome = await _outcome(
-                session, scope, dialect, table_node, column_node, literal_node.this
-            )
+            # The list was read with no per-request restriction on rows. Under
+            # one, a value from it could be one this request may not see, so
+            # only the restricted connector answers.
+            if scope != "":
+                stored = None
+            outcome: _Outcome | None
+            if too_large:
+                outcome = _from_values(literal, stored) if stored is not None else None
+            else:
+                outcome = await _outcome(
+                    session, scope, dialect, table_node, column_node, literal, stored
+                )
             if outcome is not None:
                 changed |= _apply(result, outcome, table_node, column_node, literal_node, flagged)
     finally:
@@ -246,16 +280,18 @@ async def _outcome(
     table: exp.Table,
     column: exp.Column,
     literal: str,
+    stored: list[str] | None = None,
 ) -> _Outcome | None:
     """What *table*.*column* holds for *literal*, from the cache or the database;
     ``None`` when the lookup failed or ran out of time, which is not cached.
-    With no *scope*, the cache is neither read nor written."""
+    With no *scope*, the cache is neither read nor written. *stored* is the
+    column's complete list, if the knowledge base has one (see :func:`_look_up`)."""
     key = (session.key, scope or "", _table_key(table), column.name, literal)
     outcome = _cached(key) if scope is not None else None
     if outcome is not None:
         return outcome
     try:
-        outcome = await _look_up(session, dialect, table, column, literal)
+        outcome = await _look_up(session, dialect, table, column, literal, stored)
     except Exception:  # noqa: BLE001
         _log.debug(
             "Literal grounding skipped %s.%s = %r: the lookup failed.",
@@ -321,6 +357,25 @@ def _kb_tables(knowledge_base: dict[str, Any]) -> dict[str, dict[str, dict[str, 
             str(col.get("name") or "").lower(): col for col in table.get("columns", []) or []
         }
     return out
+
+
+def _row_counts(knowledge_base: dict[str, Any]) -> dict[str, int]:
+    """``{table name (lower): rows}`` for the tables whose size the KB records."""
+    out: dict[str, int] = {}
+    for table in knowledge_base.get("schema", {}).get("tables", []) or []:
+        rows = table.get("row_count")
+        if isinstance(rows, int) and not isinstance(rows, bool):
+            out[str(table.get("name") or "").lower()] = rows
+    return out
+
+
+def _stored_values(column: dict[str, Any]) -> list[str] | None:
+    """Every value the column held when the knowledge base was exported, if it
+    has the complete list (``values_complete``); ``None`` otherwise."""
+    values = column.get("samples")
+    if not column.get("values_complete") or not isinstance(values, list):
+        return None
+    return [str(v) for v in values if v is not None]
 
 
 def _groundable(column: dict[str, Any]) -> bool:
@@ -391,8 +446,9 @@ def _source_table(
 
 def _comparisons(
     statement: exp.Expr, tables: dict[str, dict[str, dict[str, Any]]]
-) -> Iterator[tuple[exp.Table, exp.Column, exp.Literal]]:
-    """``(table, column, literal)`` for every groundable comparison, scope by scope."""
+) -> Iterator[tuple[exp.Table, exp.Column, exp.Literal, dict[str, Any]]]:
+    """``(table, column, literal, column's KB entry)`` for every groundable
+    comparison, scope by scope."""
     try:
         scopes = traverse_scope(statement)
     except Exception:  # noqa: BLE001
@@ -411,7 +467,7 @@ def _comparisons(
             if entry is None or not _groundable(entry):
                 continue
             for literal in literals:
-                yield table, column, literal
+                yield table, column, literal, entry
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +521,7 @@ _ABANDONED = object()
 class _Session:
     """One grounding call's use of the agent's connector.
 
-    Opened from the source when the statement has a literal to check, before
+    Opened from the source when a literal needs the database, before
     the cache is consulted (see :meth:`cache_scope`). Every database call, the
     open included, runs on a daemon thread in the caller's context and is
     waited for until the step's deadline and no longer. A call still running
@@ -644,8 +700,13 @@ async def _look_up(
     table: exp.Table,
     column: exp.Column,
     literal: str,
+    stored: list[str] | None = None,
 ) -> _Outcome | None:
-    """What *table*.*column* holds for *literal*; ``None`` if time ran out."""
+    """What *table*.*column* holds for *literal*; ``None`` if time ran out.
+
+    With *stored*, the column's complete list as of the last export, which does
+    not hold *literal*, only the exact match is queried, in case the literal
+    was stored since; the list answers the rest (see :func:`_from_values`)."""
     source, col = _target(table, column)
     value = exp.Literal.string(literal)
 
@@ -655,6 +716,8 @@ async def _look_up(
         return None
     if found:
         return _Outcome("found")
+    if stored is not None:
+        return _from_values(literal, stored)
 
     loose = (
         exp.select(col.copy())
@@ -732,13 +795,41 @@ async def _nearby(
     rows = await session.run(every, dialect, _MAX_DISTINCT_FOR_SIMILARITY + 1)
     values = [str(v) for v in rows or () if v is not None]
     if rows is not None and len(values) <= _MAX_DISTINCT_FOR_SIMILARITY:
-        by_lower = {v.lower(): v for v in values}
-        for close in difflib.get_close_matches(
-            literal.strip().lower(), list(by_lower), n=_MAX_NEARBY, cutoff=0.5
-        ):
-            if by_lower[close] not in found:
-                found.append(by_lower[close])
+        _add_similar(found, literal, values)
     return tuple(found[:_MAX_NEARBY])
+
+
+def _add_similar(found: list[str], literal: str, values: list[str]) -> None:
+    """Append to *found* the values of *values* most similar to *literal*,
+    ignoring case, up to five in all."""
+    by_lower = {v.lower(): v for v in values}
+    for close in difflib.get_close_matches(
+        literal.strip().lower(), list(by_lower), n=_MAX_NEARBY, cutoff=0.5
+    ):
+        if by_lower[close] not in found:
+            found.append(by_lower[close])
+
+
+def _from_values(literal: str, values: list[str]) -> _Outcome:
+    """What a column whose complete list is *values* holds for *literal*, which
+    is not among them: the passes of :func:`_look_up` after the exact match,
+    run over the list instead of the database. One value equal ignoring case
+    and surrounding spaces, or failing that also punctuation at either end, is
+    the match; several are left to the repair; none gives the nearby values."""
+    distinct = list(dict.fromkeys(values))
+    loose = [v for v in distinct if v.strip().lower() == literal.strip().lower()]
+    needle = literal.strip().lower()
+    folded = _fold(literal)
+    if not loose and len(folded) >= _MIN_FOLDED_CHARS:
+        loose = [v for v in distinct if _fold(v) == folded]
+        needle = folded
+    if len(loose) == 1:
+        return _Outcome("one", (loose[0],))
+    if loose:
+        return _Outcome("many", tuple(loose[:_MAX_NEARBY]))
+    found = [v for v in distinct if needle in v.lower()][:_MAX_NEARBY]
+    _add_similar(found, literal, distinct)
+    return _Outcome("none", tuple(found[:_MAX_NEARBY]))
 
 
 def _quote(value: str) -> str:

@@ -10,6 +10,7 @@ connector, read-only, as the orchestrator would.
 from __future__ import annotations
 
 import asyncio
+import copy
 import faulthandler
 import json
 import logging
@@ -551,6 +552,197 @@ def test_the_same_column_under_an_ordinary_name_is_grounded(tmp_path: Path) -> N
     result = _ground("SELECT id FROM people WHERE contact = 'John.Doe@acme.com'", src, kb)
 
     assert result.sql == "SELECT id FROM people WHERE contact = 'john.doe@acme.com'"
+
+
+# --- Stored value lists and large tables ---------------------------------------------
+
+STATUS_LIST = ["Legal", "Active", "ACTIVE"]
+SOC_LIST = ["Youth Authority Facilities", "Juvenile Court Schools", "Special Education Schools"]
+
+
+def _kb(row_count: int | None = None, **lists: list[str]) -> dict[str, Any]:
+    """KB with the table's recorded size and some columns' complete value lists,
+    as export-kb stores them."""
+    kb = copy.deepcopy(KB)
+    table = kb["schema"]["tables"][0]
+    if row_count is not None:
+        table["row_count"] = row_count
+    for column in table["columns"]:
+        if column["name"] in lists:
+            column["samples"] = lists[column["name"]]
+            column["values_complete"] = True
+    return kb
+
+
+def test_a_literal_in_the_stored_list_needs_no_lookup(src: _Source) -> None:
+    sql = "SELECT id FROM schools WHERE status = 'Legal'"
+
+    result = _ground(sql, src, _kb(status=STATUS_LIST))
+
+    assert result.sql == sql
+    assert src.opened == [] and src.statements == []
+
+
+def test_a_literal_the_list_matches_ignoring_case_takes_it_after_one_exact_check(
+    src: _Source,
+) -> None:
+    result = _ground("SELECT id FROM schools WHERE status = 'legal'", src, _kb(status=STATUS_LIST))
+
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+    assert len(src.statements) == 1
+
+
+def test_a_literal_stored_since_the_export_is_left_alone(tmp_path: Path) -> None:
+    """The list predates a row holding 'legal' as written. The exact check finds
+    it, so the literal is not rewritten to the 'Legal' the list knows."""
+    src = _Source(_schools_db(tmp_path / "s.db", [*ROWS, (5, "legal", "=", "x", "E5", 1)]))
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    result = _ground(sql, src, _kb(status=STATUS_LIST))
+
+    assert result.sql == sql and result.substitutions == [] and result.notes == []
+
+
+def test_a_literal_the_list_does_not_hold_gets_nearby_values_from_the_list(
+    src: _Source,
+) -> None:
+    sql = "SELECT id FROM schools WHERE soc = 'Youth Authority School'"
+
+    result = _ground(sql, src, _kb(soc=SOC_LIST))
+
+    assert result.sql == sql
+    assert result.notes and "'Youth Authority Facilities'" in result.notes[0]
+    assert result.offers_nearby and result.flagged == [0]
+    assert len(src.statements) == 1
+
+
+def test_the_list_offers_values_containing_the_literal(src: _Source) -> None:
+    """'Court' is too short beside 'Juvenile Court Schools' to count as similar,
+    but the stored value contains it."""
+    result = _ground("SELECT id FROM schools WHERE soc = 'Court'", src, _kb(soc=SOC_LIST))
+
+    assert result.notes and "'Juvenile Court Schools'" in result.notes[0]
+
+
+def test_samples_that_are_not_the_complete_list_are_not_trusted(src: _Source) -> None:
+    """Samples without values_complete are a few of the values, not all of
+    them: the database is asked."""
+    kb = _kb()
+    kb["schema"]["tables"][0]["columns"][3]["samples"] = ["Juvenile Court Schools"]
+
+    result = _ground("SELECT id FROM schools WHERE soc = 'Youth Authority School'", src, kb)
+
+    assert result.notes and "'Youth Authority Facilities'" in result.notes[0]
+    assert len(src.statements) > 1
+
+
+def test_several_values_the_list_matches_are_left_with_a_note(src: _Source) -> None:
+    sql = "SELECT id FROM schools WHERE status = 'active'"
+
+    result = _ground(sql, src, _kb(status=STATUS_LIST))
+
+    assert result.sql == sql and result.flagged == [0]
+    assert "'Active'" in result.notes[0] and "'ACTIVE'" in result.notes[0]
+
+
+@pytest.mark.parametrize(
+    ("literal", "stored"),
+    [
+        (" = ", "="),  # surrounding spaces
+        ("na", "NA"),  # case, in a literal too short for the punctuation pass
+        ("Directly funded.", "Directly funded"),  # punctuation at an end
+    ],
+)
+def test_the_list_is_matched_as_the_database_would_be(
+    src: _Source, literal: str, stored: str
+) -> None:
+    kb = _kb(funding=["Directly funded", "Locally funded", "=", "NA"])
+
+    result = _ground(f"SELECT id FROM schools WHERE funding = '{literal}'", src, kb)
+
+    assert result.sql == f"SELECT id FROM schools WHERE funding = '{stored}'"
+
+
+def test_a_table_larger_than_the_cap_is_not_looked_up(src: _Source) -> None:
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    result = _ground(sql, src, _kb(row_count=1_000_001))
+
+    assert result.sql == sql and result.notes == []
+    assert src.opened == [] and src.statements == []
+
+
+def test_above_the_cap_a_stored_list_is_used_alone(src: _Source) -> None:
+    result = _ground(
+        "SELECT id FROM schools WHERE status = 'legal'",
+        src,
+        _kb(row_count=1_000_001, status=STATUS_LIST),
+    )
+
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+    assert src.statements == []
+
+
+@pytest.mark.parametrize("scope", ["tenant-a", None])
+def test_under_a_row_filter_the_stored_list_is_not_used(src: _Source, scope: str | None) -> None:
+    """The list was read with no row restriction, so a value in it may be one
+    this request may not see: 'Youth Authority Camps' is in the list alone."""
+    kb = _kb(soc=[*SOC_LIST, "Youth Authority Camps"])
+    sql = "SELECT id FROM schools WHERE soc = 'Youth Authority School'"
+
+    filtered = _ground(sql, _filtered(src, scope), kb)
+    unfiltered = _ground(sql, src, kb)
+
+    assert filtered.notes and "'Youth Authority Camps'" not in filtered.notes[0]
+    assert "'Youth Authority Facilities'" in filtered.notes[0]
+    assert "'Youth Authority Camps'" in unfiltered.notes[0]
+
+
+def test_above_the_cap_under_a_row_filter_nothing_is_grounded(src: _Source) -> None:
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    result = _ground(sql, _filtered(src, "tenant-a"), _kb(row_count=1_000_001, status=STATUS_LIST))
+
+    assert result.sql == sql and result.notes == [] and src.statements == []
+
+
+@pytest.mark.parametrize("row_count", [1_000_000, None])
+def test_a_table_at_the_cap_or_of_unknown_size_is_looked_up(
+    src: _Source, row_count: int | None
+) -> None:
+    result = _ground("SELECT id FROM schools WHERE status = 'legal'", src, _kb(row_count))
+
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+    assert src.statements
+
+
+def test_a_cap_of_zero_looks_up_any_table(src: _Source, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("nlqueries.config.LITERAL_GROUNDING_MAX_ROWS", 0)
+
+    result = _ground(
+        "SELECT id FROM schools WHERE status = 'legal'", src, _kb(row_count=10_000_000)
+    )
+
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+
+
+def test_the_cap_is_read_from_nlq_literal_grounding_max_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from nlqueries import config
+
+    # Reloading re-runs load_dotenv, which would read a developer's .env back in.
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: False)
+    monkeypatch.delenv("NLQ_LITERAL_GROUNDING_MAX_ROWS", raising=False)
+    try:
+        assert importlib.reload(config).LITERAL_GROUNDING_MAX_ROWS == 1_000_000
+        monkeypatch.setenv("NLQ_LITERAL_GROUNDING_MAX_ROWS", "500")
+        assert importlib.reload(config).LITERAL_GROUNDING_MAX_ROWS == 500
+    finally:
+        monkeypatch.delenv("NLQ_LITERAL_GROUNDING_MAX_ROWS", raising=False)
+        importlib.reload(config)
 
 
 # --- Bounds, the cache, and closing --------------------------------------------------

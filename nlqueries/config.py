@@ -461,11 +461,21 @@ column stores, before the statement runs. A literal that matches exactly one sto
 value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``), or failing
 that also punctuation at either end, is replaced with it; one that matches none is
 left, with nearby values offered to the repair step. Columns whose names mark their
-values as personal data are skipped, as export-kb skips them.
+values as personal data are skipped, as export-kb skips them; a column's complete value
+list in the knowledge base answers in place of most queries; and a table larger than
+LITERAL_GROUNDING_MAX_ROWS is not queried.
 Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
 for any agent with a registered connector, reading through the agent's connector with
 read-only permission; a generate-only request's statement is never run. On by default; set
 NLQ_LITERAL_GROUNDING=false to turn it off."""
+
+LITERAL_GROUNDING_MAX_ROWS: int = int(os.getenv("NLQ_LITERAL_GROUNDING_MAX_ROWS", "1000000"))
+"""Literal grounding does not query a table the knowledge base records as having more
+rows than this: a literal that matches nothing costs up to four queries, most of them
+scans, and on a large table they are slow, and on a warehouse billed. A column of such a
+table whose complete value list the knowledge base holds is still grounded from the list
+alone, where no row filter applies. A table whose size the knowledge base does not record
+is looked up. ``0`` removes the cap."""
 
 LITERAL_GROUNDING_REPAIR: bool = os.getenv("NLQ_LITERAL_GROUNDING_REPAIR", "true").lower() in (
     "1",

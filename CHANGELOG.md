@@ -27,6 +27,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     `export-kb` will not sample (email, phone, address, tokens, secrets and
     the like): a lookup would copy other people's values into the repair
     prompt and provenance.
+  - **Cost.** Where the knowledge base holds a column's complete value list,
+    the list answers: a literal in it needs no query, and one that is not
+    gets one exact-match query, in case it was stored since the export.
+    The list was read with no row restriction, so under a per-request row
+    filter the lookups go through the filter instead. Otherwise a literal
+    that matches nothing costs up to four queries, most of them scans, so a
+    table the knowledge base records as larger than
+    `NLQ_LITERAL_GROUNDING_MAX_ROWS` (1,000,000 by default; `0` for no cap)
+    is not queried, and only a stored list grounds its columns. A table of
+    unknown size is queried.
     The check is read-only and bounded: 8 literals, 1 s a lookup, 3 s in all.
     No lookup is waited for past the 3 s: one still running then is
     abandoned. Outcomes are cached per database for 15 minutes, and any error
