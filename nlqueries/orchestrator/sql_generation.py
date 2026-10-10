@@ -30,7 +30,11 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import get_llm_client, output_budget
-from nlqueries.orchestrator.literal_grounding import GroundingResult, ground_literals
+from nlqueries.orchestrator.literal_grounding import (
+    GroundingResult,
+    ground_literals,
+    string_literals,
+)
 from nlqueries.orchestrator.prompt_assembly import (
     _ANSWER_RULES,
     _PARTIAL_COLUMNS_NOTE,
@@ -169,7 +173,14 @@ async def validate_and_repair(
             return grounded_sql
         prefix = system if system is not None else _build_sql_system_prompt(knowledge_base, dialect)
         corrected = await _repair_literals(
-            grounded_sql, grounded.notes, question, prefix, llm, knowledge_base, dialect
+            grounded_sql,
+            grounded.notes,
+            grounded.flagged,
+            question,
+            prefix,
+            llm,
+            knowledge_base,
+            dialect,
         )
         if corrected is None:
             return grounded_sql
@@ -262,6 +273,7 @@ async def validate_and_repair(
 async def _repair_literals(
     statement_sql: str,
     notes: list[str],
+    flagged: list[int],
     question: str | None,
     system: str | list[dict[str, Any]],
     llm: LLMClient,
@@ -272,10 +284,15 @@ async def _repair_literals(
     matches, given grounding's *notes*.
 
     Returns the model's statement when it validates and differs from
-    *statement_sql* in the values of its string literals and nothing else (see
-    :func:`_only_literals_differ`), else ``None``: an invalid answer, the same
-    statement, any other change, or a failed call all keep the original. Any
-    other change is recorded with the reason ``"rejected: non-literal change"``.
+    *statement_sql* only in the values of the string literals at the positions
+    grounding *flagged* (see :func:`_literal_changes`), else ``None``: an
+    invalid answer, the same statement, any other change, or a failed call all
+    keep the original. A change beyond string literals is recorded with the
+    reason ``"rejected: non-literal change"``, and a change to any other
+    literal, whether it matched as written, was replaced by grounding, or was
+    never checked, with ``"rejected: changed a literal grounding did not
+    flag"``: the repair exists to fix the flagged values, not to rewrite a date
+    format or a pattern elsewhere in the statement.
     Exactly one call, never repeated, made through *llm* like any other so its
     usage is recorded, and recorded in provenance as ``literal_repair``. Does
     not count as an attempt.
@@ -300,26 +317,40 @@ async def _repair_literals(
             and _validate_sql(candidate, knowledge_base, dialect) is None
             and not _same_statement(candidate, statement_sql, dialect)
         ):
-            if _only_literals_differ(candidate, statement_sql, dialect):
-                corrected = candidate
-            else:
+            changes = _literal_changes(candidate, statement_sql, dialect)
+            if changes is None:
                 reason = "rejected: non-literal change"
+            elif any(position not in flagged for position in changes):
+                reason = "rejected: changed a literal grounding did not flag"
+            else:
+                corrected = candidate
     except Exception:  # noqa: BLE001 - the original statement stands
         _log.warning("The literal repair call failed; the statement is kept.", exc_info=True)
     record_literal_repair(changed=corrected is not None, notes=notes, reason=reason)
     return corrected
 
 
-def _only_literals_differ(a: str, b: str, dialect: str) -> bool:
-    """Whether *a* and *b* are one statement but for the values of their string
-    literals: both parsed, every string literal replaced with a placeholder, and
-    the two trees equal. A changed column, join, aggregate or number, or a
-    predicate added or removed, makes them differ."""
+def _literal_changes(candidate: str, original: str, dialect: str) -> list[int] | None:
+    """The positions of the string literals whose value *candidate* changes,
+    counted among those of *original* as grounding counts them (see
+    :func:`string_literals`), when *candidate* is *original* but for string
+    literal values; ``None`` when it differs in anything else.
+
+    Both are parsed and every string literal replaced with a placeholder; the
+    two trees must then be equal. A changed column, join, aggregate or number,
+    or a predicate added or removed, makes them differ. With the structure
+    equal, the literals correspond position by position."""
     try:
-        masked = [_strings_masked(sqlglot.parse_one(s, read=dialect)) for s in (a, b)]
+        new_tree = sqlglot.parse_one(candidate, read=dialect)
+        old_tree = sqlglot.parse_one(original, read=dialect)
     except Exception:  # noqa: BLE001 - unparsable: not shown to be literals only
-        return False
-    return bool(masked[0] == masked[1])
+        return None
+    new_values = [node.this for node in string_literals(new_tree)]
+    old_values = [node.this for node in string_literals(old_tree)]
+    if _strings_masked(new_tree) != _strings_masked(old_tree):
+        return None
+    pairs = zip(old_values, new_values, strict=True)
+    return [position for position, (old, new) in enumerate(pairs) if old != new]
 
 
 def _strings_masked(tree: exp.Expr) -> exp.Expr:
@@ -335,9 +366,12 @@ def _record_substitutions(
     """Record in provenance each substitution whose stored value is a string
     literal of *sql*, the statement returned, once each.
 
-    A statement grounded and then replaced, by an LLM repair or a literal
-    repair that changed that literal, does not carry its substitution, and
-    provenance must not claim it."""
+    *substitutions* holds only those made in statements kept on the way to
+    *sql*, and the literal repair may change only the literals grounding
+    flagged, never one it replaced (see :func:`_repair_literals`), so each
+    should be there. The check is a backstop: should a later step replace a
+    grounded statement, provenance must not claim a substitution the answer
+    does not carry."""
     if not substitutions:
         return
     try:

@@ -112,6 +112,13 @@ class GroundingResult:
     #: Whether a literal that matched no stored value came with nearby ones:
     #: the case a repair can act on.
     offers_nearby: bool = False
+    #: Where the literals a note was written for stand among the string
+    #: literals of :attr:`sql`, counted as :func:`string_literals` lists them:
+    #: those no stored value matches, and those several match. The only
+    #: literals a repair may change. Positions, not values, so a literal
+    #: elsewhere in the statement that happens to hold a flagged value is not
+    #: flagged with it.
+    flagged: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -181,6 +188,7 @@ async def ground_literals(
         return GroundingResult(sql=sql)
 
     result = GroundingResult(sql=sql)
+    flagged: list[exp.Literal] = []
     session = _Session(source, time.monotonic() + _TOTAL_BUDGET_S)
     changed = False
     try:
@@ -198,16 +206,32 @@ async def ground_literals(
                 session, scope, dialect, table_node, column_node, literal_node.this
             )
             if outcome is not None:
-                changed |= _apply(result, outcome, table_node, column_node, literal_node)
+                changed |= _apply(result, outcome, table_node, column_node, literal_node, flagged)
     finally:
         session.close()
+    literals = string_literals(statement)
+    result.flagged = [i for i, node in enumerate(literals) if any(node is f for f in flagged)]
     if changed:
         try:
             result.sql = statement.sql(dialect=dialect)
+            rendered = string_literals(sqlglot.parse_one(result.sql, read=dialect))
         except Exception:  # noqa: BLE001
             _log.debug("Literal grounding skipped: the statement did not render.", exc_info=True)
             return GroundingResult(sql=sql)
+        # The positions in `flagged` count the tree's string literals; they hold
+        # for the rendered statement only if it parses back to the same ones. A
+        # render that changed any other literal would change what the statement
+        # asks beyond the values grounding replaced, so it is not used either.
+        if [node.this for node in rendered] != [node.this for node in literals]:
+            _log.debug("Literal grounding skipped: the rendered literals differ.")
+            return GroundingResult(sql=sql)
     return result
+
+
+def string_literals(tree: exp.Expr) -> list[exp.Literal]:
+    """The string literals of *tree*, in the order :attr:`GroundingResult.flagged`
+    counts them."""
+    return [node for node in tree.find_all(exp.Literal) if node.is_string]
 
 
 async def _outcome(
@@ -247,14 +271,18 @@ def _apply(
     table: exp.Table,
     column: exp.Column,
     literal_node: exp.Literal,
+    flagged: list[exp.Literal],
 ) -> bool:
-    """Record *outcome* on *result*; ``True`` when the literal was replaced."""
+    """Record *outcome* on *result*, adding *literal_node* to *flagged* when a
+    note is written for it; ``True`` when the literal was replaced."""
     literal = literal_node.this
     if outcome.kind == "one":
         stored = outcome.values[0]
         literal_node.set("this", stored)
         result.substitutions.append((table.name, column.name, literal, stored))
         return True
+    if outcome.kind in ("none", "many"):
+        flagged.append(literal_node)
     if outcome.kind == "none":
         result.offers_nearby = result.offers_nearby or bool(outcome.values)
         nearby = ", ".join(_quote_stored(v) for v in outcome.values)

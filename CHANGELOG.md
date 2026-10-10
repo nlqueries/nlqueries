@@ -26,10 +26,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     The check is read-only and bounded: 8 literals, 1 s a lookup, 3 s in all.
     No lookup is waited for past the 3 s: one still running then is
     abandoned. Outcomes are cached per database for 15 minutes, and any error
-    skips the check. On SQLite the case-insensitive comparison is written
-    `TRIM(col) = TRIM('x') COLLATE NOCASE` and the search for values
-    containing a literal `col LIKE '%x%'`, which stay fast when several
-    lookups run at once, where `LOWER()` on the column did not.
+    skips the check, as does a statement whose literals would not come back
+    unchanged from its re-render. On SQLite the case-insensitive comparison
+    is written `TRIM(col) = TRIM('x') COLLATE NOCASE` and the search for
+    values containing a literal `col LIKE '%x%'`, which stay fast when
+    several lookups run at once, where `LOWER()` on the column did not.
   - **When it runs.** Whatever the execution policy, for any agent with a
     registered connector. Generate-only forbids running the statement, not
     reading a column's values, and the statement is never run by the check.
@@ -45,10 +46,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     run and return no rows, the notes discarded. When a note offers nearby
     values, one LLM call with the question, the statement and the notes asks
     for the same statement with only the literal corrected. The answer is used
-    only if it validates and differs in string literal values and nothing
-    else, and is grounded again without a second call. Recorded in provenance
-    as `literal_repair`, with the reason `rejected: non-literal change` when
-    the answer changed more than literals.
+    only if it validates and differs in nothing but the values of the literals
+    grounding flagged, and is grounded again without a second call. Recorded
+    in provenance as `literal_repair`, with the reason
+    `rejected: non-literal change` when the answer changed more than literals,
+    and `rejected: changed a literal grounding did not flag` when it changed
+    any other literal.
 
 ### Changed
 

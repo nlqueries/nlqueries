@@ -31,6 +31,7 @@ from nlqueries.orchestrator import literal_grounding
 from nlqueries.orchestrator.literal_grounding import GroundingResult, _fold, ground_literals
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult, validate_and_repair
+from sqlglot import exp
 
 KB: dict[str, Any] = {
     "schema": {
@@ -176,6 +177,27 @@ def test_a_value_that_exists_as_written_is_left_after_one_lookup(src: _Source) -
 
     assert result.sql == sql and result.substitutions == [] and result.notes == []
     assert len(src.statements) == 1
+
+
+def test_a_render_that_changes_any_other_literal_is_not_used(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Grounding re-renders the statement it changed. A render that also
+    changed a literal grounding did not replace would change what the
+    statement asks, and the flagged positions, counted on the tree, would not
+    be shown to hold for it."""
+    real = exp.Select.sql
+
+    def _render(self: exp.Select, *args: Any, **kwargs: Any) -> str:
+        return str(real(self, *args, **kwargs)).replace("'kept'", "'altered'")
+
+    monkeypatch.setattr(exp.Select, "sql", _render)
+    sql = "SELECT id, 'kept' AS tag FROM schools WHERE status = 'legal'"
+
+    result = _ground(sql, src)
+
+    assert result.sql == sql
+    assert result.substitutions == []
 
 
 # --- How the loose pass is written --------------------------------------------------
@@ -1000,9 +1022,10 @@ def test_a_reverted_statement_records_nothing_even_where_the_value_appears(
     assert collected.literals_grounded == []
 
 
-def test_a_substitution_the_literal_repair_replaced_is_not_recorded(src: _Source) -> None:
-    """Grounded to 'Legal', then the repair, correcting the other literal, also
-    changed this one: the returned statement does not carry the substitution."""
+def test_a_repair_that_changes_a_grounded_literal_is_rejected(src: _Source) -> None:
+    """Grounded to 'Legal'; the repair, correcting the flagged soc literal, also
+    changed that one, which grounding did not flag. Rejected, so the
+    substitution stands and is recorded."""
     sql = "SELECT id FROM schools WHERE status = 'legal' AND soc = 'Youth Authority School'"
     llm = MagicMock()
     llm.acomplete = AsyncMock(
@@ -1014,11 +1037,14 @@ def test_a_substitution_the_literal_repair_replaced_is_not_recorded(src: _Source
 
     result, collected = _recorded(sql, src, llm)
 
-    assert "'Active'" in result.sql and "'Legal'" not in result.sql
-    assert collected.literals_grounded == []
-
-
-# --- Through validate_and_repair -----------------------------------------------------
+    assert result.sql == (
+        "SELECT id FROM schools WHERE status = 'Legal' AND soc = 'Youth Authority School'"
+    )
+    assert collected.literals_grounded == LEGAL_RECORD
+    assert collected.literal_repair is not None
+    assert (
+        collected.literal_repair["reason"] == "rejected: changed a literal grounding did not flag"
+    )
 
 
 def _validate(sql: str, source: _Source | None, llm: Any = None) -> SQLGenerationResult:
@@ -1215,6 +1241,135 @@ def test_a_changed_number_beside_the_literal_keeps_the_original(src: _Source) ->
     assert result.sql == original
     assert collected.literal_repair is not None
     assert collected.literal_repair["reason"] == "rejected: non-literal change"
+
+
+def test_a_repair_that_changes_a_grounded_literal_holding_a_flagged_value_is_rejected(
+    src: _Source,
+) -> None:
+    """status = 'legal' is grounded to 'Legal' and funding = 'Legal' matches
+    nothing, so the statement holds 'Legal' twice and only the second is
+    flagged. Flagged by position, not value: the repair may not change the
+    first."""
+    sql = (
+        "SELECT id FROM schools WHERE status = 'legal' AND funding = 'Legal' "
+        "AND soc = 'Youth Authority School'"
+    )
+    llm = _replying(
+        "<sql>SELECT id FROM schools WHERE status = 'Active' AND funding = 'Active' "
+        "AND soc = 'Youth Authority Facilities'</sql>"
+    )
+
+    result, collected = _repair(sql, src, llm)
+
+    assert result.sql == sql.replace("'legal'", "'Legal'")
+    assert collected.literals_grounded == LEGAL_RECORD
+    assert collected.literal_repair is not None
+    assert (
+        collected.literal_repair["reason"] == "rejected: changed a literal grounding did not flag"
+    )
+
+
+def test_a_repair_of_the_flagged_literals_beside_a_grounded_one_holding_the_same_value(
+    src: _Source,
+) -> None:
+    """The same statement, with the repair changing only what was flagged:
+    grounding and the gate count the literals' positions the same way."""
+    sql = (
+        "SELECT id FROM schools WHERE status = 'legal' AND funding = 'Legal' "
+        "AND soc = 'Youth Authority School'"
+    )
+    fixed = (
+        "SELECT id FROM schools WHERE status = 'Legal' AND funding = 'Directly funded' "
+        "AND soc = 'Youth Authority Facilities'"
+    )
+    llm = _replying(f"<sql>{fixed}</sql>")
+
+    result, collected = _repair(sql, src, llm)
+
+    assert result.sql == fixed
+    assert collected.literals_grounded == LEGAL_RECORD
+    assert collected.literal_repair is not None and collected.literal_repair["changed"] is True
+
+
+def test_a_repair_that_changes_an_unchecked_literal_holding_a_flagged_value_is_rejected(
+    src: _Source,
+) -> None:
+    """The label repeats the flagged literal but compares nothing, so grounding
+    never checked it and the repair may not change it."""
+    sql = (
+        "SELECT id, 'Youth Authority School' AS label FROM schools "
+        "WHERE soc = 'Youth Authority School'"
+    )
+    llm = _replying(
+        "<sql>SELECT id, 'Youth Authority Facilities' AS label FROM schools "
+        "WHERE soc = 'Youth Authority Facilities'</sql>"
+    )
+
+    result, collected = _repair(sql, src, llm)
+
+    assert result.sql == sql
+    assert collected.literal_repair is not None
+    assert (
+        collected.literal_repair["reason"] == "rejected: changed a literal grounding did not flag"
+    )
+
+
+def test_a_repair_that_changes_a_literal_that_matched_is_rejected(src: _Source) -> None:
+    """funding = 'Directly funded' exists as written; only soc was flagged."""
+    sql = (
+        "SELECT id FROM schools WHERE soc = 'Youth Authority School' "
+        "AND funding = 'Directly funded'"
+    )
+    llm = MagicMock()
+    llm.acomplete = AsyncMock(
+        return_value=(
+            "<sql>SELECT id FROM schools WHERE soc = 'Youth Authority Facilities' "
+            "AND funding = 'Locally funded'</sql>"
+        )
+    )
+
+    result, collected = _recorded(sql, src, llm)
+
+    assert result.sql == sql
+    assert collected.literal_repair is not None
+    assert collected.literal_repair["changed"] is False
+    assert (
+        collected.literal_repair["reason"] == "rejected: changed a literal grounding did not flag"
+    )
+
+
+def test_a_repair_may_settle_a_literal_several_values_match(src: _Source) -> None:
+    """'active' matches both 'Active' and 'ACTIVE': flagged, so the repair may
+    choose between them while it corrects the soc literal."""
+    sql = "SELECT id FROM schools WHERE status = 'active' AND soc = 'Youth Authority School'"
+    fixed = "SELECT id FROM schools WHERE status = 'ACTIVE' AND soc = 'Special Education Schools'"
+    llm = MagicMock()
+    llm.acomplete = AsyncMock(return_value=f"<sql>{fixed}</sql>")
+
+    result, collected = _recorded(sql, src, llm)
+
+    assert result.sql == fixed
+    assert collected.literal_repair is not None and collected.literal_repair["changed"] is True
+
+
+def test_a_repair_of_the_flagged_literal_alone_is_accepted_beside_one_that_matched(
+    src: _Source,
+) -> None:
+    sql = (
+        "SELECT id FROM schools WHERE soc = 'Youth Authority School' "
+        "AND funding = 'Directly funded'"
+    )
+    fixed = (
+        "SELECT id FROM schools WHERE soc = 'Youth Authority Facilities' "
+        "AND funding = 'Directly funded'"
+    )
+    llm = MagicMock()
+    llm.acomplete = AsyncMock(return_value=f"<sql>{fixed}</sql>")
+
+    result, collected = _recorded(sql, src, llm)
+
+    assert result.sql == fixed
+    assert collected.literal_repair is not None and collected.literal_repair["changed"] is True
 
 
 def test_an_invalid_statement_back_keeps_the_original(src: _Source) -> None:

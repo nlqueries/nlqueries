@@ -66,7 +66,9 @@ class Provenance:
     # The one LLM call made when a valid statement kept a literal no stored
     # value matches: {"attempted": True, "changed": bool, "notes": [...],
     # "reason": str | None}, or None when no such call was made. "reason" is
-    # "rejected: non-literal change" when the answer changed more than literals.
+    # "rejected: non-literal change" when the answer changed more than literals,
+    # and "rejected: changed a literal grounding did not flag" when it changed a
+    # literal other than those grounding flagged.
     literal_repair: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
