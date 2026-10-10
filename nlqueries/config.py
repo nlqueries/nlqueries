@@ -460,7 +460,8 @@ LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in 
 column stores, before the statement runs. A literal that matches exactly one stored
 value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``), or failing
 that also punctuation at either end, is replaced with it; one that matches none is
-left, with nearby values offered to the repair step.
+left, with nearby values offered to the repair step. Columns whose names mark their
+values as personal data are skipped, as export-kb skips them.
 Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
 for any agent with a registered connector, reading through the agent's connector with
 read-only permission; a generate-only request's statement is never run. On by default; set

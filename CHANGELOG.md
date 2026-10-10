@@ -22,7 +22,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     no punctuation pass.
   - **None or several match:** the statement is left alone, and an LLM repair,
     if one runs, is told the nearby stored values.
-  - **Scope.** Keys and columns the knowledge base does not know are skipped.
+  - **Scope.** Keys and columns the knowledge base does not know are skipped,
+    and so are columns whose names mark them as personal data, the ones
+    `export-kb` will not sample (email, phone, address, tokens, secrets and
+    the like): a lookup would copy other people's values into the repair
+    prompt and provenance.
     The check is read-only and bounded: 8 literals, 1 s a lookup, 3 s in all.
     No lookup is waited for past the 3 s: one still running then is
     abandoned. Outcomes are cached per database for 15 minutes, and any error

@@ -37,7 +37,11 @@ that does restrict rows shares them only among requests with the same
 value one user may see is not one every user may.
 
 Only columns the knowledge base knows, of a text type, that are not keys: a
-key's value is an identifier, and "the nearest identifier" is not a fix.
+key's value is an identifier, and "the nearest identifier" is not a fix. Nor
+columns whose name marks their values as personal data
+(:func:`~nlqueries.knowledge.kb_generator.is_pii_column`), the refusal
+``export-kb`` makes: a lookup on ``email`` would copy other people's addresses
+into a note, the repair prompt and provenance.
 """
 
 from __future__ import annotations
@@ -60,6 +64,7 @@ import sqlglot.expressions as exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from nlqueries.connectors.base import PermittedConnector
+from nlqueries.knowledge.kb_generator import is_pii_column
 
 if TYPE_CHECKING:
     from nlqueries.connectors.loader import LookupSource
@@ -319,8 +324,10 @@ def _kb_tables(knowledge_base: dict[str, Any]) -> dict[str, dict[str, dict[str, 
 
 
 def _groundable(column: dict[str, Any]) -> bool:
-    """A text column that is not a key."""
+    """A text column that is not a key, and not personal data by its name."""
     if column.get("is_primary_key") or column.get("is_foreign_key"):
+        return False
+    if is_pii_column(str(column.get("name") or "")):
         return False
     col_type = str(column.get("type") or "").upper()
     # An empty type is SQLite's untyped column; the lookups are text lookups and

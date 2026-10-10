@@ -502,6 +502,57 @@ def test_a_connector_that_cannot_be_opened_is_tried_once() -> None:
     assert len(attempts) == 1
 
 
+# --- Personal data ----------------------------------------------------------------
+
+
+def _people(tmp_path: Path, column: str) -> tuple[_Source, dict[str, Any]]:
+    """A table of two people's addresses, its column named *column*."""
+    db = tmp_path / "people.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"CREATE TABLE people (id INTEGER PRIMARY KEY, {column} TEXT)")
+        conn.executemany(
+            "INSERT INTO people VALUES (?, ?)", [(1, "john.doe@acme.com"), (2, "jane.roe@acme.com")]
+        )
+    conn.close()
+    kb = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "people",
+                    "columns": [
+                        {"name": "id", "type": "INTEGER", "is_primary_key": True},
+                        {"name": column, "type": "TEXT"},
+                    ],
+                }
+            ]
+        }
+    }
+    return _Source(db), kb
+
+
+@pytest.mark.parametrize(
+    "column", ["email", "contact_phone", "home_address", "api_token", "password_hash"]
+)
+def test_a_column_named_as_personal_data_is_never_looked_up(tmp_path: Path, column: str) -> None:
+    """The refusal export-kb makes: a lookup would copy other people's values
+    into a note, the repair prompt and provenance."""
+    src, kb = _people(tmp_path, column)
+    sql = f"SELECT id FROM people WHERE {column} = 'John.Doe@acme.com'"
+
+    result = _ground(sql, src, kb)
+
+    assert result.sql == sql and result.notes == [] and result.substitutions == []
+    assert src.opened == [] and src.statements == []
+
+
+def test_the_same_column_under_an_ordinary_name_is_grounded(tmp_path: Path) -> None:
+    src, kb = _people(tmp_path, "contact")
+
+    result = _ground("SELECT id FROM people WHERE contact = 'John.Doe@acme.com'", src, kb)
+
+    assert result.sql == "SELECT id FROM people WHERE contact = 'john.doe@acme.com'"
+
+
 # --- Bounds, the cache, and closing --------------------------------------------------
 
 
