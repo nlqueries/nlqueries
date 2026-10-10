@@ -211,6 +211,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   connection at once anyway. A statement's timeout now starts when its
   thread has the connection, so a timeout running out while waiting can no
   longer interrupt another thread's statement.
+- **The MCP schema tool shows primary and foreign keys.** `get_agent_schema`
+  read `primary_key` and `foreign_key` from each column, names no knowledge
+  base has carried; the generator writes `is_primary_key`, `is_foreign_key`
+  and `references`. So no column ever showed a key flag. It now reads those,
+  and, like the prompt, shows a foreign key only when its target is recorded.
 
 - **A hand-edited connector entry that is not a mapping no longer crashes the
   CLI.** `agent-a: postgresql://host/db` (the URL where its settings belong)

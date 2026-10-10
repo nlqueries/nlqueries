@@ -154,10 +154,15 @@ def get_agent_schema(agent_id: str) -> str:
             col_name = col.get("name", "?")
             col_type = col.get("type", "").upper() or "TEXT"
             flags: list[str] = []
-            if col.get("primary_key"):
+            # The knowledge base's own field names, as `_render_m_schema` reads
+            # them. This read `primary_key` and `foreign_key`, which no
+            # knowledge base this function can load has ever carried: the
+            # generator wrote no key fields before `kb_version: 2` and these
+            # three since, so no column ever showed a key flag here.
+            if col.get("is_primary_key"):
                 flags.append("PK")
-            if col.get("foreign_key"):
-                flags.append(f"FK→{col['foreign_key']}")
+            if col.get("is_foreign_key") and col.get("references"):
+                flags.append(f"FK→{col['references']}")
             samples = col.get("samples", [])
             if samples and col.get("values_complete"):
                 sample_str = f" values: {samples}"
