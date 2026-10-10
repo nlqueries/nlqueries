@@ -88,6 +88,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   person asking. The prompts now say to return the thing's name or title
   column instead of the id, or a description where it has neither, unless
   the question asks for the id.
+- **The SQL prompt treats a given definition as exact.** A user who spells out
+  how a segment, a rate or a period is worked out, in the question or in the
+  knowledge base's business rules or glossary, wants that calculation, but the
+  model sometimes applied the usual meaning of the term. The prompts now say
+  such a definition is exact: every condition and boundary as written. The
+  rule names the SQL prompt's own sections (Business Rules, Glossary), so the
+  model can tell which text it means.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds
