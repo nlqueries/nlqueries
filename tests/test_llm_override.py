@@ -203,11 +203,14 @@ def test_a_None_inside_extra_is_forwarded_rather_than_dropped() -> None:
 def test_extra_may_not_carry_a_kwarg_the_client_already_passes() -> None:
     """Rejected at construction, because the collision is otherwise inconsistent.
 
-    `_auth_kwargs()` is spread into the completion call directly in the sync and
-    streaming paths, where a duplicate keyword raises TypeError. In `acomplete`
-    it is merged into a dict literal after `model`/`messages`/`max_tokens`, where
-    it silently wins instead. A host that put `max_tokens` in `extra` would get
-    an exception from one method and a quietly capped answer from the other.
+    `extra` reaches every call through `_request_kwargs`, merged over the
+    model's own arguments, so a `temperature` or `output_config` in it would
+    silently replace the client's. `model`, `messages` and `max_tokens` are
+    keywords of the call itself: `complete`, `stream` and `astream` raise
+    TypeError on a duplicate, while `acomplete` puts them in a dict literal
+    before `extra`, which silently wins. A host that put `max_tokens` in `extra`
+    would get an exception from one method and a quietly capped answer from
+    another.
     """
     for reserved in ("model", "messages", "max_tokens", "stream", "temperature", "output_config"):
         with pytest.raises(ValueError, match="may not contain"):
