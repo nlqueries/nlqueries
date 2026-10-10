@@ -34,10 +34,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     registered connector. Generate-only forbids running the statement, not
     reading a column's values, and the statement is never run by the check.
     An agent with no registered connector opens nothing.
-  - **Its own connector.** Each check opens a connector of its own, with
-    read-only permission, and closes it, rather than using the pooled one the
-    request executes on. The pooled SQLite connector is one connection, and
-    concurrent requests looking values up on it deadlocked the process.
+  - **The agent's connector, as every query reads it.** The lookups go through
+    `open_connector_for_agent` with read-only permission, so whatever wraps that
+    function for a request, such as a row filter, applies to them too; their
+    threads run in the caller's context so request-bound state reaches them.
+    Outcomes are shared only where no such wrapper restricts rows, or within
+    the `cache_scope` a restricting wrapper declares.
   - **A valid statement whose literal matches nothing gets one repair call
     (`NLQ_LITERAL_GROUNDING_REPAIR`, on by default).** Such a statement used to
     run and return no rows, the notes discarded. When a note offers nearby

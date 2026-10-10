@@ -462,8 +462,8 @@ value ignoring case and surrounding spaces (``'legal'`` for ``'Legal'``), or fai
 that also punctuation at either end, is replaced with it; one that matches none is
 left, with nearby values offered to the repair step.
 Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
-for any agent with a registered connector, on a read-only connector of its own that it
-closes afterwards; a generate-only request's statement is never run. On by default; set
+for any agent with a registered connector, reading through the agent's connector with
+read-only permission; a generate-only request's statement is never run. On by default; set
 LITERAL_GROUNDING=false to turn it off."""
 
 LITERAL_GROUNDING_REPAIR: bool = os.getenv("NLQ_LITERAL_GROUNDING_REPAIR", "true").lower() in (

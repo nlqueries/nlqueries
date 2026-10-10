@@ -22,12 +22,19 @@ error skips the literal (or the step) and is logged at DEBUG; grounding can
 make a statement better, never fail it. Outcomes are cached per database for
 ``_CACHE_TTL_S``, since a workload repeats its literals.
 
-Safe under concurrent calls from different threads and event loops. Each call
-opens its own connector rather than sharing the pooled one (see
-:func:`~nlqueries.connectors.loader.lookup_source` for the deadlock sharing
-caused), runs every database call on a daemon thread, and stops waiting for one
-at the step's deadline: a stuck lookup is abandoned, never awaited, and its
-connector is closed when it returns.
+Safe under concurrent calls from different threads and event loops. The
+lookups read through the agent's connector as every query does (see
+:func:`~nlqueries.connectors.loader.lookup_source`), so a per-request wrapper
+such as a row filter applies to them too. Every database call runs on a daemon
+thread, in the caller's context so that request-bound state reaches it, and is
+waited for until the step's deadline and no longer: a stuck lookup is
+abandoned, never awaited.
+
+Outcomes are cached per database and per row scope. Core's own connector
+wrapper restricts nothing per request, so its outcomes are shared; a wrapper
+that does restrict rows shares them only among requests with the same
+``cache_scope`` it declares, and one that declares none is not cached, since a
+value one user may see is not one every user may.
 
 Only columns the knowledge base knows, of a text type, that are not keys: a
 key's value is an identifier, and "the nearest identifier" is not a fix.
@@ -37,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import difflib
 import functools
 import logging
@@ -51,6 +59,7 @@ import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
+from nlqueries.connectors.base import PermittedConnector
 from nlqueries.orchestrator.provenance import record_literal_grounded
 
 if TYPE_CHECKING:
@@ -109,8 +118,9 @@ class _Outcome:
     values: tuple[str, ...] = ()
 
 
-# Keyed by the source's key first, so two databases never share an answer.
-_CacheKey = tuple[str, str, str, str]
+# Keyed by the source's key and the row scope first, so two databases, or two
+# row scopes on one database, never share an answer.
+_CacheKey = tuple[str, str, str, str, str]
 _cache: OrderedDict[_CacheKey, tuple[float, _Outcome]] = OrderedDict()
 # Threading, not asyncio: callers run on different event loops in different
 # threads. Held around the dict operations alone, never around a database call.
@@ -173,7 +183,14 @@ async def ground_literals(
         ):
             if count >= _MAX_LITERALS or not session.usable:
                 break
-            outcome = await _outcome(session, dialect, table_node, column_node, literal_node.this)
+            try:
+                scope = await session.cache_scope()
+            except Exception:  # noqa: BLE001
+                _log.debug("Literal grounding skipped: no connector.", exc_info=True)
+                break
+            outcome = await _outcome(
+                session, scope, dialect, table_node, column_node, literal_node.this
+            )
             if outcome is not None:
                 changed |= _apply(result, outcome, table_node, column_node, literal_node)
     finally:
@@ -188,12 +205,18 @@ async def ground_literals(
 
 
 async def _outcome(
-    session: _Session, dialect: str, table: exp.Table, column: exp.Column, literal: str
+    session: _Session,
+    scope: str | None,
+    dialect: str,
+    table: exp.Table,
+    column: exp.Column,
+    literal: str,
 ) -> _Outcome | None:
     """What *table*.*column* holds for *literal*, from the cache or the database;
-    ``None`` when the lookup failed or ran out of time, which is not cached."""
-    key = (session.key, _table_key(table), column.name, literal)
-    outcome = _cached(key)
+    ``None`` when the lookup failed or ran out of time, which is not cached.
+    With no *scope*, the cache is neither read nor written."""
+    key = (session.key, scope or "", _table_key(table), column.name, literal)
+    outcome = _cached(key) if scope is not None else None
     if outcome is not None:
         return outcome
     try:
@@ -207,7 +230,7 @@ async def _outcome(
             exc_info=True,
         )
         return None
-    if outcome is not None:
+    if outcome is not None and scope is not None:
         _remember(key, outcome)
     return outcome
 
@@ -427,15 +450,34 @@ class _Session:
     async def run(self, statement: exp.Expr, dialect: str, max_rows: int) -> list[Any] | None:
         """The first column of *statement*'s rows; ``None`` when out of time."""
         sql = statement.sql(dialect=dialect)
-        if self._connector is None:
-            try:
-                if await self._in_thread(self._open) is _ABANDONED:
-                    return None
-            except Exception:
-                self._failed = True  # no connector, so nothing more to try
-                raise
+        if not await self._opened():
+            return None
         rows = await self._in_thread(functools.partial(self._execute, sql, max_rows))
         return None if rows is _ABANDONED else rows
+
+    async def cache_scope(self) -> str | None:
+        """The row scope this session's outcomes may be cached under, or
+        ``None`` when they must not be. Opens the connector to find out."""
+        if not await self._opened():
+            return None
+        connector = self._connector
+        if isinstance(connector, PermittedConnector):
+            return ""  # core's own wrapper: nothing restricted per request
+        # Read through getattr so a wrapper that forwards unknown attributes to
+        # what it wraps cannot borrow a scope it does not have: core's wrapper
+        # declares none.
+        scope = getattr(connector, "cache_scope", None)
+        return scope if isinstance(scope, str) else None
+
+    async def _opened(self) -> bool:
+        """Open the connector if it is not; ``False`` when out of time."""
+        if self._connector is not None:
+            return True
+        try:
+            return await self._in_thread(self._open) is not _ABANDONED
+        except Exception:
+            self._failed = True  # no connector, so nothing more to try
+            raise
 
     def close(self) -> None:
         with self._lock:
@@ -451,9 +493,12 @@ class _Session:
         with self._lock:
             self._running += 1
         loop = asyncio.get_running_loop()
+        # In the caller's context: run_in_executor does not copy it, and a
+        # wrapper around the connector may read request-bound state from it.
+        context = contextvars.copy_context()
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(_THREADS, self._counted, call), remaining
+                loop.run_in_executor(_THREADS, context.run, self._counted, call), remaining
             )
         except TimeoutError:
             # Not left to the deadline check: asyncio fires a timer up to its
@@ -474,7 +519,10 @@ class _Session:
                 self._release()
 
     def _open(self) -> bool:
-        self._connector = self._source.open()
+        connector = self._source.open()
+        if connector is None:
+            raise RuntimeError("The agent's connector could not be opened.")
+        self._connector = connector
         return True
 
     def _execute(self, sql: str, max_rows: int) -> list[Any]:

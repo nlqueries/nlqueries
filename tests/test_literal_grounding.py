@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
-from nlqueries.connectors.base import QueryResult
+from nlqueries.connectors.base import PermittedConnector, QueryResult
 from nlqueries.connectors.loader import LookupSource, lookup_source
 from nlqueries.connectors.sqlite import SQLiteConnector
 from nlqueries.execution import ExecutionPolicy
@@ -96,22 +96,32 @@ class _Recording(SQLiteConnector):
         super().close()
 
 
+class _Released(PermittedConnector):
+    """Core's per-request wrapper, as the loader returns it, recording release."""
+
+    released = False
+
+    def close(self) -> None:
+        self.released = True
+        super().close()
+
+
 class _Source:
-    """A lookup source on a SQLite file, as the loader builds one, recording the
-    connectors it opens and the statements they run."""
+    """A lookup source on a SQLite file, as the loader builds one: core's wrapper
+    around one connector, recording what it hands out and the statements run."""
 
     def __init__(self, db: Path, key: str | None = None) -> None:
         self.db = db
         self.statements: list[str] = []
-        self.opened: list[_Recording] = []
+        self.opened: list[_Released] = []
+        self.inner = _Recording(self.statements)
+        self.inner.connect({"database": str(db)})
         self.source = LookupSource(key=key or str(db), open=self._open)
 
-    def _open(self) -> _Recording:
-        connector = _Recording(self.statements)
-        connector.connect({"database": str(self.db)})
-        connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
-        self.opened.append(connector)
-        return connector
+    def _open(self) -> _Released:
+        wrapper = _Released(self.inner, ExecutionPolicy.execute_read_only())
+        self.opened.append(wrapper)
+        return wrapper
 
 
 def _entry(db: Path | str) -> dict[str, str]:
@@ -451,6 +461,21 @@ def test_a_source_that_cannot_connect_is_tried_once() -> None:
     assert len(attempts) == 1
 
 
+def test_a_connector_that_cannot_be_opened_is_tried_once() -> None:
+    """The loader returns None when it cannot connect: one attempt, no lookups."""
+    attempts: list[int] = []
+
+    def _none() -> None:
+        attempts.append(1)
+
+    sql = "SELECT id FROM schools WHERE status = 'legal' OR funding = 'x' OR soc = 'y'"
+
+    result = _ground(sql, LookupSource(key="none", open=_none))
+
+    assert result.sql == sql
+    assert len(attempts) == 1
+
+
 # --- Bounds, the cache, and closing --------------------------------------------------
 
 
@@ -474,15 +499,14 @@ def test_the_step_stops_when_its_time_is_spent(
     assert result.sql == "SELECT id FROM schools WHERE status = 'legal'"
 
 
-def test_a_repeated_literal_is_answered_from_the_cache_without_connecting(src: _Source) -> None:
+def test_a_repeated_literal_is_answered_from_the_cache(src: _Source) -> None:
     sql = "SELECT id FROM schools WHERE status = 'legal'"
 
     _ground(sql, src)
-    asked, opened = len(src.statements), len(src.opened)
+    asked = len(src.statements)
     again = _ground(sql, src)
 
-    assert asked > 0 and opened == 1
-    assert len(src.statements) == asked and len(src.opened) == opened
+    assert asked > 0 and len(src.statements) == asked
     assert again.sql == "SELECT id FROM schools WHERE status = 'Legal'"
 
 
@@ -496,7 +520,7 @@ def test_the_cache_is_keyed_on_the_database_not_the_source_object(tmp_path: Path
     _ground(sql, first)
     result = _ground(sql, second)
 
-    assert first.statements and second.opened == [] and second.statements == []
+    assert first.statements and second.statements == []
     assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
 
 
@@ -537,22 +561,100 @@ def test_the_cache_drops_the_least_recently_used_outcome_first(
     )
     for sql in (first, second, first, third):  # `first` used again: `second` is oldest
         _ground(sql, src)
-    opened = len(src.opened)
+    asked = len(src.statements)
 
     _ground(first, src)
     _ground(third, src)
-    assert len(src.opened) == opened, "the two most recent were kept"
+    assert len(src.statements) == asked, "the two most recent were kept"
     _ground(second, src)
-    assert len(src.opened) == opened + 1, "the least recently used was dropped"
+    assert len(src.statements) > asked, "the least recently used was dropped"
 
 
-def test_each_call_opens_its_own_connector_and_closes_it(src: _Source) -> None:
+def test_each_call_releases_what_it_opened_and_the_pooled_connector_stays_open(
+    src: _Source,
+) -> None:
     _ground("SELECT id FROM schools WHERE status = 'legal'", src)
     _ground("SELECT id FROM schools WHERE funding = ' = '", src)
 
     assert len(src.opened) == 2
-    assert src.opened[0] is not src.opened[1]
-    assert all(connector.closed for connector in src.opened)
+    assert all(wrapper.released for wrapper in src.opened)
+    assert not src.inner.closed
+
+
+# --- Row scope ------------------------------------------------------------------------
+
+
+class _RowFiltered:
+    """A per-request wrapper that restricts rows, forwarding everything else to
+    what it wraps, as the enterprise layer's row filter does."""
+
+    def __init__(self, inner: Any, scope: str | None = None) -> None:
+        self._inner = inner
+        if scope is not None:
+            self.cache_scope = scope
+
+    def execute_query(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.execute_query(sql, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _filtered(src: _Source, scope: str | None) -> LookupSource:
+    return LookupSource(key=src.source.key, open=lambda: _RowFiltered(src._open(), scope))
+
+
+def test_a_wrapper_that_declares_no_scope_is_not_cached(src: _Source) -> None:
+    """A value one user may see is not one every user may: without a declared
+    scope, every request looks its values up again."""
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    _ground(sql, _filtered(src, None))
+    asked = len(src.statements)
+    again = _ground(sql, _filtered(src, None))
+
+    assert asked > 0 and len(src.statements) == 2 * asked
+    assert again.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+
+
+def test_outcomes_are_shared_only_within_a_declared_scope(src: _Source) -> None:
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    _ground(sql, _filtered(src, "tenant-a"))
+    asked = len(src.statements)
+    _ground(sql, _filtered(src, "tenant-a"))
+    assert len(src.statements) == asked, "same scope: answered from the cache"
+    _ground(sql, _filtered(src, "tenant-b"))
+    assert len(src.statements) == 2 * asked, "another scope: looked up again"
+    _ground(sql, src)
+    assert len(src.statements) == 3 * asked, "the unrestricted wrapper: its own entry"
+
+
+def test_the_lookups_run_in_the_callers_context(src: _Source) -> None:
+    """A wrapper reads request-bound state from a ContextVar when it is opened;
+    the lookups' own threads must see the caller's."""
+    import contextvars
+
+    bound: contextvars.ContextVar[str | None] = contextvars.ContextVar("bound", default=None)
+    seen: list[str | None] = []
+
+    def _open() -> Any:
+        seen.append(bound.get())
+        return src._open()
+
+    async def run() -> GroundingResult:
+        bound.set("request-1")
+        return await ground_literals(
+            "SELECT id FROM schools WHERE status = 'legal'",
+            KB,
+            "sqlite",
+            LookupSource(key="ctx", open=_open),
+        )
+
+    result = asyncio.run(run())
+
+    assert seen == ["request-1"]
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Legal'"
 
 
 # --- Stuck lookups -------------------------------------------------------------------
@@ -662,10 +764,10 @@ def test_four_concurrent_run_query_calls_on_their_own_loops_all_finish(
     against one SQLite agent, each with literals that need grounding: what an
     evaluation harness with four workers does.
 
-    On the pooled connector this deadlocked the process. The pooled SQLite
-    connector is one `sqlite3` connection with a Python authorizer: one thread
-    held the connection's mutex waiting for the GIL to call the authorizer, the
-    other held the GIL waiting for the mutex.
+    Before the SQLite connector took a lock this deadlocked the process. The
+    pooled SQLite connector is one `sqlite3` connection with a Python
+    authorizer: one thread held the connection's mutex waiting for the GIL to
+    call the authorizer, the other held the GIL waiting for the mutex.
 
     A deadlock on the GIL freezes every thread, this one included, so no join
     timeout could report it; faulthandler's watchdog runs without the GIL and
@@ -1230,27 +1332,33 @@ def test_an_unregistered_agent_has_no_source_and_nothing_is_logged(
     assert caplog.records == []
 
 
-def test_a_source_opens_a_new_read_only_connector_each_time_outside_the_pool(
+def test_a_source_reads_through_the_hookable_opener_with_read_permission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Through `open_connector_for_agent` as it stands when called: a wrapper
+    installed on the module after import, as the enterprise layer installs its
+    row filter, is the one that runs."""
     from nlqueries.connectors import loader
 
     db = _schools_db(tmp_path / "schools.db")
     _register(tmp_path, monkeypatch, {"agent1": _entry(db)})
+    calls: list[tuple[str, ExecutionPolicy]] = []
+    original = loader.open_connector_for_agent
+
+    def _hooked(agent_id: str, *args: Any, **kwargs: Any) -> Any:
+        calls.append((agent_id, args[0] if args else kwargs["execution"]))
+        return original(agent_id, *args, **kwargs)
+
+    monkeypatch.setattr(loader, "open_connector_for_agent", _hooked)
     source = lookup_source("agent1")
     assert source is not None
 
     first, second = source.open(), source.open()
-    try:
-        assert isinstance(first, SQLiteConnector) and isinstance(second, SQLiteConnector)
-        assert first is not second
-        assert first.execution_policy == ExecutionPolicy.execute_read_only()
-        assert first.execute_query("SELECT COUNT(*) FROM schools").rows[0][0] == 4
-        pooled = [cached.connector for cached in loader._cache.values()]
-        assert first not in pooled and second not in pooled
-    finally:
-        first.close()
-        second.close()
+
+    assert calls == [("agent1", ExecutionPolicy.execute_read_only())] * 2
+    assert isinstance(first, PermittedConnector) and isinstance(second, PermittedConnector)
+    assert len(loader._cache) == 1, "one pooled connector serves both"
+    assert first.execute_query("SELECT COUNT(*) FROM schools").rows[0][0] == 4
 
 
 def test_the_source_key_follows_the_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

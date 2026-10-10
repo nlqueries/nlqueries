@@ -359,16 +359,15 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class LookupSource:
-    """A database to read stored values from, and a way to reach it that is
-    not shared with anything else."""
+    """A database to read stored values from, and how to reach it."""
 
     #: Identifies the configuration the connector is built from: the cache
     #: fingerprint, which covers the password. Two agents on one entry share
     #: it, and an edited entry gets a new one.
     key: str
-    #: Opens a new connector, outside the cache, with read permission bound to
-    #: it. Blocking. The caller owns it and closes it.
-    open: Callable[[], DatabaseConnector]
+    #: Opens the connector to read through, with read permission. Blocking.
+    #: Closing what it returns is safe and releases nothing the pool holds.
+    open: Callable[[], DatabaseConnector | None]
 
 
 def lookup_source(agent_id: str) -> LookupSource | None:
@@ -378,31 +377,28 @@ def lookup_source(agent_id: str) -> LookupSource | None:
     and must not log the warning :func:`open_connector_for_agent` gives a
     request that needed a connector.
 
-    Not the pooled connector. Grounding looks values up from worker threads
-    while other requests use the same database, and the pooled connector is one
-    handle for all of them. SQLite's is one ``sqlite3`` connection with a Python
-    authorizer, and two threads on it deadlock the process: one holds the
-    connection's mutex and waits for the GIL to call the authorizer, the other
-    holds the GIL and waits for the mutex. Opening a connector per grounding
-    call gives each its own handle.
+    Read through :func:`open_connector_for_agent`, the seam every query to the
+    agent's database passes, so whatever is wrapped around that function for a
+    request applies to the lookups as well: the enterprise layer applies an
+    agent's row filters exactly so, from a ContextVar bound for the request,
+    and a lookup that went around it would read rows the user cannot see. The
+    name is looked up when called, so a wrapper installed on this module after
+    import is the one that runs.
+
+    With read permission whatever the request's own policy: generate-only
+    forbids running the generated statement, not reading the values a literal
+    is compared to (see :class:`~nlqueries.execution.ExecutionMode`). The pooled
+    connector is shared with the request's other threads, which is safe: the
+    SQLite connector lets one thread use its connection at a time.
     """
     connectors = _load_connectors()
     connector_id = _find_connector_id(agent_id, connectors) if connectors else None
     cfg = connectors.get(connector_id) if connector_id is not None else None
     if connector_id is None or not isinstance(cfg, dict):
         return None
-    connector_cls, _degraded = _resolve(str(cfg.get("db_type") or "").lower(), cfg)
-    if connector_cls is None:
-        return None
-    resolved_id, resolved_cfg, resolved_cls = connector_id, cfg, connector_cls
 
-    def _open() -> DatabaseConnector:
-        connector = resolved_cls()
-        connector.connect(credentials_for(resolved_id, resolved_cfg))
-        # On the connector itself, which is safe here and nowhere else: nothing
-        # else ever holds this one. See PermittedConnector for the pooled case.
-        connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
-        return connector
+    def _open() -> DatabaseConnector | None:
+        return open_connector_for_agent(agent_id, ExecutionPolicy.execute_read_only())
 
     return LookupSource(key=_fingerprint(connector_id, cfg), open=_open)
 
