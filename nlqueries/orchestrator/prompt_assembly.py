@@ -66,6 +66,13 @@ _ROLE_PREAMBLE = (
 #: YES/NO rule is limited to questions that offer the choice, because applied
 #: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
+#: The rule on joins that repeat rows is for a reporting question's commonest
+#: silent error: a total over one table, joined to another that has several
+#: rows per key, is multiplied by the join and still looks plausible.
+#:
+#: The join-type rule: an outer join adds zero-count rows nobody asked for, and an
+#: inner join drops the zero a question about "at most" or "none" is asking about.
+#:
 #: The display-column rule: an answer of ids is right and useless to the person who
 #: asked which customer it was. Instead of the id, not beside it.
 #:
@@ -88,6 +95,13 @@ Name2, Name3).
 name, title or description column, return that column instead of the id.
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
+- When a join repeats the rows whose values you total or count (a customer's invoices \
+joined to the same customer's shipments repeat each invoice once per shipment), total \
+or count them per join key in a subquery first, then join the result.
+- Join with an inner join unless the question keeps the rows that have no match: \
+"at most two", "fewer than three", "with no orders" or "including those without" \
+keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
+count, such a row counts as 0.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.

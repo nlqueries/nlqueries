@@ -119,6 +119,46 @@ def _reaches_anthropic_api(model: str) -> bool:
     return model.startswith(("anthropic/", "claude-"))
 
 
+#: DeepSeek's ``reasoning_effort`` for each ``LLM_EFFORT`` level. DeepSeek takes
+#: ``low``, ``high`` and ``max``: ``medium`` has no level of its own and goes
+#: down to ``low``, ``xhigh`` up to ``max``.
+_DEEPSEEK_EFFORT = {"low": "low", "medium": "low", "high": "high", "xhigh": "max", "max": "max"}
+
+
+def _deepseek_body(model: str) -> dict[str, Any]:
+    """The request-body fields DeepSeek's thinking takes, for a ``deepseek/`` id.
+
+    Sent through ``extra_body``, which the OpenAI SDK merges into the JSON body.
+    A top-level ``reasoning_effort`` does not survive LiteLLM's DeepSeek
+    mapping: it is turned into ``thinking`` on or off and the level is dropped
+    (LiteLLM 1.104.2, ``DeepSeekChatConfig.map_openai_params``). ``thinking``
+    would reach the body either way; it travels with the effort for one route.
+    See :data:`nlqueries.config.LLM_EFFORT` and :data:`nlqueries.config.LLM_THINKING`.
+    """
+    if not model.startswith("deepseek/"):
+        return {}
+    if not config.LLM_THINKING:
+        return {"thinking": {"type": "disabled"}}
+    effort = _DEEPSEEK_EFFORT.get(config.LLM_EFFORT or "")
+    return {"reasoning_effort": effort} if effort else {}
+
+
+def _streams_usage(model: str) -> bool:
+    """Whether to ask *model*'s stream for its usage (``stream_options``).
+
+    On OpenAI-compatible routes only, as LiteLLM lists them, and only where
+    LiteLLM says the route accepts ``stream_options``. Without it such a stream
+    ends with no usage at all, and the record has to be an estimate.
+    """
+    with contextlib.suppress(Exception):
+        _, provider, _, _ = litellm.get_llm_provider(model=model)
+        compatible = getattr(litellm, "openai_compatible_providers", ())
+        if provider != "openai" and provider not in compatible:
+            return False
+        return "stream_options" in (litellm.get_supported_openai_params(model=model) or [])
+    return False
+
+
 def _system_message(system: SystemParam, *, keep_blocks: bool) -> dict[str, Any]:
     """The system message for a LiteLLM call.
 
@@ -147,7 +187,12 @@ def _record_litellm_usage(model: str, usage: Any) -> None:
     ``cache_read_tokens`` and subtracted from the regular input. So are tokens
     written to the cache (``cache_creation_tokens``, which Bedrock reports),
     into ``cache_write_tokens``: they are billed at their own rate, not as
-    plain input. Best-effort.
+    plain input.
+
+    ``completion_tokens`` already includes any reasoning, as OpenAI-style
+    usage counts it, so it is the output as billed. The reasoning part, when
+    reported under ``completion_tokens_details``, is also recorded on its own.
+    Best-effort.
     """
     if usage is None:
         return
@@ -157,6 +202,8 @@ def _record_litellm_usage(model: str, usage: Any) -> None:
         details = getattr(usage, "prompt_tokens_details", None)
         cached = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
         written = int(getattr(details, "cache_creation_tokens", 0) or 0) if details else 0
+        produced = getattr(usage, "completion_tokens_details", None)
+        reasoning = int(getattr(produced, "reasoning_tokens", 0) or 0) if produced else 0
         record_usage(
             UsageRecord(
                 model=model,
@@ -165,8 +212,19 @@ def _record_litellm_usage(model: str, usage: Any) -> None:
                 cache_read_tokens=cached,
                 cache_write_tokens=written,
                 estimated=False,
+                reasoning_tokens=reasoning,
             )
         )
+
+
+def _record_stream_usage(
+    model: str, usage: Any, system: SystemParam, user: str, collected: list[str]
+) -> None:
+    """The usage a stream reported in its last chunk, or an estimate without one."""
+    if usage is not None:
+        _record_litellm_usage(model, usage)
+    else:
+        _record_estimated(model, f"{_flatten_system(system)}\n{user}", "".join(collected))
 
 
 def _record_estimated(model: str, prompt_text: str, output_text: str) -> None:
@@ -187,13 +245,17 @@ def _record_estimated(model: str, prompt_text: str, output_text: str) -> None:
 #: the names ``extra`` may not carry.
 #:
 #: Rejected at construction because the collision is otherwise inconsistent and
-#: half of it is silent. ``_call_kwargs()`` is spread into the call directly in
-#: the sync and streaming paths, where a duplicate keyword is a loud
-#: ``TypeError``; in ``acomplete`` it is merged into a dict literal *after* these
-#: keys, where it quietly wins. A host that put ``max_tokens`` in ``extra`` would
-#: get an exception from one method and a silently capped answer from the other.
-#: Core does not otherwise inspect ``extra`` — this is the one constraint it has
-#: to enforce, because it is the one it creates.
+#: mostly silent. ``extra`` reaches every call through :meth:`_request_kwargs`,
+#: which merges it over this model's own arguments, so a ``temperature`` or
+#: ``output_config`` in ``extra`` would quietly replace this class's on every
+#: path. ``model``, ``messages`` and ``max_tokens`` (and ``stream`` on the
+#: streaming calls) are keywords of the call itself: in ``complete``, ``stream``
+#: and ``astream`` a duplicate is a loud ``TypeError``, while ``acomplete`` puts
+#: them in a dict literal *before* ``extra``, which quietly wins. A host that put
+#: ``max_tokens`` in ``extra`` would get an exception from one method and a
+#: silently capped answer from another. Core does not otherwise inspect
+#: ``extra``: this is the one constraint it has to enforce, because it is the one
+#: it creates.
 #:
 #: ``timeout`` is deliberately absent from this set. It is not a name this class
 #: owns: a host that sets one in ``extra`` is making a per-client choice, and
@@ -317,10 +379,11 @@ class LiteLLMClient(LLMClient):
     def _model_kwargs(self, temperature: float | None = None) -> dict[str, Any]:
         """This model's own arguments: its effort, and a temperature it accepts.
 
-        ``output_config`` goes in as a keyword argument, which LiteLLM maps into
-        the Anthropic request. ``extra_body`` would not work on this route:
-        LiteLLM forwards it as a field literally named ``extra_body``, and
-        Anthropic rejects the request with a 400.
+        For Claude, ``output_config`` goes in as a keyword argument, which
+        LiteLLM maps into the Anthropic request. ``extra_body`` would not work
+        on that route: LiteLLM forwards it as a field literally named
+        ``extra_body``, and Anthropic rejects the request with a 400. For
+        DeepSeek it is the only route for the effort (see :func:`_deepseek_body`).
         """
         kwargs: dict[str, Any] = {}
         effort = effort_for(self._model) if _reaches_anthropic_api(self._model) else None
@@ -328,6 +391,35 @@ class LiteLLMClient(LLMClient):
             kwargs["output_config"] = {"effort": effort}
         if temperature is not None and accepts_temperature(self._model):
             kwargs["temperature"] = temperature
+        body = _deepseek_body(self._model)
+        if body:
+            kwargs["extra_body"] = body
+        return kwargs
+
+    def _request_kwargs(
+        self, temperature: float | None = None, *, stream: bool = False
+    ) -> dict[str, Any]:
+        """The model's arguments and the call's, as one set for a completion.
+
+        Both can carry ``extra_body``: this model's (DeepSeek's thinking fields)
+        and a host's own, in ``extra``. They are merged rather than one
+        replacing the other, the host's keys winning where both set one; a
+        host ``extra_body`` that is not a mapping is left as it is.
+
+        A *stream* on a route that can report its usage asks for it (see
+        :func:`_streams_usage`), unless the host set ``stream_options`` itself.
+        """
+        kwargs = self._model_kwargs(temperature)
+        ours = kwargs.pop("extra_body", None)
+        kwargs.update(self._call_kwargs())
+        if ours:
+            theirs = kwargs.get("extra_body")
+            if theirs is None:
+                kwargs["extra_body"] = ours
+            elif isinstance(theirs, dict):
+                kwargs["extra_body"] = {**ours, **theirs}
+        if stream and _streams_usage(self._model):
+            kwargs.setdefault("stream_options", {"include_usage": True})
         return kwargs
 
     # ------------------------------------------------------------------
@@ -336,8 +428,8 @@ class LiteLLMClient(LLMClient):
 
     def complete(self, system: SystemParam, user: str, max_tokens: int | None = None) -> str:
         budget = max_tokens or output_budget("answer")
-        auth = self._call_kwargs()
-        with _deadline(self._model, _configured_deadline(auth)):
+        kwargs = self._request_kwargs()
+        with _deadline(self._model, _configured_deadline(kwargs)):
             response = litellm.completion(
                 model=self._model,
                 messages=[
@@ -345,8 +437,7 @@ class LiteLLMClient(LLMClient):
                     {"role": "user", "content": user},
                 ],
                 max_tokens=budget,
-                **self._model_kwargs(),
-                **auth,
+                **kwargs,
             )
         content = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)
@@ -362,13 +453,13 @@ class LiteLLMClient(LLMClient):
 
     def stream(self, system: SystemParam, user: str) -> Iterator[str]:
         budget = output_budget("answer")
-        auth = self._call_kwargs()
+        kwargs = self._request_kwargs(stream=True)
         # The iteration is inside the deadline too, not just the call that opens
         # the stream. litellm applies the timeout per chunk read, so a provider
         # that accepts the request and then stalls raises here -- which is the
         # shape of the hang this exists for, and the one a wrapper around the
         # opening call alone would miss.
-        with _deadline(self._model, _configured_deadline(auth)):
+        with _deadline(self._model, _configured_deadline(kwargs)):
             response = litellm.completion(
                 model=self._model,
                 messages=[
@@ -377,19 +468,24 @@ class LiteLLMClient(LLMClient):
                 ],
                 max_tokens=budget,
                 stream=True,
-                **self._model_kwargs(),
-                **auth,
+                **kwargs,
             )
             collected: list[str] = []
             finish: object = None
+            usage: Any = None
             for chunk in response:
+                # Usage, when asked for, comes on the last chunk, which an
+                # OpenAI-style stream sends with no choices at all.
+                usage = getattr(chunk, "usage", None) or usage
+                if not chunk.choices:
+                    continue
                 finish = getattr(chunk.choices[0], "finish_reason", None) or finish
                 delta = chunk.choices[0].delta.content
                 if delta:
                     collected.append(delta)
                     yield delta
-        # Streaming usage is provider-dependent in LiteLLM; record an estimate.
-        _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", "".join(collected))
+        # Exact where the stream reported its usage, an estimate where it did not.
+        _record_stream_usage(self._model, usage, system, user, collected)
         # The finish reason arrives on the last chunk, so this can only be
         # decided once the stream is done -- and only when nothing at all was
         # yielded. `collected` empty, not blank: `exhausted` treats whitespace
@@ -421,8 +517,7 @@ class LiteLLMClient(LLMClient):
                 {"role": "user", "content": user},
             ],
             "max_tokens": budget,
-            **self._model_kwargs(temperature),
-            **self._call_kwargs(),
+            **self._request_kwargs(temperature),
         }
         with _deadline(self._model, _configured_deadline(kwargs)):
             response = await litellm.acompletion(**kwargs)
@@ -438,9 +533,9 @@ class LiteLLMClient(LLMClient):
 
     async def astream(self, system: SystemParam, user: str) -> AsyncIterator[str]:
         budget = output_budget("answer")
-        auth = self._call_kwargs()
+        kwargs = self._request_kwargs(stream=True)
         # See the sync path: the iteration is inside the deadline as well.
-        with _deadline(self._model, _configured_deadline(auth)):
+        with _deadline(self._model, _configured_deadline(kwargs)):
             response = await litellm.acompletion(
                 model=self._model,
                 messages=[
@@ -449,18 +544,22 @@ class LiteLLMClient(LLMClient):
                 ],
                 max_tokens=budget,
                 stream=True,
-                **self._model_kwargs(),
-                **auth,
+                **kwargs,
             )
             collected: list[str] = []
             finish: object = None
+            usage: Any = None
             async for chunk in response:
+                # See the sync path: the usage chunk carries no choices.
+                usage = getattr(chunk, "usage", None) or usage
+                if not chunk.choices:
+                    continue
                 finish = getattr(chunk.choices[0], "finish_reason", None) or finish
                 delta = chunk.choices[0].delta.content
                 if delta:
                     collected.append(delta)
                     yield delta
-        _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", "".join(collected))
+        _record_stream_usage(self._model, usage, system, user, collected)
         # See the sync path: empty, not blank.
         if not collected and str(finish) in TRUNCATED:
             raise OutputBudgetExhausted(self._model, budget)

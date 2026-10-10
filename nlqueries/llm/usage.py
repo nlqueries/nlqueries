@@ -37,6 +37,12 @@ class UsageRecord:
     ``cache_write_tokens`` are the (separately-priced) prompt-cache halves, 0
     for providers without prompt caching. ``estimated`` is True when the
     provider didn't report usage and the counts are a heuristic estimate.
+
+    ``reasoning_tokens`` is the part of ``output_tokens`` the model spent
+    reasoning, where the provider reports it separately (OpenAI-style
+    ``completion_tokens_details.reasoning_tokens``, which DeepSeek sends), and
+    0 otherwise. It is already counted in ``output_tokens``, which is what the
+    output is billed on: a total must not add it again.
     """
 
     model: str
@@ -45,6 +51,7 @@ class UsageRecord:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     estimated: bool = False
+    reasoning_tokens: int = 0
 
 
 _sink: ContextVar[list[UsageRecord] | None] = ContextVar("nlqueries_llm_usage_sink", default=None)
