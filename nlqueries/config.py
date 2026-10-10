@@ -464,7 +464,8 @@ left, with nearby values offered to the repair step. Columns whose names mark th
 values as personal data are skipped, as export-kb skips them; a column's complete value
 list in the knowledge base answers in place of most queries; and a table larger than
 LITERAL_GROUNDING_MAX_ROWS is not queried.
-Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
+Read-only and bounded: 3 s of lookups a pass, and at most two passes for a statement,
+one before a repair and one on the repaired statement. Runs whatever the execution policy,
 for any agent with a registered connector, reading through the agent's connector with
 read-only permission; a generate-only request's statement is never run. On by default; set
 NLQ_LITERAL_GROUNDING=false to turn it off."""

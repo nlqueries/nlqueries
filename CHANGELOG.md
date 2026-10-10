@@ -37,14 +37,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     `NLQ_LITERAL_GROUNDING_MAX_ROWS` (1,000,000 by default; `0` for no cap)
     is not queried, and only a stored list grounds its columns. A table of
     unknown size is queried.
-    The check is read-only and bounded: 8 literals, 1 s a lookup, 3 s in all.
-    No lookup is waited for past the 3 s: one still running then is
-    abandoned. Outcomes are cached per database for 15 minutes, and any error
-    skips the check, as does a statement whose literals would not come back
-    unchanged from its re-render. On SQLite the case-insensitive comparison
-    is written `TRIM(col) = TRIM('x') COLLATE NOCASE` and the search for
-    values containing a literal `col LIKE '%x%'`, which stay fast when
-    several lookups run at once, where `LOWER()` on the column did not.
+    The check is read-only and bounded per pass: 8 literals, 1 s a lookup,
+    3 s in all. No lookup is waited for past the 3 s: one still running then
+    is abandoned. A statement gets at most two passes, one before a repair
+    and one on the repaired statement, so up to 16 literals and 6 s.
+    Outcomes are cached per database for 15 minutes, and any error skips the
+    check, as does a statement whose literals would not come back unchanged
+    from its re-render. On SQLite the case-insensitive comparison is written
+    `TRIM(col) = TRIM('x') COLLATE NOCASE` and the search for values
+    containing a literal `col LIKE '%x%'`, which stay fast when several
+    lookups run at once, where `LOWER()` on the column did not.
   - **When it runs.** Whatever the execution policy, for any agent with a
     registered connector. Generate-only forbids running the statement, not
     reading a column's values, and the statement is never run by the check.

@@ -16,11 +16,14 @@ statement runs, each such comparison is checked against the database:
 - none, or several: the statement is left alone, and a note lists up to five
   nearby stored values for the LLM repair step, if one runs.
 
-Read-only and bounded: at most ``_MAX_LITERALS`` comparisons per statement,
-``_LOOKUP_TIMEOUT_S`` per lookup, ``_TOTAL_BUDGET_S`` for the whole step. Any
-error skips the literal (or the step) and is logged at DEBUG; grounding can
-make a statement better, never fail it. Outcomes are cached per database for
-``_CACHE_TTL_S``, since a workload repeats its literals.
+Read-only and bounded per call: at most ``_MAX_LITERALS`` comparisons,
+``_LOOKUP_TIMEOUT_S`` per lookup, ``_TOTAL_BUDGET_S`` for the call.
+:func:`~nlqueries.orchestrator.sql_generation.validate_and_repair` calls it at
+most twice for one statement, once before a repair and once on the repaired
+statement, so its bound is twice that. Any error skips the literal (or the
+step) and is logged at DEBUG; grounding can make a statement better, never fail
+it. Outcomes are cached per database for ``_CACHE_TTL_S``, since a workload
+repeats its literals.
 
 Safe under concurrent calls from different threads and event loops. The
 lookups read through the agent's connector as every query does (see
@@ -86,8 +89,8 @@ _log = logging.getLogger(__name__)
 _MAX_LITERALS = 8
 #: Server-side budget for one lookup, where the connector supports one.
 _LOOKUP_TIMEOUT_S = 1.0
-#: Wall-clock budget for the whole step, opening the connector included. No
-#: database call is waited for past it.
+#: Wall-clock budget for one call, opening the connector included. No database
+#: call is waited for past it.
 _TOTAL_BUDGET_S = 3.0
 #: Longer literals are free text, not a stored category value.
 _MAX_LITERAL_CHARS = 100
