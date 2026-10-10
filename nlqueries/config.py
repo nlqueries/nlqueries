@@ -299,11 +299,48 @@ their own defaults (``high`` and ``medium``), the ten-question comparison that
 chose them answered all ten correctly in 4.8 s on average. At ``low`` they also
 answered all ten, in 3.8 s, for two thirds of the cost.
 
-Sent only to Claude 5 and later, and only through the Anthropic API: the
-Anthropic client, and LiteLLM with an ``anthropic/`` or bare ``claude-`` id.
-Bedrock, Vertex and OpenRouter take effort in their own request shapes, which
-have not been checked, so those routes keep each model's default. Other models
-are sent nothing. Blank sends nothing to any model.
+Sent to Claude 5 and later only through the Anthropic API: the Anthropic
+client, and LiteLLM with an ``anthropic/`` or bare ``claude-`` id. Bedrock,
+Vertex and OpenRouter take effort in their own request shapes, which have not
+been checked, so those routes keep each model's default.
+
+DeepSeek through LiteLLM (a ``deepseek/`` id) is sent it as ``reasoning_effort``,
+which takes ``low``, ``high`` or ``max``: ``low`` and ``medium`` send ``low``,
+``high`` sends ``high``, ``xhigh`` and ``max`` send ``max``. It goes in
+``extra_body``, because LiteLLM turns a top-level ``reasoning_effort`` for
+DeepSeek into ``thinking`` on or off and drops the level. With
+:data:`LLM_THINKING` off, no effort is sent. Other models are sent nothing.
+Blank sends nothing to any model.
+"""
+
+
+def _thinking() -> bool:
+    """``LLM_THINKING``, validated the way :func:`_effort` validates its value.
+
+    ``on`` or ``off``, in any case. Unset or blank means ``on``. Any other value
+    is ignored with a warning naming the setting, and ``on`` applies: that is
+    the provider's own default, so a typo changes nothing.
+    """
+    written = os.getenv("LLM_THINKING")
+    if written is None or not written.strip():
+        return True
+    value = written.strip().lower()
+    if value in ("on", "off"):
+        return value == "on"
+    logging.getLogger(__name__).warning(
+        "LLM_THINKING=%r is not 'on' or 'off' and is being ignored; using 'on'.", written
+    )
+    return True
+
+
+LLM_THINKING: bool = _thinking()
+"""Whether a DeepSeek model thinks before it answers: ``on`` (the default) or ``off``.
+
+DeepSeek thinks by default, at a high effort. ``off`` sends ``thinking:
+{"type": "disabled"}`` to ``deepseek/`` models through LiteLLM, and no
+:data:`LLM_EFFORT` with it, since an effort means nothing without thinking.
+``on`` sends nothing for thinking and leaves it to the model. Other models are
+sent nothing either way.
 """
 
 

@@ -278,6 +278,13 @@ def test_the_reserved_names_are_exactly_what_the_client_passes() -> None:
     # line happens to be written.
     passed -= {"timeout"}
 
+    # `extra_body` and `stream_options` too, for the same reason: a host's own
+    # `extra_body` is merged with the model's, the host's keys winning, and
+    # `stream_options` is set with `setdefault`. Asserted in
+    # test_llm_deepseek.py by test_a_host_extra_body_is_merged_with_the_model_s
+    # and test_a_host_s_own_stream_options_wins.
+    passed -= {"extra_body", "stream_options"}
+
     assert passed == module._RESERVED_COMPLETION_KWARGS, (
         "the names this class passes to litellm and the names extra is refused "
         f"have diverged: extra={sorted(passed - module._RESERVED_COMPLETION_KWARGS)}, "
