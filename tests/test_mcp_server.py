@@ -357,6 +357,50 @@ class TestGetAgentSchema:
         assert "order_id" in out
         assert "customer_id" in out
 
+    def test_key_flags_show_from_the_knowledge_base_fields(self, tmp_path: Path) -> None:
+        """`is_primary_key`, `is_foreign_key` and `references`: what the
+        generator writes, so what the tool must read."""
+        from nlqueries.mcp_server.server import get_agent_schema
+
+        self._write_kb(
+            tmp_path,
+            """
+            kb_version: 2
+            schema:
+              tables:
+                - name: orders
+                  columns:
+                    - name: order_id
+                      type: BIGINT
+                      is_primary_key: true
+                      is_foreign_key: false
+                      references: null
+                    - name: customer_id
+                      type: BIGINT
+                      is_primary_key: false
+                      is_foreign_key: true
+                      references: customers.id
+                    - name: note
+                      type: TEXT
+                      is_primary_key: false
+                      is_foreign_key: false
+                      references: null
+                    - name: region_id
+                      type: BIGINT
+                      is_primary_key: false
+                      is_foreign_key: true
+                      references: null
+            """,
+        )
+        with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
+            out = get_agent_schema("sales")
+
+        assert "order_id: BIGINT [PK]" in out, out
+        assert "customer_id: BIGINT [FK→customers.id]" in out, out
+        assert "note: TEXT\n" in out + "\n" and "note: TEXT [" not in out, out
+        # A foreign key with no recorded target gets no flag, as in the prompt.
+        assert "FK→None" not in out and "region_id: BIGINT [" not in out, out
+
     def test_table_description_included(self, tmp_path: Path) -> None:
         from nlqueries.mcp_server.server import get_agent_schema
 
@@ -471,7 +515,7 @@ class TestGetAgentSchema:
                   columns:
                     - name: order_id
                       type: BIGINT
-                      primary_key: true
+                      is_primary_key: true
             """,
         )
         with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):
@@ -491,7 +535,8 @@ class TestGetAgentSchema:
                   columns:
                     - name: customer_id
                       type: BIGINT
-                      foreign_key: customers.customer_id
+                      is_foreign_key: true
+                      references: customers.customer_id
             """,
         )
         with patch("nlqueries.mcp_server.server.config.KB_PATH", tmp_path):

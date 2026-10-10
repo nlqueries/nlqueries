@@ -56,6 +56,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The MCP schema tool shows primary and foreign keys.** `get_agent_schema`
+  read `primary_key` and `foreign_key` from each column, names no knowledge
+  base has carried; the generator writes `is_primary_key`, `is_foreign_key`
+  and `references`. So no column ever showed a key flag. It now reads those,
+  and, like the prompt, shows a foreign key only when its target is recorded.
+
 - **A hand-edited connector entry that is not a mapping no longer crashes the
   CLI.** `agent-a: postgresql://host/db` (the URL where its settings belong)
   raised `AttributeError` from alias resolution, so from every command given an
