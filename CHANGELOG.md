@@ -86,7 +86,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **The SQL prompt asks for the name, not the id, of the thing asked about.**
   "Which customer" answered with customer ids is right and of no use to the
   person asking. When the entity's table has a name, title or description
-  column, the prompts now say to return it instead of the id.
+  column, the prompts now say to return it instead of the id, unless the
+  question asks for the id.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds

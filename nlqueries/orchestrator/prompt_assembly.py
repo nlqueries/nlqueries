@@ -92,7 +92,8 @@ returns a single number with no grouping column.
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
 - When the question asks which customer, product or other thing, and its table has a \
-name, title or description column, return that column instead of the id.
+name, title or description column, return that column instead of the id, unless the \
+question asks for the id.
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
 - When a join repeats the rows whose values you total or count (a customer's invoices \
