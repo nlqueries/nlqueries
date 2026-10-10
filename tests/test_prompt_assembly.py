@@ -786,6 +786,10 @@ ANSWER_RULE_PHRASES = [
     # A definition given is exact.
     "A definition given in the question, the Business Rules or the Glossary",
     "apply every condition and boundary as written, not the usual meaning of the term",
+    # Numbers stored as text are cleaned before a cast.
+    "Before comparing, sorting or adding a text column as a number",
+    "quietly keeps the leading digits or gives 0",
+    "but keep the decimal mark, as a point",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
