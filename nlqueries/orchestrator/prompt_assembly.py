@@ -66,6 +66,9 @@ _ROLE_PREAMBLE = (
 #: YES/NO rule is limited to questions that offer the choice, because applied
 #: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
+#: The join-type rule: an outer join adds zero-count rows nobody asked for, and an
+#: inner join drops the zero a question about "at most" or "none" is asking about.
+#:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
 #: the repair step, so a repaired statement cannot undo it.
@@ -83,6 +86,9 @@ order. "The name" means one set of name columns, not every numbered variant (Nam
 Name2, Name3).
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
+- Join with an inner join unless the question keeps the rows that have no match: \
+"at most two", "fewer than three", "with no orders" or "including those without" \
+count the ones with none, so join those with LEFT JOIN and count them as 0.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.

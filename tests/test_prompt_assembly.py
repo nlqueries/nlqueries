@@ -772,6 +772,9 @@ ANSWER_RULE_PHRASES = [
     # Counting the joined rows, not distinct ones, unless asked.
     "Count the rows the joins produce with COUNT(column)",
     "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # Join type follows the question's wording.
+    "Join with an inner join unless the question keeps the rows that have no match",
+    "count the ones with none, so join those with LEFT JOIN and count them as 0",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
