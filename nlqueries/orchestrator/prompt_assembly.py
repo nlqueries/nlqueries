@@ -79,8 +79,10 @@ _ROLE_PREAMBLE = (
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
-#: The clean-before-cast rule: numbers stored as decorated text cast to 0 and drop
-#: out of a result without an error, and text sorts times and amounts wrongly.
+#: The clean-before-cast rule: numbers stored as decorated text cast, on SQLite, to
+#: 0 or to their leading digits without an error ('1,200' to 1), so rows drop out
+#: of a result unnoticed; other databases reject the cast. Text also sorts times
+#: and amounts wrongly.
 #:
 #: One block, kept short: it sits in the prompt-cached Instructions and costs
 #: tokens on every call. Shared with `sql_generation`, whose prompt also drives
@@ -109,10 +111,11 @@ or count them per join key in a subquery first, then join the result.
 "at most two", "fewer than three", "with no orders" or "including those without" \
 keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
 count, such a row counts as 0.
-- Before comparing, sorting or adding a text column as a number or a date, remove \
-what its sample values show around the digits (a currency sign, a unit, a word or \
-separator) and parse times written as text such as '12:05'; a plain CAST of such a \
-value gives 0 or NULL, and text sorts '10:00' before '9:00'.
+- Before comparing, sorting or adding a text column as a number, remove what its sample \
+values show around or between the digits (a currency sign, a thousands separator, a \
+unit or a word), and parse durations and times written as text such as '12:05'. A \
+plain CAST fails on some databases and on others quietly keeps the leading digits or \
+gives 0 ('1,200' becomes 1, '$1,200' becomes 0), and as text '10:00' sorts before '9:00'.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
