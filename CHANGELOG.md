@@ -102,6 +102,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   '9:00'. The prompts now say to remove what the sample values show around or
   between the digits, keeping the decimal mark (a decimal comma becomes a
   point), and to parse such durations and times, first.
+- **The SQL prompt prefers joins and window functions to per-row subqueries.**
+  Some databases run a subquery that refers to the outer row once for every
+  row, and on a table of hundreds of thousands of rows a correct statement of
+  that shape did not finish in two minutes. The prompts now say to prefer
+  joins, GROUP BY and window functions.
 - **A column the hint names is the one the SQL uses.** Given a hint such as
   "the cheapest refers to MIN(price)", the model sometimes ordered by another
   column holding the same measure in another form, a number of milliseconds
