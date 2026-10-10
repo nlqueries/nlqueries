@@ -320,3 +320,26 @@ def test_export_kb_collects_a_table_within_values_max_rows(
     assert result.exit_code == 0, result.output
     assert any("DISTINCT" in q for q in queries)
     assert "No values for" not in result.output
+
+
+@pytest.mark.parametrize("args", [(), ("--no-include-samples",)])
+def test_export_kb_says_when_a_table_reports_no_row_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    """Neither row cap can skip such a table, and the generic connector reports
+    no sizes at all; said even without values, since grounding's cap reads the
+    same sizes."""
+    result, _ = _export(monkeypatch, tmp_path, None, *args)
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 0, result.output
+    assert "1 of 1 table(s) report no row count, so no row cap can skip them" in output
+
+
+def test_export_kb_says_nothing_of_sizes_when_every_table_reports_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, _ = _export(monkeypatch, tmp_path, 100)
+
+    assert result.exit_code == 0, result.output
+    assert "report no row count" not in " ".join(result.output.split())
