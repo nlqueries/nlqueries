@@ -130,7 +130,7 @@ async def validate_and_repair(
     into the correction prompt with nearby values. Without *lookups* it never
     runs. The orchestrator supplies them for any agent with a registered
     connector, whatever the request's execution policy: the lookups read
-    through a connector of their own, with read permission, and nothing here
+    through the agent's connector with read permission, and nothing here
     executes *sql*.
 
     **Literal repair** (``LITERAL_GROUNDING_REPAIR``, on the valid paths only):

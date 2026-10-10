@@ -160,8 +160,10 @@ async def ground_literals(
     """Ground the string literals *sql* compares columns to; see the module docstring.
 
     Returns *sql* unchanged when *source* is ``None``, when nothing needs
-    grounding, or on any error. Opens a connector from *source* only for a
-    literal the cache cannot answer, and closes it before returning or, if a
+    grounding, or on any error. When the statement has a literal to check, it
+    opens the agent's connector through *source* before consulting the cache,
+    since which outcomes may be shared depends on that connector (see
+    :meth:`_Session.cache_scope`), and releases it before returning or, if a
     lookup was abandoned, when that lookup returns.
     """
     if source is None or not sql.strip():
@@ -426,14 +428,16 @@ _ABANDONED = object()
 
 
 class _Session:
-    """One grounding call's own connector.
+    """One grounding call's use of the agent's connector.
 
-    Opened on the first lookup the cache cannot answer. Every database call, the
-    open included, runs on a daemon thread and is waited for until the step's
-    deadline and no longer. A call still running then is abandoned and the
-    session takes no more lookups. The connector is closed by whichever comes
-    last, :meth:`close` or the last call returning, so never under a statement
-    still running on it.
+    Opened from the source when the statement has a literal to check, before
+    the cache is consulted (see :meth:`cache_scope`). Every database call, the
+    open included, runs on a daemon thread in the caller's context and is
+    waited for until the step's deadline and no longer. A call still running
+    then is abandoned and the session takes no more lookups. What was opened is
+    released by whichever comes last, :meth:`close` or the last call returning,
+    so never under a statement still running on it; for the pooled connector
+    the loader returns, releasing closes nothing the pool holds.
     """
 
     def __init__(self, source: LookupSource, deadline: float) -> None:

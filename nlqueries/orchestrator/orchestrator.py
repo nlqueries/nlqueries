@@ -411,8 +411,9 @@ class Orchestrator:
             # literals against what the columns store (LITERAL_GROUNDING):
             # read-only lookups, never the statement, and whatever the execution
             # policy, since generate-only forbids running the generated
-            # statement and a value lookup is not that. The lookups open a
-            # connector of their own rather than this request's pooled one; see
+            # statement and a value lookup is not that. The lookups read through
+            # the agent's connector as every query does, so a per-request
+            # wrapper such as a row filter applies to them too; see
             # `lookup_source`. An agent with no registered connector gets none,
             # and nothing is logged for it.
             # ------------------------------------------------------------------
