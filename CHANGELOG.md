@@ -7,7 +7,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 ### Added
 
 - **String literals are checked against the stored values before a statement
-  runs (`LITERAL_GROUNDING`, on by default).** A model writes `status = 'legal'`
+  runs (`NLQ_LITERAL_GROUNDING`, on by default).** A model writes `status = 'legal'`
   where the column holds `'Legal'`, or copies `' = '` from a hint where it
   holds `'='`. The statement is valid, runs, and returns no rows, a wrong
   answer with nothing to say so.

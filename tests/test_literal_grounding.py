@@ -914,6 +914,26 @@ def test_validate_and_repair_does_not_ground_without_lookups() -> None:
     assert result.sql == "SELECT id FROM schools WHERE status = 'legal'"
 
 
+def test_the_setting_is_read_from_nlq_literal_grounding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prefixed like the other feature flags; the bare name is not read."""
+    import importlib
+
+    from nlqueries import config
+
+    # Reloading re-runs load_dotenv, which would read a developer's .env back in.
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: False)
+    monkeypatch.delenv("LITERAL_GROUNDING", raising=False)
+    monkeypatch.setenv("NLQ_LITERAL_GROUNDING", "false")
+    try:
+        assert importlib.reload(config).LITERAL_GROUNDING is False
+        monkeypatch.delenv("NLQ_LITERAL_GROUNDING")
+        monkeypatch.setenv("LITERAL_GROUNDING", "false")
+        assert importlib.reload(config).LITERAL_GROUNDING is True
+    finally:
+        monkeypatch.delenv("LITERAL_GROUNDING", raising=False)
+        importlib.reload(config)
+
+
 def test_the_setting_turns_it_off(src: _Source, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nlqueries.config.LITERAL_GROUNDING", False)
 

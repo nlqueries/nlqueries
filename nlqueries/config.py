@@ -451,7 +451,7 @@ EXPLAIN_VALIDATION: bool = os.getenv("NLQ_EXPLAIN_VALIDATION", "false").lower() 
 """When True, validate_and_repair() runs EXPLAIN on the final SQL via the caller-supplied
 connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
 
-LITERAL_GROUNDING: bool = os.getenv("LITERAL_GROUNDING", "true").lower() in (
+LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
     "1",
     "true",
     "yes",
@@ -464,7 +464,7 @@ left, with nearby values offered to the repair step.
 Read-only and bounded to a few seconds a statement. Runs whatever the execution policy,
 for any agent with a registered connector, reading through the agent's connector with
 read-only permission; a generate-only request's statement is never run. On by default; set
-LITERAL_GROUNDING=false to turn it off."""
+NLQ_LITERAL_GROUNDING=false to turn it off."""
 
 LITERAL_GROUNDING_REPAIR: bool = os.getenv("NLQ_LITERAL_GROUNDING_REPAIR", "true").lower() in (
     "1",
@@ -476,7 +476,7 @@ offers nearby values for it, make one LLM call with the grounding notes asking f
 same statement with only that literal corrected. The answer replaces the statement only
 when it validates and differs from it in string literal values and nothing else; it is
 grounded again, with no second call. Recorded in provenance as ``literal_repair``. Only
-meaningful when LITERAL_GROUNDING is on. On by default; set
+meaningful when NLQ_LITERAL_GROUNDING is on. On by default; set
 NLQ_LITERAL_GROUNDING_REPAIR=false to turn it off."""
 
 # ---------------------------------------------------------------------------
