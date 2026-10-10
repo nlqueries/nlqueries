@@ -203,11 +203,14 @@ def test_a_None_inside_extra_is_forwarded_rather_than_dropped() -> None:
 def test_extra_may_not_carry_a_kwarg_the_client_already_passes() -> None:
     """Rejected at construction, because the collision is otherwise inconsistent.
 
-    `_auth_kwargs()` is spread into the completion call directly in the sync and
-    streaming paths, where a duplicate keyword raises TypeError. In `acomplete`
-    it is merged into a dict literal after `model`/`messages`/`max_tokens`, where
-    it silently wins instead. A host that put `max_tokens` in `extra` would get
-    an exception from one method and a quietly capped answer from the other.
+    `extra` reaches every call through `_request_kwargs`, merged over the
+    model's own arguments, so a `temperature` or `output_config` in it would
+    silently replace the client's. `model`, `messages` and `max_tokens` are
+    keywords of the call itself: `complete`, `stream` and `astream` raise
+    TypeError on a duplicate, while `acomplete` puts them in a dict literal
+    before `extra`, which silently wins. A host that put `max_tokens` in `extra`
+    would get an exception from one method and a quietly capped answer from
+    another.
     """
     for reserved in ("model", "messages", "max_tokens", "stream", "temperature", "output_config"):
         with pytest.raises(ValueError, match="may not contain"):
@@ -277,6 +280,13 @@ def test_the_reserved_names_are_exactly_what_the_client_passes() -> None:
     # exemption is a decision in this file instead of a consequence of how the
     # line happens to be written.
     passed -= {"timeout"}
+
+    # `extra_body` and `stream_options` too, for the same reason: a host's own
+    # `extra_body` is merged with the model's, the host's keys winning, and
+    # `stream_options` is set with `setdefault`. Asserted in
+    # test_llm_deepseek.py by test_a_host_extra_body_is_merged_with_the_model_s
+    # and test_a_host_s_own_stream_options_wins.
+    passed -= {"extra_body", "stream_options"}
 
     assert passed == module._RESERVED_COMPLETION_KWARGS, (
         "the names this class passes to litellm and the names extra is refused "

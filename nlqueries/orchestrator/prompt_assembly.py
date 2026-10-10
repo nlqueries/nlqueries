@@ -66,6 +66,19 @@ _ROLE_PREAMBLE = (
 #: YES/NO rule is limited to questions that offer the choice, because applied
 #: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
+#: The rule on joins that repeat rows is for a reporting question's commonest
+#: silent error: a total over one table, joined to another that has several
+#: rows per key, is multiplied by the join and still looks plausible.
+#:
+#: The join-type rule: an outer join adds zero-count rows nobody asked for, and an
+#: inner join drops the zero a question about "at most" or "none" is asking about.
+#:
+#: The display-column rule: an answer of ids is right and useless to the person who
+#: asked which customer it was. Instead of the id, not beside it.
+#:
+#: The definitions rule: a user who spells out how a metric is worked out wants
+#: that calculation, not the textbook one the term usually names.
+#:
 #: The clean-before-cast rule: numbers stored as decorated text cast to 0 and drop
 #: out of a result without an error, and text sorts times and amounts wrongly.
 #:
@@ -84,8 +97,18 @@ returns a single number with no grouping column.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
+- When the question asks which customer, product or other thing, return its name or \
+title column instead of the id, or a description where it has neither, unless the \
+question asks for the id.
 - Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
 when the question or hint says distinct, unique or different.
+- When a join repeats the rows whose values you total or count (a customer's invoices \
+joined to the same customer's shipments repeat each invoice once per shipment), total \
+or count them per join key in a subquery first, then join the result.
+- Join with an inner join unless the question keeps the rows that have no match: \
+"at most two", "fewer than three", "with no orders" or "including those without" \
+keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
+count, such a row counts as 0.
 - Before comparing, sorting or adding a text column as a number or a date, remove \
 what its sample values show around the digits (a currency sign, a unit, a word or \
 separator) and parse times written as text such as '12:05'; a plain CAST of such a \
@@ -97,6 +120,9 @@ for every tie.
 - A column the hint names for something in the question is the column to use for it \
 ("the cheapest refers to MIN(price)" means order by price), even where another \
 column seems to hold the same thing in another form.
+- A definition given in the question, the Business Rules or the Glossary (how a \
+segment, a rate or a period is worked out) is exact: apply every condition and \
+boundary as written, not the usual meaning of the term.
 - Only when the question itself offers the choice, as in "yes or no?" or "true or \
 false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean \
 expression. A question that only asks whether something holds ("is the order \
