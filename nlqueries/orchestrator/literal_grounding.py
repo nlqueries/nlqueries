@@ -464,11 +464,14 @@ class _Session:
         if not await self._opened():
             return None
         connector = self._connector
-        if isinstance(connector, PermittedConnector):
-            return ""  # core's own wrapper: nothing restricted per request
-        # Read through getattr so a wrapper that forwards unknown attributes to
-        # what it wraps cannot borrow a scope it does not have: core's wrapper
-        # declares none.
+        # Exactly core's wrapper, which restricts nothing per request. Not
+        # isinstance: a row filter written as a subclass of it would pass that
+        # test and have one request's values served to the next. Anything else
+        # is cached only under the cache_scope it declares (see
+        # PermittedConnector), read through getattr so a wrapper that forwards
+        # unknown attributes cannot borrow one: core's wrapper declares none.
+        if type(connector) is PermittedConnector:
+            return ""
         scope = getattr(connector, "cache_scope", None)
         return scope if isinstance(scope, str) else None
 

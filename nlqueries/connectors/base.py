@@ -599,6 +599,17 @@ class PermittedConnector(DatabaseConnector):
     require; refusing construction would prevent a ``--no-execute`` run from
     describing the tables it generates SQL against. Execution is what is
     permitted, and execution is therefore what is checked.
+
+    **Restricting rows per request: declare ``cache_scope``.** A wrapper that
+    narrows what a connector returns for a request (a row filter, a tenant
+    scope), whether it wraps this class or subclasses it, must declare
+    ``cache_scope``: a string naming the restriction, equal for two requests
+    only when they may see the same rows. Literal grounding caches the values
+    it looks up and shares them across requests. Exactly this class restricts
+    nothing, so its lookups are shared per database; any other connector's are
+    shared only among requests with the same ``cache_scope``, and not cached at
+    all without one. Do not declare it on this class: a wrapper that forwards
+    unknown attributes to it would then appear to declare it too.
     """
 
     def __init__(

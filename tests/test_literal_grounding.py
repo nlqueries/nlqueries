@@ -96,16 +96,6 @@ class _Recording(SQLiteConnector):
         super().close()
 
 
-class _Released(PermittedConnector):
-    """Core's per-request wrapper, as the loader returns it, recording release."""
-
-    released = False
-
-    def close(self) -> None:
-        self.released = True
-        super().close()
-
-
 class _Source:
     """A lookup source on a SQLite file, as the loader builds one: core's wrapper
     around one connector, recording what it hands out and the statements run."""
@@ -113,13 +103,13 @@ class _Source:
     def __init__(self, db: Path, key: str | None = None) -> None:
         self.db = db
         self.statements: list[str] = []
-        self.opened: list[_Released] = []
+        self.opened: list[PermittedConnector] = []
         self.inner = _Recording(self.statements)
         self.inner.connect({"database": str(db)})
         self.source = LookupSource(key=key or str(db), open=self._open)
 
-    def _open(self) -> _Released:
-        wrapper = _Released(self.inner, ExecutionPolicy.execute_read_only())
+    def _open(self) -> PermittedConnector:
+        wrapper = PermittedConnector(self.inner, ExecutionPolicy.execute_read_only())
         self.opened.append(wrapper)
         return wrapper
 
@@ -585,13 +575,16 @@ def test_the_cache_drops_the_least_recently_used_outcome_first(
 
 
 def test_each_call_releases_what_it_opened_and_the_pooled_connector_stays_open(
-    src: _Source,
+    src: _Source, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    released: list[PermittedConnector] = []
+    monkeypatch.setattr(PermittedConnector, "close", lambda self: released.append(self))
+
     _ground("SELECT id FROM schools WHERE status = 'legal'", src)
     _ground("SELECT id FROM schools WHERE funding = ' = '", src)
 
     assert len(src.opened) == 2
-    assert all(wrapper.released for wrapper in src.opened)
+    assert released == src.opened
     assert not src.inner.closed
 
 
@@ -629,6 +622,42 @@ def test_a_wrapper_that_declares_no_scope_is_not_cached(src: _Source) -> None:
 
     assert asked > 0 and len(src.statements) == 2 * asked
     assert again.sql == "SELECT id FROM schools WHERE status = 'Legal'"
+
+
+def test_a_subclass_of_the_core_wrapper_that_declares_no_scope_is_not_cached(
+    src: _Source,
+) -> None:
+    """A row filter written as a subclass of PermittedConnector inherits its
+    delegation; it must not inherit sharing as well."""
+
+    class _FilteringSubclass(PermittedConnector):
+        pass
+
+    source = LookupSource(
+        key=src.source.key,
+        open=lambda: _FilteringSubclass(src.inner, ExecutionPolicy.execute_read_only()),
+    )
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    _ground(sql, source)
+    asked = len(src.statements)
+    _ground(sql, source)
+
+    assert asked > 0 and len(src.statements) == 2 * asked
+
+
+def test_exactly_the_core_wrapper_is_shared(src: _Source) -> None:
+    source = LookupSource(
+        key=src.source.key,
+        open=lambda: PermittedConnector(src.inner, ExecutionPolicy.execute_read_only()),
+    )
+    sql = "SELECT id FROM schools WHERE status = 'legal'"
+
+    _ground(sql, source)
+    asked = len(src.statements)
+    _ground(sql, source)
+
+    assert asked > 0 and len(src.statements) == asked
 
 
 def test_outcomes_are_shared_only_within_a_declared_scope(src: _Source) -> None:
