@@ -772,6 +772,24 @@ ANSWER_RULE_PHRASES = [
     # Counting the joined rows, not distinct ones, unless asked.
     "Count the rows the joins produce with COUNT(column)",
     "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # A join that repeats the rows being totalled: aggregate them first.
+    "When a join repeats the rows whose values you total or count",
+    "total or count them per join key in a subquery first, then join the result",
+    # Join type follows the question's wording.
+    "Join with an inner join unless the question keeps the rows that have no match",
+    "keep the ones with none, so join those with LEFT JOIN",
+    "Where the question asks for a count, such a row counts as 0",
+    # The name of what was asked about, not its id.
+    "When the question asks which customer, product or other thing",
+    "return its name or title column instead of the id",
+    "or a description where it has neither, unless the question asks for the id",
+    # A definition given is exact.
+    "A definition given in the question, the Business Rules or the Glossary",
+    "apply every condition and boundary as written, not the usual meaning of the term",
+    # Numbers stored as text are cleaned before a cast.
+    "Before comparing, sorting or adding a text column as a number",
+    "quietly keeps the leading digits or gives 0",
+    "but keep the decimal mark, as a point",
     # Joins and window functions over per-row subqueries.
     "Prefer joins, GROUP BY and window functions to a subquery that refers to the outer",
     "row and so runs once per row: on a large table it can take minutes",
