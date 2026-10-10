@@ -772,6 +772,9 @@ ANSWER_RULE_PHRASES = [
     # Counting the joined rows, not distinct ones, unless asked.
     "Count the rows the joins produce with COUNT(column)",
     "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # The name of what was asked about, not its id.
+    "When the question asks which customer, product or other thing",
+    "name, title or description column, return that column instead of the id",
     # Superlatives.
     "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
     "unless the question asks for every tie",
