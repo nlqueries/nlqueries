@@ -70,8 +70,10 @@ _ROLE_PREAMBLE = (
 #: silent error: a total over one table, joined to another that has several
 #: rows per key, is multiplied by the join and still looks plausible.
 #:
-#: The join-type rule: an outer join adds zero-count rows nobody asked for, and an
-#: inner join drops the zero a question about "at most" or "none" is asking about.
+#: The join-type rule: an inner join is the rule and an outer join the listed
+#: exception. Written as a choice between the two, the same wording went one way
+#: in one question and the other way in the next, and an outer join added
+#: zero-count rows nobody asked for.
 #:
 #: The display-column rule: an answer of ids is right and useless to the person who
 #: asked which customer it was. Instead of the id, not beside it.
@@ -113,10 +115,13 @@ when the question or hint says distinct, unique or different.
 - When a join repeats the rows whose values you total or count (a customer's invoices \
 joined to the same customer's shipments repeat each invoice once per shipment), total \
 or count them per join key in a subquery first, then join the result.
-- Join with an inner join unless the question keeps the rows that have no match: \
-"at most two", "fewer than three", "with no orders" or "including those without" \
-keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
-count, such a row counts as 0.
+- Join with an inner join. A bare "for each X, how many Y" or "the total Y per X" is an \
+inner join too: an X with no Y is left out. Use LEFT JOIN only when the question says \
+"including those with none", "zero", "at most", "fewer than", "no" or "without", asks \
+about the X that have no Y ("never ordered", "missing a manager"), or asks for every \
+member of a dimension table whether or not it has a match; a bare "for each X" is not \
+such a question unless it says the unmatched ones are wanted. There a row with no match \
+counts as 0 where a count is asked for. If unsure, use an inner join.
 - When the question orders, compares or adds a text column that holds numbers, use its \
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
 text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \

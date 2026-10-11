@@ -775,10 +775,14 @@ ANSWER_RULE_PHRASES = [
     # A join that repeats the rows being totalled: aggregate them first.
     "When a join repeats the rows whose values you total or count",
     "total or count them per join key in a subquery first, then join the result",
-    # Join type follows the question's wording.
-    "Join with an inner join unless the question keeps the rows that have no match",
-    "keep the ones with none, so join those with LEFT JOIN",
-    "Where the question asks for a count, such a row counts as 0",
+    # Join type: inner by rule, LEFT JOIN on the listed wording only.
+    'Join with an inner join. A bare "for each X, how many Y"',
+    "inner join too: an X with no Y is left out",
+    'Use LEFT JOIN only when the question says "including those with none"',
+    'about the X that have no Y ("never ordered", "missing a manager")',
+    "member of a dimension table whether or not it has a match",
+    'a bare "for each X" is not such a question unless it says the unmatched ones are wanted',
+    "If unsure, use an inner join.",
     # The name of what was asked about, not its id.
     "When the question asks which customer, product or other thing",
     "return its name or title column instead of the id",
@@ -821,6 +825,8 @@ REMOVED_RULE_PHRASES = [
     # Stated for every column, it cast plain values and parsed free-text dates;
     # cleaning a decoration is now asked for only where the samples show one.
     "Parse durations and times written as text",
+    # A choice between the joins: the same wording went both ways.
+    "Join with an inner join unless the question keeps the rows that have no match",
     "Before comparing, sorting or adding a text column as a number",
 ]
 

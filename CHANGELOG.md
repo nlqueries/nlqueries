@@ -77,12 +77,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   row once per match on the other side and still looks plausible. The prompts
   now say to total or count those rows per join key in a subquery first, then
   join the result.
-- **The SQL prompt says which join a question's wording calls for.** An outer
-  join where none was asked for adds rows with a count of 0, and an inner join
-  where the question is about "at most two" or "with no orders" drops exactly
-  the rows it asks about. The prompts now say to join with an inner join unless
-  the question keeps the rows with no match, and that such a row counts as 0
-  where the question asks for a count.
+- **The SQL prompt joins with an inner join unless the question's wording
+  says otherwise.** An outer join where none was asked for adds rows with a
+  count of 0, and an inner join where the question is about "at most two" or
+  "with no orders" drops exactly the rows it asks about. The inner join is the
+  stated rule, a bare "for each X, how many Y" included; LEFT JOIN is the
+  exception, only for the listed wording ("including those with none", "zero",
+  "at most", "fewer than", "no", "without"), a question about the X that have
+  no Y ("never ordered", "missing a manager"), or every member of a dimension
+  table, which a bare "for each X" does not ask for; then a row with no match
+  counts as 0 where a count is asked for. If unsure, inner.
 - **The SQL prompt asks for the name, not the id, of the thing asked about.**
   "Which customer" answered with customer ids is right and of no use to the
   person asking. The prompts now say to return the thing's name or title
