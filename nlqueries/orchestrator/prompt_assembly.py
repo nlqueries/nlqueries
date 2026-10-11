@@ -263,6 +263,15 @@ _RUNNING_TOTAL_NAME = re.compile(
 #: Column names that hold a running total in a standings table: a team's wins or
 #: points so far in the season, restated on every row.
 _STANDINGS_TOTALS = frozenset({"wins", "losses", "draws", "points", "pts"})
+#: The words of a table name, in snake_case or CamelCase: league_standings and
+#: LeagueStandings both give "standings".
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+
+
+def _is_standings_table(table_name: str) -> bool:
+    """Whether "standings" is a word of the table's name: not a substring of
+    another word (outstanding_invoices) and not "standing" (standing_orders)."""
+    return any(word.lower() == "standings" for word in _NAME_WORDS.findall(table_name))
 
 
 def _running_total_columns(knowledge_base: dict[str, Any]) -> list[tuple[str, str]]:
@@ -271,12 +280,12 @@ def _running_total_columns(knowledge_base: dict[str, Any]) -> list[tuple[str, st
     ``running_total``, ``running_sum``, ``running_balance`` or ``running_count``,
     a balance carried forward (``balance``, ``opening_balance``,
     ``closing_balance``, ``account_balance``, ``balance_after``), or wins,
-    losses, draws or points in a table named as standings. Names only: sample
-    values cannot show that a column accumulates."""
+    losses, draws, points or pts in a table named as standings. Names only:
+    sample values cannot show that a column accumulates."""
     found: list[tuple[str, str]] = []
     for table in knowledge_base.get("schema", {}).get("tables", []) or []:
         table_name = str(table.get("name") or "")
-        standings = "standing" in table_name.lower()
+        standings = _is_standings_table(table_name)
         for column in table.get("columns", []) or []:
             name = str(column.get("name") or "")
             if _RUNNING_TOTAL_NAME.search(name) or (
@@ -324,8 +333,10 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
             f"- These columns hold running totals: {listed}. Each row holds the total so far, "
             "so an entity's total is the value on its latest row, not the SUM of its rows (MAX "
             "gives the same for a total that never falls, such as wins or points, but not for "
-            "a balance); a total across entities adds up each one's latest value. Where you "
-            "explain your reasoning, say which you used."
+            "a balance); a total across entities adds up each one's latest value. Where the "
+            "total restarts each period (a year-to-date figure, a season's standings), that "
+            "holds within a period, and a span of periods adds up each period's last value. "
+            "Where you explain your reasoning, say which you used."
         )
     return "\n".join([_ANSWER_RULES, *extra])
 

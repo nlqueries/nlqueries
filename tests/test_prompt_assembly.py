@@ -1096,6 +1096,57 @@ def test_points_outside_a_standings_table_are_not_a_running_total() -> None:
     assert _RUNNING_RULE not in assemble_prompt("Total points?", kb).static_system
 
 
+@pytest.mark.parametrize(
+    ("table_name", "column", "listed"),
+    [
+        ("league_standings", "pts", True),
+        ("LeagueStandings", "wins", True),
+        ("LEAGUE_STANDINGS", "losses", True),
+        ("season_standings", "draws", True),
+        # "standings" inside another word, or "standing" alone, is not a standings table.
+        ("outstanding_invoices", "points", False),
+        ("OutstandingItems", "wins", False),
+        ("standing_orders", "points", False),
+    ],
+)
+def test_a_standings_table_is_one_named_standings_as_a_word(
+    table_name: str, column: str, listed: bool
+) -> None:
+    kb = _make_kb(
+        tables=[{"name": table_name, "columns": [{"name": column, "type": "INTEGER"}]}],
+        capsules=[],
+    )
+
+    static = assemble_prompt("Totals?", kb).static_system
+
+    assert (f"{table_name}.{column}" in static) is listed
+    assert (_RUNNING_RULE in static) is listed
+
+
+def test_a_total_that_restarts_each_period_adds_up_per_period() -> None:
+    """A year-to-date figure restarts each year: over several years the total adds
+    up each year's last value, which neither the latest row nor MAX gives."""
+    kb = _make_kb(
+        tables=[
+            {
+                "name": "monthly_fees",
+                "columns": [
+                    {"name": "account_id", "type": "INTEGER"},
+                    {"name": "month", "type": "DATE"},
+                    {"name": "fees_ytd", "type": "DECIMAL"},
+                ],
+            }
+        ],
+        capsules=[],
+    )
+
+    static = assemble_prompt("Total fees for 2023 and 2024?", kb).static_system
+
+    assert "monthly_fees.fees_ytd" in static
+    assert "Where the total restarts each period (a year-to-date figure" in static
+    assert "a span of periods adds up each period's last value" in static
+
+
 def test_no_running_total_rule_without_such_a_column() -> None:
     assert _RUNNING_RULE not in assemble_prompt("Total order value?", _make_kb()).static_system
 
