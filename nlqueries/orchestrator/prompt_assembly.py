@@ -115,8 +115,8 @@ when the question or hint says distinct, unique or different.
 - When a join repeats the rows whose values you total or count (a customer's invoices \
 joined to the same customer's shipments repeat each invoice once per shipment), total \
 or count them per join key in a subquery first, then join the result.
-- Join with an inner join. "For each X, how many Y" and "the total Y per X" are inner \
-joins too: an X with no Y is left out. Use LEFT JOIN only when the question says \
+- Join with an inner join. A bare "for each X, how many Y" or "the total Y per X" is an \
+inner join too: an X with no Y is left out. Use LEFT JOIN only when the question says \
 "including those with none", "zero", "at most", "fewer than", "no" or "without", asks \
 about the X that have no Y ("never ordered", "missing a manager"), or asks for every \
 member of a dimension table whether or not it has a match; a bare "for each X" is not \

@@ -776,8 +776,8 @@ ANSWER_RULE_PHRASES = [
     "When a join repeats the rows whose values you total or count",
     "total or count them per join key in a subquery first, then join the result",
     # Join type: inner by rule, LEFT JOIN on the listed wording only.
-    'Join with an inner join. "For each X, how many Y"',
-    "joins too: an X with no Y is left out",
+    'Join with an inner join. A bare "for each X, how many Y"',
+    "inner join too: an X with no Y is left out",
     'Use LEFT JOIN only when the question says "including those with none"',
     'about the X that have no Y ("never ordered", "missing a manager")',
     "member of a dimension table whether or not it has a match",

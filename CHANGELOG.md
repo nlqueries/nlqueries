@@ -81,10 +81,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   says otherwise.** An outer join where none was asked for adds rows with a
   count of 0, and an inner join where the question is about "at most two" or
   "with no orders" drops exactly the rows it asks about. The inner join is the
-  stated rule, "for each X, how many Y" included; LEFT JOIN is the exception,
-  only for the listed wording ("including those with none", "zero", "at most",
-  "fewer than", "no", "without"), a question about the X that have no Y
-  ("never ordered", "missing a manager"), or every member of a dimension
+  stated rule, a bare "for each X, how many Y" included; LEFT JOIN is the
+  exception, only for the listed wording ("including those with none", "zero",
+  "at most", "fewer than", "no", "without"), a question about the X that have
+  no Y ("never ordered", "missing a manager"), or every member of a dimension
   table, which a bare "for each X" does not ask for; then a row with no match
   counts as 0 where a count is asked for. If unsure, inner.
 - **The SQL prompt asks for the name, not the id, of the thing asked about.**
