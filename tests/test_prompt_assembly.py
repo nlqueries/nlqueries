@@ -786,10 +786,16 @@ ANSWER_RULE_PHRASES = [
     # A definition given is exact.
     "A definition given in the question, the Business Rules or the Glossary",
     "apply every condition and boundary as written, not the usual meaning of the term",
-    # Numbers stored as text are cleaned before a cast.
-    "Before comparing, sorting or adding a text column as a number",
-    "quietly keeps the leading digits or gives 0",
-    "but keep the decimal mark, as a point",
+    # Numbers stored as text: ordered, compared or added by the cast, returned as stored.
+    "When the question orders, compares or adds a text column that holds numbers",
+    "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
+    "Return the column as stored: for its largest value, ORDER BY",
+    "A plain cast reads only digits and a decimal point: where the values shown carry",
+    "(a decimal comma becomes a point, not removed: '1,5' is 1.5)",
+    "When the question only asks for the value, do not",
+    # Dates written as free text are not parsed with ladders.
+    "Do not parse dates written as free text",
+    "order by the column as stored, and where you explain your reasoning, say so",
     # Joins and window functions over per-row subqueries.
     "Prefer joins, GROUP BY and window functions to a subquery that refers to the outer",
     "which some databases run once per row of the outer query",
@@ -812,6 +818,10 @@ ANSWER_RULE_PHRASES = [
 REMOVED_RULE_PHRASES = [
     "Add no filter",
     "Answer a yes/no question with the text 'YES' or 'NO'",
+    # Stated for every column, it cast plain values and parsed free-text dates;
+    # cleaning a decoration is now asked for only where the samples show one.
+    "Parse durations and times written as text",
+    "Before comparing, sorting or adding a text column as a number",
 ]
 
 
@@ -848,5 +858,115 @@ def test_static_system_with_the_rule_is_identical_across_questions() -> None:
 
     first = assemble_prompt("How many orders?", kb).static_system
     second = assemble_prompt("Which customer spent the most last month?", kb).static_system
+
+    assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Numbers written with a decoration: a rule only where the samples show one
+# ---------------------------------------------------------------------------
+
+_STRIP_RULE = "These text columns hold numbers written with a decoration"
+
+
+def _kb_with_columns(*columns: dict[str, Any]) -> dict[str, Any]:
+    return _make_kb(tables=[{"name": "events", "columns": list(columns)}], capsules=[])
+
+
+def test_decorated_numbers_in_the_samples_get_the_strip_rule() -> None:
+    kb = _kb_with_columns(
+        {"name": "fill_rate", "type": "TEXT", "samples": ["45%", "12.5%", "7%"]},
+        {"name": "ticket_price", "type": "VARCHAR(20)", "samples": ["$1,200", "$300"]},
+    )
+
+    static = assemble_prompt("Which event had the highest fill rate?", kb).static_system
+
+    assert _STRIP_RULE in static
+    assert "events.fill_rate ('45%', '12.5%')" in static
+    assert "events.ticket_price ('$1,200', '$300')" in static
+    assert "Only when the question orders, compares or adds one of them" in static
+    assert "When the question just asks for the value, return the column as stored" in static
+
+
+@pytest.mark.parametrize(
+    "samples",
+    [
+        ["12", "7", "30"],  # plain numbers stored as text
+        ["1.5", "2.25"],  # plain decimals
+        ["A1", "B2", "C3"],  # codes
+        ["A1", "A2"],  # codes that share a prefix
+        ["SKU12", "SKU7"],  # letters joined to the digits
+        ["INV-1001", "INV-1002"],  # a hyphen is not a minus sign after a prefix
+        ["2020-01-05", "2021-03-02"],  # dates
+        ["4:05.120", "4:11.002"],  # times
+        ["January 5, 2008", "March 2, 2009"],  # dates written as free text
+        ["45%"],  # one sample is not a pattern
+        ["$50,000/yr", "$4,000/mo"],  # decorations that disagree
+    ],
+)
+def test_no_strip_rule_without_that_evidence(samples: list[str]) -> None:
+    kb = _kb_with_columns({"name": "reading", "type": "TEXT", "samples": samples})
+
+    static = assemble_prompt("What is the largest reading?", kb).static_system
+
+    assert _STRIP_RULE not in static
+
+
+@pytest.mark.parametrize(
+    "samples",
+    [
+        ["I 2008", "2008", "1999"],  # a marker set off by a space
+        ["No. 5", "No. 12"],  # a word with a period
+        ["USD 300", "USD 1,200"],  # a currency code
+        ["12 min", "7 min"],  # a unit
+        ["1,5", "2,75"],  # a decimal comma
+    ],
+)
+def test_these_decorations_get_the_strip_rule(samples: list[str]) -> None:
+    kb = _kb_with_columns({"name": "reading", "type": "TEXT", "samples": samples})
+
+    assert _STRIP_RULE in assemble_prompt("What is the largest reading?", kb).static_system
+
+
+def test_the_strip_rule_tells_a_decimal_comma_from_a_thousands_separator() -> None:
+    """Both are a comma; one becomes a point and the other is removed."""
+    kb = _kb_with_columns({"name": "dose", "type": "TEXT", "samples": ["1,5", "2,75"]})
+
+    static = assemble_prompt("Which dose is largest?", kb).static_system
+
+    assert "a decimal comma, it becomes a point rather than being removed ('1,5' is 1.5" in static
+    assert "a thousands separator is removed ('1,200' is 1200)" in static
+
+
+def test_a_long_list_of_decorated_columns_is_cut_and_says_so() -> None:
+    columns = [{"name": f"rate_{i}", "type": "TEXT", "samples": ["45%", "7%"]} for i in range(13)]
+    static = assemble_prompt("Which rate is highest?", _kb_with_columns(*columns)).static_system
+
+    assert "events.rate_9 (" in static
+    assert "events.rate_10 (" not in static
+    assert "and 3 more like them, not listed" in static
+
+
+def test_a_number_typed_column_gets_no_strip_rule() -> None:
+    """A column the database already stores as a number needs no cast."""
+    kb = _kb_with_columns({"name": "seats", "type": "INTEGER", "samples": ["1,200", "3,400"]})
+
+    assert _STRIP_RULE not in assemble_prompt("How many seats?", kb).static_system
+
+
+def test_the_strip_rule_reaches_the_repair_prompt() -> None:
+    from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
+
+    kb = _kb_with_columns({"name": "fill_rate", "type": "TEXT", "samples": ["45%", "7%"]})
+
+    assert _STRIP_RULE in _build_sql_system_prompt(kb, "sqlite")
+    assert _STRIP_RULE not in _build_sql_system_prompt(_make_kb(), "sqlite")
+
+
+def test_the_static_block_with_the_strip_rule_is_identical_across_questions() -> None:
+    kb = _kb_with_columns({"name": "fill_rate", "type": "TEXT", "samples": ["45%", "7%"]})
+
+    first = assemble_prompt("Which event had the highest fill rate?", kb).static_system
+    second = assemble_prompt("List the events.", kb).static_system
 
     assert first == second

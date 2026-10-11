@@ -79,10 +79,12 @@ _ROLE_PREAMBLE = (
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
-#: The clean-before-cast rule: numbers stored as decorated text cast, on SQLite, to
-#: 0 or to their leading digits without an error ('1,200' to 1), so rows drop out
-#: of a result unnoticed; other databases reject the cast. Text also sorts times
-#: and amounts wrongly.
+#: The numeric-text rules: a text column holding numbers is ordered by its cast
+#: but returned as stored, since a converted copy is not the value the person
+#: asked for. Stripping a decoration (a currency sign, a percent sign, a unit) is
+#: asked for only where the knowledge base's sample values show one on that
+#: column (see :func:`answer_rules_for`); stated for every column, it rewrote
+#: plain values and built parsers for dates written as free text.
 #:
 #: The correlated-subquery rule: a statement that is right but, as some databases
 #: run it, repeats a subquery for every row of a large table does not finish within
@@ -115,13 +117,18 @@ or count them per join key in a subquery first, then join the result.
 "at most two", "fewer than three", "with no orders" or "including those without" \
 keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
 count, such a row counts as 0.
-- Before comparing, sorting or adding a text column as a number, remove what its sample \
-values show around or between the digits (a currency sign, a thousands separator, a \
-unit or a word) but keep the decimal mark, as a point: where the samples use a decimal \
-comma, '1.234,56' is 1234.56. Parse durations and times written as text such as \
-'12:05'. A \
-plain CAST fails on some databases and on others quietly keeps the leading digits or \
-gives 0 ('1,200' becomes 1, '$1,200' becomes 0), and as text '10:00' sorts before '9:00'.
+- When the question orders, compares or adds a text column that holds numbers, use its \
+cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
+text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \
+the cast DESC LIMIT 1, not MAX(CAST(...)), since a converted copy is not the value asked \
+for. A plain cast reads only digits and a decimal point: where the values shown carry \
+anything else, remove it inside the cast (a decimal comma becomes a point, not removed: \
+'1,5' is 1.5), or the cast gives 0 or the leading digits on \
+some databases and fails on others. When the question only asks for the value, do not \
+cast it.
+- Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
+or chains of SUBSTR. Unless the knowledge base documents the format, order by the column \
+as stored, and where you explain your reasoning, say so.
 - Prefer joins, GROUP BY and window functions to a subquery that refers to the outer \
 row, which some databases run once per row of the outer query: on a large table that \
 can take minutes.
@@ -140,11 +147,100 @@ false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean
 expression. A question that only asks whether something holds ("is the order \
 shipped?") returns the value the data stores for it."""
 
-_SQL_FORMAT_RULES = f"""\
+#: A number with at most a short prefix, a short suffix ('%', ' min', '/yr') and
+#: separators inside its digits ('1,200', '1.234,56'). A prefix is a currency sign
+#: ('$', '€') or up to four letters set off by a space or a period ('I 2008',
+#: 'No. 5'): letters joined to the digits ('A1', 'SKU12', 'INV-1001') make a code,
+#: not a decorated number. Times and dates do not match: their separators sit
+#: between digits outside the number.
+_DECORATED_NUMBER = re.compile(
+    r"^\s*(?P<pre>[$€£¥₹]|[A-Za-z]{1,4}(?:\.\s?|\s))?\s?"
+    r"(?P<num>[+-]?(?:\d{1,3}(?:[,.\s]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?))"
+    r"\s?(?P<post>[^\d\s][^\d]{0,7})?\s*$"
+)
+
+#: Most columns a knowledge-base rule names; a longer list is cut and says so, so
+#: a schema of text columns does not fill the cached Instructions with names.
+_MAX_RULE_COLUMNS = 10
+
+#: Text column types, as the knowledge base records them.
+_TEXT_MARKERS = ("CHAR", "TEXT", "STRING", "CLOB")
+
+
+def _decorated_number_columns(
+    knowledge_base: dict[str, Any],
+) -> list[tuple[str, str, list[str]]]:
+    """``(table, column, examples)`` for each text column whose sample values are
+    numbers written with one fixed decoration.
+
+    Every sample must parse as a number with a decoration around or within it
+    (see :data:`_DECORATED_NUMBER`), at least one must carry one, and the
+    decorations must agree: one prefix and one suffix at most across the
+    samples. So '45%', '7%' and '$1,200', '$300' count; codes such as 'A1',
+    'A2' or 'INV-1001', and plain numbers stored as text, do not. Two samples
+    at least, since one is not evidence of a pattern.
+    """
+    found: list[tuple[str, str, list[str]]] = []
+    for table in knowledge_base.get("schema", {}).get("tables", []) or []:
+        for column in table.get("columns", []) or []:
+            col_type = str(column.get("type") or "").upper()
+            if col_type and not any(marker in col_type for marker in _TEXT_MARKERS):
+                continue
+            samples = [str(v) for v in column.get("samples") or [] if str(v).strip()]
+            if len(samples) < 2:
+                continue
+            parsed = [m for m in map(_DECORATED_NUMBER.match, samples) if m is not None]
+            if len(parsed) < len(samples):
+                continue
+            prefixes = {m["pre"].strip().lower() for m in parsed if m["pre"]}
+            suffixes = {m["post"].strip().lower() for m in parsed if m["post"]}
+            separated = any(re.search(r"[,\s]|\..*\.", m["num"]) for m in parsed)
+            if len(prefixes) > 1 or len(suffixes) > 1 or not (prefixes or suffixes or separated):
+                continue
+            name = _table_ref(table) or str(table.get("name"))
+            found.append((name, str(column.get("name")), samples))
+    return found
+
+
+def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
+    """The answer rules, with those this knowledge base's evidence calls for.
+
+    :data:`_ANSWER_RULES` holds for every database. A rule that depends on what
+    a column holds is added only where the knowledge base shows it, so it does
+    not fire on columns it was never about. Depends on the knowledge base
+    alone, so the cached block stays identical across questions.
+    """
+    extra: list[str] = []
+    decorated = _decorated_number_columns(knowledge_base)
+    if decorated:
+        listed = "; ".join(
+            f"{table}.{column} ({', '.join(repr(v[:20]) for v in examples[:2])})"
+            for table, column, examples in decorated[:_MAX_RULE_COLUMNS]
+        )
+        if len(decorated) > _MAX_RULE_COLUMNS:
+            listed += f"; and {len(decorated) - _MAX_RULE_COLUMNS} more like them, not listed"
+        extra.append(
+            "- These text columns hold numbers written with a decoration: "
+            f"{listed}. Only when the question orders, compares or adds one of them, "
+            "strip the decoration inside the cast to a numeric type "
+            "(CAST(REPLACE(column, '%', '') AS REAL) in SQLite), "
+            "keeping the decimal mark as a point: where the values use a decimal comma, it "
+            "becomes a point rather than being removed ('1,5' is 1.5, not 15), while a "
+            "thousands separator is removed ('1,200' is 1200); a plain CAST fails on some "
+            "databases and on "
+            "others keeps only the leading digits or gives 0. When the question just asks for "
+            "the value, return the column as stored."
+        )
+    return "\n".join([_ANSWER_RULES, *extra])
+
+
+def _sql_format_rules(answer_rules: str) -> str:
+    """The Instructions block, around *answer_rules*."""
+    return f"""\
 ## Instructions
 - Generate only a single SELECT SQL statement.
 - Use only tables and columns present in the schema above.
-{_ANSWER_RULES}
+{answer_rules}
 - First, briefly explain your reasoning in 2-4 sentences (plain text).
 - Then output the SQL between EXACTLY these markers — nothing before or after:
 
@@ -523,7 +619,7 @@ def _build_static_system(knowledge_base: dict[str, Any]) -> str:
     )
     if business_section:
         parts.append(business_section)
-    parts.append(_SQL_FORMAT_RULES)
+    parts.append(_sql_format_rules(answer_rules_for(knowledge_base)))
     return "\n".join(parts)
 
 

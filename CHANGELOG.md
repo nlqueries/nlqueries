@@ -95,13 +95,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   such a definition is exact: every condition and boundary as written. The
   rule names the SQL prompt's own sections (Business Rules, Glossary), so the
   model can tell which text it means.
-- **The SQL prompt says to clean numbers stored as text before casting them.**
-  On SQLite a text column holding '$1,200' or '1,200' casts, without an error,
-  to 0 or to 1, so rows drop out of a filter or a total unnoticed; other
-  databases reject the cast. Durations stored as text sort '10:00' before
-  '9:00'. The prompts now say to remove what the sample values show around or
-  between the digits, keeping the decimal mark (a decimal comma becomes a
-  point), and to parse such durations and times, first.
+- **The SQL prompt cleans numbers stored as text only where the samples show
+  a decoration.** On SQLite a text column holding '$1,200' or '1,200' casts,
+  without an error, to 0 or to 1, so rows drop out of a filter or a total
+  unnoticed; other databases reject the cast. Where a text column's sample
+  values are numbers with one fixed decoration (a currency sign, a percent
+  sign, a unit, a thousands separator), the prompts name the column and say to
+  strip it inside the cast, keeping the decimal mark, but only when the
+  question orders, compares or adds it. Any text column holding numbers is
+  ordered, compared or added by its numeric cast but returned as stored, with
+  anything besides digits and a decimal mark in the values shown removed inside
+  the cast, and not cast at all when the question only asks for the value;
+  dates written as free text are ordered as stored rather than parsed with
+  CASE ladders.
 - **The SQL prompt prefers joins and window functions to per-row subqueries.**
   Some databases run a subquery that refers to the outer row once for every
   row, and on a table of hundreds of thousands of rows a correct statement of
