@@ -75,7 +75,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   value quoted with a stray space became a LIKE pattern with the space in it,
   and a "contains" became a case-sensitive INSTR, so the rows it named
   dropped out. The prompts now say the spaces around a quoted value are not
-  part of it, that "contains" stays LIKE '%value%' rather than INSTR, and
+  part of it, that "contains" stays LIKE '%value%' rather than INSTR, with
+  LOWER() on both sides where the database's LIKE compares case, and
   that definitions are still applied exactly.
 - **The SQL prompt does not sum running totals.** A column that already holds
   a running total, such as a standings table's points or wins, an account

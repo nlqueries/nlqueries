@@ -806,8 +806,10 @@ ANSWER_RULE_PHRASES = [
     # A quoted value is a value, not a pattern.
     "A value quoted in the question is matched as a value, not as a pattern",
     "spaces around it are not part of it, so trim it",
-    "LIKE '%value%' stays the default (in SQLite it ignores letter case, where INSTR does not)",
-    "do not switch to INSTR",
+    "LIKE '%value%' stays the default and letter case does not filter",
+    # LIKE ignores case only on some databases; the rule must hold on all of them.
+    "where the database's LIKE compares case, put LOWER() on both sides",
+    "Do not switch to INSTR, which compares case",
     # Numbers stored as text: ordered, compared or added by the cast, returned as stored.
     "When the question orders, compares or adds a text column that holds numbers",
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
