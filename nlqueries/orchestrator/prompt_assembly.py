@@ -117,11 +117,11 @@ or count them per join key in a subquery first, then join the result.
 "at most two", "fewer than three", "with no orders" or "including those without" \
 keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
 count, such a row counts as 0.
-- For the largest or smallest value of a text column that holds numbers, order by its \
-cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery) and \
-return the column as stored, not MAX(CAST(...)): when the question asks for the value, a \
-converted copy is \
-not it.
+- When the question orders, compares or adds a text column that holds numbers, use its \
+cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
+text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \
+the cast DESC LIMIT 1, not MAX(CAST(...)), since a converted copy is not the value asked \
+for. When the question only asks for the value, do not cast it.
 - Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
 or chains of SUBSTR. Unless the knowledge base documents the format, order by the column \
 as stored, and where you explain your reasoning, say so.
@@ -154,6 +154,10 @@ _DECORATED_NUMBER = re.compile(
     r"(?P<num>[+-]?(?:\d{1,3}(?:[,.\s]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?))"
     r"\s?(?P<post>[^\d\s][^\d]{0,7})?\s*$"
 )
+
+#: Most columns a knowledge-base rule names; a longer list is cut and says so, so
+#: a schema of text columns does not fill the cached Instructions with names.
+_MAX_RULE_COLUMNS = 10
 
 #: Text column types, as the knowledge base records them.
 _TEXT_MARKERS = ("CHAR", "TEXT", "STRING", "CLOB")
@@ -207,8 +211,10 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
     if decorated:
         listed = "; ".join(
             f"{table}.{column} ({', '.join(repr(v[:20]) for v in examples[:2])})"
-            for table, column, examples in decorated
+            for table, column, examples in decorated[:_MAX_RULE_COLUMNS]
         )
+        if len(decorated) > _MAX_RULE_COLUMNS:
+            listed += f"; and {len(decorated) - _MAX_RULE_COLUMNS} more like them, not listed"
         extra.append(
             "- These text columns hold numbers written with a decoration: "
             f"{listed}. Only when the question orders, compares or adds one of them, "

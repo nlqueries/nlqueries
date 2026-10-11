@@ -102,8 +102,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   values are numbers with one fixed decoration (a currency sign, a percent
   sign, a unit, a thousands separator), the prompts name the column and say to
   strip it inside the cast, keeping the decimal mark, but only when the
-  question orders, compares or adds it. Otherwise a text column holding
-  numbers is ordered by its cast and returned as stored, and dates written as
+  question orders, compares or adds it. Any text column holding numbers is
+  ordered, compared or added by its numeric cast but returned as stored, and
+  not cast at all when the question only asks for the value; dates written as
   free text are ordered as stored rather than parsed with CASE ladders.
 - **The SQL prompt prefers joins and window functions to per-row subqueries.**
   Some databases run a subquery that refers to the outer row once for every

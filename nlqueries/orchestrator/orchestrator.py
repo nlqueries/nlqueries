@@ -52,7 +52,7 @@ _log = logging.getLogger(__name__)
 # Invalidated automatically when the file's mtime changes (e.g. after export-kb).
 _kb_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
-# Sentinel tags injected into the system prompt (must match _SQL_FORMAT_RULES
+# Sentinel tags injected into the system prompt (must match _sql_format_rules
 # in prompt_assembly.py).
 _OPEN_TAG = "<sql>"
 _CLOSE_TAG = "</sql>"

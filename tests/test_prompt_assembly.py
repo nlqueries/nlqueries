@@ -786,10 +786,11 @@ ANSWER_RULE_PHRASES = [
     # A definition given is exact.
     "A definition given in the question, the Business Rules or the Glossary",
     "apply every condition and boundary as written, not the usual meaning of the term",
-    # Numbers stored as text: ordered by the cast, returned as stored.
-    "For the largest or smallest value of a text column that holds numbers",
+    # Numbers stored as text: ordered, compared or added by the cast, returned as stored.
+    "When the question orders, compares or adds a text column that holds numbers",
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
-    "and return the column as stored, not",
+    "Return the column as stored: for its largest value, ORDER BY",
+    "When the question only asks for the value, do not cast it.",
     # Dates written as free text are not parsed with ladders.
     "Do not parse dates written as free text",
     "order by the column as stored, and where you explain your reasoning, say so",
@@ -923,6 +924,15 @@ def test_these_decorations_get_the_strip_rule(samples: list[str]) -> None:
     kb = _kb_with_columns({"name": "reading", "type": "TEXT", "samples": samples})
 
     assert _STRIP_RULE in assemble_prompt("What is the largest reading?", kb).static_system
+
+
+def test_a_long_list_of_decorated_columns_is_cut_and_says_so() -> None:
+    columns = [{"name": f"rate_{i}", "type": "TEXT", "samples": ["45%", "7%"]} for i in range(13)]
+    static = assemble_prompt("Which rate is highest?", _kb_with_columns(*columns)).static_system
+
+    assert "events.rate_9 (" in static
+    assert "events.rate_10 (" not in static
+    assert "and 3 more like them, not listed" in static
 
 
 def test_a_number_typed_column_gets_no_strip_rule() -> None:
