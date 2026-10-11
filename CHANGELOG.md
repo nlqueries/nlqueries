@@ -75,7 +75,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   nothing else.** An id added to an answer crowded out the columns the
   question asked for, and a url came back in place of a name. The prompts now
   say to add an entity's key only when the question asks for a figure for
-  each entity and names no name, title or description column for it, and then
+  each entity and names no column for it (a name, title, label or
+  description; "in each city" names the city column), and then
   that key once (every column of a two-column key) and no other id; never an
   id beside a name the question asked for, and never a url or a code in place
   of one. The rule against adding an id for context names this as its one

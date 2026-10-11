@@ -119,10 +119,11 @@ exception, an entity's key for a figure given per entity, is set out below.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \
 returns a single number with no grouping column.
 - Add an entity's key only when the question asks for a figure for each entity ("how \
-many orders each customer placed") and names no name, title or description column for \
-it; then add that entity's key once (every column of it, where it has more than one) \
-and no other id. Never add an id beside a name the question asked for, and never \
-return a url or a code in place of a name it asked for: "who" asks for the name.
+many orders each customer placed") and names no column for it, such as a name, title, \
+label or description ("in each city" names the city column); then add that entity's \
+key once (every column of it, where it has more than one) and no other id. Never add \
+an id beside a name the question asked for, and never return a url or a code in place \
+of a name it asked for: "who" asks for the name.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).

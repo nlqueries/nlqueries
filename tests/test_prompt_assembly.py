@@ -772,6 +772,10 @@ ANSWER_RULE_PHRASES = [
     # A key only for a per-entity figure with nothing else to name it by; the whole
     # key where it has two columns, since half of it merges distinct entities.
     "Add an entity's key only when the question asks for a figure for each entity",
+    # A grouping column the question names ("in each city") is a column for the
+    # entity, so no key goes beside it.
+    "names no column for it, such as a name, title, label or description",
+    '("in each city" names the city column)',
     "then add that entity's key once (every column of it, where it has more than one)",
     "and no other id",
     "Never add an id beside a name the question asked for",
