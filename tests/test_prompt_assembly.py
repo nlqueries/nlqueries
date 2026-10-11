@@ -946,6 +946,8 @@ def test_the_coded_values_rule_points_down_to_the_decoration_list() -> None:
         ["4:05.120", "4:11.002"],  # times
         ["January 5, 2008", "March 2, 2009"],  # dates written as free text
         ["45%"],  # one sample is not a pattern
+        ["65+", "70+", "80+"],  # age bands: a bare plus makes a code
+        ["10-", "20-"],  # a bare minus after the digits makes a code too
         ["$50,000/yr", "$4,000/mo"],  # decorations that disagree
     ],
 )

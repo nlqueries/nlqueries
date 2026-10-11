@@ -79,7 +79,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   not that the output should be relabelled; relabelling only when the
   question asks for the relabelled output itself, as a "yes or no?"
   question does. A column the knowledge base shows holding numbers with a
-  decoration is not treated as coded.
+  decoration is not treated as coded, and a number followed by a bare '+'
+  or '-' ('65+') is no longer read as one: it is a code.
 - **The SQL prompt adds a key column only to a per-entity figure that names
   nothing else.** An id added to an answer crowded out the columns the
   question asked for, and a url came back in place of a name. The prompts now

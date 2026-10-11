@@ -189,12 +189,14 @@ shipped?") returns the value the data stores for it."""
 #: separators inside its digits ('1,200', '1.234,56'). A prefix is a currency sign
 #: ('$', '€') or up to four letters set off by a space or a period ('I 2008',
 #: 'No. 5'): letters joined to the digits ('A1', 'SKU12', 'INV-1001') make a code,
-#: not a decorated number. Times and dates do not match: their separators sit
-#: between digits outside the number.
+#: not a decorated number. So does a bare '+' or '-' after the digits ('65+' is
+#: an age band, '10-' a grade): the coded-values rule keeps those as stored, and
+#: listing them here would tell the model to strip and cast them. Times and dates
+#: do not match: their separators sit between digits outside the number.
 _DECORATED_NUMBER = re.compile(
     r"^\s*(?P<pre>[$€£¥₹]|[A-Za-z]{1,4}(?:\.\s?|\s))?\s?"
     r"(?P<num>[+-]?(?:\d{1,3}(?:[,.\s]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?))"
-    r"\s?(?P<post>[^\d\s][^\d]{0,7})?\s*$"
+    r"\s?(?P<post>(?![+-]\s*$)[^\d\s][^\d]{0,7})?\s*$"
 )
 
 #: Most columns a knowledge-base rule names; a longer list is cut and says so, so
