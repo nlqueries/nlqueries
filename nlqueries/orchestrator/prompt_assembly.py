@@ -97,9 +97,10 @@ _ROLE_PREAMBLE = (
 #: the repair step, so a repaired statement cannot undo it.
 _ANSWER_RULES = """\
 - SELECT only the columns the question asks for, in the order the question or its \
-hint lists them: "street, city, state and zip" is four columns in that order. Do \
-not add the column you sorted, filtered or ranked by, an id, or a name, label or \
-count column for context.
+hint lists them: "street, city, state and zip" is four columns in that order. A key or \
+id column stays where the question names it, never moved to the front: "the city, the \
+store id and the opening date" puts the id second. Do not add the column you sorted, \
+filtered or ranked by, an id, or a name, label or count column for context.
 - A field, count, total, average or rank the question names is a requested column: \
 "the top five cities and their number of stores" returns the city and the count.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \

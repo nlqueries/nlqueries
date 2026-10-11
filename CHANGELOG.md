@@ -71,6 +71,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt keeps a key column where the question puts it.** The
+  prompts already said to return columns in the order the question names
+  them, but a statement still moved an id the question named later to the
+  front, out of the order asked for. They now say a key or id column stays
+  where the question names it, never moved to the front.
 - **The SQL prompt says to total before a join that repeats rows.** A sum or
   count over one table, joined to another with several rows per key (a
   customer's invoices joined to the same customer's shipments), counts each

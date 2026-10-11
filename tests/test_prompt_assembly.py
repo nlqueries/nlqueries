@@ -765,6 +765,7 @@ ANSWER_RULE_PHRASES = [
     "SELECT only the columns the question asks for",
     "in the order the question or its hint lists them",
     "Do not add the column you sorted, filtered or ranked by",
+    "id column stays where the question names it, never moved to the front",
     "A field, count, total, average or rank the question names is a requested column",
     "with no breakdown asked for returns a single number with no grouping column",
     "A person's full name is the first name and the last name, as two columns",
