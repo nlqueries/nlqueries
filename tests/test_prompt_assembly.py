@@ -790,7 +790,8 @@ ANSWER_RULE_PHRASES = [
     "When the question orders, compares or adds a text column that holds numbers",
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
     "Return the column as stored: for its largest value, ORDER BY",
-    "A plain cast reads only digits and a decimal mark: where the values shown carry",
+    "A plain cast reads only digits and a decimal point: where the values shown carry",
+    "(a decimal comma becomes a point, not removed: '1,5' is 1.5)",
     "When the question only asks for the value, do not",
     # Dates written as free text are not parsed with ladders.
     "Do not parse dates written as free text",
@@ -925,6 +926,16 @@ def test_these_decorations_get_the_strip_rule(samples: list[str]) -> None:
     kb = _kb_with_columns({"name": "reading", "type": "TEXT", "samples": samples})
 
     assert _STRIP_RULE in assemble_prompt("What is the largest reading?", kb).static_system
+
+
+def test_the_strip_rule_tells_a_decimal_comma_from_a_thousands_separator() -> None:
+    """Both are a comma; one becomes a point and the other is removed."""
+    kb = _kb_with_columns({"name": "dose", "type": "TEXT", "samples": ["1,5", "2,75"]})
+
+    static = assemble_prompt("Which dose is largest?", kb).static_system
+
+    assert "a decimal comma, it becomes a point rather than being removed ('1,5' is 1.5" in static
+    assert "a thousands separator is removed ('1,200' is 1200)" in static
 
 
 def test_a_long_list_of_decorated_columns_is_cut_and_says_so() -> None:

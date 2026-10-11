@@ -121,8 +121,9 @@ count, such a row counts as 0.
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
 text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \
 the cast DESC LIMIT 1, not MAX(CAST(...)), since a converted copy is not the value asked \
-for. A plain cast reads only digits and a decimal mark: where the values shown carry \
-anything else, remove it inside the cast, or the cast gives 0 or the leading digits on \
+for. A plain cast reads only digits and a decimal point: where the values shown carry \
+anything else, remove it inside the cast (a decimal comma becomes a point, not removed: \
+'1,5' is 1.5), or the cast gives 0 or the leading digits on \
 some databases and fails on others. When the question only asks for the value, do not \
 cast it.
 - Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
@@ -223,7 +224,10 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
             f"{listed}. Only when the question orders, compares or adds one of them, "
             "strip the decoration inside the cast to a numeric type "
             "(CAST(REPLACE(column, '%', '') AS REAL) in SQLite), "
-            "keeping the decimal mark as a point; a plain CAST fails on some databases and on "
+            "keeping the decimal mark as a point: where the values use a decimal comma, it "
+            "becomes a point rather than being removed ('1,5' is 1.5, not 15), while a "
+            "thousands separator is removed ('1,200' is 1200); a plain CAST fails on some "
+            "databases and on "
             "others keeps only the leading digits or gives 0. When the question just asks for "
             "the value, return the column as stored."
         )
