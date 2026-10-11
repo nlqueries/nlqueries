@@ -78,6 +78,16 @@ _ROLE_PREAMBLE = (
 #: The display-column rule: an answer of ids is right and useless to the person who
 #: asked which customer it was. Instead of the id, not beside it.
 #:
+#: The column-order clause: with columns already to be returned in the order asked
+#: for, an id the question named later still came back first, the usual shape of
+#: a key leading its row. Its net effect is not yet measured; the re-run after
+#: these rule changes is that measurement.
+#:
+#: The key-column rule: a key column is added only to a figure given per entity
+#: when nothing the question names tells the entities apart, and one at most.
+#: Added anywhere else, an id crowded out the columns asked for, or a url came
+#: back in place of the name the question wanted.
+#:
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
@@ -105,6 +115,11 @@ filtered or ranked by, an id, or a name, label or count column for context.
 "the top five cities and their number of stores" returns the city and the count.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \
 returns a single number with no grouping column.
+- Add an entity's key column only when the question asks for a figure for each entity \
+("how many orders each customer placed") and names no name, title or description \
+column for it; then add one key column, no more. Never add an id beside a name the \
+question asked for, and never return a url or a code in place of a name it asked for: \
+"who" asks for the name.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).

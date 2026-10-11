@@ -768,6 +768,11 @@ ANSWER_RULE_PHRASES = [
     "id column stays where the question names it, never moved to the front",
     "A field, count, total, average or rank the question names is a requested column",
     "with no breakdown asked for returns a single number with no grouping column",
+    # A key column only for a per-entity figure with nothing else to name it by.
+    "Add an entity's key column only when the question asks for a figure for each entity",
+    "then add one key column, no more",
+    "Never add an id beside a name the question asked for",
+    "never return a url or a code in place of a name it asked for",
     "A person's full name is the first name and the last name, as two columns",
     "not every numbered variant",
     # Counting the joined rows, not distinct ones, unless asked.
