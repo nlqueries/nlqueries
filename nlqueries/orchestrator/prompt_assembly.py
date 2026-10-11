@@ -249,8 +249,15 @@ def _decorated_number_columns(
 
 
 #: Column names that say the column holds a running total wherever it appears.
+#: "running" and "balance" alone are not enough: running_time is a duration
+#: and balance_due or minimum_balance an amount on each row, all of which add
+#: up. So running_ needs a total after it, and a balance is the bare word or
+#: one of the forms a ledger carries forward.
 _RUNNING_TOTAL_NAME = re.compile(
-    r"^(?:cumulative|running|cum)_|_(?:cumulative|running|to_date|ytd)$|^ytd_|(?:^|_)balance(?:$|_)",
+    r"^(?:cumulative|cum|ytd)_"
+    r"|_(?:cumulative|to_date|ytd)$"
+    r"|(?:^|_)running_(?:total|sum|balance|count)(?:$|_)"
+    r"|^(?:opening_|closing_|account_)?balance(?:_after)?$",
     re.IGNORECASE,
 )
 #: Column names that hold a running total in a standings table: a team's wins or
@@ -260,9 +267,12 @@ _STANDINGS_TOTALS = frozenset({"wins", "losses", "draws", "points", "pts"})
 
 def _running_total_columns(knowledge_base: dict[str, Any]) -> list[tuple[str, str]]:
     """``(table, column)`` for each column whose name says it holds a running
-    total: ``cumulative_*``, ``running_*``, ``*_ytd``, ``*_to_date``, a balance,
-    or wins, losses, draws or points in a table named as standings. Names only:
-    sample values cannot show that a column accumulates."""
+    total: ``cumulative_*``, ``cum_*``, ``ytd_*``, ``*_ytd``, ``*_to_date``,
+    ``running_total``, ``running_sum``, ``running_balance`` or ``running_count``,
+    a balance carried forward (``balance``, ``opening_balance``,
+    ``closing_balance``, ``account_balance``, ``balance_after``), or wins,
+    losses, draws or points in a table named as standings. Names only: sample
+    values cannot show that a column accumulates."""
     found: list[tuple[str, str]] = []
     for table in knowledge_base.get("schema", {}).get("tables", []) or []:
         table_name = str(table.get("name") or "")

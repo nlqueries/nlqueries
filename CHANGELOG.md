@@ -77,7 +77,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   times too large. Where a column's name says it holds one, the prompts name
   it and say an entity's total is the value on its latest row, not the SUM of
   its rows (MAX only where the total never falls), while a total across
-  entities still adds up each one's latest value.
+  entities still adds up each one's latest value. A per-row amount whose
+  name only looks like one (running_time, balance_due) is not listed.
 - **The SQL prompt keeps coded values as stored.** A statement turned a code
   such as 'R' into a word in its output, or cast a code such as '65+' to the
   number 65, so neither matched the value stored. The prompts now say codes

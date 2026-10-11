@@ -1100,6 +1100,57 @@ def test_no_running_total_rule_without_such_a_column() -> None:
     assert _RUNNING_RULE not in assemble_prompt("Total order value?", _make_kb()).static_system
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "cumulative_sales",
+        "cum_points",
+        "ytd_revenue",
+        "sales_ytd",
+        "revenue_to_date",
+        "running_total",
+        "running_sum",
+        "running_balance",
+        "running_count",
+        "points_running_total",
+        "balance",
+        "opening_balance",
+        "closing_balance",
+        "account_balance",
+        "balance_after",
+    ],
+)
+def test_these_names_are_running_totals(name: str) -> None:
+    kb = _make_kb(
+        tables=[{"name": "ledger", "columns": [{"name": name, "type": "DECIMAL"}]}],
+        capsules=[],
+    )
+
+    assert f"ledger.{name}" in assemble_prompt("Totals?", kb).static_system
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "running_time",  # a film's duration: the total adds them up
+        "running_minutes",
+        "running_days",
+        "balance_due",  # an invoice's amount owed: the total adds them up
+        "minimum_balance",
+        "sales_running",
+        "imbalance",
+        "rebalance_date",
+    ],
+)
+def test_near_miss_names_are_not_running_totals(name: str) -> None:
+    kb = _make_kb(
+        tables=[{"name": "ledger", "columns": [{"name": name, "type": "DECIMAL"}]}],
+        capsules=[],
+    )
+
+    assert _RUNNING_RULE not in assemble_prompt("Totals?", kb).static_system
+
+
 def test_the_running_total_rule_reaches_the_repair_prompt() -> None:
     from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
 
