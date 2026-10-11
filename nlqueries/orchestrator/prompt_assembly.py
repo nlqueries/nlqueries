@@ -118,8 +118,9 @@ or count them per join key in a subquery first, then join the result.
 keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
 count, such a row counts as 0.
 - For the largest or smallest value of a text column that holds numbers, order by its \
-numeric cast (ORDER BY CAST(column AS REAL) DESC LIMIT 1) and return the column as \
-stored, not MAX(CAST(...)): when the question asks for the value, a converted copy is \
+cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery) and \
+return the column as stored, not MAX(CAST(...)): when the question asks for the value, a \
+converted copy is \
 not it.
 - Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
 or chains of SUBSTR. Unless the knowledge base documents the format, order by the column \
@@ -211,7 +212,8 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
         extra.append(
             "- These text columns hold numbers written with a decoration: "
             f"{listed}. Only when the question orders, compares or adds one of them, "
-            "strip the decoration inside the CAST (CAST(REPLACE(column, '%', '') AS REAL)), "
+            "strip the decoration inside the cast to a numeric type "
+            "(CAST(REPLACE(column, '%', '') AS REAL) in SQLite), "
             "keeping the decimal mark as a point; a plain CAST fails on some databases and on "
             "others keeps only the leading digits or gives 0. When the question just asks for "
             "the value, return the column as stored."

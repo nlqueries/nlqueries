@@ -788,7 +788,7 @@ ANSWER_RULE_PHRASES = [
     "apply every condition and boundary as written, not the usual meaning of the term",
     # Numbers stored as text: ordered by the cast, returned as stored.
     "For the largest or smallest value of a text column that holds numbers",
-    "order by its numeric cast (ORDER BY CAST(column AS REAL) DESC LIMIT 1)",
+    "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
     "and return the column as stored, not",
     # Dates written as free text are not parsed with ladders.
     "Do not parse dates written as free text",
