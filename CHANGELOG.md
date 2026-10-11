@@ -71,6 +71,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt keeps coded values as stored.** A statement turned a code
+  such as 'R' into a word in its output, or cast a code such as '65+' to the
+  number 65, so neither matched the value stored. The prompts now say codes
+  stay exactly as stored in SELECT and WHERE, that a coded column is not
+  cast, and that a mapping explaining a code says which code to filter on,
+  not that the output should be relabelled; relabelling only when the
+  question asks for the relabelled output itself, as a "yes or no?"
+  question does. A column the knowledge base shows holding numbers with a
+  decoration is not treated as coded, and a number followed by a bare '+'
+  or '-' ('65+') is no longer read as one: it is a code.
 - **The SQL prompt adds a key column only to a per-entity figure that names
   nothing else.** An id added to an answer crowded out the columns the
   question asked for, and a url came back in place of a name. The prompts now

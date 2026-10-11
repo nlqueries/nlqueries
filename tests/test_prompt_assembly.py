@@ -821,6 +821,15 @@ ANSWER_RULE_PHRASES = [
     "unless the question asks for every tie",
     # Literals.
     "A quoted value in the hint is exact: use it as written",
+    # Codes stay codes.
+    "stay exactly as stored, in SELECT and in WHERE",
+    "do not relabel them (no CASE turning 'Y' into a word) and do not",
+    "CAST a coded column ('65+' is an age band, not the number 65;",
+    # The evidence-based decoration list wins over the general ban on casting
+    # codes, and a yes-or-no question still gets its YES or NO.
+    "a column listed below as holding numbers written with a decoration is not coded",
+    'relabelled output itself, as a "yes or no?" question does',
+    "it is not a request to relabel the output",
     # Columns the hint names.
     "A column the hint names for something in the question is the column to use for it",
     "even where another column seems to hold the same thing in another form",
@@ -907,6 +916,23 @@ def test_decorated_numbers_in_the_samples_get_the_strip_rule() -> None:
     assert "When the question just asks for the value, return the column as stored" in static
 
 
+def test_the_coded_values_rule_points_down_to_the_decoration_list() -> None:
+    """The coded-values rule says a column "listed below" as decorated is not coded,
+    so the list must come after it in both the cached and the repair prompt."""
+    from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
+
+    kb = _kb_with_columns(
+        {"name": "fill_rate", "type": "TEXT", "samples": ["45%", "12.5%", "7%"]},
+    )
+
+    for prompt in (
+        assemble_prompt("Which event had the highest fill rate?", kb).static_system,
+        _build_sql_system_prompt(kb, "sqlite"),
+    ):
+        coded = prompt.index("a column listed below as holding numbers written with a decoration")
+        assert coded < prompt.index(_STRIP_RULE)
+
+
 @pytest.mark.parametrize(
     "samples",
     [
@@ -920,6 +946,8 @@ def test_decorated_numbers_in_the_samples_get_the_strip_rule() -> None:
         ["4:05.120", "4:11.002"],  # times
         ["January 5, 2008", "March 2, 2009"],  # dates written as free text
         ["45%"],  # one sample is not a pattern
+        ["65+", "70+", "80+"],  # age bands: a bare plus makes a code
+        ["10-", "20-"],  # a bare minus after the digits makes a code too
         ["$50,000/yr", "$4,000/mo"],  # decorations that disagree
     ],
 )
