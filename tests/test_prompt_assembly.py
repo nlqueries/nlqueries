@@ -779,7 +779,9 @@ ANSWER_RULE_PHRASES = [
     'Join with an inner join. "For each X, how many Y"',
     "joins too: an X with no Y is left out",
     'Use LEFT JOIN only when the question says "including those with none"',
-    "or asks for every member of a dimension table whether or not it has a match",
+    'about the X that have no Y ("never ordered", "missing a manager")',
+    "member of a dimension table whether or not it has a match",
+    'a bare "for each X" is not such a question unless it says the unmatched ones are wanted',
     "If unsure, use an inner join.",
     # The name of what was asked about, not its id.
     "When the question asks which customer, product or other thing",

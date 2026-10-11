@@ -83,9 +83,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   "with no orders" drops exactly the rows it asks about. The inner join is the
   stated rule, "for each X, how many Y" included; LEFT JOIN is the exception,
   only for the listed wording ("including those with none", "zero", "at most",
-  "fewer than", "no", "without") or every member of a dimension table, and
-  then a row with no match counts as 0 where a count is asked for. If unsure,
-  inner.
+  "fewer than", "no", "without"), a question about the X that have no Y
+  ("never ordered", "missing a manager"), or every member of a dimension
+  table, which a bare "for each X" does not ask for; then a row with no match
+  counts as 0 where a count is asked for. If unsure, inner.
 - **The SQL prompt asks for the name, not the id, of the thing asked about.**
   "Which customer" answered with customer ids is right and of no use to the
   person asking. The prompts now say to return the thing's name or title

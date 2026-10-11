@@ -117,9 +117,11 @@ joined to the same customer's shipments repeat each invoice once per shipment), 
 or count them per join key in a subquery first, then join the result.
 - Join with an inner join. "For each X, how many Y" and "the total Y per X" are inner \
 joins too: an X with no Y is left out. Use LEFT JOIN only when the question says \
-"including those with none", "zero", "at most", "fewer than", "no" or "without", or asks \
-for every member of a dimension table whether or not it has a match; there a row with \
-no match counts as 0 where a count is asked for. If unsure, use an inner join.
+"including those with none", "zero", "at most", "fewer than", "no" or "without", asks \
+about the X that have no Y ("never ordered", "missing a manager"), or asks for every \
+member of a dimension table whether or not it has a match; a bare "for each X" is not \
+such a question unless it says the unmatched ones are wanted. There a row with no match \
+counts as 0 where a count is asked for. If unsure, use an inner join.
 - When the question orders, compares or adds a text column that holds numbers, use its \
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
 text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \
