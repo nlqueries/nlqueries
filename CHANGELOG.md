@@ -71,6 +71,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt adds a key column only to a per-entity figure that names
+  nothing else.** An id added to an answer crowded out the columns the
+  question asked for, and a url came back in place of a name. The prompts now
+  say to add an entity's key only when the question asks for a figure for
+  each entity and names no column for it (a name, title, label or
+  description; "in each city" names the city column), and then
+  that key once (every column of a two-column key) and no other id; never an
+  id beside a name the question asked for, and never a url or a code in place
+  of one. The rule against adding an id for context names this as its one
+  exception.
 - **The SQL prompt keeps a key column where the question puts it.** The
   prompts already said to return columns in the order the question names
   them, but a statement still moved an id the question named later to the

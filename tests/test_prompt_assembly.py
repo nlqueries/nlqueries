@@ -765,9 +765,21 @@ ANSWER_RULE_PHRASES = [
     "SELECT only the columns the question asks for",
     "in the order the question or its hint lists them",
     "Do not add the column you sorted, filtered or ranked by",
+    "the one exception, an entity's key for a figure given per entity, is set out below",
     "id column stays where the question names it, never moved to the front",
     "A field, count, total, average or rank the question names is a requested column",
     "with no breakdown asked for returns a single number with no grouping column",
+    # A key only for a per-entity figure with nothing else to name it by; the whole
+    # key where it has two columns, since half of it merges distinct entities.
+    "Add an entity's key only when the question asks for a figure for each entity",
+    # A grouping column the question names ("in each city") is a column for the
+    # entity, so no key goes beside it.
+    "names no column for it, such as a name, title, label or description",
+    '("in each city" names the city column)',
+    "then add that entity's key once (every column of it, where it has more than one)",
+    "and no other id",
+    "Never add an id beside a name the question asked for",
+    "never return a url or a code in place of a name it asked for",
     "A person's full name is the first name and the last name, as two columns",
     "not every numbered variant",
     # Counting the joined rows, not distinct ones, unless asked.

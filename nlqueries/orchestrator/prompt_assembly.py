@@ -78,6 +78,18 @@ _ROLE_PREAMBLE = (
 #: The display-column rule: an answer of ids is right and useless to the person who
 #: asked which customer it was. Instead of the id, not beside it.
 #:
+#: The column-order clause: with columns already to be returned in the order asked
+#: for, an id the question named later still came back first, the usual shape of
+#: a key leading its row. Its net effect is not yet measured; the re-run after
+#: these rule changes is that measurement.
+#:
+#: The key-column rule: a key is added only to a figure given per entity when
+#: nothing the question names tells the entities apart, and that key once, with
+#: no other id. Added anywhere else, an id crowded out the columns asked for, or a
+#: url came back in place of the name the question wanted. "Once" counts keys, not
+#: columns: half of a two-column key groups distinct entities together. The first
+#: rule names this as its one exception, so the two are not weighed afresh each time.
+#:
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
@@ -100,11 +112,18 @@ _ANSWER_RULES = """\
 hint lists them: "street, city, state and zip" is four columns in that order. A key or \
 id column stays where the question names it, never moved to the front: "the city, the \
 store id and the opening date" puts the id second. Do not add the column you sorted, \
-filtered or ranked by, an id, or a name, label or count column for context.
+filtered or ranked by, an id, or a name, label or count column for context; the one \
+exception, an entity's key for a figure given per entity, is set out below.
 - A field, count, total, average or rank the question names is a requested column: \
 "the top five cities and their number of stores" returns the city and the count.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \
 returns a single number with no grouping column.
+- Add an entity's key only when the question asks for a figure for each entity ("how \
+many orders each customer placed") and names no column for it, such as a name, title, \
+label or description ("in each city" names the city column); then add that entity's \
+key once (every column of it, where it has more than one) and no other id. Never add \
+an id beside a name the question asked for, and never return a url or a code in place \
+of a name it asked for: "who" asks for the name.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
