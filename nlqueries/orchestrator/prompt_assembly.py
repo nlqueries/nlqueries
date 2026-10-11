@@ -93,6 +93,11 @@ _ROLE_PREAMBLE = (
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
+#: The coded-values rule: a code returned as a word, or cast to a number, is not
+#: the value stored ('65+' cast to a number is 65, and no longer equals '65+'). A
+#: mapping that explains a code says which code to filter on, not that the output
+#: should be relabelled.
+#:
 #: The numeric-text rules: a text column holding numbers is ordered by its cast
 #: but returned as stored, since a converted copy is not the value the person
 #: asked for. Stripping a decoration (a currency sign, a percent sign, a unit) is
@@ -161,6 +166,14 @@ can take minutes.
 ... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
 for every tie.
 - A quoted value in the hint is exact: use it as written, in the column the hint names.
+- Coded values ('Y', 'N', '+', '-', '65+', a status code) stay exactly as stored, in \
+SELECT and in WHERE: do not relabel them (no CASE turning 'Y' into a word) and do not \
+CAST a coded column ('65+' is an age band, not the number 65; a column listed below \
+as holding numbers written with a decoration is not coded). A mapping the question, \
+the hint or a document gives to explain a code ("returned refers to status = 'R'") \
+tells you which code to filter on; it is not a request to relabel the output. Relabel \
+only when the question asks for the relabelled output itself, as a "yes or no?" \
+question does.
 - A column the hint names for something in the question is the column to use for it \
 ("the cheapest refers to MIN(price)" means order by price), even where another \
 column seems to hold the same thing in another form.
