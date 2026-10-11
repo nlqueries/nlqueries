@@ -1202,6 +1202,27 @@ def test_near_miss_names_are_not_running_totals(name: str) -> None:
     assert _RUNNING_RULE not in assemble_prompt("Totals?", kb).static_system
 
 
+@pytest.mark.parametrize(
+    ("name", "column_type", "listed"),
+    [
+        ("paid_to_date", "DECIMAL(12,2)", True),
+        ("paid_to_date", "", True),  # no recorded type: read by its name
+        ("effective_to_date", "DATE", False),  # a contract's end date, not an amount
+        ("active_to_date", "TIMESTAMP", False),
+        ("valid_to_date", "TEXT", False),  # SQLite stores dates as text
+        ("cumulative_total", "VARCHAR(20)", False),
+        ("running_total_reached", "BOOLEAN", False),
+    ],
+)
+def test_a_running_total_is_a_number(name: str, column_type: str, listed: bool) -> None:
+    kb = _make_kb(
+        tables=[{"name": "contracts", "columns": [{"name": name, "type": column_type}]}],
+        capsules=[],
+    )
+
+    assert (_RUNNING_RULE in assemble_prompt("Totals?", kb).static_system) is listed
+
+
 def test_the_running_total_rule_reaches_the_repair_prompt() -> None:
     from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
 

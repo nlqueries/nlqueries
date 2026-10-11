@@ -274,13 +274,20 @@ def _is_standings_table(table_name: str) -> bool:
     return any(word.lower() == "standings" for word in _NAME_WORDS.findall(table_name))
 
 
+#: Column types that cannot hold a running total: a date or time (valid_to_date in
+#: a contract table matches *_to_date), text, which is how SQLite stores dates, or
+#: a flag. A column with no recorded type is still read by its name.
+_NON_TOTAL_TYPE_MARKERS = ("DATE", "TIME", *_TEXT_MARKERS, "BOOL")
+
+
 def _running_total_columns(knowledge_base: dict[str, Any]) -> list[tuple[str, str]]:
     """``(table, column)`` for each column whose name says it holds a running
     total: ``cumulative_*``, ``cum_*``, ``ytd_*``, ``*_ytd``, ``*_to_date``,
     ``running_total``, ``running_sum``, ``running_balance`` or ``running_count``,
     a balance carried forward (``balance``, ``opening_balance``,
     ``closing_balance``, ``account_balance``, ``balance_after``), or wins,
-    losses, draws, points or pts in a table named as standings. Names only:
+    losses, draws, points or pts in a table named as standings. A date, time,
+    text or boolean column is skipped whatever its name. Names and types only:
     sample values cannot show that a column accumulates."""
     found: list[tuple[str, str]] = []
     for table in knowledge_base.get("schema", {}).get("tables", []) or []:
@@ -288,6 +295,9 @@ def _running_total_columns(knowledge_base: dict[str, Any]) -> list[tuple[str, st
         standings = _is_standings_table(table_name)
         for column in table.get("columns", []) or []:
             name = str(column.get("name") or "")
+            column_type = str(column.get("type") or "").upper()
+            if any(marker in column_type for marker in _NON_TOTAL_TYPE_MARKERS):
+                continue
             if _RUNNING_TOTAL_NAME.search(name) or (
                 standings and name.lower() in _STANDINGS_TOTALS
             ):
