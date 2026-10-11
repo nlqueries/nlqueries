@@ -105,6 +105,12 @@ _ROLE_PREAMBLE = (
 #: column (see :func:`answer_rules_for`); stated for every column, it rewrote
 #: plain values and built parsers for dates written as free text.
 #:
+#: The running-total rule: a column that already holds a running total (a
+#: standings table's points, a balance, cumulative_*) is summed to a figure many
+#: times too large. It is named only where a column's name says so. The latest row
+#: is the total; MAX equals it only where the total never falls, which a balance
+#: can, and a total across entities still adds up each one's latest value.
+#:
 #: The correlated-subquery rule: a statement that is right but, as some databases
 #: run it, repeats a subquery for every row of a large table does not finish within
 #: a request's timeout.
@@ -242,6 +248,63 @@ def _decorated_number_columns(
     return found
 
 
+#: Column names that say the column holds a running total wherever it appears.
+#: "running" and "balance" alone are not enough: running_time is a duration
+#: and balance_due or minimum_balance an amount on each row, all of which add
+#: up. So running_ needs a total after it, and a balance is the bare word or
+#: one of the forms a ledger carries forward.
+_RUNNING_TOTAL_NAME = re.compile(
+    r"^(?:cumulative|cum|ytd)_"
+    r"|_(?:cumulative|to_date|ytd)$"
+    r"|(?:^|_)running_(?:total|sum|balance|count)(?:$|_)"
+    r"|^(?:opening_|closing_|account_)?balance(?:_after)?$",
+    re.IGNORECASE,
+)
+#: Column names that hold a running total in a standings table: a team's wins or
+#: points so far in the season, restated on every row.
+_STANDINGS_TOTALS = frozenset({"wins", "losses", "draws", "points", "pts"})
+#: The words of a table name, in snake_case or CamelCase: league_standings and
+#: LeagueStandings both give "standings".
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+
+
+def _is_standings_table(table_name: str) -> bool:
+    """Whether "standings" is a word of the table's name: not a substring of
+    another word (outstanding_invoices) and not "standing" (standing_orders)."""
+    return any(word.lower() == "standings" for word in _NAME_WORDS.findall(table_name))
+
+
+#: Column types that cannot hold a running total: a date or time (valid_to_date in
+#: a contract table matches *_to_date), text, which is how SQLite stores dates, or
+#: a flag. A column with no recorded type is still read by its name.
+_NON_TOTAL_TYPE_MARKERS = ("DATE", "TIME", *_TEXT_MARKERS, "BOOL")
+
+
+def _running_total_columns(knowledge_base: dict[str, Any]) -> list[tuple[str, str]]:
+    """``(table, column)`` for each column whose name says it holds a running
+    total: ``cumulative_*``, ``cum_*``, ``ytd_*``, ``*_ytd``, ``*_to_date``,
+    ``running_total``, ``running_sum``, ``running_balance`` or ``running_count``,
+    a balance carried forward (``balance``, ``opening_balance``,
+    ``closing_balance``, ``account_balance``, ``balance_after``), or wins,
+    losses, draws, points or pts in a table named as standings. A date, time,
+    text or boolean column is skipped whatever its name. Names and types only:
+    sample values cannot show that a column accumulates."""
+    found: list[tuple[str, str]] = []
+    for table in knowledge_base.get("schema", {}).get("tables", []) or []:
+        table_name = str(table.get("name") or "")
+        standings = _is_standings_table(table_name)
+        for column in table.get("columns", []) or []:
+            name = str(column.get("name") or "")
+            column_type = str(column.get("type") or "").upper()
+            if any(marker in column_type for marker in _NON_TOTAL_TYPE_MARKERS):
+                continue
+            if _RUNNING_TOTAL_NAME.search(name) or (
+                standings and name.lower() in _STANDINGS_TOTALS
+            ):
+                found.append((_table_ref(table) or table_name, name))
+    return found
+
+
 def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
     """The answer rules, with those this knowledge base's evidence calls for.
 
@@ -270,6 +333,20 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
             "databases and on "
             "others keeps only the leading digits or gives 0. When the question just asks for "
             "the value, return the column as stored."
+        )
+    running = _running_total_columns(knowledge_base)
+    if running:
+        listed = ", ".join(f"{table}.{column}" for table, column in running[:_MAX_RULE_COLUMNS])
+        if len(running) > _MAX_RULE_COLUMNS:
+            listed += f", and {len(running) - _MAX_RULE_COLUMNS} more like them, not listed"
+        extra.append(
+            f"- These columns hold running totals: {listed}. Each row holds the total so far, "
+            "so an entity's total is the value on its latest row, not the SUM of its rows (MAX "
+            "gives the same for a total that never falls, such as wins or points, but not for "
+            "a balance); a total across entities adds up each one's latest value. Where the "
+            "total restarts each period (a year-to-date figure, a season's standings), that "
+            "holds within a period, and a span of periods adds up each period's last value. "
+            "Where you explain your reasoning, say which you used."
         )
     return "\n".join([_ANSWER_RULES, *extra])
 

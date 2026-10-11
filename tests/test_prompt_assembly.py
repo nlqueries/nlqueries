@@ -1017,3 +1017,218 @@ def test_the_static_block_with_the_strip_rule_is_identical_across_questions() ->
     second = assemble_prompt("List the events.", kb).static_system
 
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Running totals: a rule only where a column's name says it holds one
+# ---------------------------------------------------------------------------
+
+_RUNNING_RULE = "These columns hold running totals"
+
+
+def test_running_total_columns_get_the_max_not_sum_rule() -> None:
+    kb = _make_kb(
+        tables=[
+            {
+                "name": "league_standings",
+                "columns": [
+                    {"name": "team_id", "type": "INTEGER"},
+                    {"name": "points", "type": "INTEGER"},
+                    {"name": "wins", "type": "INTEGER"},
+                ],
+            },
+            {
+                "name": "accounts",
+                "columns": [
+                    {"name": "balance", "type": "DECIMAL"},
+                    {"name": "cumulative_deposits", "type": "DECIMAL"},
+                    {"name": "fees_ytd", "type": "DECIMAL"},
+                ],
+            },
+        ],
+        capsules=[],
+    )
+
+    static = assemble_prompt("Which team has the most points?", kb).static_system
+
+    assert _RUNNING_RULE in static
+    for named in (
+        "league_standings.points",
+        "league_standings.wins",
+        "accounts.balance",
+        "accounts.cumulative_deposits",
+        "accounts.fees_ytd",
+    ):
+        assert named in static, named
+    assert "league_standings.team_id" not in static
+    assert "an entity's total is the value on its latest row, not the SUM of its rows" in static
+    # A balance can fall, so MAX is no stand-in for it, and a total over many
+    # accounts still adds up each one's latest balance.
+    assert "never falls, such as wins or points, but not for a balance" in static
+    assert "a total across entities adds up each one's latest value" in static
+
+
+def test_a_long_list_of_running_totals_is_cut_and_says_so() -> None:
+    columns = [{"name": f"cumulative_{i}", "type": "INTEGER"} for i in range(12)]
+    kb = _make_kb(tables=[{"name": "ledger", "columns": columns}], capsules=[])
+
+    static = assemble_prompt("Totals?", kb).static_system
+
+    assert "ledger.cumulative_9" in static and "ledger.cumulative_10" not in static
+    assert "and 2 more like them, not listed" in static
+
+
+def test_points_outside_a_standings_table_are_not_a_running_total() -> None:
+    """A match's points are that match's; only a standings table restates a total."""
+    kb = _make_kb(
+        tables=[
+            {
+                "name": "matches",
+                "columns": [
+                    {"name": "points", "type": "INTEGER"},
+                    {"name": "wins", "type": "INTEGER"},
+                ],
+            }
+        ],
+        capsules=[],
+    )
+
+    assert _RUNNING_RULE not in assemble_prompt("Total points?", kb).static_system
+
+
+@pytest.mark.parametrize(
+    ("table_name", "column", "listed"),
+    [
+        ("league_standings", "pts", True),
+        ("LeagueStandings", "wins", True),
+        ("LEAGUE_STANDINGS", "losses", True),
+        ("season_standings", "draws", True),
+        # "standings" inside another word, or "standing" alone, is not a standings table.
+        ("outstanding_invoices", "points", False),
+        ("OutstandingItems", "wins", False),
+        ("standing_orders", "points", False),
+    ],
+)
+def test_a_standings_table_is_one_named_standings_as_a_word(
+    table_name: str, column: str, listed: bool
+) -> None:
+    kb = _make_kb(
+        tables=[{"name": table_name, "columns": [{"name": column, "type": "INTEGER"}]}],
+        capsules=[],
+    )
+
+    static = assemble_prompt("Totals?", kb).static_system
+
+    assert (f"{table_name}.{column}" in static) is listed
+    assert (_RUNNING_RULE in static) is listed
+
+
+def test_a_total_that_restarts_each_period_adds_up_per_period() -> None:
+    """A year-to-date figure restarts each year: over several years the total adds
+    up each year's last value, which neither the latest row nor MAX gives."""
+    kb = _make_kb(
+        tables=[
+            {
+                "name": "monthly_fees",
+                "columns": [
+                    {"name": "account_id", "type": "INTEGER"},
+                    {"name": "month", "type": "DATE"},
+                    {"name": "fees_ytd", "type": "DECIMAL"},
+                ],
+            }
+        ],
+        capsules=[],
+    )
+
+    static = assemble_prompt("Total fees for 2023 and 2024?", kb).static_system
+
+    assert "monthly_fees.fees_ytd" in static
+    assert "Where the total restarts each period (a year-to-date figure" in static
+    assert "a span of periods adds up each period's last value" in static
+
+
+def test_no_running_total_rule_without_such_a_column() -> None:
+    assert _RUNNING_RULE not in assemble_prompt("Total order value?", _make_kb()).static_system
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "cumulative_sales",
+        "cum_points",
+        "ytd_revenue",
+        "sales_ytd",
+        "revenue_to_date",
+        "running_total",
+        "running_sum",
+        "running_balance",
+        "running_count",
+        "points_running_total",
+        "balance",
+        "opening_balance",
+        "closing_balance",
+        "account_balance",
+        "balance_after",
+    ],
+)
+def test_these_names_are_running_totals(name: str) -> None:
+    kb = _make_kb(
+        tables=[{"name": "ledger", "columns": [{"name": name, "type": "DECIMAL"}]}],
+        capsules=[],
+    )
+
+    assert f"ledger.{name}" in assemble_prompt("Totals?", kb).static_system
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "running_time",  # a film's duration: the total adds them up
+        "running_minutes",
+        "running_days",
+        "balance_due",  # an invoice's amount owed: the total adds them up
+        "minimum_balance",
+        "sales_running",
+        "imbalance",
+        "rebalance_date",
+    ],
+)
+def test_near_miss_names_are_not_running_totals(name: str) -> None:
+    kb = _make_kb(
+        tables=[{"name": "ledger", "columns": [{"name": name, "type": "DECIMAL"}]}],
+        capsules=[],
+    )
+
+    assert _RUNNING_RULE not in assemble_prompt("Totals?", kb).static_system
+
+
+@pytest.mark.parametrize(
+    ("name", "column_type", "listed"),
+    [
+        ("paid_to_date", "DECIMAL(12,2)", True),
+        ("paid_to_date", "", True),  # no recorded type: read by its name
+        ("effective_to_date", "DATE", False),  # a contract's end date, not an amount
+        ("active_to_date", "TIMESTAMP", False),
+        ("valid_to_date", "TEXT", False),  # SQLite stores dates as text
+        ("cumulative_total", "VARCHAR(20)", False),
+        ("running_total_reached", "BOOLEAN", False),
+    ],
+)
+def test_a_running_total_is_a_number(name: str, column_type: str, listed: bool) -> None:
+    kb = _make_kb(
+        tables=[{"name": "contracts", "columns": [{"name": name, "type": column_type}]}],
+        capsules=[],
+    )
+
+    assert (_RUNNING_RULE in assemble_prompt("Totals?", kb).static_system) is listed
+
+
+def test_the_running_total_rule_reaches_the_repair_prompt() -> None:
+    from nlqueries.orchestrator.sql_generation import _build_sql_system_prompt
+
+    kb = _make_kb(
+        tables=[{"name": "accounts", "columns": [{"name": "balance", "type": "DECIMAL"}]}],
+        capsules=[],
+    )
+
+    assert _RUNNING_RULE in _build_sql_system_prompt(kb, "sqlite")

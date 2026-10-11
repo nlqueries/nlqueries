@@ -71,6 +71,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL prompt does not sum running totals.** A column that already holds
+  a running total, such as a standings table's points or wins, an account
+  balance or a cumulative_* figure, summed across rows gives a figure many
+  times too large. Where a column's name says it holds one, the prompts name
+  it and say an entity's total is the value on its latest row, not the SUM of
+  its rows (MAX only where the total never falls), while a total across
+  entities still adds up each one's latest value. A per-row amount whose
+  name only looks like one (running_time, balance_due) is not listed, nor is
+  a date, text or flag column (a contract's valid_to_date). Where
+  the total restarts each period (year to date, a season), a span of periods
+  adds up each period's last value.
 - **The SQL prompt keeps coded values as stored.** A statement turned a code
   such as 'R' into a word in its output, or cast a code such as '65+' to the
   number 65, so neither matched the value stored. The prompts now say codes
