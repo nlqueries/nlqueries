@@ -788,10 +788,11 @@ ANSWER_RULE_PHRASES = [
     "apply every condition and boundary as written, not the usual meaning of the term",
     # Numbers stored as text: ordered by the cast, returned as stored.
     "For the largest or smallest value of a text column that holds numbers",
+    "order by its numeric cast (ORDER BY CAST(column AS REAL) DESC LIMIT 1)",
     "and return the column as stored, not",
     # Dates written as free text are not parsed with ladders.
     "Do not parse dates written as free text",
-    "order by the column as stored and say so in your explanation",
+    "order by the column as stored, and where you explain your reasoning, say so",
     # Joins and window functions over per-row subqueries.
     "Prefer joins, GROUP BY and window functions to a subquery that refers to the outer",
     "which some databases run once per row of the outer query",
@@ -890,6 +891,9 @@ def test_decorated_numbers_in_the_samples_get_the_strip_rule() -> None:
         ["12", "7", "30"],  # plain numbers stored as text
         ["1.5", "2.25"],  # plain decimals
         ["A1", "B2", "C3"],  # codes
+        ["A1", "A2"],  # codes that share a prefix
+        ["SKU12", "SKU7"],  # letters joined to the digits
+        ["INV-1001", "INV-1002"],  # a hyphen is not a minus sign after a prefix
         ["2020-01-05", "2021-03-02"],  # dates
         ["4:05.120", "4:11.002"],  # times
         ["January 5, 2008", "March 2, 2009"],  # dates written as free text
@@ -903,6 +907,22 @@ def test_no_strip_rule_without_that_evidence(samples: list[str]) -> None:
     static = assemble_prompt("What is the largest reading?", kb).static_system
 
     assert _STRIP_RULE not in static
+
+
+@pytest.mark.parametrize(
+    "samples",
+    [
+        ["I 2008", "2008", "1999"],  # a marker set off by a space
+        ["No. 5", "No. 12"],  # a word with a period
+        ["USD 300", "USD 1,200"],  # a currency code
+        ["12 min", "7 min"],  # a unit
+        ["1,5", "2,75"],  # a decimal comma
+    ],
+)
+def test_these_decorations_get_the_strip_rule(samples: list[str]) -> None:
+    kb = _kb_with_columns({"name": "reading", "type": "TEXT", "samples": samples})
+
+    assert _STRIP_RULE in assemble_prompt("What is the largest reading?", kb).static_system
 
 
 def test_a_number_typed_column_gets_no_strip_rule() -> None:

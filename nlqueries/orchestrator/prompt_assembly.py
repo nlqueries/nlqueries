@@ -118,11 +118,12 @@ or count them per join key in a subquery first, then join the result.
 keep the ones with none, so join those with LEFT JOIN. Where the question asks for a \
 count, such a row counts as 0.
 - For the largest or smallest value of a text column that holds numbers, order by its \
-cast (ORDER BY CAST(column AS INTEGER) DESC LIMIT 1) and return the column as stored, not \
-MAX(CAST(...)): when the question asks for the value, a converted copy is not it.
+numeric cast (ORDER BY CAST(column AS REAL) DESC LIMIT 1) and return the column as \
+stored, not MAX(CAST(...)): when the question asks for the value, a converted copy is \
+not it.
 - Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
 or chains of SUBSTR. Unless the knowledge base documents the format, order by the column \
-as stored and say so in your explanation.
+as stored, and where you explain your reasoning, say so.
 - Prefer joins, GROUP BY and window functions to a subquery that refers to the outer \
 row, which some databases run once per row of the outer query: on a large table that \
 can take minutes.
@@ -141,11 +142,14 @@ false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean
 expression. A question that only asks whether something holds ("is the order \
 shipped?") returns the value the data stores for it."""
 
-#: A number with at most a short prefix ('$', 'I ', 'No.'), a short suffix ('%',
-#: ' min', '/yr') and separators inside its digits ('1,200', '1.234,56'). Times and
-#: dates do not match: their separators sit between digits outside the number.
+#: A number with at most a short prefix, a short suffix ('%', ' min', '/yr') and
+#: separators inside its digits ('1,200', '1.234,56'). A prefix is a currency sign
+#: ('$', '€') or up to four letters set off by a space or a period ('I 2008',
+#: 'No. 5'): letters joined to the digits ('A1', 'SKU12', 'INV-1001') make a code,
+#: not a decorated number. Times and dates do not match: their separators sit
+#: between digits outside the number.
 _DECORATED_NUMBER = re.compile(
-    r"^\s*(?P<pre>[^\d\s+-]{1,4}\.?\s?)?"
+    r"^\s*(?P<pre>[$€£¥₹]|[A-Za-z]{1,4}(?:\.\s?|\s))?\s?"
     r"(?P<num>[+-]?(?:\d{1,3}(?:[,.\s]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?))"
     r"\s?(?P<post>[^\d\s][^\d]{0,7})?\s*$"
 )
@@ -160,11 +164,12 @@ def _decorated_number_columns(
     """``(table, column, examples)`` for each text column whose sample values are
     numbers written with one fixed decoration.
 
-    Every sample must parse as a number with a decoration around or within it,
-    at least one must carry one, and the decorations must agree: one prefix and
-    one suffix at most across the samples. So '45%', '7%' and '$1,200', '$300'
-    count; codes such as 'A1', 'B2', and plain numbers stored as text, do not.
-    Two samples at least, since one is not evidence of a pattern.
+    Every sample must parse as a number with a decoration around or within it
+    (see :data:`_DECORATED_NUMBER`), at least one must carry one, and the
+    decorations must agree: one prefix and one suffix at most across the
+    samples. So '45%', '7%' and '$1,200', '$300' count; codes such as 'A1',
+    'A2' or 'INV-1001', and plain numbers stored as text, do not. Two samples
+    at least, since one is not evidence of a pattern.
     """
     found: list[tuple[str, str, list[str]]] = []
     for table in knowledge_base.get("schema", {}).get("tables", []) or []:
