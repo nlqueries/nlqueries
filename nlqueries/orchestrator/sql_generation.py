@@ -36,10 +36,10 @@ from nlqueries.orchestrator.literal_grounding import (
     string_literals,
 )
 from nlqueries.orchestrator.prompt_assembly import (
-    _ANSWER_RULES,
     _PARTIAL_COLUMNS_NOTE,
     _columns_omitted,
     _table_ref,
+    answer_rules_for,
 )
 from nlqueries.orchestrator.provenance import record_literal_grounded, record_literal_repair
 from nlqueries.sql_policy import evaluate
@@ -691,7 +691,7 @@ def _build_sql_system_prompt(knowledge_base: dict[str, Any], dialect: str) -> st
         "Do not include any explanation or comments.\n"
         "Do not use markdown code blocks.\n"
         "Output only the raw SQL statement.\n\n"
-        f"{_ANSWER_RULES}\n\n"
+        f"{answer_rules_for(knowledge_base)}\n\n"
     ) + schema_ctx
 
 
