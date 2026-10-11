@@ -93,6 +93,15 @@ _ROLE_PREAMBLE = (
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
+#: The quoted-value rule: a value quoted in the question is a value, not a
+#: pattern. Read as exact, its stray spaces became part of a LIKE pattern and a
+#: "contains" turned into a case-sensitive INSTR, and the rows it named dropped
+#: out. Definitions stay exact; quoted values are matched as values. Letter case
+#: is named only for "contains": said of every quoted value, it would invite a
+#: LOWER() around each equality the question quotes. The block goes to every
+#: dialect, and LIKE ignores case in SQLite but compares it in Postgres and
+#: others, so the clause says to fold case where LIKE does not.
+#:
 #: The coded-values rule: a code returned as a word, or cast to a number, is not
 #: the value stored ('65+' cast to a number is 65, and no longer equals '65+'). A
 #: mapping that explains a code says which code to filter on, not that the output
@@ -186,6 +195,12 @@ column seems to hold the same thing in another form.
 - A definition given in the question, the Business Rules or the Glossary (how a \
 segment, a rate or a period is worked out) is exact: apply every condition and \
 boundary as written, not the usual meaning of the term.
+- A value quoted in the question is matched as a value, not as a pattern: spaces around \
+it are not part of it, so trim it and do not build a LIKE pattern around the spaces. \
+For "contains", LIKE '%value%' stays the default and letter case does not filter: \
+SQLite's LIKE already ignores it, and where the database's LIKE compares case, put \
+LOWER() on both sides. Do not switch to INSTR, which compares case. Definitions are \
+still applied exactly; this is only about quoted values.
 - Only when the question itself offers the choice, as in "yes or no?" or "true or \
 false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean \
 expression. A question that only asks whether something holds ("is the order \
