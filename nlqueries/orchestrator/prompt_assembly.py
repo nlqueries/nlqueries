@@ -121,7 +121,10 @@ count, such a row counts as 0.
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
 text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \
 the cast DESC LIMIT 1, not MAX(CAST(...)), since a converted copy is not the value asked \
-for. When the question only asks for the value, do not cast it.
+for. A plain cast reads only digits and a decimal mark: where the values shown carry \
+anything else, remove it inside the cast, or the cast gives 0 or the leading digits on \
+some databases and fails on others. When the question only asks for the value, do not \
+cast it.
 - Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
 or chains of SUBSTR. Unless the knowledge base documents the format, order by the column \
 as stored, and where you explain your reasoning, say so.

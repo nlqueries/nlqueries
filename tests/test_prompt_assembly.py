@@ -790,7 +790,8 @@ ANSWER_RULE_PHRASES = [
     "When the question orders, compares or adds a text column that holds numbers",
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
     "Return the column as stored: for its largest value, ORDER BY",
-    "When the question only asks for the value, do not cast it.",
+    "A plain cast reads only digits and a decimal mark: where the values shown carry",
+    "When the question only asks for the value, do not",
     # Dates written as free text are not parsed with ladders.
     "Do not parse dates written as free text",
     "order by the column as stored, and where you explain your reasoning, say so",
