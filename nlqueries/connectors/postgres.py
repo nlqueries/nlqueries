@@ -10,7 +10,9 @@ public OSS API and has no dependency on the enterprise layer.
 from __future__ import annotations
 
 import logging
+import re
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,14 +45,84 @@ logger = logging.getLogger(__name__)
 _YIELD_PER = 1000
 
 # Statements that can be read through a server-side cursor. Deliberately a
-# prefix check rather than a parse: it runs on every query, and the cost of
-# being wrong is only that a read is not streamed.
-_STREAMABLE_PREFIXES = ("select", "with", "table", "values")
+# check of the first word rather than a parse: it runs on every query, and the
+# cost of being wrong is only that a read is not streamed.
+_STREAMABLE_KEYWORDS = frozenset({"select", "with", "table", "values"})
+
+_FIRST_WORD = re.compile(r"\w+")
+
+
+def _skip_leading_noise(sql: str) -> str:
+    """*sql* from its first word: past whitespace, ``(`` and comments.
+
+    Block comments are skipped by counting, because Postgres nests them: the
+    first ``*/`` in ``/* a /* b */ c */`` does not end the comment. An
+    unterminated comment runs to the end, leaving nothing.
+    """
+    i, n = 0, len(sql)
+    while i < n:
+        if sql[i].isspace() or sql[i] == "(":
+            i += 1
+        elif sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end < 0 else end + 1
+        elif sql.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if sql.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif sql.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        else:
+            break
+    return sql[i:]
+
+
+def _streamed_rows(conn: Any, result: Any, deadline: float | None) -> Iterator[Any]:
+    """The rows of a streamed *result*, :data:`_YIELD_PER` to a FETCH.
+
+    ``statement_timeout`` bounds each statement, and a streamed read is a
+    DECLARE and then a FETCH per batch. Set once, it let every batch run the
+    whole budget again: on PostgreSQL 16 a 2 s timeout let a 6 s read finish.
+    Before each batch it is set to what is left of the read's budget
+    (*deadline*, on :func:`time.monotonic`), so the server ends the read as a
+    whole once the budget is spent, with the error a read that is not
+    streamed gets. With no budget the batches are fetched as they are.
+
+    ``set_config(..., true)`` is ``SET LOCAL`` as a function call.
+    ``pg_stat_statements`` keeps a row for each value a SET is given
+    (PostgreSQL 15 and 16 alike), so a SET per batch would leave a row per
+    batch in a fixed-size view, crowding out the database's own statements; a
+    SELECT is normalised to one row. ``query_filter`` drops it from history.
+    """
+    # iter(): partitions() is a generator, so this changes nothing for a real
+    # result, but next() on anything else need not ever stop.
+    batches = iter(result.partitions(_YIELD_PER))
+    while True:
+        if deadline is not None:
+            left_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            conn.execute(
+                text("SELECT set_config('statement_timeout', :ms, true)"), {"ms": str(left_ms)}
+            )
+        batch = next(batches, None)
+        if batch is None:
+            return
+        yield from batch
 
 
 def _returns_rows(sql: str) -> bool:
-    """True when *sql* is a read that psycopg2 can stream."""
-    return sql.lstrip().lstrip("(").lower().startswith(_STREAMABLE_PREFIXES)
+    """True when *sql* is a read that psycopg2 can stream.
+
+    Leading comments say nothing about what a statement does, and the SQL
+    console opens every statement with one, its cancellation tag
+    (``/* nlq-console:<id> */``). Checking the first word of the raw text
+    streamed none of its queries, so each one was loaded whole before the
+    result budget saw a row.
+    """
+    word = _FIRST_WORD.match(_skip_leading_noise(sql))
+    return word is not None and word.group().lower() in _STREAMABLE_KEYWORDS
 
 
 # Schemas that are part of Postgres / the catalog itself, never user data.
@@ -67,6 +139,29 @@ _SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
 #: cannot pass a ``*/``, so the match ends where the comment does.
 _LEADING_NOISE = r"^(\s+|/\*([^*]|\*+[^*/])*\*+/|--[^\n]*)+"
 
+#: The head of a server-side cursor's declaration, up to its statement. A
+#: streamed read is recorded in ``pg_stat_statements`` only as this, with the
+#: statement after it, plus a FETCH and a CLOSE.
+_CURSOR_DECLARATION = (
+    r'^DECLARE\s+("[^"]*"|[^\s"]+)\s+((NO\s+)?SCROLL\s+|BINARY\s+|(A|IN)SENSITIVE\s+)*'
+    r"CURSOR\s+(WITH(OUT)?\s+HOLD\s+)?FOR\s+"
+)
+
+#: The tag nlqueries' own callers open a statement with to identify a run:
+#: ``/* nlq-console:<id> */``, ``/* nlq-pinboard:<id> */`` and the like.
+_RUN_TAG = r"/\*\s*nlq-[a-z-]+:"
+
+#: A ``pg_stat_statements`` row's statement, as an expression over a column
+#: named ``query``. A cursor declared for one of our tagged runs reads as the
+#: run's statement: those are queries someone ran deliberately, in the SQL
+#: console or on a pinboard, and once they stream the declaration is all that
+#: is recorded of them. Every other row, every other cursor included, is left
+#: as recorded.
+STATEMENT_TEXT = (
+    f"CASE WHEN query ~* '{_CURSOR_DECLARATION}{_RUN_TAG}' "
+    f"THEN regexp_replace(query, '{_CURSOR_DECLARATION}', '', 'i') ELSE query END"
+)
+
 #: Whether a ``pg_stat_statements`` row is a read, as an expression over a
 #: column named ``query`` -- so a test can bind statements to it and let
 #: Postgres answer. Spelled with ``[^a-z]`` rather than a word boundary because
@@ -76,7 +171,9 @@ _LEADING_NOISE = r"^(\s+|/\*([^*]|\*+[^*/])*\*+/|--[^\n]*)+"
 #: bounded result; whatever survives is still parsed and filtered downstream. The
 #: cost of being slightly generous is a parse. The cost of being slightly strict
 #: is a query nobody ever sees again.
-STATEMENT_IS_A_READ = f"regexp_replace(query, '{_LEADING_NOISE}', '') ~* '^(select|with)[^a-z]'"
+STATEMENT_IS_A_READ = (
+    f"regexp_replace({STATEMENT_TEXT}, '{_LEADING_NOISE}', '') ~* '^(select|with)[^a-z]'"
+)
 
 
 class PostgresConnector(DatabaseConnector):
@@ -110,6 +207,16 @@ class PostgresConnector(DatabaseConnector):
 
         Expected keys: ``host``, ``port``, ``database``, ``user``, ``password``.
         ``host`` defaults to ``"localhost"`` and ``port`` to ``5432`` when omitted.
+
+        Optional ``application_name`` names every session this connector's
+        engine opens, in ``pg_stat_activity``. A caller that cancels a running
+        statement by finding it there needs it: while a streamed read runs, the
+        session's text is the cursor's ``FETCH``, not the statement. The name
+        belongs to the engine, not to one statement, so a caller that cancels by
+        it builds a connector for the run and names it after that run, as the
+        enterprise SQL console does. A connector shared between runs shares the
+        name, and a cancel by it reaches every run in flight. Postgres keeps
+        the first 63 bytes of a name.
         """
         url = URL.create(
             drivername="postgresql+psycopg2",
@@ -144,6 +251,8 @@ class PostgresConnector(DatabaseConnector):
             connect_args["sslcert"] = ssl_client_cert
         if ssl_client_key := credentials.get("ssl_client_key"):
             connect_args["sslkey"] = ssl_client_key
+        if application_name := credentials.get("application_name"):
+            connect_args["application_name"] = str(application_name)
         # Pooling only pays off now that connectors are reused across
         # requests (see loader's cache). Each cached connector holds up to
         # pool_size + max_overflow connections, so the ceiling per API worker is
@@ -437,6 +546,16 @@ class PostgresConnector(DatabaseConnector):
         ``pg_stat_statements.track_utility = off``; this makes the extraction
         immune either way.
 
+        Except our own tagged runs. A run the SQL console or a pinboard tags
+        (``/* nlq-console:<id> */``) streams like any read, so a cursor
+        declared for one is returned as its statement (:data:`STATEMENT_TEXT`).
+        Each such run is a row of its own, with one call: the cursor's name
+        changes every time, so they are never counted together. Its time is the
+        declaration's, not the read's. Rows are still ordered by calls and cut
+        at *limit*, so where the database's reads outnumber the limit, these
+        one-call rows are the first left out: the history holds the tagged runs
+        that fit, not every one the console ran.
+
         The prefix test skips leading whitespace and comments rather than
         anchoring on the first character. Our own SQL Console tags every
         statement it runs with ``/* nlq-console:<uuid> */``, and any tool that
@@ -466,7 +585,7 @@ class PostgresConnector(DatabaseConnector):
                 rows = conn.execute(
                     text(
                         f"""
-                        SELECT query, calls, mean_exec_time
+                        SELECT {STATEMENT_TEXT} AS query, calls, mean_exec_time
                         FROM pg_stat_statements
                         WHERE dbid = (
                             SELECT oid FROM pg_database WHERE datname = current_database()
@@ -483,7 +602,7 @@ class PostgresConnector(DatabaseConnector):
                 rows = conn.execute(
                     text(
                         f"""
-                        SELECT query, calls, mean_time AS mean_exec_time
+                        SELECT {STATEMENT_TEXT} AS query, calls, mean_time AS mean_exec_time
                         FROM pg_stat_statements
                         WHERE dbid = (
                             SELECT oid FROM pg_database WHERE datname = current_database()
@@ -569,9 +688,11 @@ class PostgresConnector(DatabaseConnector):
                     # least-privilege role, which only the operator can grant.
                     conn.execute(text("SET TRANSACTION READ ONLY"))
 
+                    deadline: float | None = None
                     if effective_timeout is not None and effective_timeout > 0:
                         statement_timeout_ms = max(1, int(effective_timeout * 1000))
                         conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))
+                        deadline = time.monotonic() + effective_timeout
 
                     # Server-side cursor for reads: rows arrive in batches
                     # instead of the driver building the entire result before
@@ -585,19 +706,24 @@ class PostgresConnector(DatabaseConnector):
                     # Misjudging one costs streaming, never correctness: the
                     # budget below still bounds what is turned into Python
                     # objects either way.
-                    executor = (
-                        conn.execution_options(stream_results=True, yield_per=_YIELD_PER)
-                        if _returns_rows(sql)
-                        else conn
+                    # For this statement only: Connection.execution_options()
+                    # changes the connection, and the SETs below must not be
+                    # sent through a cursor of their own.
+                    streamed = _returns_rows(sql)
+                    cursor_result = conn.execute(
+                        text(sql), execution_options={"stream_results": streamed}
                     )
-                    cursor_result = executor.execute(text(sql))
-                    elapsed_ms = (time.perf_counter() - start) * 1000
 
                     truncated = False
                     reason: str | None = None
                     if cursor_result.returns_rows:
                         columns = list(cursor_result.keys())
-                        rows, truncated, reason = collect(iter(cursor_result), max_rows)
+                        source = (
+                            _streamed_rows(conn, cursor_result, deadline)
+                            if streamed
+                            else iter(cursor_result)
+                        )
+                        rows, truncated, reason = collect(source, max_rows)
                         if truncated:
                             # Stop the server sending the rest of a result we
                             # have already decided not to read.
@@ -606,6 +732,9 @@ class PostgresConnector(DatabaseConnector):
                     else:
                         columns = []
                         rows = []
+                    # After the rows: a streamed read's execute returns once the
+                    # cursor is declared, and the read happens in the batches.
+                    elapsed_ms = (time.perf_counter() - start) * 1000
 
                     span.set_attribute("db.row_count", len(rows))
                     span.set_attribute("db.result_truncated", truncated)
