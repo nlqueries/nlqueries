@@ -233,8 +233,11 @@ def test_an_encode_in_flight_does_not_hold_the_process_at_exit():
     import textwrap
     import time
 
+    # Port 0, read back from the server: a port chosen here would only be bound
+    # once the child has started and imported, a window for something else to
+    # take it (from #257's review).
     script = textwrap.dedent(
-        f"""
+        """
         import json, threading, time, urllib.request
         from nlqueries.embeddings.embed_server import build_server
 
@@ -242,14 +245,14 @@ def test_an_encode_in_flight_does_not_hold_the_process_at_exit():
             time.sleep(20)
             return [[0.0] * 384 for _ in texts]
 
-        server = build_server({_free_port()}, encoder=slow, max_concurrency=2)
+        server = build_server(0, encoder=slow, max_concurrency=2)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         port = server.server_address[1]
 
         def fire():
             req = urllib.request.Request(
-                f"http://127.0.0.1:{{port}}/embed", data=json.dumps({{"text": "x"}}).encode(),
-                headers={{"Content-Type": "application/json"}},
+                f"http://127.0.0.1:{port}/embed", data=json.dumps({"text": "x"}).encode(),
+                headers={"Content-Type": "application/json"},
             )
             try:
                 urllib.request.urlopen(req, timeout=60).read()
@@ -271,6 +274,58 @@ def test_an_encode_in_flight_does_not_hold_the_process_at_exit():
 
     assert run.returncode == 0, run.stderr
     assert elapsed < 12, f"the process took {elapsed:.1f}s to exit; it waited for the encode"
+
+
+def test_a_thread_that_cannot_start_does_not_take_a_slot(monkeypatch: pytest.MonkeyPatch):
+    """Under resource exhaustion `Thread.start()` raises. The pool counted the
+    thread before starting it, so the slot was gone for good: at a limit of 1
+    every later job waited on a worker that never ran (from #257's review)."""
+    from nlqueries.embeddings.embed_server import _EncodePool
+
+    real_start = threading.Thread.start
+    failures = iter([RuntimeError("can't start new thread")])
+
+    def _start(self: threading.Thread) -> None:
+        if self.name.startswith("embed-encode"):
+            failure = next(failures, None)
+            if failure is not None:
+                raise failure
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", _start)
+    pool = _EncodePool(1)
+
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        pool.submit(lambda: 0)
+    assert pool.submit(lambda: 42).result(timeout=5) == 42
+    pool.shutdown()
+
+
+def test_an_encode_that_outlasts_the_wait_fails_its_request(monkeypatch: pytest.MonkeyPatch):
+    """A request waits for its encode, but not forever: a pool that has stopped
+    taking work fails the request instead of holding it and the gate's slot
+    (from #257's review)."""
+    import time
+    import urllib.error
+
+    from nlqueries.embeddings import embed_server
+
+    monkeypatch.setattr(embed_server, "_ENCODE_WAIT_SECONDS", 0.3)
+    port = _free_port()
+    server = embed_server.build_server(port, encoder=_slow_encoder(3.0), max_concurrency=1)
+    _serve_in_background(server)
+
+    started = time.monotonic()
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        _post_embed(port)
+    elapsed = time.monotonic() - started
+    gate = server.RequestHandlerClass.gate
+    server.shutdown()
+    server.server_close()
+
+    assert refused.value.code == 500
+    assert elapsed < 2.0, f"the request waited {elapsed:.1f}s for an encode it had given up on"
+    assert gate.inflight == 0, "the request kept the gate's slot"
 
 
 def test_closing_the_server_stops_its_encode_threads():
