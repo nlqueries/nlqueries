@@ -503,6 +503,9 @@ class TestEmbedHandlerLegacyCompat:
             def serve_forever(self) -> None:
                 raise KeyboardInterrupt
 
+            def server_close(self) -> None:
+                captured["closed"] = True
+
         with (
             patch.object(embed_server, "_load_encoder", return_value=fake_encoder),
             patch.object(embed_server, "_PID_FILE") as mock_pid,
@@ -517,3 +520,5 @@ class TestEmbedHandlerLegacyCompat:
 
         assert captured["handler"].encoder is fake_encoder
         assert captured["handler"].gate is not None, "the concurrency bound must be applied"
+        # And closed on the way out, which stops its encode pool (from #257's review).
+        assert captured.get("closed") is True, "serve() did not close the server"

@@ -6,6 +6,8 @@ import socket
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _free_port() -> int:
     """Return an available TCP port on localhost."""
@@ -186,6 +188,107 @@ def test_the_gate_bounds_work_in_flight():
 
     assert gate.peak <= 2, f"{gate.peak} encodes ran at once against a limit of 2"
     assert gate.inflight == 0, "the gate leaked a slot"
+
+
+def test_encodes_run_on_a_fixed_set_of_threads():
+    """Each request is handled on a new thread, and the encode must not run there.
+
+    On Windows, the torch backend's BLAS (MKL) keeps buffers per thread and never
+    frees them when the thread exits. Encoding on the request's own thread, with
+    texts of varying length, grew the daemon by about 8 MB a call: 2 GB to 26 GB
+    over 3,000 calls. On a fixed pool of threads it levels off.
+    """
+    from nlqueries.embeddings.embed_server import build_server
+
+    threads: list[str] = []
+
+    def _encoder(texts: list[str]) -> list[list[float]]:
+        threads.append(threading.current_thread().name)
+        return [[0.0] * 384 for _ in texts]
+
+    port = _free_port()
+    server = build_server(port, encoder=_encoder, max_concurrency=2)
+    _serve_in_background(server)
+    for i in range(12):
+        _post_embed(port, f"text-{i}")
+    _fire_concurrently(port, 6)
+    server.shutdown()
+    server.server_close()
+
+    assert len(threads) == 18
+    assert len(set(threads)) <= 2, f"encodes ran on {len(set(threads))} threads: {set(threads)}"
+
+
+def test_an_encode_in_flight_does_not_hold_the_process_at_exit():
+    """Stopping the daemon must not wait for a forward pass (from #257's review).
+
+    ``ThreadPoolExecutor`` joins its threads at interpreter exit, so with the
+    encodes on one a process whose server had stopped still waited for the
+    encode in flight: 5 s for a 6-second encode, measured. A large batch could
+    then outlast ``embed-server stop``'s wait, which reports the daemon as
+    still running.
+    """
+    import subprocess
+    import sys
+    import textwrap
+    import time
+
+    script = textwrap.dedent(
+        f"""
+        import json, threading, time, urllib.request
+        from nlqueries.embeddings.embed_server import build_server
+
+        def slow(texts):
+            time.sleep(20)
+            return [[0.0] * 384 for _ in texts]
+
+        server = build_server({_free_port()}, encoder=slow, max_concurrency=2)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+
+        def fire():
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{{port}}/embed", data=json.dumps({{"text": "x"}}).encode(),
+                headers={{"Content-Type": "application/json"}},
+            )
+            try:
+                urllib.request.urlopen(req, timeout=60).read()
+            except Exception:
+                pass
+
+        threading.Thread(target=fire, daemon=True).start()
+        deadline = time.monotonic() + 10
+        while server.RequestHandlerClass.gate.inflight == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server.RequestHandlerClass.gate.inflight == 1, "the encode never started"
+        server.shutdown()
+        server.server_close()
+        """
+    )
+    started = time.monotonic()
+    run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    elapsed = time.monotonic() - started
+
+    assert run.returncode == 0, run.stderr
+    assert elapsed < 12, f"the process took {elapsed:.1f}s to exit; it waited for the encode"
+
+
+def test_closing_the_server_stops_its_encode_threads():
+    """A process that builds and closes servers, as these tests do, must not
+    keep a pool of idle threads for each one."""
+    from nlqueries.embeddings.embed_server import build_server
+
+    port = _free_port()
+    server = build_server(port, encoder=_slow_encoder(0.0), max_concurrency=3)
+    _serve_in_background(server)
+    _fire_concurrently(port, 3)
+    server.shutdown()
+    server.server_close()
+
+    pool = server.RequestHandlerClass.pool
+    assert pool is not None, "the server has no encode pool"
+    with pytest.raises(RuntimeError):
+        pool.submit(lambda: None)
 
 
 def test_healthz_answers_while_an_embed_is_in_flight():
