@@ -66,6 +66,11 @@ from nlqueries import config
 #: divergence returns wrong neighbours rather than raising anything.
 _MODEL_NAME = config.EMBED_MODEL
 _DEFAULT_PORT = 8765
+#: The longest a request waits for its encode. Far beyond any encode and any
+#: client's timeout; it exists so that a pool that has stopped taking work fails
+#: the request, rather than holding it and the gate's slot forever (from #257's
+#: review).
+_ENCODE_WAIT_SECONDS = 300.0
 #: Under `config.STATE_DIR` rather than a hardcoded home directory. A read-only
 #: root filesystem left this with nowhere to go, so the server died at startup
 #: with `[Errno 30]` and every natural-language query with it -- and nothing
@@ -292,8 +297,12 @@ class _EncodePool:
                 thread = threading.Thread(
                     target=self._work, name=f"embed-encode-{len(self._threads)}", daemon=True
                 )
-                self._threads.append(thread)
+                # Counted once it runs. `start()` raises when the host is out of
+                # threads, and a thread counted first kept its slot for good: at
+                # a limit of 1, every later job waited for a worker that never
+                # ran (from #257's review). This request fails instead.
                 thread.start()
+                self._threads.append(thread)
             self._jobs.put((future, fn))
         return future
 
@@ -552,10 +561,13 @@ class _EmbedHandler(BaseHTTPRequestHandler):
                 return self._encode_unguarded(texts)
             # The gate admits no more encodes than the pool has threads, so
             # this never queues inside the pool: the bound stays the gate's.
-            return cast(
-                list[list[float]],
-                cls.pool.submit(lambda: self._encode_unguarded(texts)).result(),
-            )
+            future = cls.pool.submit(lambda: self._encode_unguarded(texts))
+            try:
+                return cast(list[list[float]], future.result(timeout=_ENCODE_WAIT_SECONDS))
+            except TimeoutError:
+                raise TimeoutError(
+                    f"no encode thread finished this request within {_ENCODE_WAIT_SECONDS:g}s"
+                ) from None
 
     def _encode_unguarded(self, texts: list[str]) -> list[list[float]]:
         cls = self.__class__
