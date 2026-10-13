@@ -27,6 +27,13 @@ The bound matters as much as the threading: every concurrent encode holds its
 own activations, so an unbounded daemon turns a burst into an out-of-memory kill
 rather than a queue. Set the limit to 1 to reproduce the old behaviour exactly.
 
+Encodes run on a fixed pool of that many threads, not on the thread that handled
+the request, which is a new one for every request. On Windows the torch
+backend's BLAS (MKL) keeps buffers per thread and never frees them when the
+thread exits, so encoding on request threads leaked about 8 MB per call for
+texts of varying length: a daemon grew to 38 GB over four days. Linux releases
+them, but a fixed pool is right there too.
+
 ``GET /healthz`` reports the backend and how many encodes are in flight, and is
 answered outside the bound — a health check that queues behind the work it
 reports on stops being useful exactly when it matters.
@@ -46,6 +53,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Any, cast
@@ -303,6 +311,11 @@ class _EmbedHandler(BaseHTTPRequestHandler):
     # Set by build_server(). Unset means unbounded, which only happens if a
     # caller constructs the handler itself — the legacy path.
     gate: _Gate | None = None
+    #: Where encodes run: a fixed set of threads, as many as the gate admits.
+    #: Not the request's own thread, which is new for every request -- see the
+    #: module docstring for what that cost on Windows. Unset only on the
+    #: legacy path, like the gate.
+    pool: ThreadPoolExecutor | None = None
     backend: str = "unknown"
     #: The model this daemon loaded, reported by ``/healthz``.
     #:
@@ -467,7 +480,11 @@ class _EmbedHandler(BaseHTTPRequestHandler):
         if gate is None:
             return self._encode_unguarded(texts)
         with gate:
-            return self._encode_unguarded(texts)
+            if cls.pool is None:
+                return self._encode_unguarded(texts)
+            # The gate admits no more encodes than the pool has threads, so
+            # this never queues inside the pool: the bound stays the gate's.
+            return cls.pool.submit(self._encode_unguarded, texts).result()
 
     def _encode_unguarded(self, texts: list[str]) -> list[list[float]]:
         cls = self.__class__
@@ -502,6 +519,12 @@ class _ThreadingEmbedServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
+    def server_close(self) -> None:
+        super().server_close()
+        pool = getattr(self.RequestHandlerClass, "pool", None)
+        if pool is not None:
+            pool.shutdown(wait=False)
+
 
 def build_server(
     port: int,
@@ -519,6 +542,7 @@ def build_server(
     exactly what a concurrency test does — cannot overwrite each other's encoder.
     """
     limit = config.EMBED_SERVER_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
+    gate = _Gate(limit)
     handler = type(
         "_BoundEmbedHandler",
         (_EmbedHandler,),
@@ -526,7 +550,8 @@ def build_server(
             "encoder": staticmethod(encoder) if encoder is not None else None,
             "model": model,
             "model_name": model_name,
-            "gate": _Gate(limit),
+            "gate": gate,
+            "pool": ThreadPoolExecutor(max_workers=gate.limit, thread_name_prefix="embed-encode"),
             "backend": backend,
         },
     )

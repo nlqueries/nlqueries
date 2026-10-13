@@ -6,6 +6,8 @@ import socket
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _free_port() -> int:
     """Return an available TCP port on localhost."""
@@ -186,6 +188,53 @@ def test_the_gate_bounds_work_in_flight():
 
     assert gate.peak <= 2, f"{gate.peak} encodes ran at once against a limit of 2"
     assert gate.inflight == 0, "the gate leaked a slot"
+
+
+def test_encodes_run_on_a_fixed_set_of_threads():
+    """Each request is handled on a new thread, and the encode must not run there.
+
+    On Windows, the torch backend's BLAS (MKL) keeps buffers per thread and never
+    frees them when the thread exits. Encoding on the request's own thread, with
+    texts of varying length, grew the daemon by about 8 MB a call: 2 GB to 26 GB
+    over 3,000 calls. On a fixed pool of threads it levels off.
+    """
+    from nlqueries.embeddings.embed_server import build_server
+
+    threads: list[str] = []
+
+    def _encoder(texts: list[str]) -> list[list[float]]:
+        threads.append(threading.current_thread().name)
+        return [[0.0] * 384 for _ in texts]
+
+    port = _free_port()
+    server = build_server(port, encoder=_encoder, max_concurrency=2)
+    _serve_in_background(server)
+    for i in range(12):
+        _post_embed(port, f"text-{i}")
+    _fire_concurrently(port, 6)
+    server.shutdown()
+    server.server_close()
+
+    assert len(threads) == 18
+    assert len(set(threads)) <= 2, f"encodes ran on {len(set(threads))} threads: {set(threads)}"
+
+
+def test_closing_the_server_stops_its_encode_threads():
+    """A process that builds and closes servers, as these tests do, must not
+    keep a pool of idle threads for each one."""
+    from nlqueries.embeddings.embed_server import build_server
+
+    port = _free_port()
+    server = build_server(port, encoder=_slow_encoder(0.0), max_concurrency=3)
+    _serve_in_background(server)
+    _fire_concurrently(port, 3)
+    server.shutdown()
+    server.server_close()
+
+    pool = server.RequestHandlerClass.pool
+    assert pool is not None, "the server has no encode pool"
+    with pytest.raises(RuntimeError):
+        pool.submit(lambda: None)
 
 
 def test_healthz_answers_while_an_embed_is_in_flight():

@@ -312,6 +312,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The embedding daemon no longer grows without bound on Windows.** Each
+  request is served on a new thread, and the encode ran on it. With the torch
+  backend, MKL keeps buffers for each thread and does not free them when the
+  thread exits, so texts of varying length grew the daemon by about 8 MB a
+  call: one reached 38 GB in four days. Encodes now run on a fixed pool of
+  threads, as many as `EMBED_SERVER_MAX_CONCURRENCY`, and the same 1,500 calls
+  added about 90 MB. On Linux, encoding on a new thread per call levelled off
+  as well.
 - **PostgreSQL streams a read that opens with a comment.** A statement is
   read through a server-side cursor only when it is a read, and that was
   judged from its first characters. A statement opening with a comment was
