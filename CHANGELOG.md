@@ -6,6 +6,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`application_name` for the PostgreSQL connector.** Optional; it labels
+  every session in `pg_stat_activity`. A caller that cancels a running
+  statement by finding it there needs it: while a streamed read runs, the
+  session's text is the cursor's `FETCH`, not the statement.
 - **String literals are checked against the stored values before a statement
   runs (`NLQ_LITERAL_GROUNDING`, on by default).** A model writes `status = 'legal'`
   where the column holds `'Legal'`, or copies `' = '` from a hint where it
@@ -308,6 +312,21 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **PostgreSQL streams a read that opens with a comment.** A statement is
+  read through a server-side cursor only when it is a read, and that was
+  judged from its first characters. A statement opening with a comment was
+  never streamed, so psycopg2 loaded its whole result before the row and
+  byte budget saw a row. Every statement a SQL console tags for
+  cancellation (`/* nlq-console:<id> */`) is one. The check now skips
+  leading whitespace, parentheses and comments, nested as Postgres nests
+  them, and compares the whole first word, so `withdraw_funds()` no longer
+  counts as `with`.
+- **Query history keeps our own tagged runs once they stream.**
+  `pg_stat_statements` records a streamed read only as its cursor's
+  `DECLARE`, which history extraction drops along with every other cursor.
+  A cursor declared for a run tagged `/* nlq-<kind>:<id> */` is now returned
+  as its statement. Each such run is a row of its own with one call, and
+  its time is the declaration's, not the read's.
 - **The SQLite connector no longer deadlocks when threads share it.** The
   loader pools one connector per database and hands it to every thread that
   asks, and SQLite's is one `sqlite3` connection with a Python authorizer.

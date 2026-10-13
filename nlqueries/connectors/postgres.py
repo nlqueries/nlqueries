@@ -10,6 +10,7 @@ public OSS API and has no dependency on the enterprise layer.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -43,14 +44,52 @@ logger = logging.getLogger(__name__)
 _YIELD_PER = 1000
 
 # Statements that can be read through a server-side cursor. Deliberately a
-# prefix check rather than a parse: it runs on every query, and the cost of
-# being wrong is only that a read is not streamed.
-_STREAMABLE_PREFIXES = ("select", "with", "table", "values")
+# check of the first word rather than a parse: it runs on every query, and the
+# cost of being wrong is only that a read is not streamed.
+_STREAMABLE_KEYWORDS = frozenset({"select", "with", "table", "values"})
+
+_FIRST_WORD = re.compile(r"\w+")
+
+
+def _skip_leading_noise(sql: str) -> str:
+    """*sql* from its first word: past whitespace, ``(`` and comments.
+
+    Block comments are skipped by counting, because Postgres nests them: the
+    first ``*/`` in ``/* a /* b */ c */`` does not end the comment. An
+    unterminated comment runs to the end, leaving nothing.
+    """
+    i, n = 0, len(sql)
+    while i < n:
+        if sql[i].isspace() or sql[i] == "(":
+            i += 1
+        elif sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end < 0 else end + 1
+        elif sql.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if sql.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif sql.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        else:
+            break
+    return sql[i:]
 
 
 def _returns_rows(sql: str) -> bool:
-    """True when *sql* is a read that psycopg2 can stream."""
-    return sql.lstrip().lstrip("(").lower().startswith(_STREAMABLE_PREFIXES)
+    """True when *sql* is a read that psycopg2 can stream.
+
+    Leading comments say nothing about what a statement does, and the SQL
+    console opens every statement with one, its cancellation tag
+    (``/* nlq-console:<id> */``). Checking the first word of the raw text
+    streamed none of its queries, so each one was loaded whole before the
+    result budget saw a row.
+    """
+    word = _FIRST_WORD.match(_skip_leading_noise(sql))
+    return word is not None and word.group().lower() in _STREAMABLE_KEYWORDS
 
 
 # Schemas that are part of Postgres / the catalog itself, never user data.
@@ -67,6 +106,29 @@ _SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
 #: cannot pass a ``*/``, so the match ends where the comment does.
 _LEADING_NOISE = r"^(\s+|/\*([^*]|\*+[^*/])*\*+/|--[^\n]*)+"
 
+#: The head of a server-side cursor's declaration, up to its statement. A
+#: streamed read is recorded in ``pg_stat_statements`` only as this, with the
+#: statement after it, plus a FETCH and a CLOSE.
+_CURSOR_DECLARATION = (
+    r'^DECLARE\s+("[^"]*"|[^\s"]+)\s+((NO\s+)?SCROLL\s+|BINARY\s+|(A|IN)SENSITIVE\s+)*'
+    r"CURSOR\s+(WITH(OUT)?\s+HOLD\s+)?FOR\s+"
+)
+
+#: The tag nlqueries' own callers open a statement with to identify a run:
+#: ``/* nlq-console:<id> */``, ``/* nlq-pinboard:<id> */`` and the like.
+_RUN_TAG = r"/\*\s*nlq-[a-z-]+:"
+
+#: A ``pg_stat_statements`` row's statement, as an expression over a column
+#: named ``query``. A cursor declared for one of our tagged runs reads as the
+#: run's statement: those are queries someone ran deliberately, in the SQL
+#: console or on a pinboard, and once they stream the declaration is all that
+#: is recorded of them. Every other row, every other cursor included, is left
+#: as recorded.
+STATEMENT_TEXT = (
+    f"CASE WHEN query ~* '{_CURSOR_DECLARATION}{_RUN_TAG}' "
+    f"THEN regexp_replace(query, '{_CURSOR_DECLARATION}', '', 'i') ELSE query END"
+)
+
 #: Whether a ``pg_stat_statements`` row is a read, as an expression over a
 #: column named ``query`` -- so a test can bind statements to it and let
 #: Postgres answer. Spelled with ``[^a-z]`` rather than a word boundary because
@@ -76,7 +138,9 @@ _LEADING_NOISE = r"^(\s+|/\*([^*]|\*+[^*/])*\*+/|--[^\n]*)+"
 #: bounded result; whatever survives is still parsed and filtered downstream. The
 #: cost of being slightly generous is a parse. The cost of being slightly strict
 #: is a query nobody ever sees again.
-STATEMENT_IS_A_READ = f"regexp_replace(query, '{_LEADING_NOISE}', '') ~* '^(select|with)[^a-z]'"
+STATEMENT_IS_A_READ = (
+    f"regexp_replace({STATEMENT_TEXT}, '{_LEADING_NOISE}', '') ~* '^(select|with)[^a-z]'"
+)
 
 
 class PostgresConnector(DatabaseConnector):
@@ -110,6 +174,11 @@ class PostgresConnector(DatabaseConnector):
 
         Expected keys: ``host``, ``port``, ``database``, ``user``, ``password``.
         ``host`` defaults to ``"localhost"`` and ``port`` to ``5432`` when omitted.
+
+        Optional ``application_name`` labels every session in
+        ``pg_stat_activity``. A caller that cancels a running statement by
+        finding it there needs it: while a streamed read runs, the session's
+        text is the cursor's ``FETCH``, not the statement.
         """
         url = URL.create(
             drivername="postgresql+psycopg2",
@@ -144,6 +213,8 @@ class PostgresConnector(DatabaseConnector):
             connect_args["sslcert"] = ssl_client_cert
         if ssl_client_key := credentials.get("ssl_client_key"):
             connect_args["sslkey"] = ssl_client_key
+        if application_name := credentials.get("application_name"):
+            connect_args["application_name"] = str(application_name)
         # Pooling only pays off now that connectors are reused across
         # requests (see loader's cache). Each cached connector holds up to
         # pool_size + max_overflow connections, so the ceiling per API worker is
@@ -437,6 +508,13 @@ class PostgresConnector(DatabaseConnector):
         ``pg_stat_statements.track_utility = off``; this makes the extraction
         immune either way.
 
+        Except our own tagged runs. A run the SQL console or a pinboard tags
+        (``/* nlq-console:<id> */``) streams like any read, so a cursor
+        declared for one is returned as its statement (:data:`STATEMENT_TEXT`).
+        Each such run is a row of its own, with one call: the cursor's name
+        changes every time, so they are never counted together. Its time is the
+        declaration's, not the read's.
+
         The prefix test skips leading whitespace and comments rather than
         anchoring on the first character. Our own SQL Console tags every
         statement it runs with ``/* nlq-console:<uuid> */``, and any tool that
@@ -466,7 +544,7 @@ class PostgresConnector(DatabaseConnector):
                 rows = conn.execute(
                     text(
                         f"""
-                        SELECT query, calls, mean_exec_time
+                        SELECT {STATEMENT_TEXT} AS query, calls, mean_exec_time
                         FROM pg_stat_statements
                         WHERE dbid = (
                             SELECT oid FROM pg_database WHERE datname = current_database()
@@ -483,7 +561,7 @@ class PostgresConnector(DatabaseConnector):
                 rows = conn.execute(
                     text(
                         f"""
-                        SELECT query, calls, mean_time AS mean_exec_time
+                        SELECT {STATEMENT_TEXT} AS query, calls, mean_time AS mean_exec_time
                         FROM pg_stat_statements
                         WHERE dbid = (
                             SELECT oid FROM pg_database WHERE datname = current_database()

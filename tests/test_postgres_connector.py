@@ -476,6 +476,23 @@ _HISTORY_STATEMENTS: list[tuple[str, bool]] = [
     ('FETCH FORWARD 1000 FROM "c_7f1449704a10_76"', False),
     ('CLOSE "c_7f1449704a10_76"', False),
     ("DECLARE c CURSOR FOR SELECT 1", False),
+    # A streamed read is recorded only as the cursor it was declared as. Our own
+    # tagged runs are kept, and read as their statement (see STATEMENT_TEXT);
+    # every other cursor, the agent's own streamed reads included, stays out.
+    (
+        'DECLARE "c_7f1449704a10_76" CURSOR WITHOUT HOLD FOR '
+        "/* nlq-console:2a2e3031-f2d4-4d30-841b-1c355affb0dd */ SELECT a FROM t",
+        True,
+    ),
+    (
+        'DECLARE "c_7f1449704a10_77" CURSOR WITHOUT HOLD FOR '
+        "/* nlq-pinboard:12 */ WITH x AS (SELECT 1) SELECT * FROM x",
+        True,
+    ),
+    ('declare "c_1" cursor without hold for /* nlq-scheduled-chart:9 */ select 1', True),
+    ('DECLARE "c_7f1449704a10_78" CURSOR WITHOUT HOLD FOR SELECT a FROM t', False),
+    ('DECLARE "c_1" CURSOR WITHOUT HOLD FOR /* another tool */ SELECT a FROM t', False),
+    ('DECLARE "c_1" CURSOR WITHOUT HOLD FOR /* nlq-console:abc */ DELETE FROM t', False),
     ("/* a comment */ INSERT INTO t VALUES (1)", False),
     # A word that merely begins with the keyword is not the keyword.
     ("selectivity_check()", False),
@@ -506,6 +523,33 @@ def test_the_history_filter_keeps_reads_and_drops_the_rest(connector) -> None:
                 {"q": statement},
             ).scalar()
             assert got is expected, f"{statement!r}: expected {expected}, got {got}"
+
+
+def test_the_history_reads_a_tagged_cursor_as_its_statement(connector) -> None:
+    """What extraction returns for a row: a tagged cursor's statement, and
+    every other row as it was recorded."""
+    from nlqueries.connectors.postgres import STATEMENT_TEXT
+
+    tagged = "/* nlq-console:abc */ SELECT a FROM t"
+    cases = {
+        f'DECLARE "c_7f1449704a10_76" CURSOR WITHOUT HOLD FOR {tagged}': tagged,
+        f'DECLARE "c_1" NO SCROLL CURSOR WITH HOLD FOR {tagged}': tagged,
+        tagged: tagged,
+        'DECLARE "c_1" CURSOR WITHOUT HOLD FOR SELECT a FROM t': (
+            'DECLARE "c_1" CURSOR WITHOUT HOLD FOR SELECT a FROM t'
+        ),
+    }
+    engine = connector._require_engine()
+    with engine.connect() as conn:
+        for recorded, expected in cases.items():
+            got = conn.execute(
+                sa_text(
+                    f"SELECT {STATEMENT_TEXT} AS text "  # noqa: S608 — module constant
+                    "FROM (SELECT CAST(:q AS text) AS query) s"
+                ),
+                {"q": recorded},
+            ).scalar()
+            assert got == expected, recorded
 
 
 def test_history_extraction_is_scoped_to_the_connected_database(seeded_connector) -> None:
@@ -550,3 +594,167 @@ def test_both_history_queries_carry_both_filters() -> None:
     assert body.count("mean_exec_time\n") >= 1
     assert body.count("dbid = (") == 2
     assert body.count("{STATEMENT_IS_A_READ}") == 2
+    assert body.count("SELECT {STATEMENT_TEXT} AS query") == 2
+
+
+# ---------------------------------------------------------------------------
+# Streaming a tagged read, and naming the session that runs it
+# ---------------------------------------------------------------------------
+
+
+def test_a_read_behind_a_leading_comment_runs_on_a_server_side_cursor(connector) -> None:
+    """Streamed means a named cursor: psycopg2 leaves a client-side one unnamed
+    and loads its whole result before the budget sees a row. The SQL console
+    tags every statement with a leading comment, and a check on the first word
+    of the raw text streamed none of them."""
+    from sqlalchemy import event
+
+    engine = connector._require_engine()
+    cursors: list[str | None] = []
+
+    def record(_conn, cursor, statement, *_args) -> None:
+        if "nlq-console:abc" in statement:
+            cursors.append(cursor.name)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        result = connector.execute_query(
+            "/* nlq-console:abc */ SELECT g FROM generate_series(1, 3) AS g"
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert result.error is None
+    assert result.rows == [[1], [2], [3]]
+    [name] = cursors
+    assert name is not None
+
+
+def test_the_session_carries_the_application_name_it_was_given(credentials) -> None:
+    labelled = granted(PostgresConnector())
+    labelled.connect({**credentials, "application_name": "nlq-console:abc"})
+    plain = granted(PostgresConnector())
+    plain.connect(credentials)
+
+    def name(c: PostgresConnector) -> object:
+        return c.execute_query("SELECT current_setting('application_name')").rows
+
+    assert name(labelled) == [["nlq-console:abc"]]
+    assert name(plain) != [["nlq-console:abc"]]
+
+
+def test_a_streamed_read_is_found_by_its_application_name_while_it_runs(credentials) -> None:
+    """What the label is for. While a streamed read runs, its session's text
+    in pg_stat_activity is the cursor's FETCH, which carries no tag, so a
+    cancel that matched the text found nothing and the read ran on. Matched by
+    application_name, it is found and stopped."""
+    import threading
+    import time
+
+    tag = "nlq-console:find-me"
+    reader = granted(PostgresConnector())
+    reader.connect({**credentials, "application_name": tag})
+    outcome: dict[str, QueryResult] = {}
+    worker = threading.Thread(
+        target=lambda: outcome.update(
+            result=reader.execute_query(
+                f"/* {tag} */ SELECT pg_sleep(0.2), g FROM generate_series(1, 100) AS g"
+            )
+        )
+    )
+    worker.start()
+
+    watcher = granted(PostgresConnector())
+    watcher.connect(credentials)
+    texts: list[str] = []
+    cancelled: list[bool] = []
+    with watcher._require_engine().connect() as conn:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not any(q.startswith("FETCH") for q in texts):
+            texts = list(
+                conn.execute(
+                    sa_text(
+                        "SELECT query FROM pg_stat_activity "
+                        "WHERE application_name = :tag AND state = 'active'"
+                    ),
+                    {"tag": tag},
+                ).scalars()
+            )
+            # pg_stat_activity is a snapshot per transaction: end it, or every
+            # poll sees the first one.
+            conn.rollback()
+            time.sleep(0.05)
+        by_text = conn.execute(
+            sa_text(
+                "SELECT pid FROM pg_stat_activity "
+                "WHERE query LIKE :pattern AND pid <> pg_backend_pid()"
+            ),
+            {"pattern": f"%{tag}%"},
+        ).all()
+        cancelled = list(
+            conn.execute(
+                sa_text(
+                    "SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                    "WHERE application_name = :tag AND pid <> pg_backend_pid()"
+                ),
+                {"tag": tag},
+            ).scalars()
+        )
+    worker.join(timeout=30)
+
+    assert any(q.startswith("FETCH") for q in texts), texts
+    assert by_text == []  # the old way finds nothing
+    assert cancelled == [True]
+    assert "canceling statement due to user request" in (outcome["result"].error or "")
+
+
+@pytest.fixture(scope="module")
+def history_credentials() -> dict:
+    """A second container, with pg_stat_statements loaded, which the first lacks."""
+    container = PostgresContainer("postgres:16-alpine").with_command(
+        "postgres -c shared_preload_libraries=pg_stat_statements"
+    )
+    try:
+        container.start()
+    except Exception as exc:
+        pytest.skip(f"Could not start Postgres container: {exc}")
+    try:
+        yield {
+            "host": container.get_container_host_ip(),
+            "port": int(container.get_exposed_port(5432)),
+            "database": container.dbname,
+            "user": container.username,
+            "password": container.password,
+            "ssl_mode": "disable",
+        }
+    finally:
+        container.stop()
+
+
+def test_a_streamed_read_of_ours_is_extracted_as_its_statement(history_credentials) -> None:
+    """End to end. Once a tagged read streams, pg_stat_statements records only
+    its DECLARE, which the history drops with every other cursor, so the
+    statements run deliberately in the SQL console stopped reaching the
+    history. Extraction returns the statement, as before it streamed. An
+    untagged streamed read stays out."""
+    connector = granted(PostgresConnector())
+    connector.connect(history_credentials)
+    with connector._require_engine().begin() as conn:
+        conn.execute(sa_text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        conn.execute(sa_text("CREATE TABLE hist_a (id int, b_id int)"))
+        conn.execute(sa_text("CREATE TABLE hist_b (id int)"))
+        conn.execute(sa_text("SELECT pg_stat_statements_reset()"))
+    tagged = (
+        "/* nlq-console:e2e */ SELECT hist_a.id FROM hist_a JOIN hist_b ON hist_a.b_id = hist_b.id"
+    )
+    untagged = (
+        "SELECT hist_b.id FROM hist_b JOIN hist_a ON hist_a.b_id = hist_b.id WHERE hist_b.id > 7"
+    )
+    assert connector.execute_query(tagged).error is None
+    assert connector.execute_query(untagged).error is None
+
+    extracted = [record.sql for record in connector.extract_query_history()]
+
+    assert tagged in extracted
+    assert not any(s.lstrip().upper().startswith(("DECLARE", "FETCH", "CLOSE")) for s in extracted)
+    assert not any("hist_b.id >" in s for s in extracted)
