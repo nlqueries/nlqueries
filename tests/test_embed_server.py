@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import socket
 import threading
 from unittest.mock import MagicMock, patch
@@ -329,7 +330,7 @@ def test_an_encode_that_outlasts_the_wait_fails_its_request(monkeypatch: pytest.
 
 
 def test_an_existing_worker_takes_the_job_when_no_new_thread_can_start(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
     """Out of threads, the pool serves at the capacity it has, rather than
     failing requests while a worker sits idle (from #258's review)."""
@@ -343,8 +344,36 @@ def test_an_existing_worker_takes_the_job_when_no_new_thread_can_start(
 
     monkeypatch.setattr(threading.Thread, "start", _no_threads)
 
-    assert pool.submit(lambda: 7).result(timeout=5) == 7
+    with caplog.at_level(logging.WARNING, logger="nlqueries.embeddings.embed_server"):
+        assert pool.submit(lambda: 7).result(timeout=5) == 7
+        assert pool.submit(lambda: 8).result(timeout=5) == 8
     pool.shutdown()
+
+    # Said once for the shortfall, not once per request (from #259's review).
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, warnings
+    assert "running on 1 of 4" in warnings[0]
+    assert pool.running == 1
+
+
+def test_healthz_reports_the_encode_threads_running():
+    """max_concurrency is what was configured; this is what is running."""
+    import json
+    import urllib.request
+
+    from nlqueries.embeddings.embed_server import build_server
+
+    port = _free_port()
+    server = build_server(port, encoder=_slow_encoder(0.0), max_concurrency=3)
+    _serve_in_background(server)
+    _post_embed(port)
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=10) as resp:
+        health = json.loads(resp.read())
+    server.shutdown()
+    server.server_close()
+
+    assert health["max_concurrency"] == 3
+    assert health["encode_threads"] == 1
 
 
 def test_a_request_that_gave_up_does_not_leave_its_encode_queued(

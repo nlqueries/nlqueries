@@ -287,6 +287,15 @@ class _EncodePool:
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
         self._closed = False
+        # Whether running short of `size` has been logged since the last
+        # thread that did start: once per episode, not once per request.
+        self._shortfall_logged = False
+
+    @property
+    def running(self) -> int:
+        """Encode threads started, which is fewer than `size` until enough
+        requests have arrived, or while the host cannot start more."""
+        return len(self._threads)
 
     def submit(self, fn: Callable[[], Any]) -> Future[Any]:
         future: Future[Any] = Future()
@@ -305,11 +314,24 @@ class _EncodePool:
                 # capacity it has (from #258's review).
                 try:
                     thread.start()
-                except RuntimeError:
+                except RuntimeError as exc:
                     if not self._threads:
                         raise
+                    # Said, because nothing else would say it: the daemon keeps
+                    # answering, only slower, and /healthz's max_concurrency
+                    # still reads as configured (from #259's review).
+                    if not self._shortfall_logged:
+                        self._shortfall_logged = True
+                        logger.warning(
+                            "Could not start an encode thread (%s); running on %d of %d "
+                            "until one starts. Requests queue for the threads there are.",
+                            exc,
+                            len(self._threads),
+                            self.size,
+                        )
                 else:
                     self._threads.append(thread)
+                    self._shortfall_logged = False
             self._jobs.put((future, fn))
         return future
 
@@ -424,6 +446,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         gate = self.__class__.gate
+        pool = self.__class__.pool
         self._respond(
             {
                 "status": "ok",
@@ -434,6 +457,9 @@ class _EmbedHandler(BaseHTTPRequestHandler):
                 "model": self.__class__.model_name,
                 "inflight": gate.inflight if gate else 0,
                 "max_concurrency": gate.limit if gate else None,
+                # Started so far: below max_concurrency until enough requests
+                # have arrived, or while the host cannot start threads.
+                "encode_threads": pool.running if pool else None,
             }
         )
 
@@ -566,8 +592,11 @@ class _EmbedHandler(BaseHTTPRequestHandler):
         with gate:
             if cls.pool is None:
                 return self._encode_unguarded(texts)
-            # The gate admits no more encodes than the pool has threads, so
-            # this never queues inside the pool: the bound stays the gate's.
+            # The gate admits no more encodes than the pool's size, so with every
+            # thread started this never queues inside the pool. Below its size
+            # -- the host could not start a thread -- jobs do queue behind busy
+            # threads, and the gate still bounds that queue to its limit less
+            # the threads running.
             future = cls.pool.submit(lambda: self._encode_unguarded(texts))
             try:
                 return cast(list[list[float]], future.result(timeout=_ENCODE_WAIT_SECONDS))
