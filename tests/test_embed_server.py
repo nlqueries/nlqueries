@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import socket
 import threading
 from unittest.mock import MagicMock, patch
@@ -326,6 +327,89 @@ def test_an_encode_that_outlasts_the_wait_fails_its_request(monkeypatch: pytest.
     assert refused.value.code == 500
     assert elapsed < 2.0, f"the request waited {elapsed:.1f}s for an encode it had given up on"
     assert gate.inflight == 0, "the request kept the gate's slot"
+
+
+def test_an_existing_worker_takes_the_job_when_no_new_thread_can_start(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """Out of threads, the pool serves at the capacity it has, rather than
+    failing requests while a worker sits idle (from #258's review)."""
+    from nlqueries.embeddings.embed_server import _EncodePool
+
+    pool = _EncodePool(4)
+    assert pool.submit(lambda: 1).result(timeout=5) == 1  # one worker running
+
+    def _no_threads(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", _no_threads)
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.embeddings.embed_server"):
+        assert pool.submit(lambda: 7).result(timeout=5) == 7
+        assert pool.submit(lambda: 8).result(timeout=5) == 8
+    pool.shutdown()
+
+    # Said once for the shortfall, not once per request (from #259's review).
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, warnings
+    assert "running on 1 of 4" in warnings[0]
+    assert pool.running == 1
+
+
+def test_healthz_reports_the_encode_threads_running():
+    """max_concurrency is what was configured; this is what is running."""
+    import json
+    import urllib.request
+
+    from nlqueries.embeddings.embed_server import build_server
+
+    port = _free_port()
+    server = build_server(port, encoder=_slow_encoder(0.0), max_concurrency=3)
+    _serve_in_background(server)
+    _post_embed(port)
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=10) as resp:
+        health = json.loads(resp.read())
+    server.shutdown()
+    server.server_close()
+
+    assert health["max_concurrency"] == 3
+    assert health["encode_threads"] == 1
+
+
+def test_a_request_that_gave_up_does_not_leave_its_encode_queued(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A request that stopped waiting cancels its job, so a worker that frees
+    up skips it rather than encoding for nobody (from #258's review)."""
+    import time
+    import urllib.error
+
+    from nlqueries.embeddings import embed_server
+
+    release = threading.Event()
+    calls: list[str] = []
+
+    def _encoder(texts: list[str]) -> list[list[float]]:
+        calls.append(texts[0])
+        release.wait(5)
+        return [[0.0] * 384 for _ in texts]
+
+    monkeypatch.setattr(embed_server, "_ENCODE_WAIT_SECONDS", 0.3)
+    port = _free_port()
+    server = embed_server.build_server(port, encoder=_encoder, max_concurrency=1)
+    _serve_in_background(server)
+
+    # The first gives up while its encode still runs; the second then queues
+    # behind it, and gives up too.
+    for text in ("first", "second"):
+        with pytest.raises(urllib.error.HTTPError):
+            _post_embed(port, text)
+    release.set()
+    time.sleep(0.5)
+    server.shutdown()
+    server.server_close()
+
+    assert calls == ["first"], f"encoded for requests that had given up: {calls}"
 
 
 def test_closing_the_server_stops_its_encode_threads():
