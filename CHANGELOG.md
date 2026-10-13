@@ -321,6 +321,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   leading whitespace, parentheses and comments, nested as Postgres nests
   them, and compares the whole first word, so `withdraw_funds()` no longer
   counts as `with`.
+- **A streamed PostgreSQL read is bounded by its timeout as a whole.**
+  `statement_timeout` bounds each statement, and a streamed read is a
+  `DECLARE` and then a `FETCH` per batch, so each batch could run for the
+  whole budget again: a 2 s timeout let a 6 s read finish. Before each batch
+  of 1,000 rows the timeout is now set to what is left, and a read that runs
+  out of time fails as one that is not streamed does. This covers every
+  streamed read, the agent's own included. The batches are now 1,000 rows
+  from the first; they had started at a handful and grown.
+- **A streamed read's `execution_time_ms` includes reading its rows.** It
+  was taken once the cursor was declared, so a read that took a second
+  reported a few milliseconds and was never classed as slow.
 - **Query history keeps our own tagged runs once they stream.**
   `pg_stat_statements` records a streamed read only as its cursor's
   `DECLARE`, which history extraction drops along with every other cursor.

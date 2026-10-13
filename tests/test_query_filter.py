@@ -423,6 +423,9 @@ def test_system_commands_filtered_before_sqlglot() -> None:
         ("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_USER()", True),
         ("SELECT current_user", True),
         ("SELECT VERSION()", True),
+        # The connector's own: it resets the timeout before each batch of a
+        # streamed read, as pg_stat_statements records it.
+        ("SELECT set_config($1, $2, $3)", True),
         # Should NOT be system queries — these are real business queries
         ("SELECT id FROM users WHERE active = true", False),
         ("SELECT SUM(amount) FROM payments GROUP BY currency", False),
@@ -448,6 +451,7 @@ def test_session_function_only_queries_filtered() -> None:
     session_queries = [
         "SELECT CURRENT_DATABASE() AS a, CURRENT_SCHEMAS(false) AS b",
         "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_USER()",
+        "SELECT set_config($1, $2, $3)",
     ]
     result = filter_and_deduplicate([_qr(sql) for sql in session_queries])
     assert result == []

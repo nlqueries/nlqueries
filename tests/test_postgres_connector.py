@@ -630,6 +630,36 @@ def test_a_read_behind_a_leading_comment_runs_on_a_server_side_cursor(connector)
     assert name is not None
 
 
+def test_a_streamed_read_is_bounded_by_its_timeout_as_a_whole(connector) -> None:
+    """statement_timeout bounds each statement, and a streamed read is a
+    DECLARE and then a FETCH per batch, so a timeout set once let every batch
+    run the whole budget again: on Postgres 16 a 2 s timeout let a 6 s read
+    finish. Here every 1,000th row pauses 0.6 s, so each batch stays under the
+    1.5 s timeout and the five together take twice it."""
+    import time
+
+    start = time.perf_counter()
+    result = connector.execute_query(
+        "SELECT pg_sleep(CASE WHEN g % 1000 = 0 THEN 0.6 ELSE 0 END), g "
+        "FROM generate_series(1, 5000) AS g",
+        timeout_seconds=1.5,
+    )
+    took = time.perf_counter() - start
+
+    assert "canceling statement due to statement timeout" in (result.error or ""), result
+    assert took < 2.5
+
+
+def test_a_streamed_reads_time_includes_reading_its_rows(connector) -> None:
+    """It was taken when execute returned, which for a streamed read is after
+    the DECLARE and the first row: a read that took a second reported a fifth
+    of one."""
+    result = connector.execute_query("SELECT pg_sleep(0.2), g FROM generate_series(1, 5) AS g")
+
+    assert result.error is None
+    assert result.execution_time_ms >= 900
+
+
 def test_the_session_carries_the_application_name_it_was_given(credentials) -> None:
     labelled = granted(PostgresConnector())
     labelled.connect({**credentials, "application_name": "nlq-console:abc"})
@@ -758,3 +788,35 @@ def test_a_streamed_read_of_ours_is_extracted_as_its_statement(history_credentia
     assert tagged in extracted
     assert not any(s.lstrip().upper().startswith(("DECLARE", "FETCH", "CLOSE")) for s in extracted)
     assert not any("hist_b.id >" in s for s in extracted)
+
+
+def test_resetting_the_timeout_per_batch_leaves_one_history_row(history_credentials) -> None:
+    """A streamed read resets its timeout before every batch. As a SET, each
+    value would be a pg_stat_statements row of its own (on PostgreSQL 15 and
+    16 alike), crowding the database's own statements out of a fixed-size
+    view; set_config is normalised to one."""
+    connector = granted(PostgresConnector())
+    connector.connect(history_credentials)
+    engine = connector._require_engine()
+    with engine.begin() as conn:
+        conn.execute(sa_text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        conn.execute(sa_text("SELECT pg_stat_statements_reset()"))
+
+    for _ in range(2):
+        result = connector.execute_query(
+            "SELECT g FROM generate_series(1, 3500) AS g", timeout_seconds=30
+        )
+        assert result.error is None
+        assert result.row_count == 3500
+
+    with engine.connect() as conn:
+        recorded = conn.execute(
+            sa_text(
+                "SELECT query, calls FROM pg_stat_statements "
+                "WHERE query ILIKE '%statement_timeout%' OR query ILIKE '%set_config%'"
+            )
+        ).all()
+    sets = [query for query, _calls in recorded if query.lstrip().upper().startswith("SET")]
+    resets = [calls for query, calls in recorded if "set_config" in query]
+    assert sets == ["SET LOCAL statement_timeout = 30000"]  # the read's own, once
+    assert resets and resets[0] >= 6  # at least three batches in each read

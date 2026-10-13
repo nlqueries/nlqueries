@@ -48,7 +48,7 @@ _SYSTEM_TABLE_RE = re.compile(
 # functions with no FROM clause (pure driver handshake queries).
 _SYSTEM_FUNCTION_ONLY_RE = re.compile(
     r"^\s*SELECT\s+(?:CURRENT_DATABASE|CURRENT_SCHEMAS?|CURRENT_USER|"
-    r"VERSION|PG_POSTMASTER_START_TIME)(?:[\s($]|$)",
+    r"VERSION|PG_POSTMASTER_START_TIME|SET_CONFIG)(?:[\s($]|$)",
     re.IGNORECASE,
 )
 
