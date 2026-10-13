@@ -300,9 +300,16 @@ class _EncodePool:
                 # Counted once it runs. `start()` raises when the host is out of
                 # threads, and a thread counted first kept its slot for good: at
                 # a limit of 1, every later job waited for a worker that never
-                # ran (from #257's review). This request fails instead.
-                thread.start()
-                self._threads.append(thread)
+                # ran (from #257's review). With no worker at all this request
+                # fails; with one, the job queues and the pool serves at the
+                # capacity it has (from #258's review).
+                try:
+                    thread.start()
+                except RuntimeError:
+                    if not self._threads:
+                        raise
+                else:
+                    self._threads.append(thread)
             self._jobs.put((future, fn))
         return future
 
@@ -565,6 +572,10 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             try:
                 return cast(list[list[float]], future.result(timeout=_ENCODE_WAIT_SECONDS))
             except TimeoutError:
+                # Its job may still be queued behind a busy worker. Cancelled,
+                # the worker skips it instead of encoding for a request that
+                # has gone (from #258's review).
+                future.cancel()
                 raise TimeoutError(
                     f"no encode thread finished this request within {_ENCODE_WAIT_SECONDS:g}s"
                 ) from None
