@@ -97,7 +97,9 @@ def _streamed_rows(conn: Any, result: Any, deadline: float | None) -> Iterator[A
     batch in a fixed-size view, crowding out the database's own statements; a
     SELECT is normalised to one row. ``query_filter`` drops it from history.
     """
-    batches = result.partitions(_YIELD_PER)
+    # iter(): partitions() is a generator, so this changes nothing for a real
+    # result, but next() on anything else need not ever stop.
+    batches = iter(result.partitions(_YIELD_PER))
     while True:
         if deadline is not None:
             left_ms = max(1, int((deadline - time.monotonic()) * 1000))
@@ -549,7 +551,10 @@ class PostgresConnector(DatabaseConnector):
         declared for one is returned as its statement (:data:`STATEMENT_TEXT`).
         Each such run is a row of its own, with one call: the cursor's name
         changes every time, so they are never counted together. Its time is the
-        declaration's, not the read's.
+        declaration's, not the read's. Rows are still ordered by calls and cut
+        at *limit*, so where the database's reads outnumber the limit, these
+        one-call rows are the first left out: the history holds the tagged runs
+        that fit, not every one the console ran.
 
         The prefix test skips leading whitespace and comments rather than
         anchoring on the first character. Our own SQL Console tags every
