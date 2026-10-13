@@ -48,12 +48,13 @@ import contextlib
 import json
 import logging
 import os
+import queue
 import signal
 import subprocess
 import sys
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Any, cast
@@ -254,6 +255,73 @@ def _load_encoder(backend: str) -> Callable[[list[str]], list[list[float]]]:
 
 
 # ---------------------------------------------------------------------------
+# Encode pool
+# ---------------------------------------------------------------------------
+
+
+class _EncodePool:
+    """A fixed set of daemon threads that run encodes.
+
+    Fixed, because a new thread per request leaked MKL's per-thread buffers on
+    Windows (see the module docstring). Daemon, for the reason the server sets
+    ``daemon_threads``: the daemon is restarted routinely, and a forward pass
+    can take seconds. ``concurrent.futures.ThreadPoolExecutor`` would do the
+    first and not the second: it joins its threads at interpreter exit, so a
+    stopped daemon waited for the encode in flight, and a large batch could
+    outlast ``embed-server stop``'s wait (from #257's review).
+
+    Threads start as work arrives, up to *size*, so a server that is built and
+    never used costs none.
+    """
+
+    def __init__(self, size: int) -> None:
+        self.size = max(1, size)
+        self._jobs: queue.SimpleQueue[tuple[Future[Any], Callable[[], Any]] | None] = (
+            queue.SimpleQueue()
+        )
+        self._threads: list[threading.Thread] = []
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def submit(self, fn: Callable[[], Any]) -> Future[Any]:
+        future: Future[Any] = Future()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("the encode pool has been shut down")
+            if len(self._threads) < self.size:
+                thread = threading.Thread(
+                    target=self._work, name=f"embed-encode-{len(self._threads)}", daemon=True
+                )
+                self._threads.append(thread)
+                thread.start()
+            self._jobs.put((future, fn))
+        return future
+
+    def shutdown(self) -> None:
+        """Let idle threads finish. One busy with an encode finishes it, unless
+        the process exits first -- it is a daemon thread."""
+        with self._lock:
+            self._closed = True
+            for _ in self._threads:
+                self._jobs.put(None)
+
+    def _work(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            future, fn = job
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                result = fn()
+            except BaseException as exc:  # noqa: BLE001 -- handed to the waiting request
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+
+# ---------------------------------------------------------------------------
 # Concurrency gate
 # ---------------------------------------------------------------------------
 
@@ -315,7 +383,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
     #: Not the request's own thread, which is new for every request -- see the
     #: module docstring for what that cost on Windows. Unset only on the
     #: legacy path, like the gate.
-    pool: ThreadPoolExecutor | None = None
+    pool: _EncodePool | None = None
     backend: str = "unknown"
     #: The model this daemon loaded, reported by ``/healthz``.
     #:
@@ -484,7 +552,10 @@ class _EmbedHandler(BaseHTTPRequestHandler):
                 return self._encode_unguarded(texts)
             # The gate admits no more encodes than the pool has threads, so
             # this never queues inside the pool: the bound stays the gate's.
-            return cls.pool.submit(self._encode_unguarded, texts).result()
+            return cast(
+                list[list[float]],
+                cls.pool.submit(lambda: self._encode_unguarded(texts)).result(),
+            )
 
     def _encode_unguarded(self, texts: list[str]) -> list[list[float]]:
         cls = self.__class__
@@ -515,6 +586,8 @@ class _ThreadingEmbedServer(ThreadingHTTPServer):
 
     ``daemon_threads`` so shutdown is not held hostage by an in-flight encode:
     the daemon is restarted routinely and a model forward pass can take seconds.
+    The request threads only wait now; the encode itself runs on
+    ``_EncodePool``'s threads, which are daemon threads for the same reason.
     """
 
     daemon_threads = True
@@ -523,7 +596,7 @@ class _ThreadingEmbedServer(ThreadingHTTPServer):
         super().server_close()
         pool = getattr(self.RequestHandlerClass, "pool", None)
         if pool is not None:
-            pool.shutdown(wait=False)
+            pool.shutdown()
 
 
 def build_server(
@@ -551,7 +624,7 @@ def build_server(
             "model": model,
             "model_name": model_name,
             "gate": gate,
-            "pool": ThreadPoolExecutor(max_workers=gate.limit, thread_name_prefix="embed-encode"),
+            "pool": _EncodePool(gate.limit),
             "backend": backend,
         },
     )
@@ -621,7 +694,13 @@ def serve(port: int = _DEFAULT_PORT, backend: str | None = None) -> None:
             threading.Thread(target=server.shutdown, daemon=True).start()
 
         signal.signal(signal.SIGTERM, _shutdown)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            # Closes the socket and stops the encode pool's idle threads (from
+            # #257's review). One busy with an encode is a daemon thread, so
+            # the process does not wait for it.
+            server.server_close()
     finally:
         _PID_FILE.unlink(missing_ok=True)
 

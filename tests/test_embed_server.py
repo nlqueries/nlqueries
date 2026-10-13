@@ -219,6 +219,60 @@ def test_encodes_run_on_a_fixed_set_of_threads():
     assert len(set(threads)) <= 2, f"encodes ran on {len(set(threads))} threads: {set(threads)}"
 
 
+def test_an_encode_in_flight_does_not_hold_the_process_at_exit():
+    """Stopping the daemon must not wait for a forward pass (from #257's review).
+
+    ``ThreadPoolExecutor`` joins its threads at interpreter exit, so with the
+    encodes on one a process whose server had stopped still waited for the
+    encode in flight: 5 s for a 6-second encode, measured. A large batch could
+    then outlast ``embed-server stop``'s wait, which reports the daemon as
+    still running.
+    """
+    import subprocess
+    import sys
+    import textwrap
+    import time
+
+    script = textwrap.dedent(
+        f"""
+        import json, threading, time, urllib.request
+        from nlqueries.embeddings.embed_server import build_server
+
+        def slow(texts):
+            time.sleep(20)
+            return [[0.0] * 384 for _ in texts]
+
+        server = build_server({_free_port()}, encoder=slow, max_concurrency=2)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+
+        def fire():
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{{port}}/embed", data=json.dumps({{"text": "x"}}).encode(),
+                headers={{"Content-Type": "application/json"}},
+            )
+            try:
+                urllib.request.urlopen(req, timeout=60).read()
+            except Exception:
+                pass
+
+        threading.Thread(target=fire, daemon=True).start()
+        deadline = time.monotonic() + 10
+        while server.RequestHandlerClass.gate.inflight == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server.RequestHandlerClass.gate.inflight == 1, "the encode never started"
+        server.shutdown()
+        server.server_close()
+        """
+    )
+    started = time.monotonic()
+    run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    elapsed = time.monotonic() - started
+
+    assert run.returncode == 0, run.stderr
+    assert elapsed < 12, f"the process took {elapsed:.1f}s to exit; it waited for the encode"
+
+
 def test_closing_the_server_stops_its_encode_threads():
     """A process that builds and closes servers, as these tests do, must not
     keep a pool of idle threads for each one."""
