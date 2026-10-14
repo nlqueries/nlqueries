@@ -757,12 +757,74 @@ def serve(port: int = _DEFAULT_PORT, backend: str | None = None) -> None:
         _PID_FILE.unlink(missing_ok=True)
 
 
-if __name__ == "__main__":
-    import argparse
+#: The format of the daemon's log lines when ``--log-format`` is not given:
+#: ``text`` (the default) or ``json``.
+LOG_FORMAT_ENV = "NLQ_LOG_FORMAT"
+
+
+class JsonLogFormatter(logging.Formatter):
+    """One JSON object per log line.
+
+    The keys are those of the nlqueries-enterprise API's own lines --
+    ``asctime``, ``name``, ``levelname``, ``message``, and ``exc_info`` for a
+    traceback -- so a log reader that understands those reads these too. The
+    enterprise API container runs this daemon beside the API, and its
+    plain-text lines, "Embedding request failed" tracebacks included, were
+    invisible to the support tooling that reads the API's JSON lines.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(datefmt="%Y-%m-%dT%H:%M:%S%z")
+
+    def format(self, record: logging.LogRecord) -> str:
+        out: dict[str, Any] = {
+            "asctime": self.formatTime(record, self.datefmt),
+            "name": record.name,
+            "levelname": record.levelname,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            out["exc_info"] = self.formatException(record.exc_info)
+        if record.stack_info:
+            out["stack_info"] = self.formatStack(record.stack_info)
+        return json.dumps(out, default=str)
+
+
+def configure_logging(log_format: str | None = None) -> None:
+    """Send the daemon's logs to stderr, as plain text or as JSON lines.
+
+    *log_format* is ``text`` or ``json``; when it is not given,
+    ``NLQ_LOG_FORMAT`` decides, and text is the default. Plain text is what
+    ``logging.basicConfig`` writes. Any other value is text, with a warning
+    that says so.
+    """
+    chosen = (log_format or os.environ.get(LOG_FORMAT_ENV) or "text").strip().lower()
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        JsonLogFormatter() if chosen == "json" else logging.Formatter(logging.BASIC_FORMAT)
+    )
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    if chosen not in ("text", "json"):
+        logger.warning("Unknown log format %r; writing plain text.", chosen)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """``python -m nlqueries.embeddings.embed_server``."""
+    import argparse  # noqa: PLC0415
 
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=_DEFAULT_PORT)
     p.add_argument("--backend", default=None, choices=["torch", "onnx"])
-    args = p.parse_args()
-    logging.basicConfig(level=logging.INFO)
+    p.add_argument(
+        "--log-format",
+        default=None,
+        choices=["text", "json"],
+        help=f"Log line format (default: ${LOG_FORMAT_ENV}, else text).",
+    )
+    args = p.parse_args(argv)
+    configure_logging(args.log_format)
     serve(port=args.port, backend=args.backend)
+
+
+if __name__ == "__main__":
+    main()
