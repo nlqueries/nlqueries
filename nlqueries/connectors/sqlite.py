@@ -35,6 +35,7 @@ from nlqueries.connectors.base import (
     QueryResult,
     SchemaSpec,
     TableSpec,
+    short_cause,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,13 +168,17 @@ class SQLiteConnector(DatabaseConnector):
 
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds."""
+        return self.connection_problem() is None
+
+    def connection_problem(self) -> str | None:
+        """The driver's error if the connection test fails, else ``None``."""
         try:
             with self._using() as conn:
                 conn.execute("SELECT 1").fetchone()
-            return True
-        except Exception:  # noqa: BLE001
+            return None
+        except Exception as exc:  # noqa: BLE001
             logger.exception("SQLiteConnector.test_connection failed")
-            return False
+            return short_cause(exc)
 
     # ------------------------------------------------------------------
     # extract_schema

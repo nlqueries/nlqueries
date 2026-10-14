@@ -989,8 +989,11 @@ def connect(
             # SnowflakeConnector).
             connector = connector_cls()
             connector.connect(credentials)
-            if not connector.test_connection():
-                raise RuntimeError("test_connection() returned False")
+            # The driver's reason, not "test_connection() returned False"
+            # (from #260's review).
+            problem = connector.connection_problem()
+            if problem is not None:
+                raise RuntimeError(problem)
         else:
             # No dedicated connector registered for this db-type yet — fall back
             # to a raw SQLAlchemy connectivity check.

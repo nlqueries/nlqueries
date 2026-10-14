@@ -116,14 +116,18 @@ class RedshiftConnector(DatabaseConnector):
 
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds against the cluster."""
+        return self.connection_problem() is None
+
+    def connection_problem(self) -> str | None:
+        """The driver's error if the connection test fails, else ``None``."""
         try:
             with contextlib.closing(self._require_conn().cursor()) as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
-            return True
-        except Exception:  # noqa: BLE001
+            return None
+        except Exception as exc:  # noqa: BLE001
             logger.exception("RedshiftConnector.test_connection failed")
-            return False
+            return short_cause(exc)
         finally:
             # `SELECT 1` opens a transaction like any other statement, and the
             # connection outlives this call -- `loader.py` caches connectors

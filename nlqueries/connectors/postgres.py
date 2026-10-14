@@ -32,6 +32,7 @@ from nlqueries.connectors.base import (
     SecurityPolicy,
     SecurityPolicyReport,
     TableSpec,
+    short_cause,
 )
 from nlqueries.connectors.postgres_identity import PostgresIdentity, inspect_identity
 from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
@@ -324,14 +325,18 @@ class PostgresConnector(DatabaseConnector):
 
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds against the connected database."""
+        return self.connection_problem() is None
+
+    def connection_problem(self) -> str | None:
+        """The driver's error if the connection test fails, else ``None``."""
         try:
             engine = self._require_engine()
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            return True
-        except Exception:  # noqa: BLE001 — any failure means "not connected"
+            return None
+        except Exception as exc:  # noqa: BLE001 — any failure means "not connected"
             logger.exception("PostgresConnector.test_connection failed")
-            return False
+            return short_cause(exc)
 
     # ------------------------------------------------------------------
     # extract_schema
