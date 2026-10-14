@@ -57,6 +57,11 @@ class _Registered:
         # without this fails the command for a reason unrelated to resolution.
         return True
 
+    def connection_problem(self) -> str | None:
+        # What `nlqueries connect` asks now, for the same reason (from #260's
+        # review): a usable connection has no problem.
+        return None
+
 
 class _Resolved(_Registered):
     """Stands in for the subclass a deployment resolves for an auth method."""
