@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
+from nlqueries.cli.main import cli
 from nlqueries.embeddings import embed_server
 
 
@@ -102,3 +104,41 @@ def test_the_command_line_configures_logging_before_serving(
     embed_server.main(["--port", "9999", "--log-format", "json"])
 
     assert calls == [("log", "json"), ("serve", (9999, None))]
+
+
+def test_a_request_that_fails_is_logged_in_the_chosen_format(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """socketserver prints an exception escaping a handler -- a client gone
+    mid-response -- to stderr itself, past the logging configuration. In JSON
+    mode that would break the one-object-per-line stream (from #261's review)."""
+    monkeypatch.delenv(embed_server.LOG_FORMAT_ENV, raising=False)
+    embed_server.configure_logging("json")
+    server = embed_server._ThreadingEmbedServer(("127.0.0.1", 0), embed_server._EmbedHandler)
+    try:
+        try:
+            raise ConnectionResetError("the client went away")
+        except ConnectionResetError:
+            server.handle_error(None, ("127.0.0.1", 50123))
+    finally:
+        server.server_close()
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["levelname"] == "ERROR"
+    assert "ConnectionResetError: the client went away" in record["exc_info"]
+
+
+def test_the_foreground_command_logs_like_the_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nlqueries embed-server start --foreground` served without configuring
+    logging, so nothing below WARNING reached the terminal (from #261's review)."""
+    calls: list[str] = []
+    monkeypatch.setattr(embed_server, "read_pid_file", lambda: (None, None))
+    monkeypatch.setattr(embed_server, "configure_logging", lambda *a: calls.append("log"))
+    monkeypatch.setattr(embed_server, "serve", lambda port: calls.append(f"serve:{port}"))
+
+    result = CliRunner().invoke(cli, ["embed-server", "start", "--foreground", "--port", "9123"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["log", "serve:9123"]

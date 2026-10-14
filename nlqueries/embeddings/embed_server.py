@@ -644,6 +644,15 @@ class _ThreadingEmbedServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Log an exception that escaped a handler, through the logger.
+
+        socketserver prints it to stderr itself, past the logging
+        configuration, so in JSON mode a client that went away mid-response
+        left a raw multi-line traceback among the JSON lines.
+        """
+        logger.exception("A request from %s failed", client_address)
+
     def server_close(self) -> None:
         super().server_close()
         pool = getattr(self.RequestHandlerClass, "pool", None)

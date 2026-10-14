@@ -13,7 +13,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   traceback. An application that runs the daemon beside its own JSON-logging
   services can then read the daemon's lines, failures included, with the same
   tools. Plain text is still the default and unchanged; an unknown value is
-  plain text with a warning.
+  plain text with a warning. `nlqueries embed-server start --foreground`
+  honours the variable too, and an exception that escapes a request handler (a
+  client gone mid-response) is logged in the same format rather than printed
+  as a raw traceback.
 - **`connection_problem()` on every connector: why a connection is not
   usable.** `test_connection()` answers yes or no, and every built-in
   connector caught the driver's error inside it and only logged it, so an
