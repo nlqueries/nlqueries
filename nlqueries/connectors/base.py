@@ -277,6 +277,23 @@ class DatabaseConnector(ABC):
         """Verify that the current connection is alive and usable."""
         ...
 
+    def connection_problem(self) -> str | None:
+        """Why the connection is not usable, or ``None`` if it is.
+
+        ``test_connection`` answers only yes or no: the built-in connectors
+        catch the driver's error there and log it, so a caller showing a
+        person why a connection failed had nothing to show but the log. The
+        built-in connectors override this with their own test, returning the
+        driver's error as :func:`short_cause` gives it: its type and first
+        line, since later lines are where drivers quote what they were sent.
+
+        A returned value, not state on the connector: connectors are pooled
+        and shared across requests, so a stored "last error" would be another
+        request's. This default serves a connector that implements only
+        ``test_connection``, and can say no more than that it failed.
+        """
+        return None if self.test_connection() else "the connection test failed"
+
     @abstractmethod
     def extract_schema(self) -> SchemaSpec:
         """Introspect and return the full schema of the connected database."""
@@ -691,6 +708,10 @@ class PermittedConnector(DatabaseConnector):
     def test_connection(self) -> bool:
         with self._active() as inner:
             return inner.test_connection()
+
+    def connection_problem(self) -> str | None:
+        with self._active() as inner:
+            return inner.connection_problem()
 
     def extract_schema(self) -> SchemaSpec:
         with self._active() as inner:

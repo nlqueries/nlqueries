@@ -356,6 +356,35 @@ def test_an_existing_worker_takes_the_job_when_no_new_thread_can_start(
     assert pool.running == 1
 
 
+def test_a_later_shortfall_is_said_again(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """Once a thread starts again the warning re-arms, so a second shortfall
+    is not silent for the life of the process (promised on #259)."""
+    from nlqueries.embeddings.embed_server import _EncodePool
+
+    real_start = threading.Thread.start
+    pool = _EncodePool(4)
+    assert pool.submit(lambda: 1).result(timeout=5) == 1  # one worker
+
+    def _no_threads(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.embeddings.embed_server"):
+        monkeypatch.setattr(threading.Thread, "start", _no_threads)
+        assert pool.submit(lambda: 2).result(timeout=5) == 2  # short: said
+        monkeypatch.setattr(threading.Thread, "start", real_start)
+        assert pool.submit(lambda: 3).result(timeout=5) == 3  # a second thread starts
+        monkeypatch.setattr(threading.Thread, "start", _no_threads)
+        assert pool.submit(lambda: 4).result(timeout=5) == 4  # short again: said again
+    pool.shutdown()
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2, warnings
+    assert "running on 1 of 4" in warnings[0]
+    assert "running on 2 of 4" in warnings[1]
+
+
 def test_healthz_reports_the_encode_threads_running():
     """max_concurrency is what was configured; this is what is running."""
     import json

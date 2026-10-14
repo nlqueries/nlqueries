@@ -6,6 +6,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`connection_problem()` on every connector: why a connection is not
+  usable.** `test_connection()` answers yes or no, and every built-in
+  connector caught the driver's error inside it and only logged it, so an
+  application showing a person why a connection failed had nothing to show.
+  `connection_problem()` returns `None` for a usable connection, otherwise the
+  driver's error as its type and first line (`OperationalError: ... port 5432
+  failed: Connection refused`); later lines, where drivers quote what they were
+  sent, are left out. Each built-in connector implements it with its own test,
+  and `test_connection()` is now `connection_problem() is None`. A third-party
+  connector that implements only `test_connection()` keeps working: the
+  default says only that the test failed.
 - **`application_name` for the PostgreSQL connector.** Optional; it labels
   every session in `pg_stat_activity`. A caller that cancels a running
   statement by finding it there needs it: while a streamed read runs, the

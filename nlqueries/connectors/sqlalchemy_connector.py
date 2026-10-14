@@ -39,6 +39,7 @@ from nlqueries.connectors.base import (
     QueryResult,
     SchemaSpec,
     TableSpec,
+    short_cause,
 )
 from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 
@@ -307,13 +308,17 @@ class SQLAlchemyConnector(DatabaseConnector):
 
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds against the connected database."""
+        return self.connection_problem() is None
+
+    def connection_problem(self) -> str | None:
+        """The driver's error if the connection test fails, else ``None``."""
         try:
             with self._require_engine().connect() as conn:
                 conn.execute(text("SELECT 1"))
-            return True
-        except Exception:  # noqa: BLE001
+            return None
+        except Exception as exc:  # noqa: BLE001
             logger.exception("SQLAlchemyConnector.test_connection failed")
-            return False
+            return short_cause(exc)
 
     # ------------------------------------------------------------------
     # extract_schema

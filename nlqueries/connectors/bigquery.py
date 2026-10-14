@@ -145,13 +145,17 @@ class BigQueryConnector(DatabaseConnector):
 
     def test_connection(self) -> bool:
         """Return True if ``SELECT 1`` succeeds as a BigQuery query job."""
+        return self.connection_problem() is None
+
+    def connection_problem(self) -> str | None:
+        """The driver's error if the connection test fails, else ``None``."""
         try:
             client = self._require_client()
             client.query("SELECT 1").result()
-            return True
-        except Exception:  # noqa: BLE001 — any failure means "not connected"
+            return None
+        except Exception as exc:  # noqa: BLE001 — any failure means "not connected"
             logger.exception("BigQueryConnector.test_connection failed")
-            return False
+            return short_cause(exc)
 
     # ------------------------------------------------------------------
     # extract_schema
