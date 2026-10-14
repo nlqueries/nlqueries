@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
+from nlqueries.cli.main import cli
 from nlqueries.embeddings import embed_server
 
 
@@ -102,3 +104,71 @@ def test_the_command_line_configures_logging_before_serving(
     embed_server.main(["--port", "9999", "--log-format", "json"])
 
     assert calls == [("log", "json"), ("serve", (9999, None))]
+
+
+def _escape_a_handler(exc: BaseException) -> None:
+    """Have *exc* escape a request handler on a real server."""
+    server = embed_server._ThreadingEmbedServer(("127.0.0.1", 0), embed_server._EmbedHandler)
+    try:
+        try:
+            raise exc
+        except BaseException:
+            server.handle_error(None, ("127.0.0.1", 50123))
+    finally:
+        server.server_close()
+
+
+def test_a_handler_that_fails_is_an_error_in_the_chosen_format(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """socketserver prints an exception escaping a handler to stderr itself,
+    past the logging configuration, which in JSON mode broke the
+    one-object-per-line stream (from #261's review)."""
+    monkeypatch.delenv(embed_server.LOG_FORMAT_ENV, raising=False)
+    embed_server.configure_logging("json")
+
+    _escape_a_handler(RuntimeError("the encode pool is gone"))
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["levelname"] == "ERROR"
+    assert "RuntimeError: the encode pool is gone" in record["exc_info"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ConnectionResetError("reset"), BrokenPipeError("broken pipe"), TimeoutError("timed out")],
+    ids=["reset", "broken-pipe", "timeout"],
+)
+def test_a_client_that_left_is_routine(
+    exc: BaseException, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The embedder gives up after its timeout and embeds in-process; the
+    reply's write then fails. One INFO line, no traceback, so the stream that
+    support reads for failures does not fill with it (from #262's review)."""
+    monkeypatch.delenv(embed_server.LOG_FORMAT_ENV, raising=False)
+    embed_server.configure_logging("json")
+
+    _escape_a_handler(exc)
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["levelname"] == "INFO"
+    assert "exc_info" not in record
+    assert record["message"].endswith(f"left before its reply was written ({type(exc).__name__})")
+
+
+def test_the_foreground_command_logs_like_the_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`nlqueries embed-server start --foreground` served without configuring
+    logging, so nothing below WARNING reached the terminal (from #261's review)."""
+    calls: list[str] = []
+    monkeypatch.setattr(embed_server, "read_pid_file", lambda: (None, None))
+    monkeypatch.setattr(embed_server, "configure_logging", lambda *a: calls.append("log"))
+    monkeypatch.setattr(embed_server, "serve", lambda port: calls.append(f"serve:{port}"))
+
+    result = CliRunner().invoke(cli, ["embed-server", "start", "--foreground", "--port", "9123"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["log", "serve:9123"]

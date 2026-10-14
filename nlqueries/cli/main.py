@@ -3754,9 +3754,12 @@ def embed_server_start(port: int, foreground: bool) -> None:
         console.print(f"  Removing stale PID file ({stale})")
 
     if foreground:
-        from nlqueries.embeddings.embed_server import serve
+        from nlqueries.embeddings import embed_server as _daemon
 
-        serve(port=port)
+        # As `python -m nlqueries.embeddings.embed_server` does, honouring
+        # NLQ_LOG_FORMAT; without it nothing below WARNING reached the terminal.
+        _daemon.configure_logging()
+        _daemon.serve(port=port)
         return
 
     subprocess.Popen(
