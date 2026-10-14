@@ -648,9 +648,23 @@ class _ThreadingEmbedServer(ThreadingHTTPServer):
         """Log an exception that escaped a handler, through the logger.
 
         socketserver prints it to stderr itself, past the logging
-        configuration, so in JSON mode a client that went away mid-response
-        left a raw multi-line traceback among the JSON lines.
+        configuration, so in JSON mode a raw multi-line traceback landed among
+        the JSON lines.
+
+        A client that left before its reply was written is routine, not a
+        failure: the embedder gives up after ``EMBED_CLIENT_TIMEOUT_SECONDS``
+        and embeds in-process, and the write then fails. It is one INFO line
+        without a traceback, as the read side treats the same thing as a
+        non-event; anything else is an ERROR with its traceback.
         """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, ConnectionError | TimeoutError):
+            logger.info(
+                "A client at %s left before its reply was written (%s)",
+                client_address,
+                type(exc).__name__,
+            )
+            return
         logger.exception("A request from %s failed", client_address)
 
     def server_close(self) -> None:
