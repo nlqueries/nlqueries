@@ -291,6 +291,11 @@ class DatabaseConnector(ABC):
         and shared across requests, so a stored "last error" would be another
         request's. This default serves a connector that implements only
         ``test_connection``, and can say no more than that it failed.
+
+        The built-ins define ``test_connection`` as ``connection_problem() is
+        None``. A connector that copies that must override this method too:
+        with only one of the two delegating to the other's default, each calls
+        the other until ``RecursionError`` (from #260's review).
         """
         return None if self.test_connection() else "the connection test failed"
 

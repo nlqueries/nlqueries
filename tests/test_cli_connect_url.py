@@ -79,8 +79,31 @@ def stub_handshake(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         seen.append(credentials)
 
     monkeypatch.setattr(SQLAlchemyConnector, "connect", connect)
-    monkeypatch.setattr(SQLAlchemyConnector, "test_connection", lambda self: True)
+    monkeypatch.setattr(SQLAlchemyConnector, "connection_problem", lambda self: None)
     return seen
+
+
+def test_a_failed_connection_prints_the_databases_reason(
+    monkeypatch: pytest.MonkeyPatch, connectors_file: Path
+) -> None:
+    """It printed "test_connection() returned False" whatever the database said
+    (from #260's review)."""
+    from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
+
+    monkeypatch.setattr(SQLAlchemyConnector, "connect", lambda self, credentials: None)
+    monkeypatch.setattr(
+        SQLAlchemyConnector,
+        "connection_problem",
+        lambda self: "OperationalError: connection refused by db.example:5432",
+    )
+
+    result = CliRunner().invoke(
+        cli, ["connect", "sqlalchemy", "--url", "postgresql://u@db.example/shop", "--alias", "x"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "connection refused by db.example:5432" in result.output
+    assert "returned False" not in result.output
 
 
 def test_connects_to_a_real_sqlite_url(tmp_path: Path, connectors_file: Path) -> None:
