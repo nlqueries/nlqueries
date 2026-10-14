@@ -446,7 +446,8 @@ class TestPostgresConnectorSpan:
         mock_cursor = MagicMock()
         mock_cursor.returns_rows = True
         mock_cursor.keys.return_value = ["id"]
-        mock_cursor.fetchall.return_value = [(1,)]
+        # "SELECT 1" is read in batches (a server-side cursor).
+        mock_cursor.partitions.return_value = iter([[(1,)]])
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
@@ -456,11 +457,15 @@ class TestPostgresConnectorSpan:
         connector._engine = mock_engine
 
         with patch("nlqueries.connectors.postgres.get_tracer", return_value=mock_tracer):
-            connector.execute_query("SELECT 1")
+            result = connector.execute_query("SELECT 1")
 
         mock_tracer.start_as_current_span.assert_called_once_with(
             "postgres_connector.execute_query"
         )
+        # The span alone is set before anything can fail; the read is what
+        # says the query ran (X1).
+        assert result.error is None, result.error
+        assert [list(r) for r in result.rows] == [[1]]
 
     def test_execute_query_span_sets_db_system_attribute(self) -> None:
         mock_tracer, mock_span = _make_mock_tracer()
@@ -478,9 +483,10 @@ class TestPostgresConnectorSpan:
         connector._engine = mock_engine
 
         with patch("nlqueries.connectors.postgres.get_tracer", return_value=mock_tracer):
-            connector.execute_query("SELECT 1")
+            result = connector.execute_query("SELECT 1")
 
         mock_span.set_attribute.assert_any_call("db.system", "postgresql")
+        assert result.error is None, result.error
 
     def test_execute_query_span_sets_error_attribute_on_failure(self) -> None:
         mock_tracer, mock_span = _make_mock_tracer()
