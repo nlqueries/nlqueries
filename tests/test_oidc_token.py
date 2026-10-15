@@ -617,10 +617,16 @@ def test_eddsa_on_a_key_agreement_curve_is_refused() -> None:
 class TestEmailClaims:
     """The email and its flag decide whose account a sign-in links to."""
 
-    def test_a_null_email_is_no_email(self) -> None:
-        """``str(None)`` made it the address "None", shared by every such token."""
+    @pytest.mark.parametrize(
+        "sent",
+        [None, True, 1, ["a@example.com"], {"address": "a@example.com"}],
+        ids=["null", "true", "one", "list", "object"],
+    )
+    def test_an_email_that_is_not_a_string_is_no_email(self, sent: Any) -> None:
+        """``str(None)`` made it the address "None" (and ``str(True)`` "True"),
+        shared by every token that sent the same value."""
         private_key, public_key = _generate_rsa_key_pair()
-        token = _make_token(private_key, extra_claims={"email": None})
+        token = _make_token(private_key, extra_claims={"email": sent})
 
         assert _verify(token, _make_jwks(public_key)).email == ""
 

@@ -336,8 +336,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 - **OIDC ID tokens: `email` and `email_verified` read strictly.**
   `OidcClaims.email` was `str()` of the claim, so `"email": null` became the
-  address `"None"`, shared by every token that sent it; it is now empty, and
-  a padded address is trimmed. `email_verified` was `bool()` of the claim, so
+  address `"None"`, shared by every token that sent it; an email claim that
+  is not a string is now no address, and a padded one is trimmed. `email_verified` was `bool()` of the claim, so
   a provider that sends booleans as strings had `"false"` read as verified;
   only `true` or `"true"` count now. Both decide whose account a sign-in
   links to.

@@ -261,11 +261,12 @@ class OidcTokenVerifier:
 
         # The email and its flag decide whose account a sign-in links to, so
         # they are read as strictly as `sub`. `str()` made `"email": null` the
-        # address "None", which every such token then shared, and `bool()` read
-        # a provider's string `"false"` as verified.
+        # address "None" (and `true` "True"), which every such token then
+        # shared, and `bool()` read a provider's string `"false"` as verified.
+        email = claims.get("email")
         return OidcClaims(
             sub=subject,
-            email=str(claims.get("email") or "").strip(),
+            email=email.strip() if isinstance(email, str) else "",
             name=claims.get("name"),
             given_name=claims.get("given_name"),
             family_name=claims.get("family_name"),
