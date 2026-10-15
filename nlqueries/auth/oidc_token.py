@@ -263,15 +263,18 @@ class OidcTokenVerifier:
         # they are read as strictly as `sub`. `str()` made `"email": null` the
         # address "None" (and `true` "True"), which every such token then
         # shared, and `bool()` read a provider's string `"false"` as verified.
-        email = claims.get("email")
+        # The flag vouches for an address, so with none it is false: an empty
+        # address marked verified would match every other such token.
+        sent = claims.get("email")
+        email = sent.strip() if isinstance(sent, str) else ""
         return OidcClaims(
             sub=subject,
-            email=email.strip() if isinstance(email, str) else "",
+            email=email,
             name=claims.get("name"),
             given_name=claims.get("given_name"),
             family_name=claims.get("family_name"),
             picture=claims.get("picture"),
-            email_verified=_is_true(claims.get("email_verified")),
+            email_verified=bool(email) and _is_true(claims.get("email_verified")),
             raw=claims,
         )
 
