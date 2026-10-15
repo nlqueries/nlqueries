@@ -334,6 +334,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **OIDC ID tokens: `email` and `email_verified` read strictly.**
+  `OidcClaims.email` was `str()` of the claim, so `"email": null` became the
+  address `"None"`, shared by every token that sent it; it is now empty, and
+  a padded address is trimmed. `email_verified` was `bool()` of the claim, so
+  a provider that sends booleans as strings had `"false"` read as verified;
+  only `true` or `"true"` count now. Both decide whose account a sign-in
+  links to.
 - **OIDC ID tokens: a minute's clock difference, and any asymmetric
   algorithm.** `OidcTokenVerifier` allowed no difference between the
   provider's clock and this host's, so a provider one second ahead issued

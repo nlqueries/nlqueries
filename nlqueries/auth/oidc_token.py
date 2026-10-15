@@ -259,13 +259,23 @@ class OidcTokenVerifier:
         if not subject:
             raise OidcVerificationError("Token has no subject ('sub') claim.")
 
+        # The email and its flag decide whose account a sign-in links to, so
+        # they are read as strictly as `sub`. `str()` made `"email": null` the
+        # address "None", which every such token then shared, and `bool()` read
+        # a provider's string `"false"` as verified.
         return OidcClaims(
             sub=subject,
-            email=str(claims.get("email", "")),
+            email=str(claims.get("email") or "").strip(),
             name=claims.get("name"),
             given_name=claims.get("given_name"),
             family_name=claims.get("family_name"),
             picture=claims.get("picture"),
-            email_verified=bool(claims.get("email_verified", False)),
+            email_verified=_is_true(claims.get("email_verified")),
             raw=claims,
         )
+
+
+def _is_true(value: Any) -> bool:
+    """A boolean claim. Some providers send JSON booleans as strings, and
+    ``bool("false")`` is True; anything but ``true`` or ``"true"`` is false."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
