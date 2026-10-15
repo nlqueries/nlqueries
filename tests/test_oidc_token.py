@@ -614,6 +614,60 @@ def test_eddsa_on_a_key_agreement_curve_is_refused() -> None:
         _verify(token, jwks)
 
 
+class TestEmailClaims:
+    """The email and its flag decide whose account a sign-in links to."""
+
+    @pytest.mark.parametrize(
+        "sent",
+        [None, True, 1, ["a@example.com"], {"address": "a@example.com"}],
+        ids=["null", "true", "one", "list", "object"],
+    )
+    def test_an_email_that_is_not_a_string_is_no_email(self, sent: Any) -> None:
+        """``str(None)`` made it the address "None" (and ``str(True)`` "True"),
+        shared by every token that sent the same value."""
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, extra_claims={"email": sent})
+
+        assert _verify(token, _make_jwks(public_key)).email == ""
+
+    @pytest.mark.parametrize("sent", [None, "", "   "], ids=["null", "empty", "blank"])
+    def test_no_address_is_never_verified(self, sent: Any) -> None:
+        """An empty address marked verified matches every other such token."""
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, extra_claims={"email": sent, "email_verified": True})
+
+        claims = _verify(token, _make_jwks(public_key))
+
+        assert (claims.email, claims.email_verified) == ("", False)
+
+    def test_a_padded_email_is_trimmed(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, extra_claims={"email": "  pad@example.com "})
+
+        assert _verify(token, _make_jwks(public_key)).email == "pad@example.com"
+
+    @pytest.mark.parametrize(
+        ("sent", "verified"),
+        [
+            (True, True),
+            ("true", True),
+            ("TRUE", True),
+            ("false", False),
+            (False, False),
+            (None, False),
+            (1, False),
+        ],
+        ids=["true", "string-true", "string-TRUE", "string-false", "false", "null", "one"],
+    )
+    def test_the_verified_flag_is_read_strictly(self, sent: Any, verified: bool) -> None:
+        """``bool("false")`` is True: a provider sending booleans as strings had
+        every address read as verified."""
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, extra_claims={"email_verified": sent})
+
+        assert _verify(token, _make_jwks(public_key)).email_verified is verified
+
+
 def _forge_header(token: str, **header: Any) -> str:
     """*token* with its header fields replaced; the signature no longer matches."""
     _, payload, signature = token.split(".")

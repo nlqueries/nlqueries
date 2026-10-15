@@ -39,6 +39,13 @@ class OidcVerificationError(Exception):
 
 @dataclass
 class OidcClaims:
+    """The verified claims of an ID token.
+
+    ``email`` is empty when the token carried no usable address (none, or a
+    claim that is not a string); an empty address must never be matched
+    against an account. ``email_verified`` is never true without an address.
+    """
+
     sub: str
     email: str
     name: str | None
@@ -259,13 +266,27 @@ class OidcTokenVerifier:
         if not subject:
             raise OidcVerificationError("Token has no subject ('sub') claim.")
 
+        # The email and its flag decide whose account a sign-in links to, so
+        # they are read as strictly as `sub`. `str()` made `"email": null` the
+        # address "None" (and `true` "True"), which every such token then
+        # shared, and `bool()` read a provider's string `"false"` as verified.
+        # The flag vouches for an address, so with none it is false: an empty
+        # address marked verified would match every other such token.
+        sent = claims.get("email")
+        email = sent.strip() if isinstance(sent, str) else ""
         return OidcClaims(
             sub=subject,
-            email=str(claims.get("email", "")),
+            email=email,
             name=claims.get("name"),
             given_name=claims.get("given_name"),
             family_name=claims.get("family_name"),
             picture=claims.get("picture"),
-            email_verified=bool(claims.get("email_verified", False)),
+            email_verified=bool(email) and _is_true(claims.get("email_verified")),
             raw=claims,
         )
+
+
+def _is_true(value: Any) -> bool:
+    """A boolean claim. Some providers send JSON booleans as strings, and
+    ``bool("false")`` is True; anything but ``true`` or ``"true"`` is false."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
