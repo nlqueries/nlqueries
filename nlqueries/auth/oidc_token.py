@@ -39,6 +39,13 @@ class OidcVerificationError(Exception):
 
 @dataclass
 class OidcClaims:
+    """The verified claims of an ID token.
+
+    ``email`` is empty when the token carried no usable address (none, or a
+    claim that is not a string); an empty address must never be matched
+    against an account. ``email_verified`` is never true without an address.
+    """
+
     sub: str
     email: str
     name: str | None
