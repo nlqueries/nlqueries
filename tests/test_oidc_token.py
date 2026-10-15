@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from jwt.algorithms import RSAAlgorithm
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from jwt.algorithms import ECAlgorithm, OKPAlgorithm, RSAAlgorithm
 from nlqueries.auth.oidc_token import OidcClaims, OidcTokenVerifier, OidcVerificationError
 
 # ---------------------------------------------------------------------------
@@ -65,9 +65,15 @@ def _make_token(
     issuer: str = ISSUER,
     exp_delta_seconds: int = 3600,
     extra_claims: dict[str, Any] | None = None,
+    algorithm: str = "RS256",
+    iat_delta_seconds: int = 0,
 ) -> str:
-    """Sign and return a minimal OIDC ID token JWT."""
-    now = datetime.now(UTC)
+    """Sign and return a minimal OIDC ID token JWT.
+
+    *private_key* is an RSA key for the default RS256, or any key object PyJWT
+    signs *algorithm* with.
+    """
+    now = datetime.now(UTC) + timedelta(seconds=iat_delta_seconds)
     payload: dict[str, Any] = {
         "sub": sub,
         "email": email,
@@ -85,8 +91,8 @@ def _make_token(
         payload.update(extra_claims)
     return jwt.encode(
         payload,
-        _private_key_pem(private_key),
-        algorithm="RS256",
+        _private_key_pem(private_key) if algorithm == "RS256" else private_key,
+        algorithm=algorithm,
         headers={"kid": kid},
     )
 
@@ -203,8 +209,8 @@ class TestVerifyExpiredToken:
     def test_verify_expired_token_raises_error(self) -> None:
         """Expired token raises OidcVerificationError."""
         private_key, public_key = _generate_rsa_key_pair()
-        # exp in the past
-        token = _make_token(private_key, exp_delta_seconds=-1)
+        # exp in the past, beyond the default leeway (a minute)
+        token = _make_token(private_key, exp_delta_seconds=-120)
         jwks = _make_jwks(public_key)
 
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
@@ -455,3 +461,163 @@ class TestSec15:
             pytest.raises(OidcVerificationError, match="subject"),
         ):
             OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
+
+
+# ---------------------------------------------------------------------------
+# Clock difference and signing algorithms
+#
+# The verifier allowed no clock difference at all, so a provider whose clock
+# ran a second ahead issued tokens that were "not yet valid" here, and it
+# accepted RS256 only, so a provider signing with ES256 or PS256 could not be
+# used.
+# ---------------------------------------------------------------------------
+
+
+def _verify(token: str, jwks: dict[str, Any], **verifier_kwargs: Any) -> OidcClaims:
+    side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
+    with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+        return OidcTokenVerifier(DISCOVERY_URL, **verifier_kwargs).verify(token, CLIENT_ID)
+
+
+def _jwks_for(jwk_json: str, kid: str = "test-kid-1", **fields: Any) -> dict[str, Any]:
+    jwk: dict[str, Any] = json.loads(jwk_json)
+    jwk.update(kid=kid, use="sig", **fields)
+    return {"keys": [jwk]}
+
+
+class TestClockDifference:
+    def test_a_token_issued_by_a_clock_slightly_ahead_is_accepted(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, iat_delta_seconds=30)
+
+        assert _verify(token, _make_jwks(public_key)).sub == "user-abc"
+
+    def test_a_token_just_past_its_expiry_is_accepted(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, exp_delta_seconds=-30)
+
+        assert _verify(token, _make_jwks(public_key)).sub == "user-abc"
+
+    def test_the_allowance_is_the_one_given(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, iat_delta_seconds=30)
+
+        with pytest.raises(OidcVerificationError, match="not yet valid"):
+            _verify(token, _make_jwks(public_key), leeway_seconds=10)
+
+    def test_the_default_is_a_minute(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, iat_delta_seconds=90)
+
+        with pytest.raises(OidcVerificationError, match="not yet valid"):
+            _verify(token, _make_jwks(public_key))
+
+    def test_a_negative_allowance_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="negative"):
+            OidcTokenVerifier(DISCOVERY_URL, leeway_seconds=-1)
+
+
+class TestSigningAlgorithms:
+    @pytest.mark.parametrize("algorithm", ["RS384", "RS512", "PS256", "PS384", "PS512"])
+    def test_other_rsa_algorithms_are_accepted(self, algorithm: str) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, algorithm=algorithm)
+        jwks = _jwks_for(RSAAlgorithm.to_jwk(public_key), alg=algorithm)
+
+        assert _verify(token, jwks).sub == "user-abc"
+
+    @pytest.mark.parametrize(
+        ("algorithm", "curve"),
+        [("ES256", ec.SECP256R1()), ("ES384", ec.SECP384R1()), ("ES512", ec.SECP521R1())],
+    )
+    def test_ecdsa_is_accepted(self, algorithm: str, curve: Any) -> None:
+        private_key = ec.generate_private_key(curve)
+        token = _make_token(private_key, algorithm=algorithm)
+        jwks = _jwks_for(ECAlgorithm.to_jwk(private_key.public_key()))
+
+        assert _verify(token, jwks).sub == "user-abc"
+
+    def test_eddsa_is_accepted(self) -> None:
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        token = _make_token(private_key, algorithm="EdDSA")
+        jwks = _jwks_for(OKPAlgorithm.to_jwk(private_key.public_key()))
+
+        assert _verify(token, jwks).sub == "user-abc"
+
+    def test_a_key_that_states_no_algorithm_takes_the_tokens(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, algorithm="PS256")
+        jwks = _jwks_for(RSAAlgorithm.to_jwk(public_key))  # no "alg"
+
+        assert _verify(token, jwks).sub == "user-abc"
+
+    def test_an_hmac_token_is_refused(self) -> None:
+        """A published RSA key must never be used as an HMAC secret."""
+        _, public_key = _generate_rsa_key_pair()
+        token = jwt.encode(
+            {"sub": "x", "aud": CLIENT_ID, "iss": ISSUER},
+            "a-shared-secret-of-thirty-two-bytes!",
+            algorithm="HS256",
+            headers={"kid": "test-kid-1"},
+        )
+
+        with pytest.raises(OidcVerificationError, match="only asymmetric"):
+            _verify(token, _make_jwks(public_key))
+
+    def test_an_unsigned_token_is_refused(self) -> None:
+        _, public_key = _generate_rsa_key_pair()
+        token = jwt.encode(
+            {"sub": "x", "aud": CLIENT_ID, "iss": ISSUER},
+            None,
+            algorithm="none",
+            headers={"kid": "test-kid-1"},
+        )
+
+        with pytest.raises(OidcVerificationError, match="only asymmetric"):
+            _verify(token, _make_jwks(public_key))
+
+    def test_an_algorithm_the_key_type_cannot_verify_is_refused(self) -> None:
+        signer = ec.generate_private_key(ec.SECP256R1())
+        token = _make_token(signer, algorithm="ES256")
+        _, rsa_public = _generate_rsa_key_pair()
+        jwks = _jwks_for(RSAAlgorithm.to_jwk(rsa_public))  # same kid, wrong type
+
+        with pytest.raises(OidcVerificationError, match="cannot verify"):
+            _verify(token, jwks)
+
+    def test_an_algorithm_other_than_the_keys_own_is_refused(self) -> None:
+        private_key, public_key = _generate_rsa_key_pair()
+        token = _make_token(private_key, algorithm="RS512")
+        jwks = _make_jwks(public_key)  # the key says RS256
+
+        with pytest.raises(OidcVerificationError, match="is for 'RS256'"):
+            _verify(token, jwks)
+
+    def test_an_ecdsa_algorithm_on_the_wrong_curve_is_refused(self) -> None:
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        token = _make_token(private_key, algorithm="ES256")
+        jwks = _jwks_for(ECAlgorithm.to_jwk(private_key.public_key()))
+        token = _forge_header(token, alg="ES384")
+
+        with pytest.raises(OidcVerificationError, match="needs curve P-384"):
+            _verify(token, jwks)
+
+
+def test_eddsa_on_a_key_agreement_curve_is_refused() -> None:
+    """X25519 is for key agreement, not signatures."""
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    token = _make_token(private_key, algorithm="EdDSA")
+    jwks = _jwks_for(OKPAlgorithm.to_jwk(private_key.public_key()))
+    jwks["keys"][0]["crv"] = "X25519"
+
+    with pytest.raises(OidcVerificationError, match="is on 'X25519'"):
+        _verify(token, jwks)
+
+
+def _forge_header(token: str, **header: Any) -> str:
+    """*token* with its header fields replaced; the signature no longer matches."""
+    _, payload, signature = token.split(".")
+    current = jwt.get_unverified_header(token)
+    current.update(header)
+    encoded = jwt.utils.base64url_encode(json.dumps(current).encode()).decode()
+    return f"{encoded}.{payload}.{signature}"

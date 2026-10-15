@@ -334,6 +334,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **OIDC ID tokens: a minute's clock difference, and any asymmetric
+  algorithm.** `OidcTokenVerifier` allowed no difference between the
+  provider's clock and this host's, so a provider one second ahead issued
+  tokens that read as not yet valid, and every sign-in failed. It now allows
+  60 seconds on `exp`, `nbf` and `iat` by default; `leeway_seconds` sets
+  another. It also verified RS256 only, so a provider signing with ES256 or
+  PS256 could not be used. It now accepts RS256/384/512, PS256/384/512,
+  ES256/384/512 and EdDSA, building the key from the JWKS entry. The token's
+  algorithm must agree with that key's type, with its `alg` when it states
+  one, and with its curve, so a token cannot choose how its signature is
+  checked. HMAC algorithms and `none` are refused.
 - **The embedding daemon no longer grows without bound on Windows.** Each
   request is served on a new thread, and the encode ran on it. With the torch
   backend, MKL keeps buffers for each thread and does not free them when the
