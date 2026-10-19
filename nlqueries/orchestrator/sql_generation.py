@@ -468,11 +468,12 @@ async def repair_after_execution_error(
     so both are shown, the rewritten one framed as information like the error.
     The model is still asked to correct its own SQL: the correction goes back
     through the same wrapper and is rewritten the same way. When it is ``None``
-    or the same statement, the prompt is exactly what it is without it.
+    or the same statement however laid out (a wrapper that only re-renders
+    has not rewritten anything), the prompt is exactly what it is without it.
     """
     if len(db_error) > _DB_ERROR_MAX_CHARS:
         db_error = db_error[:_DB_ERROR_MAX_CHARS] + " [truncated]"
-    if executed_sql is not None and executed_sql.strip() != sql.strip():
+    if executed_sql is not None and not _same_statement(executed_sql, sql, dialect):
         statements = (
             f"Your SQL:\n{sql}\n\n"
             "Statement the database ran (your SQL as rewritten before it reached "

@@ -51,6 +51,8 @@ def _kb() -> dict[str, Any]:
                     "columns": [
                         {"name": "id", "type": "INTEGER", "description": ""},
                         {"name": "total", "type": "DECIMAL", "description": ""},
+                        # The column the row-filtering wrapper below filters on.
+                        {"name": "tenant_id", "type": "INTEGER", "description": ""},
                     ],
                 }
             ]
@@ -560,6 +562,17 @@ def test_a_correction_with_no_time_left_to_run_keeps_the_original() -> None:
 _FILTER = "tenant_id = 42"
 
 
+def _filtered(sql: str) -> str:
+    """*sql* with each reference to ``orders`` replaced by its filtered rows.
+
+    On a column the schema knows, as a real row filter is, so the rewritten
+    statement passes validation: that is what makes an echo of it dangerous.
+    """
+    return sql.replace(
+        "FROM orders", f"FROM (SELECT id, total FROM orders WHERE {_FILTER}) AS orders"
+    )
+
+
 class _RowFilteringWrapper:
     """Stands in for a connector wrapper outside core that adds a row filter.
 
@@ -574,7 +587,7 @@ class _RowFilteringWrapper:
 
     def execute_query(self, sql: str, timeout_seconds: float | None = None) -> QueryResult:
         self.received.append(sql)
-        rewritten = f"SELECT * FROM ({sql}) AS filtered WHERE {_FILTER}"
+        rewritten = _filtered(sql)
         self.sent.append(rewritten)
         result = self._results.pop(0)
         result.executed_sql = rewritten
@@ -622,6 +635,28 @@ def test_a_rewritten_statement_that_is_never_corrected_stays_hidden() -> None:
     assert _FILTER not in json.dumps(frame)
 
 
+def test_a_correction_that_echoes_the_rewritten_statement_is_not_run() -> None:
+    """The rewritten statement is what the error describes, so a model may hand
+    it back instead of its own SQL. It is a valid SELECT and differs from the
+    model's SQL, so without a check it would run, be filtered a second time, and
+    put the predicate in the frame. It is treated as returned unchanged; laid
+    out differently, it is still the same statement."""
+    rewritten = _filtered(FIRST_SQL)
+    for echo in (
+        rewritten,
+        rewritten.replace(" FROM (", "\n  FROM (").replace(" UNION ", "\nUNION "),
+    ):
+        wrapper = _RowFilteringWrapper([_failed(), _ok([[7]])])
+        llm = _LLM(f"<sql>{echo}</sql>")
+        frame, _ = _run(llm, [], connector=wrapper)
+
+        assert wrapper.sent[0] == rewritten, "premise: the echo is what the wrapper sent"
+        assert wrapper.received == [FIRST_SQL], f"the echoed statement was run: {echo!r}"
+        assert frame["sql"] == FIRST_SQL
+        assert frame["sql_table"]["error"] == DB_ERROR
+        assert _FILTER not in json.dumps(frame), "a filter predicate reached the caller"
+
+
 #: The correction prompt exactly as it was before ``executed_sql`` existed.
 #: Pinned as text so a statement that ran unchanged costs nothing: same
 #: prompt, same model behaviour.
@@ -643,7 +678,14 @@ _UNCHANGED_PROMPT = (
 def test_the_prompt_is_unchanged_when_the_statement_ran_unchanged() -> None:
     from nlqueries.orchestrator.sql_generation import repair_after_execution_error
 
-    for executed in (None, "SELECT id FROM orders", "  SELECT id FROM orders\n"):
+    # A wrapper that only re-renders the statement (a sqlglot round trip, new
+    # layout) has not rewritten it, and must not get the two-statement prompt.
+    for executed in (
+        None,
+        "SELECT id FROM orders",
+        "  SELECT id FROM orders\n",
+        "select id\n  from orders",
+    ):
         llm = _LLM("<sql>SELECT id FROM orders</sql>")
         asyncio.run(
             repair_after_execution_error(

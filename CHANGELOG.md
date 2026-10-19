@@ -17,7 +17,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   like the database error, and still asks it to correct its own SQL, which
   goes back through the wrapper. Before, the model saw its own SQL beside an
   error about different text. When `executed_sql` is unset or the same
-  statement, the correction prompt is byte-identical to before. The streamed
+  statement however laid out, the correction prompt is byte-identical to
+  before. A correction that repeats the statement the database ran is treated
+  as returned unchanged and not run, since it would be rewritten a second time
+  and its filter shown to the caller. The streamed
   frame's `sql` and the rows are unchanged, so callers never see the
   rewritten statement.
 - **BigQuery: Workload Identity Federation and service account

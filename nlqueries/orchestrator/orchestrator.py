@@ -41,6 +41,7 @@ from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
 from nlqueries.orchestrator.sql_generation import (
     _extract_sql,
+    _same_statement,
     repair_after_execution_error,
     validate_and_repair,
 )
@@ -508,6 +509,21 @@ class Orchestrator:
                                 )
                                 if corrected.validation_error:
                                     record_validator_warning(corrected.validation_error)
+                            elif (
+                                corrected is not None
+                                and qr.executed_sql is not None
+                                and _same_statement(corrected.sql, qr.executed_sql, dialect)
+                            ):
+                                # The model handed back the statement a wrapper
+                                # rewrote, which is the text the error describes.
+                                # Run, it would be rewritten a second time, and
+                                # the frame would show the caller the filter.
+                                # Treated as returned unchanged, so the frame
+                                # keeps the model's SQL and the original error.
+                                _log.info(
+                                    "A correction after a database error repeated the "
+                                    "rewritten statement the database ran; not run."
+                                )
                             elif (
                                 corrected is not None
                                 and corrected.sql.strip() != result.sql.strip()
