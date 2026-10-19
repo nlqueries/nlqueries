@@ -31,7 +31,7 @@ why the role matters more than the transaction does.
 | Connector | Install | Query history source |
 |---|---|---|
 | PostgreSQL | included | `pg_stat_statements` extension |
-| MySQL | `pip install "nlqueries-core[mysql]"` | Performance schema `events_statements_summary_by_digest` |
+| MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone |
 | Snowflake | `pip install "nlqueries-core[snowflake]"` | `QUERY_HISTORY` view in `INFORMATION_SCHEMA` |
 | BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS` |
 | Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`) |

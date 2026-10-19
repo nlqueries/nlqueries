@@ -19,6 +19,7 @@ from nlqueries.connectors.base import (
     SecurityPolicyReport,
     TableSpec,
 )
+from nlqueries.connectors.db_types import canonical_db_type
 from nlqueries.connectors.postgres import PostgresConnector
 from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
 from nlqueries.connectors.sqlite import SQLiteConnector
@@ -222,6 +223,10 @@ def _resolve(
     answered, and its answer is "the registry", which is as cacheable as any
     other.
     """
+    # `connect` stores `postgresql` and `mysql` as given; they name connectors
+    # registered as `postgres` and `sqlalchemy` (db_types.py). Canonicalised
+    # before the resolver too, so it sees one spelling per connector.
+    db_type = canonical_db_type(db_type)
     if _resolver is not None:
         try:
             # Read-only *and* deep-copied, because the loader passes the entry it
