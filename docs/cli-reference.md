@@ -35,7 +35,7 @@ SSL for PostgreSQL/MySQL connections is configured via the `SSL_MODE` / `SSL_CA_
 nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --schema PUBLIC --warehouse COMPUTE_WH --user alice --password YOUR_PASSWORD
 ```
 
-**BigQuery** — install `pip install "nlqueries-core[bigquery]"` first (uses Application Default Credentials if `--service-account-json` is omitted)
+**BigQuery** — install `pip install "nlqueries-core[bigquery]"` first (uses Application Default Credentials if `--service-account-json` is omitted). `--service-account-json` takes a service account key or a Workload Identity Federation credential configuration; to run as an impersonated service account, see [connectors.md](connectors.md#bigquery-authentication)
 
 ```bash
 nlqueries connect bigquery --project-id my-gcp-project --dataset-id my_dataset --service-account-json /path/to/service-account.json

@@ -110,7 +110,9 @@ dev = [
 onnx      = ["optimum[onnxruntime]>=1.17"]
 # Cloud database connectors
 snowflake = ["snowflake-connector-python>=3.0"]
-bigquery  = ["google-cloud-bigquery>=3.0"]
+# google-auth 2.20 is the first with load_credentials_from_dict, which the
+# connector uses for a Workload Identity Federation configuration given as JSON.
+bigquery  = ["google-cloud-bigquery>=3.0", "google-auth>=2.20"]
 # Dialect extras for users who only need one driver
 mysql     = ["pymysql>=1.1"]
 openai    = ["openai>=1.0"]

@@ -68,6 +68,50 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't record per-query timestamps, so all history since the last `pg_stat_statements_reset()` is returned. `--days` is honoured on Snowflake and BigQuery, which do track execution time.
 
+### BigQuery: authentication
+
+The connector finds its credentials in one of three ways, chosen by what its
+entry in `connectors.yaml` holds:
+
+| `service_account_json` | What it authenticates as |
+|---|---|
+| omitted | Application Default Credentials (ADC): `gcloud auth application-default login`, `GOOGLE_APPLICATION_CREDENTIALS`, or the workload identity of a GKE pod or Cloud Run service. The client library finds them; nothing is read by the connector. |
+| a service account key (`"type": "service_account"`) | That service account. |
+| a Workload Identity Federation credential configuration (`"type": "external_account"`) | The federated identity, with no service account key: a workload on AWS, Azure, GitHub Actions or another OIDC or SAML provider exchanges its own token for a Google one. Generate the file with `gcloud iam workload-identity-pools create-cred-config`. |
+
+`service_account_json` may be the path to the JSON file (as `--service-account-json`
+stores it) or the parsed JSON itself. The connector reads the file's `type` to
+choose; any other type is handed to the service-account loader, which refuses it
+as before.
+
+A federation configuration names where its token comes from (`credential_source`),
+and `google-auth` reads it when the connector first authenticates: a local file,
+a URL, or an executable. Treat the configuration as you would a key, and use only
+one you generated. An executable source runs only when
+`GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1` is set.
+
+**Impersonation.** Add `impersonate_service_account` with a service account
+email and the credential above (key, federation configuration or ADC) is used only
+to mint short-lived tokens for that account, which every query then runs as, with
+the BigQuery scope. Register the connector with `nlqueries connect bigquery`, then
+add the key to the entry it wrote:
+
+```yaml
+bigquery:localhost:acme-prod:
+  db_type: bigquery
+  # ... the other keys `connect` wrote ...
+  project_id: acme-prod
+  impersonate_service_account: nlqueries-reader@acme-prod.iam.gserviceaccount.com
+```
+
+The identity you start from needs `roles/iam.serviceAccountTokenCreator` on that
+service account, and the service account needs the BigQuery roles described in
+[database-hardening.md](database-hardening.md). This keeps one narrowly granted
+account as the one queries run as, whichever machine or person starts them. A
+value that is empty or not an email is refused when the connector opens, rather
+than ignored, since ignoring it would run queries as the starting identity. There
+is no `connect` flag for it yet.
+
 ### Amazon Redshift
 
 Schema descriptions are not available (no equivalent of PostgreSQL's `pg_description`). Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).

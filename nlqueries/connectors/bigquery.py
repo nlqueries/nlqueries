@@ -9,11 +9,14 @@ of the public OSS API and has no dependency on the enterprise layer.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+import google.auth
+from google.auth import impersonated_credentials
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -37,6 +40,12 @@ logger = logging.getLogger(__name__)
 # connected dataset's location can't be determined (e.g. no dataset_id given).
 _DEFAULT_REGION_QUALIFIER = "region-us"
 
+# The ``type`` of a Workload Identity Federation credential configuration.
+_EXTERNAL_ACCOUNT_TYPE = "external_account"
+
+# What an impersonated credential is minted for.
+_BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery"
+
 
 class BigQueryConnector(DatabaseConnector):
     """Connector for Google BigQuery.
@@ -48,6 +57,7 @@ class BigQueryConnector(DatabaseConnector):
             "project_id": "acme-prod",
             "dataset_id": "analytics",          # optional
             "service_account_json": "/path/to/key.json",  # or a dict, or omit for ADC
+            "impersonate_service_account": "reader@acme-prod.iam.gserviceaccount.com",  # optional
         })
         if connector.test_connection():
             schema = connector.extract_schema()
@@ -66,20 +76,31 @@ class BigQueryConnector(DatabaseConnector):
     def connect(self, credentials: dict[str, Any]) -> None:
         """Build a BigQuery client from ``credentials``.
 
-        Required keys: ``project_id``. Optional keys: ``dataset_id`` and
-        ``service_account_json``.
+        Required keys: ``project_id``. Optional keys: ``dataset_id``,
+        ``service_account_json`` and ``impersonate_service_account``.
 
-        ``service_account_json`` may be a ``dict`` (already-parsed service
-        account key), a path (``str`` or ``Path``) to a service account JSON
-        key file, or omitted entirely — in which case Application Default
-        Credentials (ADC) are used (e.g. ``gcloud auth application-default
-        login``, a workload-identity binding, or ``GOOGLE_APPLICATION_
-        CREDENTIALS``).
+        ``service_account_json`` may be a ``dict`` (already-parsed JSON) or a
+        path (``str`` or ``Path``) to a JSON file, holding either a service
+        account key or a Workload Identity Federation credential
+        configuration (``"type": "external_account"``). Omitted entirely,
+        Application Default Credentials (ADC) are used (e.g. ``gcloud auth
+        application-default login``, a workload-identity binding, or
+        ``GOOGLE_APPLICATION_CREDENTIALS``).
+
+        ``impersonate_service_account`` is a service account email. When set,
+        whichever credential the above resolved is used only to impersonate
+        that account, and every BigQuery call runs as it.
         """
         self._project_id = credentials["project_id"]
         self._dataset_id = credentials.get("dataset_id")
 
+        # Validated before anything is loaded, so a malformed target fails on
+        # the configuration rather than after a key file has been read.
+        target = self._impersonation_target(credentials.get("impersonate_service_account"))
+
         creds = self._build_credentials(credentials.get("service_account_json"))
+        if target is not None:
+            creds = self._impersonate(creds, target)
 
         if creds is not None:
             self._client = bigquery.Client(project=self._project_id, credentials=creds)
@@ -93,20 +114,69 @@ class BigQueryConnector(DatabaseConnector):
     def _build_credentials(service_account_json: Any) -> Any | None:
         """Build a ``Credentials`` object from ``service_account_json``, or ``None`` for ADC.
 
-        Accepts a ``dict`` (parsed key), a path (``str``/``Path``) to a key
+        Accepts a ``dict`` (parsed JSON), a path (``str``/``Path``) to a JSON
         file, or ``None``/empty (meaning: use Application Default Credentials).
+
+        A Workload Identity Federation configuration (``"type":
+        "external_account"``) is loaded by ``google.auth``, which reads its
+        ``credential_source``. Anything else goes to the service-account
+        loaders exactly as before, so a key behaves, and fails, as it did.
         """
         if not service_account_json:
             return None
 
         if isinstance(service_account_json, dict):
+            if service_account_json.get("type") == _EXTERNAL_ACCOUNT_TYPE:
+                creds, _project = google.auth.load_credentials_from_dict(  # type: ignore[no-untyped-call]
+                    service_account_json
+                )
+                return creds
             return service_account.Credentials.from_service_account_info(  # type: ignore[no-untyped-call]
                 service_account_json
             )
 
-        # Treat anything else (str, Path, ...) as a path to a key file.
+        # Treat anything else (str, Path, ...) as a path to a JSON file.
+        path = str(service_account_json)
+        if _json_file_type(path) == _EXTERNAL_ACCOUNT_TYPE:
+            creds, _project = google.auth.load_credentials_from_file(path)  # type: ignore[no-untyped-call]
+            return creds
         return service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
-            str(service_account_json)
+            path
+        )
+
+    @staticmethod
+    def _impersonation_target(value: Any) -> str | None:
+        """Return the ``impersonate_service_account`` email, or ``None`` if unset.
+
+        An empty or non-email value is refused rather than ignored: ignoring
+        it would run every query as the source credential, which is usually
+        broader than the account the operator meant to narrow it to.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, str) or "@" not in value.strip():
+            raise ValueError(
+                "impersonate_service_account must be a service account email "
+                f"(name@project.iam.gserviceaccount.com), got {value!r}."
+            )
+        return value.strip()
+
+    @staticmethod
+    def _impersonate(source: Any | None, target: str) -> Any:
+        """Wrap ``source`` (or ADC, when ``None``) to act as service account ``target``.
+
+        The token minted carries only the BigQuery scope. The source needs no
+        scope of its own: ``impersonated_credentials`` scopes it for the IAM
+        Credentials API, which it calls to mint that token.
+        """
+        if source is None:
+            # The project ADC reports is ignored: the connector's project_id
+            # names the project to query.
+            source, _project = google.auth.default()
+        return impersonated_credentials.Credentials(  # type: ignore[no-untyped-call]
+            source_credentials=source,
+            target_principal=target,
+            target_scopes=[_BIGQUERY_SCOPE],
         )
 
     def _resolve_region_qualifier(self) -> str:
@@ -413,6 +483,20 @@ class BigQueryConnector(DatabaseConnector):
                 execution_time_ms=elapsed_ms,
                 error=str(exc),
             )
+
+
+def _json_file_type(path: str) -> str | None:
+    """The ``type`` field of the JSON file at ``path``, or ``None`` if it can't be read.
+
+    Unreadable files return ``None`` and so take the service-account path,
+    whose loader then raises the same error it always has.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data.get("type") if isinstance(data, dict) else None
 
 
 def _utc_now_iso() -> str:
