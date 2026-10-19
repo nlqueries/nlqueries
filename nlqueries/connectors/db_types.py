@@ -27,6 +27,10 @@ DB_TYPE_ALIASES: dict[str, str] = {
 
 
 def canonical_db_type(db_type: str) -> str:
-    """*db_type*, lower-cased, under the name its connector is registered as."""
+    """*db_type*, lower-cased, under the name its connector is registered as.
+
+    Callers look an exact name up first, so a connector later registered
+    under one of these spellings is used rather than shadowed.
+    """
     lowered = db_type.lower()
     return DB_TYPE_ALIASES.get(lowered, lowered)

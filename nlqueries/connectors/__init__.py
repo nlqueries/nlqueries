@@ -232,7 +232,9 @@ def _resolve(
     # registered as `postgres` and `sqlalchemy` (db_types.py). Only the registry
     # lookup canonicalises: an installed resolver is asked with the type as
     # stored, which is what its entry carries and what its contract promises.
-    registered = canonical_db_type(db_type)
+    # An exact registration wins: if a dedicated connector is ever
+    # registered under an alias's name, it is the one used, not the alias.
+    registered = db_type if db_type in CONNECTOR_REGISTRY else canonical_db_type(db_type)
     if _resolver is not None:
         try:
             # Read-only *and* deep-copied, because the loader passes the entry it

@@ -8,6 +8,8 @@ connector registered under either name connected once and never again.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from nlqueries.cli.main import _DB_SCHEMES
 from nlqueries.connectors import CONNECTOR_REGISTRY, connector_class_for
@@ -57,6 +59,25 @@ def test_a_resolver_is_asked_with_the_type_as_stored() -> None:
 
     assert seen == ["mysql"]
     assert cls is SQLAlchemyConnector
+
+
+def test_a_connector_registered_under_an_alias_is_not_shadowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a dedicated MySQL connector is ever registered as `mysql`, it must
+    be the one used and described, not the generic connector the alias names."""
+    from nlqueries.connectors import capabilities
+
+    class DedicatedMySQL(SQLAlchemyConnector):
+        pass
+
+    # A distinct object: the alias would otherwise return the same one.
+    dedicated = dataclasses.replace(capabilities.CAPABILITIES["sqlalchemy"], dialect="mysql")
+    monkeypatch.setitem(CONNECTOR_REGISTRY, "mysql", DedicatedMySQL)
+    monkeypatch.setitem(capabilities.CAPABILITIES, "mysql", dedicated)
+
+    assert connector_class_for("mysql", {"db_type": "mysql"}) is DedicatedMySQL
+    assert for_dialect("mysql") is dedicated
 
 
 def test_mysql_runs_on_the_generic_connector() -> None:

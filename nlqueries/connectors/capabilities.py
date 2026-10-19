@@ -229,4 +229,5 @@ def for_dialect(dialect: str) -> DialectCapabilities | None:
     None indicates the dialect is not described here. It does not indicate that
     the dialect is safe.
     """
-    return CAPABILITIES.get(canonical_db_type(dialect))
+    # An exact entry wins over the alias, as it does in the registry.
+    return CAPABILITIES.get(dialect.lower()) or CAPABILITIES.get(canonical_db_type(dialect))
