@@ -2744,8 +2744,9 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
     if not chunks and since is not None:
         console.print(
-            "  [yellow]⚠ No chunks — page may not have been modified "
-            "after the given timestamp.[/yellow]"
+            "  [yellow]⚠ No chunks: the page was not modified after the given timestamp, "
+            "or no text could be read from it. The stored copy is unchanged; a full sync "
+            "(without --since) re-reads it.[/yellow]"
         )
 
 

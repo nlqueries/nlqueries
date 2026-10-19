@@ -223,6 +223,7 @@ def test_notion_since_with_an_unchanged_page_leaves_the_stored_copy(
 
     assert result.exit_code == 0, result.output
     assert stored == []
+    assert "stored copy is unchanged" in result.output
 
 
 def test_notion_full_sync_reading_nothing_stores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
