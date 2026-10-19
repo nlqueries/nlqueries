@@ -370,6 +370,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The MCP `query` tool runs the SQL it generates.** It passed no execution
+  policy, so the run fell back to the generate-only default and every MCP
+  client received SQL and no rows, though the tool's action is
+  `query:execute`, its docstring promises an answer and `mcp-authentication.md`
+  says it runs SQL. It now asks for read-only execution, as the CLI's `query`
+  does, once the request has been authorised for `query:execute`.
 - **`nlqueries connect mysql` and `connect postgresql` work after they
   connect.** `connect` accepts both and stores the type as given, but neither
   was in the connector registry, so `query`, `export-kb` and
