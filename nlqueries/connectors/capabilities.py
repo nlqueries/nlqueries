@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from nlqueries.connectors.db_types import canonical_db_type
+
 
 @dataclass(frozen=True)
 class DialectCapabilities:
@@ -227,4 +229,5 @@ def for_dialect(dialect: str) -> DialectCapabilities | None:
     None indicates the dialect is not described here. It does not indicate that
     the dialect is safe.
     """
-    return CAPABILITIES.get(dialect.lower())
+    # An exact entry wins over the alias, as it does in the registry.
+    return CAPABILITIES.get(dialect.lower()) or CAPABILITIES.get(canonical_db_type(dialect))

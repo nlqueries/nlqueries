@@ -376,6 +376,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `query:execute`, its docstring promises an answer and `mcp-authentication.md`
   says it runs SQL. It now asks for read-only execution, as the CLI's `query`
   does, once the request has been authorised for `query:execute`.
+- **`nlqueries connect mysql` and `connect postgresql` work after they
+  connect.** `connect` accepts both and stores the type as given, but neither
+  was in the connector registry, so `query`, `export-kb` and
+  `process-history` could not open the connector again (`export-kb` took a
+  reduced fallback path instead). `mysql` now runs on the generic SQLAlchemy
+  connector and `postgresql` on the PostgreSQL one. That also tightens
+  `connect postgresql`: it used to fall back to a raw connection under
+  libpq's `prefer`, which accepts a server without TLS, and now goes through
+  the PostgreSQL connector, which requires TLS, so such a server is refused
+  under either spelling. `connect mysql` sets no TLS; connectors.md says how
+  to require it. The docs no longer
+  promise MySQL query history from the performance schema, or TLS settings
+  from `SSL_MODE`/`SSL_CA_CERT`, neither of which anything read.
 - **The LLM health check works on OpenAI's Responses-API and reasoning
   models.** `nlqueries doctor` and the MCP `health` tool asked the model for 5
   output tokens. OpenAI's Responses API, which LiteLLM uses for models such as

@@ -27,7 +27,7 @@ nlqueries connect postgres --host db.example.com --database prod --user alice --
 nlqueries connect mysql --host localhost --database mydb --user alice --password secret
 ```
 
-SSL for PostgreSQL/MySQL connections is configured via the `SSL_MODE` / `SSL_CA_CERT` environment variables, not a `connect` flag — see [configuration.md](configuration.md).
+TLS is not a `connect` flag. For PostgreSQL the connector requires TLS by default; set `ssl_mode` and `ssl_ca_cert` in the connector's entry — see [database-hardening.md](database-hardening.md#transport-security). `connect mysql` sets no TLS: to require it, register through the generic connector with the options in the URL — see [connectors.md](connectors.md#mysql--tls).
 
 **Snowflake** — install `pip install "nlqueries-core[snowflake]"` first
 
@@ -158,7 +158,7 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 | `--max-queries` | `500` (env: `QUERY_HISTORY_LIMIT`) | Cap on useful queries to process after filtering |
 | `--verbose` | off | Print sqlglot parse warnings and LLM provider log lines |
 
-Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS`), MySQL (performance schema). Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
+Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS`). MySQL has no history source yet. Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
 
 A fresh or lightly-used database will produce few or zero capsules until it has real query history to learn from — run some representative business queries first, and consider `--min-executions 1` on a dev database.
 

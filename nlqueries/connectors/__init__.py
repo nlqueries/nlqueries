@@ -19,6 +19,7 @@ from nlqueries.connectors.base import (
     SecurityPolicyReport,
     TableSpec,
 )
+from nlqueries.connectors.db_types import canonical_db_type
 from nlqueries.connectors.postgres import PostgresConnector
 from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
 from nlqueries.connectors.sqlite import SQLiteConnector
@@ -189,6 +190,11 @@ def connector_class_for(
     ``None`` for a db-type nothing resolves, exactly as ``CONNECTOR_REGISTRY.get``
     does, so callers keep reporting that themselves.
 
+    The resolver is asked with *db_type* as stored. The registry is looked up
+    under its canonical name (:mod:`nlqueries.connectors.db_types`): ``connect``
+    accepts ``postgresql`` and ``mysql``, which name the connectors registered as
+    ``postgres`` and ``sqlalchemy``.
+
     A resolver that raises is logged and ignored rather than propagated. It sits
     on the query path of every connector, including the ones it has no opinion
     about, so a fault in the extension must not be able to take down a
@@ -222,6 +228,16 @@ def _resolve(
     answered, and its answer is "the registry", which is as cacheable as any
     other.
     """
+    # `connect` stores `postgresql` and `mysql` as given; they name connectors
+    # registered as `postgres` and `sqlalchemy` (db_types.py). Only the registry
+    # lookup canonicalises: an installed resolver is asked with the type as
+    # stored, which is what its entry carries and what its contract promises.
+    # An exact registration wins: if a dedicated connector is ever
+    # registered under an alias's name, it is the one used, not the alias.
+    # Lowered once, so this and `capabilities.for_dialect` agree on a
+    # mixed-case type whichever way a caller spells it.
+    lowered = db_type.lower()
+    registered = lowered if lowered in CONNECTOR_REGISTRY else canonical_db_type(lowered)
     if _resolver is not None:
         try:
             # Read-only *and* deep-copied, because the loader passes the entry it
@@ -250,7 +266,7 @@ def _resolve(
                 db_type,
                 exc_info=True,
             )
-            return CONNECTOR_REGISTRY.get(db_type), True
+            return CONNECTOR_REGISTRY.get(registered), True
         if resolved is not None:
             if not isinstance(resolved, type):
                 # A class, not an instance. `return MyConnector()` for
@@ -278,9 +294,9 @@ def _resolve(
                     type(resolved).__name__,
                     db_type,
                 )
-                return CONNECTOR_REGISTRY.get(db_type), True
+                return CONNECTOR_REGISTRY.get(registered), True
             return resolved, False
-    return CONNECTOR_REGISTRY.get(db_type), False
+    return CONNECTOR_REGISTRY.get(registered), False
 
 
 __all__ = [
