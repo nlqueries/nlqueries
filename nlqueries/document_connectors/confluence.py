@@ -22,9 +22,11 @@ Requires the ``wiki`` optional dependency group:
 from __future__ import annotations
 
 import hashlib
+import inspect
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
@@ -37,6 +39,47 @@ def _make_chunk_id(source_id: str, chunk_index: int) -> str:
     """Deterministic 16-char hex ID: sha256(source_id:None:chunk_index)[:16]."""
     raw = f"{source_id}:None:{chunk_index}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+#: Results asked for per CQL request while reading a whole space.
+_SEARCH_PAGE_SIZE = 100
+
+
+class IncompleteSpaceRead(RuntimeError):
+    """The search stopped returning new pages while Confluence reported more.
+
+    A sync stores what it read as the whole space and removes everything
+    else, so a partial read is refused rather than returned.
+    """
+
+
+def _result_id(result: dict[str, Any]) -> str:
+    content: dict[str, Any] = result.get("content", result)
+    return str(content.get("id", "")) or repr(sorted(result.items()))
+
+
+def _next_link(response: dict[str, Any]) -> str:
+    return str((response.get("_links") or {}).get("next") or "")
+
+
+def _cursor_of(next_link: str) -> str | None:
+    """The ``cursor`` query parameter of a search response's next link, if any."""
+    values = parse_qs(urlsplit(next_link).query).get("cursor") if next_link else None
+    return values[0] if values else None
+
+
+def _accepts_cursor(method: Any) -> bool:
+    """Whether the installed client's ``cql`` can be given a ``cursor``.
+
+    The ``atlassian-python-api`` range the wiki extra allows differs: the
+    3.x/4.x and server ``cql(cql, start, limit, ...)`` takes no cursor, the 5.x
+    Cloud client forwards keyword arguments to the search.
+    """
+    try:
+        params = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "cursor" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 class ConfluenceConnector(DocumentConnector):
@@ -52,6 +95,101 @@ class ConfluenceConnector(DocumentConnector):
         self._base_url = base_url.rstrip("/")
         self._username = username
         self._api_token = api_token
+
+    def _client(self) -> Any:
+        try:
+            from atlassian import Confluence
+        except ImportError as exc:
+            raise ImportError(
+                "atlassian-python-api is required for ConfluenceConnector. "
+                "Install it with: pip install 'nlqueries-core[wiki]'"
+            ) from exc
+        return Confluence(
+            url=self._base_url,
+            username=self._username,
+            password=self._api_token,
+            cloud=True,
+        )
+
+    @staticmethod
+    def _cql(space_key: str, since: datetime | None) -> str:
+        """CQL for the space's pages, optionally only those modified after *since*.
+
+        Ordered by ``created``, which an edit does not change. Offset paging
+        over ``lastModified`` let a page edited during the read jump ahead of
+        the window already read and be skipped, and a sync stores what it read
+        as the whole space, so that page's chunks were deleted.
+        """
+        if since is None:
+            return f'space = "{space_key}" AND type = page ORDER BY created ASC'
+        since_str = since.strftime("%Y-%m-%d %H:%M")
+        return (
+            f'space = "{space_key}" AND type = page'
+            f' AND lastModified > "{since_str}"'
+            f" ORDER BY created ASC"
+        )
+
+    @staticmethod
+    def _search_all(client: Any, cql: str) -> list[dict[str, Any]]:
+        """Every result of *cql*, read a page at a time.
+
+        One request used to be the whole read, capped at 200 results, so a
+        larger space was cut short with no sign of it. Confluence Cloud's search
+        is cursor-paginated and honours ``start`` only so far, so the cursor in
+        the response's next link is followed when the client can pass one, and
+        ``start`` is used otherwise.
+
+        Progress is the number of raw results consumed, compared with
+        ``totalSize`` (or, without one, the presence of a next link). In a
+        stable order a page seen twice means the window shifted under the read
+        and another page was skipped, so a read whose distinct pages end short
+        of ``totalSize`` is refused, as is a request that brings nothing new
+        while more is reported (a server that ignores ``start``): either raises
+        :class:`IncompleteSpaceRead` instead of returning a partial list.
+        """
+        seen: set[str] = set()
+        results: list[dict[str, Any]] = []
+        consumed = 0
+        cursor: str | None = None
+        use_cursor = _accepts_cursor(client.cql)
+        while True:
+            if cursor is not None:
+                response: dict[str, Any] = client.cql(cql, limit=_SEARCH_PAGE_SIZE, cursor=cursor)
+            else:
+                response = client.cql(cql, start=consumed, limit=_SEARCH_PAGE_SIZE)
+            batch: list[dict[str, Any]] = response.get("results") or []
+            new = [r for r in batch if _result_id(r) not in seen]
+            for result in new:
+                seen.add(_result_id(result))
+                results.append(result)
+            consumed += len(batch)
+            next_link = _next_link(response)
+            total = response.get("totalSize")
+            more = consumed < total if isinstance(total, int) else bool(next_link)
+            if not more:
+                if isinstance(total, int) and len(results) < total:
+                    raise IncompleteSpaceRead(
+                        f"the search returned {len(results)} distinct page(s) of "
+                        f"{total}: pages moved during the read, so it could not be "
+                        "read whole; run the sync again"
+                    )
+                return results
+            if not new:
+                raise IncompleteSpaceRead(
+                    f"the search stopped advancing after {len(results)} page(s) while "
+                    "Confluence reports more, so the space could not be read whole"
+                )
+            cursor = _cursor_of(next_link) if use_cursor else None
+
+    def has_changes_since(self, space_key: str, since: datetime) -> bool:
+        """Whether any page in *space_key* was modified after *since*.
+
+        One CQL search for a single result, with no page bodies fetched, so an
+        incremental sync can decide whether to re-read the space for the cost
+        of one request.
+        """
+        results: dict[str, Any] = self._client().cql(self._cql(space_key, since), limit=1)
+        return bool(results.get("results"))
 
     def ingest(
         self,
@@ -73,14 +211,6 @@ class ConfluenceConnector(DocumentConnector):
             Ordered list of :class:`DocumentChunk` objects.
         """
         try:
-            from atlassian import Confluence
-        except ImportError as exc:
-            raise ImportError(
-                "atlassian-python-api is required for ConfluenceConnector. "
-                "Install it with: pip install 'nlqueries-core[wiki]'"
-            ) from exc
-
-        try:
             from bs4 import BeautifulSoup
         except ImportError as exc:
             raise ImportError(
@@ -89,25 +219,8 @@ class ConfluenceConnector(DocumentConnector):
             ) from exc
 
         space_key = str(source)
-        client = Confluence(
-            url=self._base_url,
-            username=self._username,
-            password=self._api_token,
-            cloud=True,
-        )
-
-        # Build CQL query; optionally restrict to pages modified after `since`.
-        cql = f'space = "{space_key}" AND type = page ORDER BY lastModified DESC'
-        if since is not None:
-            since_str = since.strftime("%Y-%m-%d %H:%M")
-            cql = (
-                f'space = "{space_key}" AND type = page'
-                f' AND lastModified > "{since_str}"'
-                f" ORDER BY lastModified DESC"
-            )
-
-        search_results: dict[str, Any] = client.cql(cql, limit=200)
-        page_results: list[dict[str, Any]] = search_results.get("results", [])
+        client = self._client()
+        page_results = self._search_all(client, self._cql(space_key, since))
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=_CHUNK_SIZE,

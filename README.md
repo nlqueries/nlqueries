@@ -10,7 +10,7 @@
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Visitors](https://visitor-badge.laobi.icu/badge?page_id=nlqueries.nlqueries)](https://github.com/nlqueries/nlqueries)
 
-**NLQueries Core** is an open-source natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Notion, Confluence) and can blend both in a single hybrid answer.
+**NLQueries Core** is an open-source natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Markdown, plain text, Notion, Confluence), with citations.
 
 ## Links
 
@@ -31,7 +31,7 @@
 | **Document connectors** | PDF, Word, Excel, Notion, Confluence — ask questions over ingested documents with citations |
 | **Query pipeline** | Filter, cluster, and parameterize query history into reusable `QueryCapsule` templates |
 | **Knowledge base** | Auto-generated YAML schema + capsule file, with coverage reporting via `kb-stats` |
-| **Multi-agent orchestration** | Routes each question to a SQL agent, document agent, or both in parallel (hybrid) |
+| **Document Q&A** | `doc-ingest` (or `doc-sync-notion` / `doc-sync-confluence`) chunks, embeds and stores a source in Qdrant; `doc-ask` answers from it with citations |
 | **Conversational follow-ups** | Carries context across questions so a follow-up like "and by region?" resolves against the previous query — on by default in `nlqueries query`, reset with `--new-session` |
 | **Semantic cache** | Recognises a question `query` or the MCP `query` tool has answered before, by meaning, and skips the LLM: it replays the stored answer and runs the stored SQL again so the rows are current (not with `--no-execute`). `ask` does not use it. Needs Qdrant |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |

@@ -798,6 +798,174 @@ def test_incremental_sync_adds_cql_date_filter(_stub_confluence_deps: None) -> N
     assert "2024-03-15" in cql_query
 
 
+@pytest.mark.parametrize(("results", "expected"), [([{"content": {"id": "1"}}], True), ([], False)])
+def test_has_changes_since_is_one_search_and_no_page_reads(
+    _stub_confluence_deps: None, results: list[dict[str, Any]], expected: bool
+) -> None:
+    """The probe an incremental sync makes before deciding to re-read the
+    space: one CQL search for a single result, and no page bodies fetched."""
+    from datetime import UTC
+
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.return_value = {"results": results}
+    since = datetime(2024, 3, 15, 9, 30, tzinfo=UTC)
+
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        assert connector.has_changes_since("ENG", since) is expected
+
+    mock_client.cql.assert_called_once()
+    cql_query = mock_client.cql.call_args.args[0]
+    assert 'space = "ENG"' in cql_query and 'lastModified > "2024-03-15 09:30"' in cql_query
+    assert mock_client.cql.call_args.kwargs == {"limit": 1}
+    mock_client.get_page_by_id.assert_not_called()
+
+
+def _ingest_with_search(
+    responses: list[dict[str, Any]],
+) -> tuple[list[Any], MagicMock]:
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.side_effect = responses
+    mock_client.get_page_by_id.side_effect = lambda page_id, **kw: _make_page_body(
+        f"<p>Body of page {page_id}.</p>"
+    )
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        chunks = connector.ingest("ENG", source_id="src")
+    return chunks, mock_client
+
+
+def test_a_space_larger_than_one_search_page_is_read_whole(
+    _stub_confluence_deps: None,
+) -> None:
+    """One request used to be the whole read, capped at 200, and a sync now
+    removes stored chunks for pages it did not read."""
+    first = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (1, 2)]
+    second = [_make_cql_result("3", "P3", "/p/3")]
+    chunks, client = _ingest_with_search(
+        [{"results": first, "totalSize": 3}, {"results": second, "totalSize": 3}]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2", "3"}
+    assert [c.kwargs["start"] for c in client.cql.call_args_list] == [0, 2]
+
+
+def test_search_follows_the_next_link_when_there_is_no_total(
+    _stub_confluence_deps: None,
+) -> None:
+    first = [_make_cql_result("1", "P1", "/p/1")]
+    second = [_make_cql_result("2", "P2", "/p/2")]
+    chunks, client = _ingest_with_search(
+        [{"results": first, "_links": {"next": "/rest/api/search?cursor=x"}}, {"results": second}]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2"}
+    assert client.cql.call_count == 2
+
+
+def test_a_page_seen_twice_means_one_was_skipped_and_is_refused(
+    _stub_confluence_deps: None,
+) -> None:
+    """In a stable order a repeat means the window shifted under the read:
+    pages [1,2,3,4] read two at a time return [1,2] then [2,3] when something
+    moved, and page 4 was never seen. Stored as whole, its chunks would go."""
+    from nlqueries.document_connectors.confluence import IncompleteSpaceRead
+
+    first = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (1, 2)]
+    second = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (2, 3)]
+    with pytest.raises(IncompleteSpaceRead, match="3 distinct page"):
+        _ingest_with_search(
+            [{"results": first, "totalSize": 4}, {"results": second, "totalSize": 4}]
+        )
+
+
+@pytest.mark.parametrize("since", [None, datetime(2024, 3, 15, 9, 30, tzinfo=UTC)])
+def test_the_search_is_ordered_by_a_field_an_edit_does_not_move(since: datetime | None) -> None:
+    """Paging over lastModified let a page edited mid-read jump past the
+    window already read; `created` does not change when a page is edited."""
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    cql = ConfluenceConnector._cql("ENG", since)
+
+    assert cql.endswith("ORDER BY created ASC")
+    assert "ORDER BY lastModified" not in cql
+
+
+def test_the_next_link_cursor_is_followed_when_the_client_takes_one(
+    _stub_confluence_deps: None,
+) -> None:
+    """Cloud search is cursor-paginated and honours `start` only so far."""
+    first = [_make_cql_result("1", "P1", "/p/1")]
+    second = [_make_cql_result("2", "P2", "/p/2")]
+    next_link = "/rest/api/search?next=true&cursor=abc123&limit=100&start=1&cql=x"
+    chunks, client = _ingest_with_search(
+        [
+            {"results": first, "totalSize": 2, "_links": {"next": next_link}},
+            {"results": second, "totalSize": 2},
+        ]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2"}
+    assert client.cql.call_args_list[0].kwargs == {"start": 0, "limit": 100}
+    assert client.cql.call_args_list[1].kwargs == {"limit": 100, "cursor": "abc123"}
+
+
+def test_a_client_without_a_cursor_argument_pages_by_start(_stub_confluence_deps: None) -> None:
+    """The 3.x/4.x and server `cql(cql, start, limit, ...)` has no cursor."""
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    calls: list[dict[str, Any]] = []
+    pages = iter(
+        [
+            {
+                "results": [_make_cql_result("1", "P1", "/p/1")],
+                "totalSize": 2,
+                "_links": {"next": "/rest/api/search?cursor=abc"},
+            },
+            {"results": [_make_cql_result("2", "P2", "/p/2")], "totalSize": 2},
+        ]
+    )
+
+    class _OldClient:
+        def cql(self, cql: str, start: int = 0, limit: int | None = None) -> dict[str, Any]:
+            calls.append({"start": start, "limit": limit})
+            return next(pages)
+
+        def get_page_by_id(self, page_id: str, **kw: Any) -> dict[str, Any]:
+            return _make_page_body(f"<p>Body of page {page_id}.</p>")
+
+    with patch("atlassian.Confluence", return_value=_OldClient()):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net", username="a@acme.com", api_token="t"
+        )
+        chunks = connector.ingest("ENG", source_id="src")
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2"}
+    assert calls == [{"start": 0, "limit": 100}, {"start": 1, "limit": 100}]
+
+
+def test_a_search_that_stops_advancing_is_refused(_stub_confluence_deps: None) -> None:
+    """A client that ignores `start` returns the first page again; storing
+    that as the whole space would remove every other page's chunks."""
+    from nlqueries.document_connectors.confluence import IncompleteSpaceRead
+
+    page = {"results": [_make_cql_result("1", "P1", "/p/1")], "totalSize": 250}
+    with pytest.raises(IncompleteSpaceRead, match="could not be read whole"):
+        _ingest_with_search([page, page])
+
+
 # ---------------------------------------------------------------------------
 # test_document_connector_registry_contains_confluence
 # ---------------------------------------------------------------------------
