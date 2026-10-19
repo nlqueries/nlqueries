@@ -198,7 +198,11 @@ class QueryResult:
     #: passed to ``execute_query`` ran unchanged; a wrapper that rewrites it
     #: sets the text it actually sent. No connector in core sets it, since none
     #: rewrites. It is for diagnosis (the correction prompt after a database
-    #: error), never shown to callers, whose frames name the statement they asked for.
+    #: error). Core never puts it in a frame, whose ``sql`` names the statement
+    #: the caller asked for. The model is shown it, though, and a correction
+    #: that keeps the wrapper's predicate while changing something else is a
+    #: different statement, so it runs and its text is the frame's ``sql``. Put
+    #: nothing here that a caller must never see.
     executed_sql: str | None = None
 
 

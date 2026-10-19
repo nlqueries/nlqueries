@@ -20,9 +20,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   statement however laid out, the correction prompt is byte-identical to
   before. A correction that repeats the statement the database ran is treated
   as returned unchanged and not run, since it would be rewritten a second time
-  and its filter shown to the caller. The streamed
-  frame's `sql` and the rows are unchanged, so callers never see the
-  rewritten statement.
+  and its filter shown to the caller. Core never puts `executed_sql` in a
+  frame, so the frame's `sql` names the statement the caller asked for. The
+  model does see it, though, and a correction that keeps the wrapper's
+  predicate while changing something else runs, so its text, predicate
+  included, reaches the frame. A wrapper should not put there anything a
+  caller must never see.
 - **BigQuery: Workload Identity Federation and service account
   impersonation.** `service_account_json` now also accepts a Workload Identity
   Federation credential configuration (`"type": "external_account"`), as a path
