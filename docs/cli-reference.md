@@ -158,7 +158,7 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 | `--max-queries` | `500` (env: `QUERY_HISTORY_LIMIT`) | Cap on useful queries to process after filtering |
 | `--verbose` | off | Print sqlglot parse warnings and LLM provider log lines |
 
-Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS`). MySQL has no history source yet. Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
+Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS_BY_PROJECT`). MySQL has no history source yet. Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
 
 A fresh or lightly-used database will produce few or zero capsules until it has real query history to learn from — run some representative business queries first, and consider `--min-executions 1` on a dev database.
 
@@ -399,7 +399,7 @@ nlqueries cache stats <connector-or-alias>                # cache statistics
 nlqueries cache clear <connector-or-alias>                 # invalidate all cached entries
 ```
 
-Cached answers include `from_cache: true` and typically respond in under 50 ms. Entries are written automatically on every successful query — no setup beyond having Qdrant running.
+Cached answers include `from_cache: true`. The cache serves `query` and the MCP `query` tool; `ask` does not use it. A hit skips the LLM: the stored answer is replayed and the stored SQL is run again (not with `--no-execute`), so the rows are current and the database is still queried. Entries are written automatically after a query whose SQL passed validation — no setup beyond having Qdrant running.
 
 ---
 

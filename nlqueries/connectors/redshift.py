@@ -11,8 +11,9 @@ extra before use::
 Redshift is PostgreSQL-wire-protocol-compatible, so standard
 ``information_schema`` queries work.  Row counts are sourced from the
 Redshift-specific ``SVV_TABLE_INFO`` system view; query history from
-``STL_QUERY``.  Neither ``pg_description`` nor ``pg_class.reltuples`` are
-available, so column/table descriptions and exact tuple counts are omitted.
+``STL_QUERY`` (provisioned clusters only).  Table and column comments in
+``pg_description`` are not read, and ``pg_class.reltuples`` is not used, so
+descriptions and exact tuple counts are omitted.
 """
 
 from __future__ import annotations
@@ -147,8 +148,8 @@ class RedshiftConnector(DatabaseConnector):
         Returns a :class:`SchemaSpec` for every user table.  Row counts come
         from ``SVV_TABLE_INFO.tbl_rows`` (requires table-owner or superuser);
         a ``None`` count is returned if the view is inaccessible.
-        Column/table descriptions are not available in Redshift and are
-        returned as ``None``.
+        Column/table descriptions are returned as ``None``: Redshift keeps
+        ``COMMENT ON`` text in ``pg_description``, but it is not read here.
         """
         conn = self._require_conn()
         try:
