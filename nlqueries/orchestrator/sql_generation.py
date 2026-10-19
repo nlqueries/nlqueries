@@ -42,7 +42,7 @@ from nlqueries.orchestrator.prompt_assembly import (
     answer_rules_for,
 )
 from nlqueries.orchestrator.provenance import record_literal_grounded, record_literal_repair
-from nlqueries.sql_policy import evaluate
+from nlqueries.sql_policy import _sqlglot_dialect, evaluate
 
 if TYPE_CHECKING:
     from nlqueries.connectors.loader import LookupSource
@@ -388,7 +388,14 @@ def _record_substitutions(
 
 
 def _same_statement(a: str, b: str, dialect: str) -> bool:
-    """Whether *a* and *b* are one statement, however each is laid out."""
+    """Whether *a* and *b* are one statement, however each is laid out.
+
+    *dialect* may be a connector's spelling (``mssql``, ``postgresql``,
+    ``mariadb``), which sqlglot rejects; unmapped, every comparison would fall
+    through to the text match below and two layouts of one statement would
+    count as different.
+    """
+    dialect = _sqlglot_dialect(dialect)
     try:
         return bool(
             sqlglot.parse_one(a, read=dialect).sql(dialect=dialect)
@@ -847,6 +854,10 @@ def _validate_sql(
     if not sql.strip():
         return "Generated SQL is empty"
 
+    # A connector's spelling (``mssql``) is not one sqlglot accepts: the policy
+    # maps it itself, but the re-parse and the column check below did not, and
+    # raised. Mapped once here so every check reads the same dialect.
+    dialect = _sqlglot_dialect(dialect)
     decision = evaluate(sql, dialect)
     if not decision.allowed:
         return f"Refused by SQL policy {decision.policy_version}: {decision.summary()}"

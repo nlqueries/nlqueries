@@ -367,6 +367,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **SQL validation accepts the `mssql`, `postgresql` and `mariadb`
+  dialect spellings.** The SQL policy already mapped these connector
+  spellings to sqlglot's names, but the schema check's re-parse passed them
+  through raw, and sqlglot raised `ValueError`. Every correction after a
+  database error therefore failed for a caller that passed one of them (the
+  CLI maps the dialect first, so it was not affected). `_same_statement`,
+  which the correction prompt and the echo guard use, maps them too; before,
+  it fell back to a text match, and a reindented echo of a rewritten
+  statement would have run.
 - **OIDC ID tokens: `email` and `email_verified` read strictly.**
   `OidcClaims.email` was `str()` of the claim, so `"email": null` became the
   address `"None"`, shared by every token that sent it; an email claim that

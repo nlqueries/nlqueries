@@ -110,6 +110,7 @@ def _run(
     default_timeout: float = 120.0,
     deadline: float | None = None,
     connector: Any = None,
+    dialect: str = "snowflake",
 ) -> tuple[dict[str, Any], Any]:
     """Drive one question through the fresh path; return the frame and the connector.
 
@@ -120,7 +121,7 @@ def _run(
         connector = MagicMock()
         connector.execute_query.side_effect = results
     first = SQLGenerationResult(
-        sql=FIRST_SQL, is_valid=True, validation_error=None, dialect="snowflake", attempt_count=1
+        sql=FIRST_SQL, is_valid=True, validation_error=None, dialect=dialect, attempt_count=1
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
@@ -160,7 +161,7 @@ def _run(
                 async for tok in Orchestrator().handle_question(
                     "top and bottom order",
                     "agent1",
-                    dialect="snowflake",
+                    dialect=dialect,
                     timeout_seconds=timeout_seconds,
                     execution=ExecutionPolicy.execute_read_only(),
                     deadline=deadline,
@@ -642,16 +643,22 @@ def test_a_correction_that_echoes_the_rewritten_statement_is_not_run() -> None:
     put the predicate in the frame. It is treated as returned unchanged; laid
     out differently, it is still the same statement."""
     rewritten = _filtered(FIRST_SQL)
-    for echo in (
-        rewritten,
-        rewritten.replace(" FROM (", "\n  FROM (").replace(" UNION ", "\nUNION "),
+    reindented = rewritten.replace(" FROM (", "\n  FROM (").replace(" UNION ", "\nUNION ")
+    # ``mssql`` is a connector's spelling that sqlglot rejects. Unmapped, the
+    # comparison falls back to a text match and only the exact echo is caught.
+    for dialect, echo in (
+        ("snowflake", rewritten),
+        ("snowflake", reindented),
+        ("mssql", reindented),
     ):
         wrapper = _RowFilteringWrapper([_failed(), _ok([[7]])])
         llm = _LLM(f"<sql>{echo}</sql>")
-        frame, _ = _run(llm, [], connector=wrapper)
+        frame, _ = _run(llm, [], connector=wrapper, dialect=dialect)
 
         assert wrapper.sent[0] == rewritten, "premise: the echo is what the wrapper sent"
-        assert wrapper.received == [FIRST_SQL], f"the echoed statement was run: {echo!r}"
+        assert wrapper.received == [FIRST_SQL], (
+            f"the echoed statement was run ({dialect}): {echo!r}"
+        )
         assert frame["sql"] == FIRST_SQL
         assert frame["sql_table"]["error"] == DB_ERROR
         assert _FILTER not in json.dumps(frame), "a filter predicate reached the caller"
