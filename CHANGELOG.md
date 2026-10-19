@@ -370,6 +370,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The MCP `query` tool runs the SQL it generates.** It passed no execution
+  policy, so the run fell back to the generate-only default and every MCP
+  client received SQL and no rows, though the tool's action is
+  `query:execute`, its docstring promises an answer and `mcp-authentication.md`
+  says it runs SQL. It now asks for read-only execution, as the CLI's `query`
+  does, once the request has been authorised for `query:execute`.
 - **The LLM health check works on OpenAI's Responses-API and reasoning
   models.** `nlqueries doctor` and the MCP `health` tool asked the model for 5
   output tokens. OpenAI's Responses API, which LiteLLM uses for models such as
