@@ -158,7 +158,7 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 | `--max-queries` | `500` (env: `QUERY_HISTORY_LIMIT`) | Cap on useful queries to process after filtering |
 | `--verbose` | off | Print sqlglot parse warnings and LLM provider log lines |
 
-Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS`), MySQL (performance schema). Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
+Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS`), MySQL (performance schema). Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
 
 A fresh or lightly-used database will produce few or zero capsules until it has real query history to learn from — run some representative business queries first, and consider `--min-executions 1` on a dev database.
 
@@ -436,14 +436,21 @@ nlqueries mcp-server start                        # stdio — for Claude Desktop
 nlqueries mcp-server start --sse --port 8000      # SSE on 127.0.0.1
 ```
 
-The SSE listener binds loopback and **refuses a wildcard address**. Every tool
-it exposes is reachable without credentials — including `query`, which runs SQL
-against a configured database — so binding every interface publishes a
-database-query API to anything that can route to the host.
+The SSE listener **will not start without authentication**: configure an
+identity provider or a pre-shared token as
+[mcp-authentication.md](mcp-authentication.md) describes. The refusal names what
+to set. `NLQ_ALLOW_UNAUTHENTICATED_MCP=1` starts it without authentication, and
+then every tool is reachable by anything that can connect, including `query`,
+which runs SQL against a configured database.
 
-For remote access, put an authenticating proxy in front of the loopback port. If
-you understand that and want the wildcard bind anyway, set
-`NLQ_ALLOW_INSECURE_BIND=1`; the server will start and log a warning each time.
+It also binds loopback and **refuses a wildcard address**, with authentication
+on or off. For remote access, put a proxy in front of the loopback port. If you
+want the wildcard bind anyway, set `NLQ_ALLOW_INSECURE_BIND=1`; the server
+starts and logs it each time.
+
+The Docker image and `python -m nlqueries.mcp_server` choose the transport from
+`MCP_TRANSPORT` (`stdio`, `sse` or `streamable-http`) instead of a flag, under
+the same rules.
 
 **Claude Desktop config** (`claude_desktop_config.json`):
 

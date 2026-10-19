@@ -20,9 +20,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   statement however laid out, the correction prompt is byte-identical to
   before. A correction that repeats the statement the database ran is treated
   as returned unchanged and not run, since it would be rewritten a second time
-  and its filter shown to the caller. The streamed
-  frame's `sql` and the rows are unchanged, so callers never see the
-  rewritten statement.
+  and its filter shown to the caller. Core never puts `executed_sql` in a
+  frame, so the frame's `sql` names the statement the caller asked for. The
+  model does see it, though, and a correction that keeps the wrapper's
+  predicate while changing something else runs, so its text, predicate
+  included, reaches the frame. A wrapper should not put there anything a
+  caller must never see.
 - **BigQuery: Workload Identity Federation and service account
   impersonation.** `service_account_json` now also accepts a Workload Identity
   Federation credential configuration (`"type": "external_account"`), as a path
@@ -367,6 +370,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The MCP docs describe the server as it is.** `docs/cli-reference.md` and
+  `nlqueries mcp-server start --help` still said the SSE server has no
+  authentication and its tools are reachable without credentials. Since
+  0.3.0 it will not start without an identity provider or a pre-shared token
+  unless `NLQ_ALLOW_UNAUTHENTICATED_MCP=1` is set. `docs/mcp-authentication.md`
+  and the 0.3.0 entry below named a `--transport` flag that does not exist.
+  The switches are `mcp-server start --sse`, and `MCP_TRANSPORT` for the
+  Docker image and `python -m nlqueries.mcp_server`. The CLI reference's link
+  to the PostgreSQL query-history section also pointed at a missing anchor.
 - **SQL validation accepts the `mssql`, `postgresql` and `mariadb`
   dialect spellings.** The SQL policy already mapped these connector
   spellings to sqlglot's names, but the schema check's re-parse passed them
