@@ -19,8 +19,10 @@ still authorised and audited, against a principal that is the process owner.
 
 ## A networked transport will not start without a verifier
 
-`--transport sse` and `--transport streamable-http` refuse to start unless one
-of the two below is configured. The refusal names what to set.
+A networked transport refuses to start unless one of the two below is
+configured: `nlqueries mcp-server start --sse`, or `MCP_TRANSPORT=sse` or
+`MCP_TRANSPORT=streamable-http` for the Docker image and
+`python -m nlqueries.mcp_server`. The refusal names what to set.
 
 If you are upgrading and need the previous behaviour immediately, set
 `NLQ_ALLOW_UNAUTHENTICATED_MCP=1`. It logs a warning on every start and grants

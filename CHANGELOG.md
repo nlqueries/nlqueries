@@ -367,6 +367,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The MCP docs describe the server as it is.** `docs/cli-reference.md` and
+  `nlqueries mcp-server start --help` still said the SSE server has no
+  authentication and its tools are reachable without credentials. Since
+  0.3.0 it will not start without an identity provider or a pre-shared token
+  unless `NLQ_ALLOW_UNAUTHENTICATED_MCP=1` is set. `docs/mcp-authentication.md`
+  and the 0.3.0 entry below named a `--transport` flag that does not exist.
+  The switches are `mcp-server start --sse`, and `MCP_TRANSPORT` for the
+  Docker image and `python -m nlqueries.mcp_server`. The CLI reference's link
+  to the PostgreSQL query-history section also pointed at a missing anchor.
 - **SQL validation accepts the `mssql`, `postgresql` and `mariadb`
   dialect spellings.** The SQL policy already mapped these connector
   spellings to sqlglot's names, but the schema check's re-parse passed them
