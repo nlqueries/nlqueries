@@ -44,7 +44,7 @@ graph TD
     CLI --> FB
 ```
 
-A question enters through the CLI or the MCP server and reaches the `MultiAgentOrchestrator`. The orchestrator first checks the semantic cache; on a miss, an intent classifier routes the question to the SQL agent, the document agent, or both in parallel (hybrid), and a result merger combines and ranks the outputs by confidence before returning an answer.
+A question enters through the CLI or the MCP server and reaches the `MultiAgentOrchestrator`. The orchestrator first checks the semantic cache; on a miss it dispatches to an agent. `query` and the MCP `query` tool enable only the SQL agent, so their questions go straight to it without classification. The intent classifier and the result merger, which can send a question to the document agent or to both in parallel (hybrid), apply only when a caller of the Python API enables more than one agent type. Questions about documents are asked with `doc-ask`, which searches the chunks `doc-ingest` stored.
 
 ## Module layout
 

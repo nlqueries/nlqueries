@@ -253,14 +253,14 @@ nlqueries feedback-stats dev
 
 `feedback-stats` prints "No feedback recorded yet" the first time you run it for a connector — that's expected on a fresh install, not an error.
 
-### Ingest documents and ask hybrid questions
+### Ingest documents and ask about them
 
 ```bash
-nlq doc-ingest ./report.pdf --connector dev
-nlqueries query dev "What did the Q1 report say about churn, and how does that compare to our actual churn numbers?"
+nlq doc-ingest q1-report ./report.pdf
+nlq doc-ask doc_q1-report_chunks "What did the Q1 report say about churn?"
 ```
 
-The orchestrator automatically routes questions to the SQL agent, the document agent, or both (hybrid) based on the question. See [connectors.md](connectors.md#document-connectors).
+`doc-ingest` stores the report's chunks in Qdrant under `doc_q1-report_chunks`, and `doc-ask` answers from them with citations. PDF, Word and Excel need the `[docs]` extra; Markdown and plain text work on a base install. Questions to `nlqueries query` are answered from the database. See [connectors.md](connectors.md#document-connectors).
 
 ### Connect an AI assistant via MCP
 

@@ -35,6 +35,9 @@ Public API
 
 ``delete_chunks(collection, source_id)``
     Delete all chunks belonging to *source_id* from the collection.
+
+``replace_chunks(collection, source_id, chunks)``
+    Make *chunks* the whole of *source_id*'s content in the collection.
 """
 
 from __future__ import annotations
@@ -588,6 +591,43 @@ def delete_chunks(collection: str, source_id: str) -> None:
     filter_ = Filter(must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))])
     client = _get_client()
     client.delete(
+        collection_name=collection,
+        points_selector=FilterSelector(filter=filter_),
+    )
+
+
+def replace_chunks(collection: str, source_id: str, chunks: list[DocumentChunk]) -> None:
+    """Make *chunks* the whole of *source_id*'s content in *collection*.
+
+    The new chunks are stored first and the source's other chunks deleted
+    after, so a failure part-way -- the embedder or Qdrant unavailable --
+    leaves the previous version searchable rather than nothing. Chunk IDs are
+    derived from the source and the chunk's position, so a shorter new version
+    overwrites the start of the old one and the delete removes its tail. With
+    no chunks every chunk of the source is removed: the document is now empty.
+
+    Args:
+        collection: Qdrant collection name (convention: ``doc_{source_id}_chunks``).
+        source_id:  The source whose content *chunks* is.
+        chunks:     The source's complete set of chunks.
+    """
+    from qdrant_client.models import (
+        FieldCondition,
+        Filter,
+        FilterSelector,
+        HasIdCondition,
+        MatchValue,
+    )
+
+    ensure_collection(collection, DOCUMENT_VECTOR_SIZE)
+    upsert_chunks(collection, chunks)
+    filter_ = Filter(
+        must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))],
+        must_not=[HasIdCondition(has_id=[int(chunk.chunk_id, 16) for chunk in chunks])]
+        if chunks
+        else None,
+    )
+    _get_client().delete(
         collection_name=collection,
         points_selector=FilterSelector(filter=filter_),
     )

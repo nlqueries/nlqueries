@@ -159,7 +159,9 @@ def test_supports_matches_only_its_own_suffixes() -> None:
     ("name", "connector"),
     [("notes.md", "markdown"), ("guide.markdown", "markdown"), ("readme.txt", "text")],
 )
-def test_doc_ingest_reaches_the_new_connectors(tmp_path: Path, name: str, connector: str) -> None:
+def test_doc_ingest_reaches_the_new_connectors(
+    tmp_path: Path, name: str, connector: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Drive the CLI itself, not the registry.
 
     `doc-ingest` takes the first registered connector whose `supports()` is
@@ -170,13 +172,19 @@ def test_doc_ingest_reaches_the_new_connectors(tmp_path: Path, name: str, connec
     """
     from click.testing import CliRunner
     from nlqueries.cli.main import cli
+    from nlqueries.embeddings import qdrant_store
 
+    stored: list[str] = []
+    monkeypatch.setattr(
+        qdrant_store, "replace_chunks", lambda collection, *a: stored.append(collection)
+    )
     path = _write(tmp_path, name, "# Title\nSome body text.\n")
     result = CliRunner().invoke(cli, ["doc-ingest", "doc-1", str(path)])
 
     assert result.exit_code == 0, result.output
     assert f"connector={connector}" in result.output.replace(" ", "")
     assert "Chunks produced" in result.output
+    assert stored == ["doc_doc-1_chunks"]
 
 
 # ---------------------------------------------------------------------------

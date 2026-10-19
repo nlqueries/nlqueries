@@ -1,6 +1,6 @@
 # Connectors
 
-NLQueries reads two kinds of sources: databases (for structured SQL answers) and documents (for the document and hybrid agents).
+NLQueries reads two kinds of sources: databases (for structured SQL answers) and documents (answered with `doc-ask`).
 
 ---
 
@@ -170,7 +170,7 @@ Built on the standard-library `sqlite3` driver, so no extra install is needed. T
 | Word | `.docx` | `pip install "nlqueries-core[docs]"` |
 | Excel | `.xlsx` | `pip install "nlqueries-core[docs]"` |
 | Notion | Notion pages | `pip install "nlqueries-core[wiki]"`, `NOTION_API_TOKEN` |
-| Confluence | Confluence spaces | `pip install "nlqueries-core[wiki]"`, `CONFLUENCE_URL`, `CONFLUENCE_USER`, `CONFLUENCE_API_TOKEN` |
+| Confluence | Confluence spaces | `pip install "nlqueries-core[wiki]"`, `CONFLUENCE_API_TOKEN` (the URL and user are the `--base-url` and `--username` options) |
 
 ```bash
 # SOURCE_ID is an opaque slug you choose (e.g. a UUID or short name)
@@ -190,8 +190,10 @@ CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \
     --base-url https://acme.atlassian.net --username alice@acme.com
 ```
 
-After ingestion, documents are chunked and embedded into Qdrant (required — see [qdrant-setup.md](qdrant-setup.md)). The document agent retrieves relevant chunks automatically when answering; citations (source document, page/section) are included in the answer.
+Each command chunks the source, embeds the chunks and stores them in the Qdrant collection `doc_{source_id}_chunks` (Qdrant is required — see [qdrant-setup.md](qdrant-setup.md)). A later run for the same `SOURCE_ID` replaces what the earlier one stored, and if the chunks cannot be stored the command exits with an error and leaves the earlier copy in place.
 
-Query with `nlq doc-ask doc_{source_id}_chunks "..."` for a document-only answer (the collection name follows the pattern `doc_{source_id}_chunks`), or use `nlqueries query` for the orchestrator to route automatically (including hybrid SQL + document answers).
+With `--since`, an unchanged Notion page or Confluence space is left as it is. A Confluence space with any page changed since then is re-read in full, so the stored copy stays whole.
+
+Ask with `nlq doc-ask doc_{source_id}_chunks "..."`. It retrieves the most relevant chunks and answers with citations (source document, page/section). `nlqueries query` and the MCP `query` tool answer from the database only; they do not search documents.
 
 Document ingestion no longer depends on `langchain_text_splitters` — chunking uses a small built-in chunker (`nlqueries.document_connectors.chunker`), so the Python 3.14 limitation that previously affected document connectors no longer applies (see [troubleshooting.md](troubleshooting.md#w6--pydantic-v1-incompatibility-python-314) for history).

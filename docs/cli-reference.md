@@ -256,7 +256,7 @@ nlqueries query <connector-or-alias> "..." --no-execute  # generate SQL without 
 nlqueries query <connector-or-alias> "..." --new-session # discard prior conversation context
 ```
 
-Output includes agent type, answer, generated SQL, and latency. The orchestrator routes each question to a SQL agent, a document agent, or both in parallel (hybrid) — see [Multi-agent routing](#multi-agent-routing).
+Output includes agent type, answer, generated SQL, and latency. `query` answers from the database; to ask about ingested documents, use [`doc-ask`](#document-connectors).
 
 | Flag | Default | Description |
 |---|---|---|
@@ -303,23 +303,12 @@ Streams reasoning tokens, then a JSON chunk with the validated SQL. `--dialect` 
 
 ---
 
-## Multi-agent routing
-
-The orchestrator classifies each question and dispatches accordingly:
-
-| Mode | When used |
-|---|---|
-| `sql` | Answerable from structured database data |
-| `document` | Answerable from ingested documents |
-| `hybrid` | Needs both — SQL agent and document agent run in parallel, results merged and ranked by confidence |
-| `auto` | Orchestrator decides (default) |
-
----
-
 ## Document connectors
 
 ```bash
-# Ingest a local file — SOURCE_ID is an opaque slug you choose (e.g. a UUID)
+# Ingest a local file — SOURCE_ID is an opaque slug you choose (e.g. a UUID).
+# The chunks are embedded and stored in the Qdrant collection doc_{source_id}_chunks,
+# replacing what an earlier run stored for the same SOURCE_ID.
 nlq doc-ingest <source_id> <file_path>
 # e.g.
 nlq doc-ingest my-q1-report /path/to/report.pdf

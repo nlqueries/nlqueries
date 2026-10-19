@@ -1484,11 +1484,36 @@ def extract_schema(connector_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _store_document_chunks(source_id: str, chunks: list[Any]) -> None:
+    """Store *chunks* as the whole of *source_id* so ``doc-ask`` can search them.
+
+    The collection is ``doc_{source_id}_chunks``, the name ``doc-ask`` is given.
+    Exits 1 when Qdrant or the embedder is unavailable: a command that produced
+    chunks and stored none has not ingested anything a later question can find.
+    """
+    from rich.markup import escape
+
+    from nlqueries.embeddings.qdrant_store import replace_chunks
+
+    collection = f"doc_{source_id}_chunks"
+    try:
+        with console.status(f"  Embedding and storing {len(chunks)} chunk(s) …"):
+            replace_chunks(collection, source_id, chunks)
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(
+            f"[bold red]✗ Could not store the chunks in Qdrant:[/bold red] {escape(str(exc))}"
+        )
+        err_console.print("  Nothing was changed for this source. Is Qdrant running?")
+        sys.exit(1)
+    console.print(f"  Stored in       : [bold]{escape(collection)}[/bold]")
+    console.print(f'  Ask with        : nlqueries doc-ask {escape(collection)} "<question>"')
+
+
 @cli.command("doc-ingest")
 @click.argument("source_id")
 @click.argument("file_path", type=click.Path(exists=True, dir_okay=False, readable=True))
 def doc_ingest(source_id: str, file_path: str) -> None:
-    """Ingest a document file and print the number of chunks produced.
+    """Ingest a document file and store its chunks for ``doc-ask``.
 
     \b
     SOURCE_ID  opaque identifier for this document (e.g. a UUID or slug).
@@ -1507,8 +1532,14 @@ def doc_ingest(source_id: str, file_path: str) -> None:
       .txt — plain text (UTF-8)
 
     \b
+    The chunks are embedded and stored in the Qdrant collection
+    doc_<SOURCE_ID>_chunks, replacing what an earlier run stored for the same
+    SOURCE_ID. Ask about them with doc-ask.
+
+    \b
     Example:
       nlqueries doc-ingest my-policy-doc-v1 /path/to/policy.pdf
+      nlqueries doc-ask doc_my-policy-doc-v1_chunks "What is the refund window?"
     """
     from nlqueries.document_connectors import DOCUMENT_CONNECTOR_REGISTRY
 
@@ -1543,6 +1574,7 @@ def doc_ingest(source_id: str, file_path: str) -> None:
         err_console.print(f"[bold red]✗ Ingestion failed:[/bold red] {exc}")
         sys.exit(1)
 
+    _store_document_chunks(source_id, chunks)
     console.print("[bold green]✓ Ingestion complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
     if chunks:
@@ -2614,7 +2646,7 @@ def doc_ask(collection: str, question: str, source_id: str | None, top_k: int) -
     ),
 )
 def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
-    """Sync a Notion page and print the number of chunks produced.
+    """Sync a Notion page and store its chunks for ``doc-ask``.
 
     \b
     SOURCE_ID  Opaque identifier for this document source (e.g. a UUID or slug).
@@ -2623,6 +2655,8 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
 
     \b
     The Notion API token is read from the NOTION_API_TOKEN environment variable.
+    The chunks are stored in doc_<SOURCE_ID>_chunks, replacing the earlier copy;
+    with --since and an unchanged page, the stored copy is left as it is.
 
     \b
     Examples:
@@ -2665,6 +2699,10 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
         err_console.print(f"[bold red]✗ Sync failed:[/bold red] {exc}")
         sys.exit(1)
 
+    # The connector reads the one page whole or not at all, so with --since an
+    # empty result means "unchanged", and the stored copy is left alone.
+    if chunks or since is None:
+        _store_document_chunks(source_id, chunks)
     console.print("[bold green]✓ Sync complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
     if not chunks and since is not None:
@@ -3071,7 +3109,7 @@ def doc_sync_confluence(
     username: str,
     since_ts: str | None,
 ) -> None:
-    """Sync a Confluence space and print the number of chunks produced.
+    """Sync a Confluence space and store its chunks for ``doc-ask``.
 
     \b
     SOURCE_ID  Opaque identifier for this document source (e.g. a UUID or slug).
@@ -3080,6 +3118,9 @@ def doc_sync_confluence(
 
     \b
     The Confluence API token is read from the CONFLUENCE_API_TOKEN environment variable.
+    The chunks are stored in doc_<SOURCE_ID>_chunks, replacing the earlier copy.
+    With --since, the space is re-read in full when any page changed (and left
+    as it is when none did), because a partial read would replace the whole.
 
     \b
     Examples:
@@ -3117,6 +3158,12 @@ def doc_sync_confluence(
 
     try:
         chunks = connector.ingest(space_key, source_id, since=since)
+        if chunks and since is not None:
+            # A --since read holds only the changed pages, numbered from zero,
+            # and chunk IDs come from that number: stored as they are, they
+            # would overwrite other pages' chunks. Re-read the space whole.
+            console.print("  Pages changed; re-reading the whole space to store it whole …")
+            chunks = connector.ingest(space_key, source_id)
     except ImportError as exc:
         err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")
         sys.exit(1)
@@ -3124,6 +3171,8 @@ def doc_sync_confluence(
         err_console.print(f"[bold red]✗ Sync failed:[/bold red] {exc}")
         sys.exit(1)
 
+    if chunks or since is None:
+        _store_document_chunks(source_id, chunks)
     console.print("[bold green]✓ Sync complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
     if not chunks and since is not None:

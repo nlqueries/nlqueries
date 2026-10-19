@@ -370,6 +370,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **`doc-ingest`, `doc-sync-notion` and `doc-sync-confluence` store what
+  they ingest.** They chunked a source and printed a count, but nothing in
+  core wrote the chunks anywhere, so `doc-ask doc_<source_id>_chunks`
+  searched a collection no command had filled. Each now embeds its chunks and
+  stores them in that collection through the new
+  `qdrant_store.replace_chunks`, which stores the new chunks before removing
+  the source's old ones, so a re-ingest replaces the earlier version and a
+  failure part-way leaves it searchable. A command that cannot store its
+  chunks exits 1 instead of reporting success. With `--since`, an unchanged
+  page or space is left as stored. A Confluence space with changes is re-read
+  in full, because a partial read numbers its chunks from zero and would
+  overwrite other pages' chunks. The docs no longer say `nlqueries query`
+  routes questions to documents: it and the MCP `query` tool answer from the
+  database.
 - **The MCP `query` tool runs the SQL it generates.** It passed no execution
   policy, so the run fell back to the generate-only default and every MCP
   client received SQL and no rows, though the tool's action is
