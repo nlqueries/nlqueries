@@ -187,6 +187,14 @@ def get_agent_schema(agent_id: str) -> str:
     return "\n".join(lines)
 
 
+#: How long the MCP `query` tool waits for an answer.
+_QUERY_BUDGET_SECONDS = 45
+#: The database's own limit on the statement, at or just under the tool's wait
+#: (as `run_query` asks), so it stops when the tool gives up rather than
+#: running on after the client has been told the query timed out.
+_STATEMENT_BUDGET_SECONDS = 40
+
+
 async def query(
     question: str,
     agent_id: str,
@@ -226,21 +234,32 @@ async def query(
     # `query` does. Without it the run fell back to the generate-only default
     # and every caller got SQL with no rows (the default makes a forgotten
     # grant visible rather than unsafe).
+    #
+    # Cancelling the wait does not stop a statement already running in its
+    # worker thread, so the database gets a budget of its own, just under the
+    # tool's, and the turn gets the tool's deadline: no correction starts on a
+    # turn the client has already been told timed out.
+    deadline = time.monotonic() + _QUERY_BUDGET_SECONDS
     try:
-        with anyio.fail_after(45):
+        with anyio.fail_after(_QUERY_BUDGET_SECONDS):
             result = await run_query(
                 question,
                 agent_id,
                 dialect=dialect,
                 explain=explain,
                 execution=ExecutionPolicy.execute_read_only(),
+                timeout_seconds=_STATEMENT_BUDGET_SECONDS,
+                deadline=deadline,
             )
     except TimeoutError:
         return (
-            f"⏱ Query timed out after 45 s for agent '{agent_id}'.\n\n"
-            "Most likely cause: the embed daemon is not running, so the first query "
-            "triggers a slow in-process model load.\n\n"
-            "Fix: run `nlqueries embed-server start` in your terminal, then retry."
+            f"⏱ Query timed out after {_QUERY_BUDGET_SECONDS} s for agent '{agent_id}'.\n\n"
+            "Likely causes:\n"
+            "- the embed daemon is not running, so the first query triggers a slow "
+            "in-process model load: run `nlqueries embed-server start`, then retry;\n"
+            "- the query itself is slow: ask for less (a narrower filter or time "
+            "range, an aggregate rather than raw rows). The database stops it after "
+            f"{_STATEMENT_BUDGET_SECONDS} s."
         )
     except FileNotFoundError:
         available = list_agents()

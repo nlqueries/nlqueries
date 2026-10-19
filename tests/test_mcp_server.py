@@ -290,6 +290,45 @@ class TestQuery:
         assert mock_run.call_args.kwargs.get("execution") == ExecutionPolicy.execute_read_only()
 
     @pytest.mark.anyio
+    async def test_the_statement_and_the_turn_stop_with_the_tool(self) -> None:
+        """Cancelling the tool's wait leaves a running statement alone, so the
+        database needs its own budget and the turn the tool's deadline; without
+        them a statement ran on for up to 120 s after the client was told it had
+        timed out, and a correction could start on that abandoned turn."""
+        import time
+
+        from nlqueries.mcp_server import server
+        from nlqueries.mcp_server.server import query
+
+        before = time.monotonic()
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            return_value=_make_result(),
+        ) as mock_run:
+            await query("How many orders?", "sales")
+        after = time.monotonic()
+
+        kwargs = mock_run.call_args.kwargs
+        assert 0 < kwargs["timeout_seconds"] <= server._QUERY_BUDGET_SECONDS
+        assert before + server._QUERY_BUDGET_SECONDS <= kwargs["deadline"]
+        assert kwargs["deadline"] <= after + server._QUERY_BUDGET_SECONDS
+
+    @pytest.mark.anyio
+    async def test_a_timeout_names_a_slow_query_as_a_cause(self) -> None:
+        from nlqueries.mcp_server.server import query
+
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            side_effect=TimeoutError(),
+        ):
+            out = await query("How many orders?", "sales")
+
+        assert "embed-server start" in out
+        assert "query itself is slow" in out
+
+    @pytest.mark.anyio
     async def test_passes_dialect_to_run_query(self) -> None:
         from nlqueries.mcp_server.server import query
 
