@@ -11,8 +11,9 @@ extra before use::
 Redshift is PostgreSQL-wire-protocol-compatible, so standard
 ``information_schema`` queries work.  Row counts are sourced from the
 Redshift-specific ``SVV_TABLE_INFO`` system view; query history from
-``STL_QUERY``.  Neither ``pg_description`` nor ``pg_class.reltuples`` are
-available, so column/table descriptions and exact tuple counts are omitted.
+``STL_QUERY`` (provisioned clusters only).  Table and column comments in
+``pg_description`` are not read, and ``pg_class.reltuples`` is not used, so
+descriptions and exact tuple counts are omitted.
 """
 
 from __future__ import annotations

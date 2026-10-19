@@ -33,8 +33,8 @@ why the role matters more than the transaction does.
 | PostgreSQL | included | `pg_stat_statements` extension |
 | MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone. It sets no TLS; see below |
 | Snowflake | `pip install "nlqueries-core[snowflake]"` | `QUERY_HISTORY` view in `INFORMATION_SCHEMA` |
-| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS` |
-| Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`) |
+| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (requires `bigquery.jobs.listAll`, for example through `roles/bigquery.resourceViewer`) |
+| Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`; provisioned clusters only, see below) |
 | SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`) |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
 | SQLite | included (stdlib `sqlite3`) | None — file-based, no persisted history |
@@ -125,7 +125,9 @@ the same connector rewrites its whole entry, so add the key back afterwards.
 
 ### Amazon Redshift
 
-Schema descriptions are not available (no equivalent of PostgreSQL's `pg_description`). Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).
+The connector does not read table or column comments (`COMMENT ON`), so descriptions come from `import-dbt` or from editing the knowledge base. Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).
+
+Query history comes from `STL_QUERY`, which only provisioned clusters have. On a **Serverless** workgroup `process-history` stops with an error; build the knowledge base from the schema with `export-kb`.
 
 `REDSHIFT_SOCKET_TIMEOUT_SECONDS` bounds the whole connection, not just the
 handshake: the driver sets it on the socket before connecting and never clears
@@ -148,7 +150,7 @@ to do before it answers the first connection after an idle period.
 
 ### SQL Server / Azure SQL
 
-Use `alice@my-server` as `--user` for Azure SQL with SQL authentication — the same connector covers on-premises SQL Server and Azure SQL since the T-SQL dialect is identical. If the account lacks `VIEW SERVER STATE`/`VIEW DATABASE STATE`, `process-history` returns empty history and the KB is built from schema introspection only.
+Use `alice@my-server` as `--user` for Azure SQL with SQL authentication — the same connector covers on-premises SQL Server and Azure SQL since the T-SQL dialect is identical. If the account lacks `VIEW SERVER STATE`/`VIEW DATABASE STATE`, `process-history` stops with an error that names the missing permission; grant it, or build the knowledge base from the schema alone with `export-kb`.
 
 ### DuckDB
 

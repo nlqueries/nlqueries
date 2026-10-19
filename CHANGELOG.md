@@ -370,6 +370,23 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **Documentation claims corrected against the code.**
+  - The semantic cache does not answer "in under 50 ms with no LLM or
+    database round-trip". A hit skips the LLM and replays the stored answer;
+    where the command runs SQL, it runs the stored SQL again, so the rows are
+    current.
+  - MySQL is listed as running on the generic SQLAlchemy connector, which is
+    what `connect mysql` uses.
+  - BigQuery history reads `INFORMATION_SCHEMA.JOBS_BY_PROJECT`, which needs
+    `bigquery.jobs.listAll` (for example through
+    `roles/bigquery.resourceViewer`). The permission was not documented.
+  - Without `VIEW SERVER STATE`/`VIEW DATABASE STATE`, SQL Server's
+    `process-history` stops with an error naming the permission; the docs
+    said it returned an empty history.
+  - Redshift's `STL_QUERY` exists only on provisioned clusters, so
+    `process-history` stops with an error on a Serverless workgroup. Redshift
+    does keep comments in `pg_description`; the connector does not read them,
+    rather than Redshift lacking them.
 - **The MCP `query` tool runs the SQL it generates.** It passed no execution
   policy, so the run fell back to the generate-only default and every MCP
   client received SQL and no rows, though the tool's action is
