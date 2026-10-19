@@ -217,11 +217,24 @@ async def query(
         (for SQL/hybrid agents), and source citations (for document/hybrid agents).
         Includes per-query latency and agent-type metadata.
     """
+    from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
+    # This tool exists to answer from the database: its action is
+    # `query:execute`, and `guard` has authorised that before this body runs.
+    # Permission to execute is minted here, at the entry point, as the CLI's
+    # `query` does. Without it the run fell back to the generate-only default
+    # and every caller got SQL with no rows (the default makes a forgotten
+    # grant visible rather than unsafe).
     try:
         with anyio.fail_after(45):
-            result = await run_query(question, agent_id, dialect=dialect, explain=explain)
+            result = await run_query(
+                question,
+                agent_id,
+                dialect=dialect,
+                explain=explain,
+                execution=ExecutionPolicy.execute_read_only(),
+            )
     except TimeoutError:
         return (
             f"⏱ Query timed out after 45 s for agent '{agent_id}'.\n\n"

@@ -273,6 +273,23 @@ class TestQuery:
         assert "LLM timeout" in out
 
     @pytest.mark.anyio
+    async def test_the_query_tool_is_granted_read_only_execution(self) -> None:
+        """It passed no policy, so the run fell back to generate-only and every
+        MCP caller got SQL with no rows, although the tool's action is
+        `query:execute` and its output formats the rows."""
+        from nlqueries.execution import ExecutionPolicy
+        from nlqueries.mcp_server.server import query
+
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            return_value=_make_result(),
+        ) as mock_run:
+            await query("How many orders?", "sales")
+
+        assert mock_run.call_args.kwargs.get("execution") == ExecutionPolicy.execute_read_only()
+
+    @pytest.mark.anyio
     async def test_passes_dialect_to_run_query(self) -> None:
         from nlqueries.mcp_server.server import query
 
