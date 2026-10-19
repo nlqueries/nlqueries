@@ -6,6 +6,23 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`QueryResult.executed_sql`: the statement the database actually ran.**
+  `None`, the default, means the statement passed to `execute_query` ran
+  unchanged, and no connector in core sets it, because none rewrites. A
+  connector wrapper that rewrites the statement on its way to the database
+  (adding a row filter's predicate, say) sets it to the text it sent; the
+  `PermittedConnector` docstring states this beside `cache_scope`. When such a
+  statement fails, the one-correction retry now shows the model both its own
+  SQL and the statement the database ran, the latter framed as information
+  like the database error, and still asks it to correct its own SQL, which
+  goes back through the wrapper. Before, the model saw its own SQL beside an
+  error about different text. When `executed_sql` is unset or the same
+  statement however laid out, the correction prompt is byte-identical to
+  before. A correction that repeats the statement the database ran is treated
+  as returned unchanged and not run, since it would be rewritten a second time
+  and its filter shown to the caller. The streamed
+  frame's `sql` and the rows are unchanged, so callers never see the
+  rewritten statement.
 - **BigQuery: Workload Identity Federation and service account
   impersonation.** `service_account_json` now also accepts a Workload Identity
   Federation credential configuration (`"type": "external_account"`), as a path
@@ -350,6 +367,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **SQL validation accepts the `mssql`, `postgresql` and `mariadb`
+  dialect spellings.** The SQL policy already mapped these connector
+  spellings to sqlglot's names, but the schema check's re-parse passed them
+  through raw, and sqlglot raised `ValueError`. Every correction after a
+  database error therefore failed for a caller that passed one of them (the
+  CLI maps the dialect first, so it was not affected). `_same_statement`,
+  which the correction prompt and the echo guard use, maps them too; before,
+  it fell back to a text match, and a reindented echo of a rewritten
+  statement would have run.
 - **OIDC ID tokens: `email` and `email_verified` read strictly.**
   `OidcClaims.email` was `str()` of the claim, so `"email": null` became the
   address `"None"`, shared by every token that sent it; an email claim that

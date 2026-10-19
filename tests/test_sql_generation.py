@@ -175,6 +175,16 @@ def test_validate_sql_non_select_update_rejected() -> None:
     assert error is not None
 
 
+@pytest.mark.parametrize("dialect", ["mssql", "postgresql", "mariadb"])
+def test_validate_sql_accepts_a_connector_dialect_spelling(dialect: str) -> None:
+    """Spellings a connector uses and sqlglot rejects. The policy maps them;
+    the schema check's re-parse used to pass them raw, raised ValueError, and
+    so failed every correction after a database error for these dialects."""
+    assert _validate_sql("SELECT * FROM orders", _make_kb(), dialect) is None
+    error = _validate_sql("SELECT * FROM nonexistent_table", _make_kb(), dialect)
+    assert error is not None and "nonexistent_table" in error
+
+
 def test_validate_sql_unknown_table_rejected() -> None:
     error = _validate_sql("SELECT * FROM ghost_table", _make_kb(), "postgres")
     assert error is not None
