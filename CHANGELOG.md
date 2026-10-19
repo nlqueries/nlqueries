@@ -387,7 +387,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   Confluence, `--since` only decides whether to read, through the new
   `ConfluenceConnector.has_changes_since` (one search, no page bodies), and
   any read is of the whole space, because a partial read numbers its chunks
-  from zero and would overwrite other pages' chunks. The docs no longer say `nlqueries query`
+  from zero and would overwrite other pages' chunks. The Confluence read now
+  pages through the search instead of stopping at its first 200 results, and
+  refuses (`IncompleteSpaceRead`) a read that stops advancing while
+  Confluence reports more, since storing it would remove the other pages.
+  The docs no longer say `nlqueries query`
   routes questions to documents: it and the MCP `query` tool answer from the
   database.
 - **The MCP `query` tool runs the SQL it generates.** It passed no execution

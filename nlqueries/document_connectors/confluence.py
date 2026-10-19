@@ -39,6 +39,31 @@ def _make_chunk_id(source_id: str, chunk_index: int) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+#: Results asked for per CQL request while reading a whole space.
+_SEARCH_PAGE_SIZE = 100
+
+
+class IncompleteSpaceRead(RuntimeError):
+    """The search stopped returning new pages while Confluence reported more.
+
+    A sync stores what it read as the whole space and removes everything
+    else, so a partial read is refused rather than returned.
+    """
+
+
+def _result_id(result: dict[str, Any]) -> str:
+    content: dict[str, Any] = result.get("content", result)
+    return str(content.get("id", "")) or repr(sorted(result.items()))
+
+
+def _reports_more(response: dict[str, Any], collected: int) -> bool:
+    """Whether the search response says results remain beyond *collected*."""
+    total = response.get("totalSize")
+    if isinstance(total, int):
+        return collected < total
+    return bool((response.get("_links") or {}).get("next"))
+
+
 class ConfluenceConnector(DocumentConnector):
     """Extract and chunk text from a Confluence space using atlassian-python-api.
 
@@ -80,6 +105,35 @@ class ConfluenceConnector(DocumentConnector):
             f" ORDER BY lastModified DESC"
         )
 
+    @staticmethod
+    def _search_all(client: Any, cql: str) -> list[dict[str, Any]]:
+        """Every result of *cql*, read a page at a time with ``start``.
+
+        One request used to be the whole read, capped at 200 results, so a
+        larger space was cut short with no sign of it. Results are de-duplicated
+        by page ID, and if a request brings nothing new while the response
+        still reports more (a client or server that ignores ``start``), this
+        raises :class:`IncompleteSpaceRead` instead of returning a partial list.
+        """
+        seen: set[str] = set()
+        results: list[dict[str, Any]] = []
+        start = 0
+        while True:
+            response: dict[str, Any] = client.cql(cql, start=start, limit=_SEARCH_PAGE_SIZE)
+            batch: list[dict[str, Any]] = response.get("results") or []
+            new = [r for r in batch if _result_id(r) not in seen]
+            for result in new:
+                seen.add(_result_id(result))
+                results.append(result)
+            if not _reports_more(response, len(results)):
+                return results
+            if not new:
+                raise IncompleteSpaceRead(
+                    f"the search stopped advancing after {len(results)} page(s) while "
+                    "Confluence reports more, so the space could not be read whole"
+                )
+            start += len(batch)
+
     def has_changes_since(self, space_key: str, since: datetime) -> bool:
         """Whether any page in *space_key* was modified after *since*.
 
@@ -119,8 +173,7 @@ class ConfluenceConnector(DocumentConnector):
 
         space_key = str(source)
         client = self._client()
-        search_results: dict[str, Any] = client.cql(self._cql(space_key, since), limit=200)
-        page_results: list[dict[str, Any]] = search_results.get("results", [])
+        page_results = self._search_all(client, self._cql(space_key, since))
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=_CHUNK_SIZE,

@@ -330,3 +330,18 @@ def test_confluence_full_sync_reading_nothing_stores_nothing(
     assert "produced no text" in result.output
     probe.assert_not_called()
     assert stored == []
+
+
+def test_confluence_sync_stores_nothing_when_the_space_could_not_be_read_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nlqueries.document_connectors.confluence import IncompleteSpaceRead
+
+    probe, ingest, stored = _stub_confluence(monkeypatch, changed=True, whole=[])
+    ingest.side_effect = IncompleteSpaceRead("the search stopped advancing after 100 page(s)")
+
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS)
+
+    assert result.exit_code == 1
+    assert "stopped advancing" in result.output
+    assert stored == []

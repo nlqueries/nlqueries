@@ -827,6 +827,64 @@ def test_has_changes_since_is_one_search_and_no_page_reads(
     mock_client.get_page_by_id.assert_not_called()
 
 
+def _ingest_with_search(
+    responses: list[dict[str, Any]],
+) -> tuple[list[Any], MagicMock]:
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.side_effect = responses
+    mock_client.get_page_by_id.side_effect = lambda page_id, **kw: _make_page_body(
+        f"<p>Body of page {page_id}.</p>"
+    )
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        chunks = connector.ingest("ENG", source_id="src")
+    return chunks, mock_client
+
+
+def test_a_space_larger_than_one_search_page_is_read_whole(
+    _stub_confluence_deps: None,
+) -> None:
+    """One request used to be the whole read, capped at 200, and a sync now
+    removes stored chunks for pages it did not read."""
+    first = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (1, 2)]
+    second = [_make_cql_result("3", "P3", "/p/3")]
+    chunks, client = _ingest_with_search(
+        [{"results": first, "totalSize": 3}, {"results": second, "totalSize": 3}]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2", "3"}
+    assert [c.kwargs["start"] for c in client.cql.call_args_list] == [0, 2]
+
+
+def test_search_follows_the_next_link_when_there_is_no_total(
+    _stub_confluence_deps: None,
+) -> None:
+    first = [_make_cql_result("1", "P1", "/p/1")]
+    second = [_make_cql_result("2", "P2", "/p/2")]
+    chunks, client = _ingest_with_search(
+        [{"results": first, "_links": {"next": "/rest/api/search?cursor=x"}}, {"results": second}]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2"}
+    assert client.cql.call_count == 2
+
+
+def test_a_search_that_stops_advancing_is_refused(_stub_confluence_deps: None) -> None:
+    """A client that ignores `start` returns the first page again; storing
+    that as the whole space would remove every other page's chunks."""
+    from nlqueries.document_connectors.confluence import IncompleteSpaceRead
+
+    page = {"results": [_make_cql_result("1", "P1", "/p/1")], "totalSize": 250}
+    with pytest.raises(IncompleteSpaceRead, match="could not be read whole"):
+        _ingest_with_search([page, page])
+
+
 # ---------------------------------------------------------------------------
 # test_document_connector_registry_contains_confluence
 # ---------------------------------------------------------------------------
