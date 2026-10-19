@@ -3920,9 +3920,9 @@ def mcp_server_group() -> None:
     default="127.0.0.1",
     show_default=True,
     help=(
-        "Bind host for SSE transport. Loopback by default: the server has no "
-        "authentication, so a wildcard bind publishes every tool — including "
-        "query, which runs SQL — to anything that can route here."
+        "Bind host for SSE transport. Loopback by default; a wildcard address is "
+        "refused unless NLQ_ALLOW_INSECURE_BIND=1, because it publishes every "
+        "tool — including query, which runs SQL — to anything that can route here."
     ),
 )
 @click.option(
@@ -3950,8 +3950,9 @@ def mcp_server_start(sse: bool, host: str, port: int) -> None:
     SSE mode — for network/browser clients, on loopback:
       nlqueries mcp-server start --sse --port 8000
 
-    The server has no authentication yet, so it refuses to bind a wildcard
-    address. Put a proxy in front of it if you need remote access.
+    SSE will not start without authentication (an identity provider or a
+    pre-shared token; see docs/mcp-authentication.md), and it refuses to bind
+    a wildcard address. Put a proxy in front of it if you need remote access.
     """
     from nlqueries.mcp_server.server import main  # noqa: PLC0415
 
