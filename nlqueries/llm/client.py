@@ -259,8 +259,12 @@ def probe_round_trip(llm: LLMClient) -> bool:
     except OutputBudgetExhausted:
         return True
     except Exception as exc:
+        # Bounded by what it has seen, as `traceback` is: `raise exc from exc`
+        # makes an exception its own cause, and the walk would never end.
+        seen: set[int] = set()
         cause: BaseException | None = exc
-        while cause is not None:
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
             if _BUDGET_SPENT_ERROR in str(cause).lower():
                 return True
             cause = cause.__cause__ or cause.__context__

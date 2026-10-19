@@ -247,7 +247,7 @@ as generated, so a model that stops early costs what it did before.
 It is a budget, not a length. A **reasoning** model bills its private reasoning
 from the same allowance, and spends it first: measured on `deepseek-v4-pro`, a
 question classification asked for 200 tokens, used 56, and 52 of those were
-reasoning. At 5 tokens -- what the CLI and MCP health checks ask for -- all five
+reasoning. At 5 tokens, all five
 went to reasoning and the content came back empty with `finish_reason=length`.
 Over a thousand of the models LiteLLM knows are flagged as reasoning models, so
 this is the common case now rather than an exotic one. A deployment on one that

@@ -572,19 +572,55 @@ def test_a_budget_spent_before_any_text_is_a_round_trip(error: Exception) -> Non
     assert probe_round_trip(client) is True
 
 
-def test_the_400_is_recognised_behind_a_wrapping_exception() -> None:
-    """A host or SDK layer that re-raises keeps the provider's text in the cause."""
+def _raise_from(*_a: object, **_k: object) -> str:
+    try:
+        raise RuntimeError(_BUDGET_SPENT_400)
+    except RuntimeError as exc:
+        raise ValueError("provider call failed") from exc
+
+
+def _raise_during(*_a: object, **_k: object) -> str:
+    try:
+        raise RuntimeError(_BUDGET_SPENT_400)
+    except RuntimeError:
+        raise ValueError("provider call failed")  # noqa: B904 - the implicit chain is the case
+
+
+@pytest.mark.parametrize("wrapped", [_raise_from, _raise_during], ids=["cause", "context"])
+def test_the_400_is_recognised_behind_a_wrapping_exception(wrapped: object) -> None:
+    """A layer that re-raises keeps the provider's text in the chain: as the
+    cause with `from`, as the context without it."""
     from nlqueries.llm import probe_round_trip
 
-    def _wrapped(*_a: object, **_k: object) -> str:
-        try:
-            raise RuntimeError(_BUDGET_SPENT_400)
-        except RuntimeError as exc:
-            raise ValueError("provider call failed") from exc
-
     client = MagicMock()
-    client.complete.side_effect = _wrapped
+    client.complete.side_effect = wrapped
     assert probe_round_trip(client) is True
+
+
+def test_an_exception_that_is_its_own_cause_is_raised_not_walked_forever() -> None:
+    """`raise exc from exc` makes a cycle; an unbounded walk would hang the
+    health check instead of reporting the error."""
+    import threading
+
+    from nlqueries.llm import probe_round_trip
+
+    looped = RuntimeError("401 unauthorized")
+    looped.__cause__ = looped
+    client = MagicMock()
+    client.complete.side_effect = looped
+    outcome: list[BaseException] = []
+
+    def _probe() -> None:
+        try:
+            probe_round_trip(client)
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assert
+            outcome.append(exc)
+
+    worker = threading.Thread(target=_probe, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "the walk did not end"
+    assert outcome == [looped]
 
 
 @pytest.mark.parametrize(
