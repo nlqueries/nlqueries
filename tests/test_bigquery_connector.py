@@ -9,6 +9,7 @@ surface (``Client``, query jobs, datasets, and tables).
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -86,6 +87,202 @@ def test_connect_builds_credentials_from_path(mock_client_cls, mock_from_file):
 
     mock_from_file.assert_called_once_with("/path/to/key.json")
     mock_client_cls.assert_called_once_with(project="acme-prod", credentials=mock_creds)
+
+
+# ---------------------------------------------------------------------------
+# connect: Workload Identity Federation and impersonation
+# ---------------------------------------------------------------------------
+
+_FEDERATION_CONFIG = {
+    "type": "external_account",
+    "audience": (
+        "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/q"
+    ),
+    "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+    "token_url": "https://sts.googleapis.com/v1/token",
+    "credential_source": {"file": "/var/run/token"},
+}
+
+_BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery"
+
+
+@patch("google.auth.default")
+@patch("google.auth.load_credentials_from_file")
+@patch("google.auth.load_credentials_from_dict")
+@patch("google.auth.impersonated_credentials.Credentials")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_keyless_connect_still_lets_the_client_find_adc_itself(
+    mock_client_cls, mock_impersonated, mock_from_dict, mock_from_file, mock_default
+):
+    """No key and no impersonation: the client is built exactly as before.
+
+    The connector does not resolve ADC itself here; ``bigquery.Client`` does,
+    so none of the new credential paths may run.
+    """
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect({"project_id": "acme-prod"})
+
+    mock_client_cls.assert_called_once_with(project="acme-prod")
+    mock_default.assert_not_called()
+    mock_from_dict.assert_not_called()
+    mock_from_file.assert_not_called()
+    mock_impersonated.assert_not_called()
+
+
+@patch("nlqueries.connectors.bigquery.service_account.Credentials.from_service_account_info")
+@patch("google.auth.load_credentials_from_dict")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_connect_accepts_a_federation_config_dict(mock_client_cls, mock_from_dict, mock_from_info):
+    federated = MagicMock()
+    mock_from_dict.return_value = (federated, None)
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect({"project_id": "acme-prod", "service_account_json": _FEDERATION_CONFIG})
+
+    mock_from_dict.assert_called_once_with(_FEDERATION_CONFIG)
+    mock_from_info.assert_not_called()
+    mock_client_cls.assert_called_once_with(project="acme-prod", credentials=federated)
+
+
+@patch("nlqueries.connectors.bigquery.service_account.Credentials.from_service_account_file")
+@patch("google.auth.load_credentials_from_file")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_connect_accepts_a_federation_config_file(
+    mock_client_cls, mock_from_file, mock_from_sa_file, tmp_path
+):
+    path = tmp_path / "federation.json"
+    path.write_text(json.dumps(_FEDERATION_CONFIG))
+    federated = MagicMock()
+    mock_from_file.return_value = (federated, None)
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect({"project_id": "acme-prod", "service_account_json": path})
+
+    mock_from_file.assert_called_once_with(str(path))
+    mock_from_sa_file.assert_not_called()
+    mock_client_cls.assert_called_once_with(project="acme-prod", credentials=federated)
+
+
+@patch("nlqueries.connectors.bigquery.service_account.Credentials.from_service_account_file")
+@patch("google.auth.load_credentials_from_file")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_a_service_account_key_file_still_uses_the_service_account_loader(
+    mock_client_cls, mock_from_file, mock_from_sa_file, tmp_path
+):
+    """Reading the file's ``type`` must not reroute an ordinary key."""
+    path = tmp_path / "key.json"
+    path.write_text(json.dumps({"type": "service_account", "project_id": "acme-prod"}))
+    key_creds = MagicMock()
+    mock_from_sa_file.return_value = key_creds
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect({"project_id": "acme-prod", "service_account_json": str(path)})
+
+    mock_from_sa_file.assert_called_once_with(str(path))
+    mock_from_file.assert_not_called()
+    mock_client_cls.assert_called_once_with(project="acme-prod", credentials=key_creds)
+
+
+@patch("google.auth.impersonated_credentials.Credentials")
+@patch("nlqueries.connectors.bigquery.service_account.Credentials.from_service_account_info")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_impersonation_wraps_a_service_account_key(
+    mock_client_cls, mock_from_info, mock_impersonated
+):
+    key_creds = MagicMock()
+    mock_from_info.return_value = key_creds
+    impersonated = MagicMock()
+    mock_impersonated.return_value = impersonated
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect(
+        {
+            "project_id": "acme-prod",
+            "service_account_json": {"type": "service_account"},
+            "impersonate_service_account": "reader@acme-prod.iam.gserviceaccount.com",
+        }
+    )
+
+    mock_impersonated.assert_called_once_with(
+        source_credentials=key_creds,
+        target_principal="reader@acme-prod.iam.gserviceaccount.com",
+        target_scopes=[_BIGQUERY_SCOPE],
+    )
+    mock_client_cls.assert_called_once_with(project="acme-prod", credentials=impersonated)
+
+
+@patch("google.auth.impersonated_credentials.Credentials")
+@patch("google.auth.load_credentials_from_dict")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_impersonation_wraps_a_federation_config(
+    mock_client_cls, mock_from_dict, mock_impersonated
+):
+    federated = MagicMock()
+    mock_from_dict.return_value = (federated, None)
+    impersonated = MagicMock()
+    mock_impersonated.return_value = impersonated
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect(
+        {
+            "project_id": "acme-prod",
+            "service_account_json": _FEDERATION_CONFIG,
+            "impersonate_service_account": "reader@acme-prod.iam.gserviceaccount.com",
+        }
+    )
+
+    mock_impersonated.assert_called_once_with(
+        source_credentials=federated,
+        target_principal="reader@acme-prod.iam.gserviceaccount.com",
+        target_scopes=[_BIGQUERY_SCOPE],
+    )
+    mock_client_cls.assert_called_once_with(project="acme-prod", credentials=impersonated)
+
+
+@patch("google.auth.impersonated_credentials.Credentials")
+@patch("google.auth.default")
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_impersonation_wraps_application_default_credentials(
+    mock_client_cls, mock_default, mock_impersonated
+):
+    adc = MagicMock()
+    mock_default.return_value = (adc, "some-other-project")
+    impersonated = MagicMock()
+    mock_impersonated.return_value = impersonated
+    mock_client_cls.return_value = MagicMock()
+
+    connector = granted(BigQueryConnector())
+    connector.connect(
+        {
+            "project_id": "acme-prod",
+            "impersonate_service_account": "reader@acme-prod.iam.gserviceaccount.com",
+        }
+    )
+
+    mock_default.assert_called_once_with()
+    mock_impersonated.assert_called_once_with(
+        source_credentials=adc,
+        target_principal="reader@acme-prod.iam.gserviceaccount.com",
+        target_scopes=[_BIGQUERY_SCOPE],
+    )
+    # The connector's project, not the one ADC reports, is the one queried.
+    mock_client_cls.assert_called_once_with(project="acme-prod", credentials=impersonated)
+
+
+@pytest.mark.parametrize("target", ["reader", "", "  ", 42, None])
+@patch("nlqueries.connectors.bigquery.bigquery.Client")
+def test_impersonation_target_must_be_an_email(mock_client_cls, target):
+    connector = granted(BigQueryConnector())
+    with pytest.raises(ValueError, match="impersonate_service_account"):
+        connector.connect({"project_id": "acme-prod", "impersonate_service_account": target})
+    mock_client_cls.assert_not_called()
 
 
 @patch("nlqueries.connectors.bigquery.bigquery.Client")

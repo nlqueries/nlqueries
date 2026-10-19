@@ -6,6 +6,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **BigQuery: Workload Identity Federation and service account
+  impersonation.** `service_account_json` now also accepts a Workload Identity
+  Federation credential configuration (`"type": "external_account"`), as a path
+  or as parsed JSON, so a workload on AWS, Azure, GitHub Actions or another
+  identity provider can reach BigQuery without a service account key. It is
+  loaded by `google.auth`; a service account key goes to the same loaders as
+  before. A new optional `impersonate_service_account` (a service account
+  email) wraps whichever credential the connector resolved, whether key,
+  federation configuration or Application Default Credentials, in an
+  impersonated credential with the BigQuery scope, so queries run as one
+  narrowly granted account. An empty or non-email value is refused when the
+  connector opens rather than ignored. A connector with no key and no
+  impersonation is unchanged: the client still finds ADC itself. The
+  `bigquery` extra now requires `google-auth>=2.20`, the first release with
+  `load_credentials_from_dict`. See
+  [docs/connectors.md](docs/connectors.md#bigquery-authentication).
 - **JSON log lines for the embedding daemon, when asked.** Set
   `NLQ_LOG_FORMAT=json`, or pass `--log-format json` to
   `python -m nlqueries.embeddings.embed_server`, and each log line is one JSON
