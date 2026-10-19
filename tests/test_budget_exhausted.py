@@ -287,12 +287,13 @@ def test_anthropic_stream_keeps_what_it_yielded(monkeypatch: pytest.MonkeyPatch)
 # ---------------------------------------------------------------------------
 # The health probes
 #
-# Both ask for five tokens to keep the check cheap, and both throw the answer
-# away -- they are asking whether the provider is reachable, not what it said.
-# A reasoning model spends all five reasoning, so on exactly the deployment
-# this change exists for, the probe now raises. Reporting that as a fault would
-# tell the operator to raise a limit that has no bearing on a hard-coded probe
-# budget, in the command someone runs to find out what is wrong.
+# Both ask for a small budget (PROBE_MAX_TOKENS) to keep the check cheap, and
+# both throw the answer away -- they are asking whether the provider is
+# reachable, not what it said. A reasoning model can spend the whole budget
+# reasoning, so on exactly the deployment this change exists for, the probe
+# raises. Reporting that as a fault would tell the operator to raise a limit
+# that has no bearing on a hard-coded probe budget, in the command someone runs
+# to find out what is wrong.
 # ---------------------------------------------------------------------------
 
 
@@ -526,3 +527,105 @@ def test_anthropic_astream_is_quiet_on_an_ordinary_empty_reply(
     client._aclient.messages.stream.return_value = _FakeAsyncStream([], "end_turn")
 
     assert _adrain(client) == []
+
+
+# ---------------------------------------------------------------------------
+# The probe's budget and the reasoning-model 400
+#
+# The probe asked for 5 tokens. OpenAI's Responses API, which LiteLLM uses for
+# models such as o3-pro, gpt-5-pro and the codex models, refuses fewer than 16
+# outright, and OpenAI and Azure reasoning models report a budget spent before
+# any text as an HTTP 400 rather than an empty reply.
+# ---------------------------------------------------------------------------
+
+#: OpenAI's wording, as LiteLLM passes it on.
+_BUDGET_SPENT_400 = (
+    "litellm.BadRequestError: OpenAIException - Could not finish the message because "
+    "max_tokens or model output limit was reached. Please try again with higher max_tokens."
+)
+
+
+def test_the_probe_asks_for_the_least_the_responses_api_accepts() -> None:
+    from nlqueries.llm import PROBE_MAX_TOKENS, probe_round_trip
+
+    fine = MagicMock()
+    fine.complete.return_value = "OK"
+
+    assert probe_round_trip(fine) is False
+    assert PROBE_MAX_TOKENS == 16
+    assert fine.complete.call_args.kwargs["max_tokens"] == 16
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OutputBudgetExhausted("reasoner", 16),
+        RuntimeError(_BUDGET_SPENT_400),
+    ],
+    ids=["exhausted", "openai-400"],
+)
+def test_a_budget_spent_before_any_text_is_a_round_trip(error: Exception) -> None:
+    from nlqueries.llm import probe_round_trip
+
+    client = MagicMock()
+    client.complete.side_effect = error
+    assert probe_round_trip(client) is True
+
+
+def test_the_400_is_recognised_behind_a_wrapping_exception() -> None:
+    """A host or SDK layer that re-raises keeps the provider's text in the cause."""
+    from nlqueries.llm import probe_round_trip
+
+    def _wrapped(*_a: object, **_k: object) -> str:
+        try:
+            raise RuntimeError(_BUDGET_SPENT_400)
+        except RuntimeError as exc:
+            raise ValueError("provider call failed") from exc
+
+    client = MagicMock()
+    client.complete.side_effect = _wrapped
+    assert probe_round_trip(client) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "401 unauthorized",
+        # What the 5-token probe got from the Responses API: a real failure.
+        "Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16",
+        "The model `o3-pro` does not exist",
+    ],
+)
+def test_any_other_error_still_propagates(message: str) -> None:
+    from nlqueries.llm import probe_round_trip
+
+    client = MagicMock()
+    client.complete.side_effect = RuntimeError(message)
+    with pytest.raises(RuntimeError, match="."):
+        probe_round_trip(client)
+
+
+def test_doctor_reports_ok_on_the_reasoning_model_400() -> None:
+    from nlqueries.cli.main import _check_llm
+
+    client = MagicMock()
+    client.complete.side_effect = RuntimeError(_BUDGET_SPENT_400)
+    with (
+        patch("nlqueries.config.llm_credentials_available", return_value=True),
+        patch("nlqueries.llm.get_llm_client", return_value=client),
+    ):
+        result = _check_llm()
+
+    assert result.status == "ok"
+    assert "16-token probe budget" in result.detail
+    assert client.complete.call_args.kwargs["max_tokens"] == 16
+
+
+def test_mcp_health_reports_ok_on_the_reasoning_model_400() -> None:
+    client = MagicMock()
+    client.complete.side_effect = RuntimeError(_BUDGET_SPENT_400)
+
+    llm_line = next(ln for ln in _health(client).splitlines() if "**LLM**" in ln)
+    assert llm_line.startswith("✅")
+    assert "16-token probe budget" in llm_line
+    assert client.complete.call_args.kwargs["max_tokens"] == 16

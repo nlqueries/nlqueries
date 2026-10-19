@@ -394,25 +394,23 @@ def health(probe_llm: bool = False) -> str:
     else:
         try:
             from nlqueries.llm import (  # noqa: PLC0415
-                OutputBudgetExhausted,
+                PROBE_MAX_TOKENS,
                 get_llm_client,
+                probe_round_trip,
             )
 
             t0 = time.monotonic()
-            # See the CLI doctor: the probe asks for five tokens to stay cheap,
-            # and a reasoning model spends them all reasoning. The round trip
-            # succeeded, which is what is being checked -- but it is said out
-            # loud, so a caller diagnosing empty answers is not told the LLM is
-            # simply fine.
-            spent_on_reasoning = False
-            try:
-                get_llm_client().complete("You are a health check.", "Reply OK.", max_tokens=5)
-            except OutputBudgetExhausted:
-                spent_on_reasoning = True
+            # See the CLI doctor: the probe asks for a small budget to stay
+            # cheap, and a reasoning model can spend it all reasoning. The round
+            # trip succeeded, which is what is being checked -- but it is said
+            # out loud, so a caller diagnosing empty answers is not told the LLM
+            # is simply fine.
+            spent_on_reasoning = probe_round_trip(get_llm_client())
             ms = int((time.monotonic() - t0) * 1000)
             note = (
-                " — spent the 5-token probe budget before writing anything (normal for a "
-                "reasoning model; raise LLM_MAX_OUTPUT_TOKENS if answers come back empty)"
+                f" — spent the {PROBE_MAX_TOKENS}-token probe budget before writing anything "
+                "(normal for a reasoning model; raise LLM_MAX_OUTPUT_TOKENS if answers come "
+                "back empty)"
                 if spent_on_reasoning
                 else ""
             )

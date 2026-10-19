@@ -543,22 +543,22 @@ def _check_llm() -> _CheckResult:
     from nlqueries.config import LLM_MODEL, LLM_PROVIDER  # noqa: PLC0415
 
     try:
-        from nlqueries.llm import OutputBudgetExhausted, get_llm_client  # noqa: PLC0415
+        from nlqueries.llm import (  # noqa: PLC0415
+            PROBE_MAX_TOKENS,
+            get_llm_client,
+            probe_round_trip,
+        )
 
         llm = get_llm_client()
         t0 = time.monotonic()
         # A round trip that reached the provider, authenticated and came back is
-        # the entire question this probe asks. It asks for five tokens to keep
-        # the check cheap, and a reasoning model spends all five reasoning
-        # before it writes anything, so an exhausted budget is the ORDINARY
-        # result on such a deployment rather than a fault. Reporting it as a
-        # failure would tell the operator to raise a limit that has no bearing
-        # on a hard-coded probe budget.
-        spent_on_reasoning = False
-        try:
-            llm.complete("You are a health check.", "Reply OK.", max_tokens=5)
-        except OutputBudgetExhausted:
-            spent_on_reasoning = True
+        # the entire question this probe asks. It asks for a small budget to
+        # keep the check cheap, and a reasoning model can spend it all reasoning
+        # before it writes anything, so an exhausted budget is an ORDINARY
+        # result on such a deployment rather than a fault (probe_round_trip).
+        # Reporting it as a failure would tell the operator to raise a limit
+        # that has no bearing on a hard-coded probe budget.
+        spent_on_reasoning = probe_round_trip(llm)
         ms = int((time.monotonic() - t0) * 1000)
         detail = f"{LLM_PROVIDER} — {LLM_MODEL} responds ({ms} ms)"
         if spent_on_reasoning:
@@ -567,7 +567,7 @@ def _check_llm() -> _CheckResult:
             # send them to look somewhere else. Still `ok`: the provider is
             # reachable, which is what was asked.
             detail += (
-                " — spent the 5-token probe budget before writing anything, "
+                f" — spent the {PROBE_MAX_TOKENS}-token probe budget before writing anything, "
                 "which is normal for a reasoning model; if answers are coming "
                 "back empty, raise LLM_MAX_OUTPUT_TOKENS"
             )
