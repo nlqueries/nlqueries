@@ -234,7 +234,10 @@ def _resolve(
     # stored, which is what its entry carries and what its contract promises.
     # An exact registration wins: if a dedicated connector is ever
     # registered under an alias's name, it is the one used, not the alias.
-    registered = db_type if db_type in CONNECTOR_REGISTRY else canonical_db_type(db_type)
+    # Lowered once, so this and `capabilities.for_dialect` agree on a
+    # mixed-case type whichever way a caller spells it.
+    lowered = db_type.lower()
+    registered = lowered if lowered in CONNECTOR_REGISTRY else canonical_db_type(lowered)
     if _resolver is not None:
         try:
             # Read-only *and* deep-copied, because the loader passes the entry it

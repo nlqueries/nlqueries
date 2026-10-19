@@ -76,8 +76,9 @@ def test_a_connector_registered_under_an_alias_is_not_shadowed(
     monkeypatch.setitem(CONNECTOR_REGISTRY, "mysql", DedicatedMySQL)
     monkeypatch.setitem(capabilities.CAPABILITIES, "mysql", dedicated)
 
-    assert connector_class_for("mysql", {"db_type": "mysql"}) is DedicatedMySQL
-    assert for_dialect("mysql") is dedicated
+    for spelling in ("mysql", "MySQL"):
+        assert connector_class_for(spelling, {"db_type": spelling}) is DedicatedMySQL
+        assert for_dialect(spelling) is dedicated
 
 
 def test_mysql_runs_on_the_generic_connector() -> None:
