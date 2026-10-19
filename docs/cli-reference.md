@@ -27,7 +27,7 @@ nlqueries connect postgres --host db.example.com --database prod --user alice --
 nlqueries connect mysql --host localhost --database mydb --user alice --password secret
 ```
 
-SSL for PostgreSQL/MySQL connections is configured via the `SSL_MODE` / `SSL_CA_CERT` environment variables, not a `connect` flag — see [configuration.md](configuration.md).
+TLS is not a `connect` flag. For PostgreSQL the connector requires TLS by default; set `ssl_mode` and `ssl_ca_cert` in the connector's entry — see [database-hardening.md](database-hardening.md#transport-security). `connect mysql` sets no TLS: to require it, register through the generic connector with the options in the URL — see [connectors.md](connectors.md#mysql--tls).
 
 **Snowflake** — install `pip install "nlqueries-core[snowflake]"` first
 

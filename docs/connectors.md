@@ -31,7 +31,7 @@ why the role matters more than the transaction does.
 | Connector | Install | Query history source |
 |---|---|---|
 | PostgreSQL | included | `pg_stat_statements` extension |
-| MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone |
+| MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone. It sets no TLS; see below |
 | Snowflake | `pip install "nlqueries-core[snowflake]"` | `QUERY_HISTORY` view in `INFORMATION_SCHEMA` |
 | BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS` |
 | Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`) |
@@ -43,6 +43,16 @@ why the role matters more than the transaction does.
 The generic `sqlalchemy` type reaches anything with a SQLAlchemy dialect installed — MariaDB, Oracle, and the engines above if you would rather supply a URL than the discrete flags. It is configured by `--url` rather than the per-field flags, and introspects schema through SQLAlchemy's dialect-agnostic inspector rather than engine-specific catalog SQL. `--password` and `--password-env` still apply, and are the better habit — a password inside the URL is a command-line argument and lands in shell history. See [cli-reference.md](cli-reference.md#connect).
 
 See [cli-reference.md](cli-reference.md#connect) for `connect` examples per type.
+
+### MySQL — TLS
+
+`nlqueries connect mysql` composes a `mysql+pymysql://` URL with no TLS options, and the generic connector it runs on cannot add them (its `ssl_mode` and `ssl_ca_cert` settings are mapped only for PostgreSQL). The session is therefore unencrypted unless the server itself insists. To require TLS, register the database through the generic connector with the TLS options in the URL's query string, which the PyMySQL driver reads:
+
+```bash
+nlqueries connect sqlalchemy --url "mysql+pymysql://alice@db.internal:3306/shop?ssl_ca=/etc/ssl/certs/db-ca.pem"
+```
+
+Configuring the server to require TLS (`require_secure_transport=ON`) refuses an unencrypted session whichever way the client connects.
 
 ### PostgreSQL — enabling query history capture
 

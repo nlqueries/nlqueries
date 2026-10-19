@@ -38,6 +38,27 @@ def test_an_alias_is_described_by_its_connectors_capabilities(
     assert for_dialect(spelling) is for_dialect(registered) is not None
 
 
+def test_a_resolver_is_asked_with_the_type_as_stored() -> None:
+    """Its contract names the db type, and its entry carries the stored
+    spelling; canonicalising only the registry lookup keeps the two the same."""
+    from nlqueries.connectors import set_connector_resolver
+
+    seen: list[str] = []
+
+    def _resolver(db_type: str, cfg: object) -> None:
+        seen.append(db_type)
+        return None
+
+    set_connector_resolver(_resolver)
+    try:
+        cls = connector_class_for("mysql", {"db_type": "mysql"})
+    finally:
+        set_connector_resolver(None)
+
+    assert seen == ["mysql"]
+    assert cls is SQLAlchemyConnector
+
+
 def test_mysql_runs_on_the_generic_connector() -> None:
     assert connector_class_for("mysql", {"db_type": "mysql"}) is SQLAlchemyConnector
 

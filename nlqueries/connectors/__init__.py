@@ -190,6 +190,11 @@ def connector_class_for(
     ``None`` for a db-type nothing resolves, exactly as ``CONNECTOR_REGISTRY.get``
     does, so callers keep reporting that themselves.
 
+    The resolver is asked with *db_type* as stored. The registry is looked up
+    under its canonical name (:mod:`nlqueries.connectors.db_types`): ``connect``
+    accepts ``postgresql`` and ``mysql``, which name the connectors registered as
+    ``postgres`` and ``sqlalchemy``.
+
     A resolver that raises is logged and ignored rather than propagated. It sits
     on the query path of every connector, including the ones it has no opinion
     about, so a fault in the extension must not be able to take down a
@@ -224,9 +229,10 @@ def _resolve(
     other.
     """
     # `connect` stores `postgresql` and `mysql` as given; they name connectors
-    # registered as `postgres` and `sqlalchemy` (db_types.py). Canonicalised
-    # before the resolver too, so it sees one spelling per connector.
-    db_type = canonical_db_type(db_type)
+    # registered as `postgres` and `sqlalchemy` (db_types.py). Only the registry
+    # lookup canonicalises: an installed resolver is asked with the type as
+    # stored, which is what its entry carries and what its contract promises.
+    registered = canonical_db_type(db_type)
     if _resolver is not None:
         try:
             # Read-only *and* deep-copied, because the loader passes the entry it
@@ -255,7 +261,7 @@ def _resolve(
                 db_type,
                 exc_info=True,
             )
-            return CONNECTOR_REGISTRY.get(db_type), True
+            return CONNECTOR_REGISTRY.get(registered), True
         if resolved is not None:
             if not isinstance(resolved, type):
                 # A class, not an instance. `return MyConnector()` for
@@ -283,9 +289,9 @@ def _resolve(
                     type(resolved).__name__,
                     db_type,
                 )
-                return CONNECTOR_REGISTRY.get(db_type), True
+                return CONNECTOR_REGISTRY.get(registered), True
             return resolved, False
-    return CONNECTOR_REGISTRY.get(db_type), False
+    return CONNECTOR_REGISTRY.get(registered), False
 
 
 __all__ = [
