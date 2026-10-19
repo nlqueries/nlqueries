@@ -346,3 +346,57 @@ def test_confluence_sync_stores_nothing_when_the_space_could_not_be_read_whole(
     assert result.exit_code == 1
     assert "stopped advancing" in result.output
     assert stored == []
+
+
+def test_a_large_source_is_written_in_batches(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One request for a whole source passed Qdrant's 32 MB request limit at a
+    few thousand chunks, now that a Confluence space is read whole."""
+    monkeypatch.setattr(qdrant_store, "_REPLACE_BATCH_SIZE", 2)
+    calls: list[int] = []
+    real_upsert = qdrant.upsert
+
+    def _counting_upsert(*args: Any, **kwargs: Any) -> Any:
+        calls.append(len(kwargs["points"]))
+        return real_upsert(*args, **kwargs)
+
+    monkeypatch.setattr(qdrant, "upsert", _counting_upsert)
+    chunks = [_chunk("big", i, f"part {i}") for i in range(5)]
+
+    qdrant_store.replace_chunks("doc_big_chunks", "big", chunks)
+
+    assert calls == [2, 2, 1]
+    assert len(_stored_texts(qdrant, "doc_big_chunks")) == 5
+
+
+def test_a_write_that_fails_after_the_first_batch_says_both_versions_remain(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(qdrant_store, "_REPLACE_BATCH_SIZE", 2)
+    qdrant_store.replace_chunks("doc_x_chunks", "x", [_chunk("x", i, f"old {i}") for i in range(5)])
+    real_upsert = qdrant.upsert
+    calls: list[int] = []
+
+    def _second_fails(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) == 2:
+            raise TimeoutError("request timed out")
+        return real_upsert(*args, **kwargs)
+
+    monkeypatch.setattr(qdrant, "upsert", _second_fails)
+    new = [_chunk("x", i, f"new {i}") for i in range(4)]
+
+    with pytest.raises(qdrant_store.StaleChunksRemain, match="2 of 4 new chunks"):
+        qdrant_store.replace_chunks("doc_x_chunks", "x", new)
+
+    assert _stored_texts(qdrant, "doc_x_chunks") == ["new 0", "new 1", "old 2", "old 3", "old 4"]
+
+
+def test_the_default_batch_stays_well_under_qdrants_request_limit() -> None:
+    """Qdrant refuses a request over `service.max_request_size_mb`, 32 MB by
+    default. A point is a 384-float vector plus up to 800 characters of text
+    and its payload; 8 KB is a generous ceiling for one serialised."""
+    per_point = 8 * 1024
+
+    assert qdrant_store._REPLACE_BATCH_SIZE * per_point < 32 * 1024 * 1024 // 4

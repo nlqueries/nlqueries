@@ -113,14 +113,20 @@ class ConfluenceConnector(DocumentConnector):
 
     @staticmethod
     def _cql(space_key: str, since: datetime | None) -> str:
-        """CQL for the space's pages, optionally only those modified after *since*."""
+        """CQL for the space's pages, optionally only those modified after *since*.
+
+        Ordered by ``created``, which an edit does not change. Offset paging
+        over ``lastModified`` let a page edited during the read jump ahead of
+        the window already read and be skipped, and a sync stores what it read
+        as the whole space, so that page's chunks were deleted.
+        """
         if since is None:
-            return f'space = "{space_key}" AND type = page ORDER BY lastModified DESC'
+            return f'space = "{space_key}" AND type = page ORDER BY created ASC'
         since_str = since.strftime("%Y-%m-%d %H:%M")
         return (
             f'space = "{space_key}" AND type = page'
             f' AND lastModified > "{since_str}"'
-            f" ORDER BY lastModified DESC"
+            f" ORDER BY created ASC"
         )
 
     @staticmethod
@@ -134,13 +140,12 @@ class ConfluenceConnector(DocumentConnector):
         ``start`` is used otherwise.
 
         Progress is the number of raw results consumed, compared with
-        ``totalSize`` (or, without one, the presence of a next link): offset
-        paging over ``lastModified`` repeats a page that is edited during the
-        read, so the de-duplicated count can end short of ``totalSize`` on a
-        read that finished. A request that brings nothing new while more is
-        reported -- empty, or only repeats, as from a server that ignores
-        ``start`` -- raises :class:`IncompleteSpaceRead` instead of returning a
-        partial list.
+        ``totalSize`` (or, without one, the presence of a next link). In a
+        stable order a page seen twice means the window shifted under the read
+        and another page was skipped, so a read whose distinct pages end short
+        of ``totalSize`` is refused, as is a request that brings nothing new
+        while more is reported (a server that ignores ``start``): either raises
+        :class:`IncompleteSpaceRead` instead of returning a partial list.
         """
         seen: set[str] = set()
         results: list[dict[str, Any]] = []
@@ -162,6 +167,12 @@ class ConfluenceConnector(DocumentConnector):
             total = response.get("totalSize")
             more = consumed < total if isinstance(total, int) else bool(next_link)
             if not more:
+                if isinstance(total, int) and len(results) < total:
+                    raise IncompleteSpaceRead(
+                        f"the search returned {len(results)} distinct page(s) of "
+                        f"{total}: pages moved during the read, so it could not be "
+                        "read whole; run the sync again"
+                    )
                 return results
             if not new:
                 raise IncompleteSpaceRead(

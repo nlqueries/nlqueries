@@ -390,10 +390,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   from zero and would overwrite other pages' chunks. The Confluence read now
   pages through the search instead of stopping at its first 200 results,
   following the next link's cursor where the installed client takes one and
-  `start` otherwise, counts progress in raw results so a page repeated by an
-  edit mid-read does not fail it, and refuses (`IncompleteSpaceRead`) a read
-  that stops advancing while Confluence reports more, since storing it would
-  remove the other pages.
+  `start` otherwise. Pages are read in `created` order, which an edit does not
+  change, so a page edited mid-read can no longer jump past the window
+  already read and be skipped; a read that still ends with fewer distinct
+  pages than Confluence reports, or stops advancing, is refused
+  (`IncompleteSpaceRead`), since storing it would remove the missing pages.
+  `replace_chunks` writes in batches of 256, so a large space stays under
+  Qdrant's 32 MB request limit; a failure after the first batch raises
+  `StaleChunksRemain`.
   The docs no longer say `nlqueries query`
   routes questions to documents: it and the MCP `query` tool answer from the
   database.

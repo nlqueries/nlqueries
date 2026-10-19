@@ -875,19 +875,32 @@ def test_search_follows_the_next_link_when_there_is_no_total(
     assert client.cql.call_count == 2
 
 
-def test_a_page_repeated_across_batches_does_not_refuse_a_finished_read(
+def test_a_page_seen_twice_means_one_was_skipped_and_is_refused(
     _stub_confluence_deps: None,
 ) -> None:
-    """Offset paging over lastModified repeats a page edited during the read:
-    the de-duplicated count ends short of totalSize, but the read finished."""
+    """In a stable order a repeat means the window shifted under the read:
+    pages [1,2,3,4] read two at a time return [1,2] then [2,3] when something
+    moved, and page 4 was never seen. Stored as whole, its chunks would go."""
+    from nlqueries.document_connectors.confluence import IncompleteSpaceRead
+
     first = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (1, 2)]
     second = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (2, 3)]
-    chunks, client = _ingest_with_search(
-        [{"results": first, "totalSize": 4}, {"results": second, "totalSize": 4}]
-    )
+    with pytest.raises(IncompleteSpaceRead, match="3 distinct page"):
+        _ingest_with_search(
+            [{"results": first, "totalSize": 4}, {"results": second, "totalSize": 4}]
+        )
 
-    assert {c.metadata["page_id"] for c in chunks} == {"1", "2", "3"}
-    assert client.cql.call_count == 2
+
+@pytest.mark.parametrize("since", [None, datetime(2024, 3, 15, 9, 30, tzinfo=UTC)])
+def test_the_search_is_ordered_by_a_field_an_edit_does_not_move(since: datetime | None) -> None:
+    """Paging over lastModified let a page edited mid-read jump past the
+    window already read; `created` does not change when a page is edited."""
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    cql = ConfluenceConnector._cql("ENG", since)
+
+    assert cql.endswith("ORDER BY created ASC")
+    assert "ORDER BY lastModified" not in cql
 
 
 def test_the_next_link_cursor_is_followed_when_the_client_takes_one(

@@ -596,12 +596,20 @@ def delete_chunks(collection: str, source_id: str) -> None:
     )
 
 
-class StaleChunksRemain(RuntimeError):
-    """The new chunks were stored but the earlier version's leftovers were not removed.
+#: Points written per request by :func:`replace_chunks`. One request for a
+#: whole source passed Qdrant's default 32 MB request limit at a few thousand
+#: chunks (each point carries a 384-float vector and up to 800 characters).
+_REPLACE_BATCH_SIZE = 256
 
-    Raised by :func:`replace_chunks` when the delete after a successful upsert
-    fails. The collection then holds the new chunks *and* the old version's
-    tail, so a search can return text from both until a later replace succeeds.
+
+class StaleChunksRemain(RuntimeError):
+    """A replace stopped part-way, leaving new and old chunks side by side.
+
+    Raised by :func:`replace_chunks` when a write fails after at least one
+    batch of new chunks was stored, or when the delete after a complete write
+    fails. The collection then holds some or all of the new chunks *and* the
+    old version's remainder, so a search can return text from both until a
+    later replace succeeds.
     """
 
 
@@ -631,7 +639,19 @@ def replace_chunks(collection: str, source_id: str, chunks: list[DocumentChunk])
     )
 
     ensure_collection(collection, DOCUMENT_VECTOR_SIZE)
-    upsert_chunks(collection, chunks)
+    for start in range(0, len(chunks), _REPLACE_BATCH_SIZE):
+        try:
+            upsert_chunks(collection, chunks[start : start + _REPLACE_BATCH_SIZE])
+        except Exception as exc:
+            if start == 0:
+                raise  # nothing written yet: the earlier version is untouched
+            raise StaleChunksRemain(
+                f"{start} of {len(chunks)} new chunks were stored before the write "
+                f"failed ({exc}), and the earlier version was not removed"
+            ) from exc
+    # One request whatever the size: a keep-list of a few thousand integer IDs
+    # is tens of kilobytes, and splitting it across deletes would remove the
+    # chunks each slice leaves out.
     filter_ = Filter(
         must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))],
         must_not=[HasIdCondition(has_id=[int(chunk.chunk_id, 16) for chunk in chunks])]
