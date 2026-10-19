@@ -6,6 +6,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`QueryResult.executed_sql`: the statement the database actually ran.**
+  `None`, the default, means the statement passed to `execute_query` ran
+  unchanged, and no connector in core sets it, because none rewrites. A
+  connector wrapper that rewrites the statement on its way to the database
+  (adding a row filter's predicate, say) sets it to the text it sent; the
+  `PermittedConnector` docstring states this beside `cache_scope`. When such a
+  statement fails, the one-correction retry now shows the model both its own
+  SQL and the statement the database ran, the latter framed as information
+  like the database error, and still asks it to correct its own SQL, which
+  goes back through the wrapper. Before, the model saw its own SQL beside an
+  error about different text. When `executed_sql` is unset or the same
+  statement, the correction prompt is byte-identical to before. The streamed
+  frame's `sql` and the rows are unchanged, so callers never see the
+  rewritten statement.
 - **BigQuery: Workload Identity Federation and service account
   impersonation.** `service_account_json` now also accepts a Workload Identity
   Federation credential configuration (`"type": "external_account"`), as a path

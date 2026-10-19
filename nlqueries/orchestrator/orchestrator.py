@@ -487,6 +487,7 @@ class Orchestrator:
                                     llm,
                                     system,
                                     result.attempt_count,
+                                    executed_sql=qr.executed_sql,
                                 )
                             except Exception:  # noqa: BLE001
                                 # The database's error is the answer the user

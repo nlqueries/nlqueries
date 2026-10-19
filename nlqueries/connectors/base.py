@@ -194,6 +194,12 @@ class QueryResult:
     #:
     #: A caller may branch on these, so a new value belongs here first.
     truncation_reason: str | None = None
+    #: The statement the database actually ran. ``None`` means the statement
+    #: passed to ``execute_query`` ran unchanged; a wrapper that rewrites it
+    #: sets the text it actually sent. No connector in core sets it, since none
+    #: rewrites. It is for diagnosis (the correction prompt after a database
+    #: error), never shown to callers, whose frames name the statement they asked for.
+    executed_sql: str | None = None
 
 
 # Policy kinds surfaced by :meth:`DatabaseConnector.list_security_policies`.
@@ -632,6 +638,13 @@ class PermittedConnector(DatabaseConnector):
     shared only among requests with the same ``cache_scope``, and not cached at
     all without one. Do not declare it on this class: a wrapper that forwards
     unknown attributes to it would then appear to declare it too.
+
+    **Rewriting the statement: set ``executed_sql``.** A wrapper that changes
+    the statement before it reaches the database (adding a row filter's
+    predicate, say) sets :attr:`QueryResult.executed_sql` on the result to the
+    text it actually sent. A database error describes that text, so the
+    one-correction retry shows it to the model beside the model's own SQL.
+    Leave it ``None`` when the statement ran unchanged.
     """
 
     def __init__(
