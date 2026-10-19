@@ -320,3 +320,66 @@ def test_stop_survives_a_slow_tasklist(
     assert "Daemon (PID 4242) did not exit" in out.getvalue()
     # Assumed running, so not forgotten.
     assert pid_file.read_text() == "4242"
+
+
+# --- Which port start, status and clients agree on -----------------------------
+
+
+@pytest.mark.parametrize(("args", "expected"), [((), 9123), (("--port", "9200"), 9200)])
+def test_status_probes_the_port_clients_use(
+    pid_file: Path,
+    out: io.StringIO,
+    monkeypatch: pytest.MonkeyPatch,
+    args: tuple[str, ...],
+    expected: int,
+) -> None:
+    """`status` probed 8765 whatever port the daemon was started on, so one on
+    another port read as "starting" for ever. Clients look on
+    EMBED_SERVER_PORT, so that is the default, and --port overrides it."""
+    from nlqueries import config
+
+    monkeypatch.setattr(config, "EMBED_SERVER_PORT", 9123)
+    pid_file.write_text("4242")
+    urls: list[str] = []
+
+    def _probe(url: str, timeout: float) -> None:
+        urls.append(url)
+
+    with (
+        patch.object(embed_server, "is_pid_alive", return_value=True),
+        patch("urllib.request.urlopen", _probe),
+    ):
+        result = _run("status", *args)
+
+    assert result.exit_code == 0, out.getvalue()
+    assert urls == [f"http://127.0.0.1:{expected}/embed"]
+    assert f"port {expected}" in out.getvalue()
+
+
+def test_start_listens_on_the_port_clients_use(
+    pid_file: Path, out: io.StringIO, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nlqueries import config
+
+    monkeypatch.setattr(config, "EMBED_SERVER_PORT", 9123)
+    popen = MagicMock()
+    with patch("subprocess.Popen", popen):
+        result = _run("start")
+
+    assert result.exit_code == 0, out.getvalue()
+    argv = popen.call_args.args[0]
+    assert argv[argv.index("--port") + 1] == "9123"
+    assert "EMBED_SERVER_PORT" not in out.getvalue()
+
+
+def test_start_on_another_port_says_clients_will_not_find_it(
+    pid_file: Path, out: io.StringIO, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nlqueries import config
+
+    monkeypatch.setattr(config, "EMBED_SERVER_PORT", 8765)
+    with patch("subprocess.Popen", MagicMock()):
+        result = _run("start", "--port", "9000")
+
+    assert result.exit_code == 0, out.getvalue()
+    assert "EMBED_SERVER_PORT=9000" in out.getvalue()

@@ -15,12 +15,15 @@ import math
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 # Load .env from the current working directory (or any parent).
 # This is a no-op when the variables are already set in the environment,
-# so it is safe to call unconditionally.
-load_dotenv(override=False)
+# so it is safe to call unconditionally. `usecwd=True` is what makes it the
+# working directory: without it the search starts from this file's folder,
+# which for an installed package is site-packages, and a user's .env is
+# never found.
+load_dotenv(find_dotenv(usecwd=True), override=False)
 
 # ---------------------------------------------------------------------------
 # State directory
