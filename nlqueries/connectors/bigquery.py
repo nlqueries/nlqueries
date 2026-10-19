@@ -96,7 +96,12 @@ class BigQueryConnector(DatabaseConnector):
 
         # Validated before anything is loaded, so a malformed target fails on
         # the configuration rather than after a key file has been read.
-        target = self._impersonation_target(credentials.get("impersonate_service_account"))
+        # Presence, not the value, says whether impersonation was asked for: a
+        # bare ``impersonate_service_account:`` in YAML loads as ``None`` and
+        # must be refused like any other empty value, not read as absent.
+        target = None
+        if "impersonate_service_account" in credentials:
+            target = self._impersonation_target(credentials["impersonate_service_account"])
 
         creds = self._build_credentials(credentials.get("service_account_json"))
         if target is not None:
@@ -145,15 +150,14 @@ class BigQueryConnector(DatabaseConnector):
         )
 
     @staticmethod
-    def _impersonation_target(value: Any) -> str | None:
-        """Return the ``impersonate_service_account`` email, or ``None`` if unset.
+    def _impersonation_target(value: Any) -> str:
+        """Return the ``impersonate_service_account`` email, checked.
 
-        An empty or non-email value is refused rather than ignored: ignoring
-        it would run every query as the source credential, which is usually
-        broader than the account the operator meant to narrow it to.
+        An empty (including ``None``) or non-email value is refused rather
+        than ignored: ignoring it would run every query as the source
+        credential, which is usually broader than the account the operator
+        meant to narrow it to.
         """
-        if value is None:
-            return None
         if not isinstance(value, str) or "@" not in value.strip():
             raise ValueError(
                 "impersonate_service_account must be a service account email "

@@ -101,6 +101,7 @@ dev = [
     # Optional connector deps — installed in CI so their tests keep running
     "snowflake-connector-python>=3.0",
     "google-cloud-bigquery>=3.0",
+    "google-auth>=2.20",
     # DuckDB reads local files through table functions, so the security corpus
     # needs it present to check that it cannot.
     "duckdb>=1.0",

@@ -110,7 +110,8 @@ service account, and the service account needs the BigQuery roles described in
 account as the one queries run as, whichever machine or person starts them. A
 value that is empty or not an email is refused when the connector opens, rather
 than ignored, since ignoring it would run queries as the starting identity. There
-is no `connect` flag for it yet.
+is no `connect` flag for it yet, and running `nlqueries connect bigquery` again for
+the same connector rewrites its whole entry, so add the key back afterwards.
 
 ### Amazon Redshift
 

@@ -276,7 +276,7 @@ def test_impersonation_wraps_application_default_credentials(
     mock_client_cls.assert_called_once_with(project="acme-prod", credentials=impersonated)
 
 
-@pytest.mark.parametrize("target", ["reader", "", "  ", 42])
+@pytest.mark.parametrize("target", ["reader", "", "  ", 42, None])
 @patch("nlqueries.connectors.bigquery.bigquery.Client")
 def test_impersonation_target_must_be_an_email(mock_client_cls, target):
     connector = granted(BigQueryConnector())
