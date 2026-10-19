@@ -393,6 +393,37 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   listens on `EMBED_SERVER_PORT` by default and warns when `--port` names a
   port clients will not use; `status` checks `EMBED_SERVER_PORT` and takes
   `--port`; `health` reports the port it reached.
+- **`doc-ingest`, `doc-sync-notion` and `doc-sync-confluence` store what
+  they ingest.** They chunked a source and printed a count, but nothing in
+  core wrote the chunks anywhere, so `doc-ask doc_<source_id>_chunks`
+  searched a collection no command had filled. Each now embeds its chunks and
+  stores them in that collection through the new
+  `qdrant_store.replace_chunks`, which stores the new chunks before removing
+  the source's old ones, so a re-ingest replaces the earlier version and a
+  failure before the write leaves it untouched; a failure of the clean-up
+  after the write raises `StaleChunksRemain`, and the command says both
+  versions may be searchable until a rerun. A command that cannot store its
+  chunks exits 1 instead of reporting success. A read that produces no text
+  stores nothing and exits 1, since a mistyped space key or a scanned PDF
+  would otherwise delete a good copy; `--allow-empty` stores the empty
+  result. With `--since`, an unchanged page or space is left as stored. For
+  Confluence, `--since` only decides whether to read, through the new
+  `ConfluenceConnector.has_changes_since` (one search, no page bodies), and
+  any read is of the whole space, because a partial read numbers its chunks
+  from zero and would overwrite other pages' chunks. The Confluence read now
+  pages through the search instead of stopping at its first 200 results,
+  following the next link's cursor where the installed client takes one and
+  `start` otherwise. Pages are read in `created` order, which an edit does not
+  change, so a page edited mid-read can no longer jump past the window
+  already read and be skipped; a read that still ends with fewer distinct
+  pages than Confluence reports, or stops advancing, is refused
+  (`IncompleteSpaceRead`), since storing it would remove the missing pages.
+  `replace_chunks` writes in batches of 256, so a large space stays under
+  Qdrant's 32 MB request limit; a failure after the first batch raises
+  `StaleChunksRemain`.
+  The docs no longer say `nlqueries query`
+  routes questions to documents: it and the MCP `query` tool answer from the
+  database.
 - **Documentation claims corrected against the code.**
   - The semantic cache does not answer "in under 50 ms with no LLM or
     database round-trip". A hit skips the LLM and replays the stored answer,

@@ -35,6 +35,9 @@ Public API
 
 ``delete_chunks(collection, source_id)``
     Delete all chunks belonging to *source_id* from the collection.
+
+``replace_chunks(collection, source_id, chunks)``
+    Make *chunks* the whole of *source_id*'s content in the collection.
 """
 
 from __future__ import annotations
@@ -591,3 +594,77 @@ def delete_chunks(collection: str, source_id: str) -> None:
         collection_name=collection,
         points_selector=FilterSelector(filter=filter_),
     )
+
+
+#: Points written per request by :func:`replace_chunks`. One request for a
+#: whole source passed Qdrant's default 32 MB request limit at a few thousand
+#: chunks (each point carries a 384-float vector and up to 800 characters).
+_REPLACE_BATCH_SIZE = 256
+
+
+class StaleChunksRemain(RuntimeError):
+    """A replace stopped part-way, leaving new and old chunks side by side.
+
+    Raised by :func:`replace_chunks` when a write fails after at least one
+    batch of new chunks was stored, or when the delete after a complete write
+    fails. The collection then holds some or all of the new chunks *and* the
+    old version's remainder, so a search can return text from both until a
+    later replace succeeds.
+    """
+
+
+def replace_chunks(collection: str, source_id: str, chunks: list[DocumentChunk]) -> None:
+    """Make *chunks* the whole of *source_id*'s content in *collection*.
+
+    The new chunks are stored first and the source's other chunks deleted
+    after, so a failure before the store -- the embedder or Qdrant unavailable
+    -- leaves the previous version untouched rather than nothing. A failure of
+    the delete after a successful store raises :class:`StaleChunksRemain`: the
+    new chunks are in place but so is the old version's tail. Chunk IDs are
+    derived from the source and the chunk's position, so a shorter new version
+    overwrites the start of the old one and the delete removes its tail. With
+    no chunks every chunk of the source is removed: the document is now empty.
+
+    Args:
+        collection: Qdrant collection name (convention: ``doc_{source_id}_chunks``).
+        source_id:  The source whose content *chunks* is.
+        chunks:     The source's complete set of chunks.
+    """
+    from qdrant_client.models import (
+        FieldCondition,
+        Filter,
+        FilterSelector,
+        HasIdCondition,
+        MatchValue,
+    )
+
+    ensure_collection(collection, DOCUMENT_VECTOR_SIZE)
+    for start in range(0, len(chunks), _REPLACE_BATCH_SIZE):
+        try:
+            upsert_chunks(collection, chunks[start : start + _REPLACE_BATCH_SIZE])
+        except Exception as exc:
+            if start == 0:
+                raise  # nothing written yet: the earlier version is untouched
+            raise StaleChunksRemain(
+                f"{start} of {len(chunks)} new chunks were stored before the write "
+                f"failed ({exc}), and the earlier version was not removed"
+            ) from exc
+    # One request whatever the size: a keep-list of a few thousand integer IDs
+    # is tens of kilobytes, and splitting it across deletes would remove the
+    # chunks each slice leaves out.
+    filter_ = Filter(
+        must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))],
+        must_not=[HasIdCondition(has_id=[int(chunk.chunk_id, 16) for chunk in chunks])]
+        if chunks
+        else None,
+    )
+    try:
+        _get_client().delete(
+            collection_name=collection,
+            points_selector=FilterSelector(filter=filter_),
+        )
+    except Exception as exc:
+        raise StaleChunksRemain(
+            f"the new chunks were stored, but the earlier version's leftover chunks "
+            f"could not be removed ({exc})"
+        ) from exc

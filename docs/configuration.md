@@ -19,7 +19,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `CAPSULES_DIR` | No | `~/.nlqueries/capsules` | Path to saved query capsules |
 | `FEEDBACK_DIR` | No | `~/.nlqueries/feedback` | Path to feedback JSONL files |
 | `NOTION_API_TOKEN` | Only for Notion sync | — | Notion integration token |
-| `CONFLUENCE_URL` / `CONFLUENCE_USER` / `CONFLUENCE_API_TOKEN` | Only for Confluence sync | — | Confluence connection details |
+| `CONFLUENCE_API_TOKEN` | Only for Confluence sync | — | The API token for `doc-sync-confluence`; the site URL and user are its `--base-url` and `--username` options |
 | `HF_TOKEN` | No | — | Hugging Face token — avoids rate limits on the one-time embedding model download. See [troubleshooting.md](troubleshooting.md#w2--hugging-face-hub-unauthenticated-requests). |
 | `EMBED_SERVER_PORT` | No | `8765` | Port the embedding daemon listens on |
 | `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
