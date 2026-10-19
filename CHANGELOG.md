@@ -370,6 +370,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The LLM health check works on OpenAI's Responses-API and reasoning
+  models.** `nlqueries doctor` and the MCP `health` tool asked the model for 5
+  output tokens. OpenAI's Responses API, which LiteLLM uses for models such as
+  `o3-pro`, `gpt-5-pro` and the codex models, refuses fewer than 16, so the
+  check failed on every one of them. The probe now asks for 16
+  (`nlqueries.llm.PROBE_MAX_TOKENS`). An OpenAI or Azure reasoning model that
+  spends that budget before writing anything answers with an HTTP 400 ("Could
+  not finish the message because max_tokens…") rather than an empty reply;
+  the check now treats that as it treats an empty reply, as a successful round
+  trip with a note, instead of reporting the provider as down.
 - **The MCP docs describe the server as it is.** `docs/cli-reference.md` and
   `nlqueries mcp-server start --help` still said the SSE server has no
   authentication and its tools are reachable without credentials. Since

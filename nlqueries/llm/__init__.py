@@ -7,7 +7,13 @@ from typing import Any, cast
 from nlqueries import config
 from nlqueries.config import BEDROCK_MODEL_PREFIX, BEDROCK_PROVIDER
 from nlqueries.llm.anthropic_client import AnthropicClient
-from nlqueries.llm.client import LLMClient, LLMTimeout, OutputBudgetExhausted
+from nlqueries.llm.client import (
+    PROBE_MAX_TOKENS,
+    LLMClient,
+    LLMTimeout,
+    OutputBudgetExhausted,
+    probe_round_trip,
+)
 from nlqueries.llm.litellm_client import LiteLLMClient
 from nlqueries.llm.override import (
     LLMOverride,
@@ -25,6 +31,7 @@ from nlqueries.llm.usage import (
 )
 
 __all__ = [
+    "PROBE_MAX_TOKENS",
     "AnthropicClient",
     "LLMClient",
     "LLMOverride",
@@ -37,6 +44,7 @@ __all__ = [
     "estimate_tokens",
     "get_llm_client",
     "output_budget",
+    "probe_round_trip",
     "record_usage",
     "use_llm_override",
     "use_usage_sink",

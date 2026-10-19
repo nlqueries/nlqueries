@@ -226,3 +226,47 @@ class LLMClient(ABC):
         tokens: list[str] = await asyncio.to_thread(list, self.stream(system, user))
         for token in tokens:
             yield token
+
+
+#: The output budget a health probe asks for. The probe only asks whether the
+#: provider answers, so the budget is kept small, but not below 16: OpenAI's
+#: Responses API, which LiteLLM uses for models such as ``o3-pro``,
+#: ``gpt-5-pro`` and the codex models, refuses ``max_output_tokens`` under 16
+#: ("integer below minimum value"), so a smaller probe failed on every one of
+#: them. 16 is also what LiteLLM's own health check asks for.
+PROBE_MAX_TOKENS = 16
+
+#: How OpenAI and Azure word the HTTP 400 a reasoning model returns when it
+#: spends the whole budget before writing anything, instead of an empty reply
+#: with ``finish_reason=length``. It is the same event as
+#: :class:`OutputBudgetExhausted`, reported as an error.
+_BUDGET_SPENT_ERROR = "could not finish the message because max_tokens"
+
+
+def probe_round_trip(llm: LLMClient) -> bool:
+    """Ask *llm* for a short reply, and say whether it spent the budget first.
+
+    For the health checks. Returns ``True`` when the model used the whole
+    :data:`PROBE_MAX_TOKENS` before writing anything: the request reached the
+    provider, authenticated and was answered, which is what a probe asks, so
+    that is not a failure. A reasoning model does it routinely. It shows up as
+    :class:`OutputBudgetExhausted`, or, from OpenAI and Azure reasoning models,
+    as an HTTP 400 saying the message could not be finished. Anything else
+    propagates.
+    """
+    try:
+        llm.complete("You are a health check.", "Reply OK.", max_tokens=PROBE_MAX_TOKENS)
+    except OutputBudgetExhausted:
+        return True
+    except Exception as exc:
+        # Bounded by what it has seen, as `traceback` is: `raise exc from exc`
+        # makes an exception its own cause, and the walk would never end.
+        seen: set[int] = set()
+        cause: BaseException | None = exc
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if _BUDGET_SPENT_ERROR in str(cause).lower():
+                return True
+            cause = cause.__cause__ or cause.__context__
+        raise
+    return False
