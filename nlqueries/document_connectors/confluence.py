@@ -53,6 +53,43 @@ class ConfluenceConnector(DocumentConnector):
         self._username = username
         self._api_token = api_token
 
+    def _client(self) -> Any:
+        try:
+            from atlassian import Confluence
+        except ImportError as exc:
+            raise ImportError(
+                "atlassian-python-api is required for ConfluenceConnector. "
+                "Install it with: pip install 'nlqueries-core[wiki]'"
+            ) from exc
+        return Confluence(
+            url=self._base_url,
+            username=self._username,
+            password=self._api_token,
+            cloud=True,
+        )
+
+    @staticmethod
+    def _cql(space_key: str, since: datetime | None) -> str:
+        """CQL for the space's pages, optionally only those modified after *since*."""
+        if since is None:
+            return f'space = "{space_key}" AND type = page ORDER BY lastModified DESC'
+        since_str = since.strftime("%Y-%m-%d %H:%M")
+        return (
+            f'space = "{space_key}" AND type = page'
+            f' AND lastModified > "{since_str}"'
+            f" ORDER BY lastModified DESC"
+        )
+
+    def has_changes_since(self, space_key: str, since: datetime) -> bool:
+        """Whether any page in *space_key* was modified after *since*.
+
+        One CQL search for a single result, with no page bodies fetched, so an
+        incremental sync can decide whether to re-read the space for the cost
+        of one request.
+        """
+        results: dict[str, Any] = self._client().cql(self._cql(space_key, since), limit=1)
+        return bool(results.get("results"))
+
     def ingest(
         self,
         source: str | Path,
@@ -73,14 +110,6 @@ class ConfluenceConnector(DocumentConnector):
             Ordered list of :class:`DocumentChunk` objects.
         """
         try:
-            from atlassian import Confluence
-        except ImportError as exc:
-            raise ImportError(
-                "atlassian-python-api is required for ConfluenceConnector. "
-                "Install it with: pip install 'nlqueries-core[wiki]'"
-            ) from exc
-
-        try:
             from bs4 import BeautifulSoup
         except ImportError as exc:
             raise ImportError(
@@ -89,24 +118,8 @@ class ConfluenceConnector(DocumentConnector):
             ) from exc
 
         space_key = str(source)
-        client = Confluence(
-            url=self._base_url,
-            username=self._username,
-            password=self._api_token,
-            cloud=True,
-        )
-
-        # Build CQL query; optionally restrict to pages modified after `since`.
-        cql = f'space = "{space_key}" AND type = page ORDER BY lastModified DESC'
-        if since is not None:
-            since_str = since.strftime("%Y-%m-%d %H:%M")
-            cql = (
-                f'space = "{space_key}" AND type = page'
-                f' AND lastModified > "{since_str}"'
-                f" ORDER BY lastModified DESC"
-            )
-
-        search_results: dict[str, Any] = client.cql(cql, limit=200)
+        client = self._client()
+        search_results: dict[str, Any] = client.cql(self._cql(space_key, since), limit=200)
         page_results: list[dict[str, Any]] = search_results.get("results", [])
 
         splitter = RecursiveCharacterTextSplitter(

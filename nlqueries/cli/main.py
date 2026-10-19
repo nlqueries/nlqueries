@@ -1484,26 +1484,45 @@ def extract_schema(connector_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _store_document_chunks(source_id: str, chunks: list[Any]) -> None:
+def _store_document_chunks(source_id: str, chunks: list[Any], *, allow_empty: bool) -> None:
     """Store *chunks* as the whole of *source_id* so ``doc-ask`` can search them.
 
     The collection is ``doc_{source_id}_chunks``, the name ``doc-ask`` is given.
     Exits 1 when Qdrant or the embedder is unavailable: a command that produced
     chunks and stored none has not ingested anything a later question can find.
+
+    No chunks is refused unless *allow_empty*: a wrong space key, a page whose
+    text sits in blocks the connector does not read, or a scanned PDF all read
+    as empty, and storing that would delete a good copy.
     """
     from rich.markup import escape
 
-    from nlqueries.embeddings.qdrant_store import replace_chunks
+    from nlqueries.embeddings.qdrant_store import StaleChunksRemain, replace_chunks
 
     collection = f"doc_{source_id}_chunks"
+    if not chunks and not allow_empty:
+        err_console.print(
+            "[bold red]✗ The source produced no text, so nothing was stored.[/bold red]"
+        )
+        err_console.print(
+            f"  Anything already stored in {escape(collection)} is unchanged. If the source "
+            "really is empty now, run again with --allow-empty to remove it."
+        )
+        sys.exit(1)
     try:
         with console.status(f"  Embedding and storing {len(chunks)} chunk(s) …"):
             replace_chunks(collection, source_id, chunks)
+    except StaleChunksRemain as exc:
+        err_console.print(f"[bold red]✗ Stored, but not cleanly:[/bold red] {escape(str(exc))}")
+        err_console.print(
+            "  doc-ask may return text from both versions until this command succeeds again."
+        )
+        sys.exit(1)
     except Exception as exc:  # noqa: BLE001
         err_console.print(
             f"[bold red]✗ Could not store the chunks in Qdrant:[/bold red] {escape(str(exc))}"
         )
-        err_console.print("  Nothing was changed for this source. Is Qdrant running?")
+        err_console.print("  The earlier version was not deleted. Is Qdrant running?")
         sys.exit(1)
     console.print(f"  Stored in       : [bold]{escape(collection)}[/bold]")
     console.print(f'  Ask with        : nlqueries doc-ask {escape(collection)} "<question>"')
@@ -1512,7 +1531,16 @@ def _store_document_chunks(source_id: str, chunks: list[Any]) -> None:
 @cli.command("doc-ingest")
 @click.argument("source_id")
 @click.argument("file_path", type=click.Path(exists=True, dir_okay=False, readable=True))
-def doc_ingest(source_id: str, file_path: str) -> None:
+@click.option(
+    "--allow-empty",
+    is_flag=True,
+    default=False,
+    help=(
+        "Store an empty result, removing the source's stored chunks. Without it, "
+        "a read that produces no chunks stores nothing and exits 1."
+    ),
+)
+def doc_ingest(source_id: str, file_path: str, allow_empty: bool) -> None:
     """Ingest a document file and store its chunks for ``doc-ask``.
 
     \b
@@ -1574,7 +1602,7 @@ def doc_ingest(source_id: str, file_path: str) -> None:
         err_console.print(f"[bold red]✗ Ingestion failed:[/bold red] {exc}")
         sys.exit(1)
 
-    _store_document_chunks(source_id, chunks)
+    _store_document_chunks(source_id, chunks, allow_empty=allow_empty)
     console.print("[bold green]✓ Ingestion complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
     if chunks:
@@ -2645,7 +2673,16 @@ def doc_ask(collection: str, question: str, source_id: str | None, top_k: int) -
         "(e.g. 2024-01-15T00:00:00+00:00). Omit for a full sync."
     ),
 )
-def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
+@click.option(
+    "--allow-empty",
+    is_flag=True,
+    default=False,
+    help=(
+        "Store an empty result, removing the source's stored chunks. Without it, "
+        "a read that produces no chunks stores nothing and exits 1."
+    ),
+)
+def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_empty: bool) -> None:
     """Sync a Notion page and store its chunks for ``doc-ask``.
 
     \b
@@ -2702,7 +2739,7 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None) -> None:
     # The connector reads the one page whole or not at all, so with --since an
     # empty result means "unchanged", and the stored copy is left alone.
     if chunks or since is None:
-        _store_document_chunks(source_id, chunks)
+        _store_document_chunks(source_id, chunks, allow_empty=allow_empty)
     console.print("[bold green]✓ Sync complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
     if not chunks and since is not None:
@@ -3098,8 +3135,17 @@ def eval_cmd(
     "since_ts",
     default=None,
     help=(
-        "Only fetch pages modified after this ISO 8601 timestamp "
+        "Re-read the space only if a page was modified after this ISO 8601 timestamp "
         "(e.g. 2024-01-15T00:00:00+00:00). Omit for a full sync."
+    ),
+)
+@click.option(
+    "--allow-empty",
+    is_flag=True,
+    default=False,
+    help=(
+        "Store an empty result, removing the source's stored chunks. Without it, "
+        "a read that produces no chunks stores nothing and exits 1."
     ),
 )
 def doc_sync_confluence(
@@ -3108,6 +3154,7 @@ def doc_sync_confluence(
     base_url: str,
     username: str,
     since_ts: str | None,
+    allow_empty: bool,
 ) -> None:
     """Sync a Confluence space and store its chunks for ``doc-ask``.
 
@@ -3119,8 +3166,9 @@ def doc_sync_confluence(
     \b
     The Confluence API token is read from the CONFLUENCE_API_TOKEN environment variable.
     The chunks are stored in doc_<SOURCE_ID>_chunks, replacing the earlier copy.
-    With --since, the space is re-read in full when any page changed (and left
-    as it is when none did), because a partial read would replace the whole.
+    With --since, one search checks whether any page changed; if one did, the
+    space is re-read in full (a partial read would replace the whole), and if
+    none did, the stored copy is left as it is.
 
     \b
     Examples:
@@ -3156,13 +3204,17 @@ def doc_sync_confluence(
         f"(source_id=[bold]{source_id}[/bold]) …"
     )
 
+    # A --since read would hold only the changed pages, numbered from zero, and
+    # chunk IDs come from that number: stored as they are, they would overwrite
+    # other pages' chunks. So --since only decides whether to read; any read is
+    # of the whole space.
+    chunks: list[Any] = []
+    changed = False
     try:
-        chunks = connector.ingest(space_key, source_id, since=since)
-        if chunks and since is not None:
-            # A --since read holds only the changed pages, numbered from zero,
-            # and chunk IDs come from that number: stored as they are, they
-            # would overwrite other pages' chunks. Re-read the space whole.
-            console.print("  Pages changed; re-reading the whole space to store it whole …")
+        changed = since is None or connector.has_changes_since(space_key, since)
+        if changed:
+            if since is not None:
+                console.print("  Pages changed; reading the whole space to store it whole …")
             chunks = connector.ingest(space_key, source_id)
     except ImportError as exc:
         err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")
@@ -3171,14 +3223,14 @@ def doc_sync_confluence(
         err_console.print(f"[bold red]✗ Sync failed:[/bold red] {exc}")
         sys.exit(1)
 
-    if chunks or since is None:
-        _store_document_chunks(source_id, chunks)
+    if changed:
+        _store_document_chunks(source_id, chunks, allow_empty=allow_empty)
     console.print("[bold green]✓ Sync complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
-    if not chunks and since is not None:
+    if not changed:
         console.print(
-            "  [yellow]⚠ No chunks — space may have no pages modified "
-            "after the given timestamp.[/yellow]"
+            "  [yellow]⚠ No pages modified after the given timestamp; "
+            "the stored copy is unchanged.[/yellow]"
         )
 
 

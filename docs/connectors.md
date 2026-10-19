@@ -190,9 +190,11 @@ CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \
     --base-url https://acme.atlassian.net --username alice@acme.com
 ```
 
-Each command chunks the source, embeds the chunks and stores them in the Qdrant collection `doc_{source_id}_chunks` (Qdrant is required — see [qdrant-setup.md](qdrant-setup.md)). A later run for the same `SOURCE_ID` replaces what the earlier one stored, and if the chunks cannot be stored the command exits with an error and leaves the earlier copy in place.
+Each command chunks the source, embeds the chunks and stores them in the Qdrant collection `doc_{source_id}_chunks` (Qdrant is required — see [qdrant-setup.md](qdrant-setup.md)). A later run for the same `SOURCE_ID` replaces what the earlier one stored. The new chunks are written before the old ones are removed: if writing fails, the command exits with an error and the earlier copy is untouched; if only the removal of the old version's leftover chunks fails, the command says so, and `doc-ask` may return text from both versions until a rerun succeeds.
 
-With `--since`, an unchanged Notion page or Confluence space is left as it is. A Confluence space with any page changed since then is re-read in full, so the stored copy stays whole.
+A read that produces no text (a mistyped space key, a lost permission, a scanned PDF with no text layer) stores nothing and exits with an error, leaving the stored copy as it was. If the source really is empty now, pass `--allow-empty` to remove its stored chunks.
+
+With `--since`, an unchanged Notion page or Confluence space is left as it is. For Confluence, one search checks whether any page changed since then; if one did, the whole space is read, so the stored copy stays whole.
 
 Ask with `nlq doc-ask doc_{source_id}_chunks "..."`. It retrieves the most relevant chunks and answers with citations (source document, page/section). `nlqueries query` and the MCP `query` tool answer from the database only; they do not search documents.
 

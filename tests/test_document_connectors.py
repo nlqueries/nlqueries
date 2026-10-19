@@ -798,6 +798,35 @@ def test_incremental_sync_adds_cql_date_filter(_stub_confluence_deps: None) -> N
     assert "2024-03-15" in cql_query
 
 
+@pytest.mark.parametrize(("results", "expected"), [([{"content": {"id": "1"}}], True), ([], False)])
+def test_has_changes_since_is_one_search_and_no_page_reads(
+    _stub_confluence_deps: None, results: list[dict[str, Any]], expected: bool
+) -> None:
+    """The probe an incremental sync makes before deciding to re-read the
+    space: one CQL search for a single result, and no page bodies fetched."""
+    from datetime import UTC
+
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.return_value = {"results": results}
+    since = datetime(2024, 3, 15, 9, 30, tzinfo=UTC)
+
+    with patch("atlassian.Confluence", return_value=mock_client):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net",
+            username="alice@acme.com",
+            api_token="test-token",
+        )
+        assert connector.has_changes_since("ENG", since) is expected
+
+    mock_client.cql.assert_called_once()
+    cql_query = mock_client.cql.call_args.args[0]
+    assert 'space = "ENG"' in cql_query and 'lastModified > "2024-03-15 09:30"' in cql_query
+    assert mock_client.cql.call_args.kwargs == {"limit": 1}
+    mock_client.get_page_by_id.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # test_document_connector_registry_contains_confluence
 # ---------------------------------------------------------------------------

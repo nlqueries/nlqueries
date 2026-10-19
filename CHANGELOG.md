@@ -377,11 +377,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   stores them in that collection through the new
   `qdrant_store.replace_chunks`, which stores the new chunks before removing
   the source's old ones, so a re-ingest replaces the earlier version and a
-  failure part-way leaves it searchable. A command that cannot store its
-  chunks exits 1 instead of reporting success. With `--since`, an unchanged
-  page or space is left as stored. A Confluence space with changes is re-read
-  in full, because a partial read numbers its chunks from zero and would
-  overwrite other pages' chunks. The docs no longer say `nlqueries query`
+  failure before the write leaves it untouched; a failure of the clean-up
+  after the write raises `StaleChunksRemain`, and the command says both
+  versions may be searchable until a rerun. A command that cannot store its
+  chunks exits 1 instead of reporting success. A read that produces no text
+  stores nothing and exits 1, since a mistyped space key or a scanned PDF
+  would otherwise delete a good copy; `--allow-empty` stores the empty
+  result. With `--since`, an unchanged page or space is left as stored. For
+  Confluence, `--since` only decides whether to read, through the new
+  `ConfluenceConnector.has_changes_since` (one search, no page bodies), and
+  any read is of the whole space, because a partial read numbers its chunks
+  from zero and would overwrite other pages' chunks. The docs no longer say `nlqueries query`
   routes questions to documents: it and the MCP `query` tool answer from the
   database.
 - **The MCP `query` tool runs the SQL it generates.** It passed no execution

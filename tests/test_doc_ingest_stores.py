@@ -103,12 +103,30 @@ def test_ingesting_again_replaces_the_earlier_version(tmp_path: Path, qdrant: Qd
     assert "new handbook" in texts[0]
 
 
-def test_an_emptied_document_leaves_nothing_behind(tmp_path: Path, qdrant: QdrantClient) -> None:
+def test_an_empty_read_stores_nothing_and_keeps_the_stored_copy(
+    tmp_path: Path, qdrant: QdrantClient
+) -> None:
+    """A wrong space key, a page whose text is in blocks the connector skips,
+    or a scanned PDF all read as empty; storing that would delete a good copy."""
     path = _write(tmp_path, "notes.txt", "Some notes worth keeping.\n")
     assert CliRunner().invoke(cli, ["doc-ingest", "notes", str(path)]).exit_code == 0
 
     path.write_text("", encoding="utf-8")
     result = CliRunner().invoke(cli, ["doc-ingest", "notes", str(path)])
+
+    assert result.exit_code == 1
+    assert "produced no text" in result.output
+    assert "--allow-empty" in result.output
+    assert "Ingestion complete" not in result.output
+    assert _stored_texts(qdrant, "doc_notes_chunks") == ["Some notes worth keeping."]
+
+
+def test_allow_empty_removes_the_stored_copy(tmp_path: Path, qdrant: QdrantClient) -> None:
+    path = _write(tmp_path, "notes.txt", "Some notes worth keeping.\n")
+    assert CliRunner().invoke(cli, ["doc-ingest", "notes", str(path)]).exit_code == 0
+
+    path.write_text("", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["doc-ingest", "notes", str(path), "--allow-empty"])
 
     assert result.exit_code == 0, result.output
     assert _stored_texts(qdrant, "doc_notes_chunks") == []
@@ -144,6 +162,31 @@ def test_a_failed_store_keeps_the_previous_version(
     assert _stored_texts(qdrant, "doc_x_chunks") == ["kept text"]
 
 
+def test_a_failed_delete_after_the_store_says_both_versions_remain(
+    tmp_path: Path, qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one window where a failure leaves a blend: the new chunks are in,
+    the old tail is not out. The error has to say so, not "nothing changed"."""
+    long_doc = "".join(f"# Part {i}\nSection {i} of the old handbook.\n\n" for i in range(3))
+    path = _write(tmp_path, "handbook.md", long_doc)
+    assert CliRunner().invoke(cli, ["doc-ingest", "hb", str(path)]).exit_code == 0
+
+    def _delete_fails(*args: Any, **kwargs: Any) -> None:
+        raise TimeoutError("timed out deleting points")
+
+    monkeypatch.setattr(qdrant, "delete", _delete_fails)
+    path.write_text("# Part 0\nThe new handbook has one section.\n", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["doc-ingest", "hb", str(path)])
+
+    assert result.exit_code == 1
+    assert "Stored, but not cleanly" in result.output
+    assert "both versions" in result.output
+    assert "timed out deleting points" in result.output
+    assert "Ingestion complete" not in result.output
+    texts = _stored_texts(qdrant, "doc_hb_chunks")
+    assert len(texts) == 3 and any("new handbook" in t for t in texts)
+
+
 def test_doc_ingest_fails_when_nothing_could_be_stored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -158,9 +201,10 @@ def test_doc_ingest_fails_when_nothing_could_be_stored(
     result = CliRunner().invoke(cli, ["doc-ingest", "a", str(path)])
 
     assert result.exit_code == 1
-    assert "Could not store the chunks" in result.stderr
-    assert "localhost:6333" in result.stderr
-    assert "Ingestion complete" not in result.stdout
+    assert "Could not store the chunks" in result.output
+    assert "localhost:6333" in result.output
+    assert "was not deleted" in result.output
+    assert "Ingestion complete" not in result.output
 
 
 def test_notion_since_with_an_unchanged_page_leaves_the_stored_copy(
@@ -181,6 +225,21 @@ def test_notion_since_with_an_unchanged_page_leaves_the_stored_copy(
     assert stored == []
 
 
+def test_notion_full_sync_reading_nothing_stores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nlqueries.document_connectors import notion
+
+    stored: list[Any] = []
+    monkeypatch.setenv("NOTION_API_TOKEN", "secret")
+    monkeypatch.setattr(notion.NotionConnector, "ingest", lambda self, *a, **k: [])
+    monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
+
+    result = CliRunner().invoke(cli, ["doc-sync-notion", "wiki", "page1"])
+
+    assert result.exit_code == 1
+    assert "produced no text" in result.output
+    assert stored == []
+
+
 def test_notion_sync_stores_the_page(monkeypatch: pytest.MonkeyPatch) -> None:
     from nlqueries.document_connectors import notion
 
@@ -198,72 +257,76 @@ def test_notion_sync_stores_the_page(monkeypatch: pytest.MonkeyPatch) -> None:
     assert stored == [("doc_wiki_chunks", "wiki", chunks)]
 
 
-def test_confluence_since_with_changes_re_reads_the_whole_space(
+_CONFLUENCE_ARGS = [
+    "doc-sync-confluence",
+    "eng",
+    "ENG",
+    "--base-url",
+    "https://acme.atlassian.net",
+    "--username",
+    "alice@acme.com",
+]
+_SINCE = ["--since", "2026-01-01T00:00:00+00:00"]
+
+
+def _stub_confluence(
+    monkeypatch: pytest.MonkeyPatch, *, changed: bool, whole: list[DocumentChunk]
+) -> tuple[MagicMock, MagicMock, list[Any]]:
+    from nlqueries.document_connectors import confluence
+
+    probe = MagicMock(return_value=changed)
+    ingest = MagicMock(return_value=whole)
+    stored: list[Any] = []
+    monkeypatch.setenv("CONFLUENCE_API_TOKEN", "secret")
+    monkeypatch.setattr(
+        confluence.ConfluenceConnector, "has_changes_since", lambda self, *a: probe(*a)
+    )
+    monkeypatch.setattr(
+        confluence.ConfluenceConnector, "ingest", lambda self, *a, **k: ingest(*a, **k)
+    )
+    monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
+    return probe, ingest, stored
+
+
+def test_confluence_since_with_changes_reads_the_whole_space_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A --since read numbers only the changed pages' chunks from zero, so
-    storing it would overwrite other pages' chunks; the space is re-read."""
-    from nlqueries.document_connectors import confluence
-
-    changed = [_chunk("eng", 0, "changed page")]
+    storing it would overwrite other pages' chunks. --since only decides
+    whether to read, and the one read is of the whole space."""
     whole = [_chunk("eng", 0, "page one"), _chunk("eng", 1, "changed page")]
-    ingest = MagicMock(side_effect=[changed, whole])
-    stored: list[Any] = []
-    monkeypatch.setenv("CONFLUENCE_API_TOKEN", "secret")
-    monkeypatch.setattr(
-        confluence.ConfluenceConnector, "ingest", lambda self, *a, **k: ingest(*a, **k)
-    )
-    monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
+    probe, ingest, stored = _stub_confluence(monkeypatch, changed=True, whole=whole)
 
-    result = CliRunner().invoke(
-        cli,
-        [
-            "doc-sync-confluence",
-            "eng",
-            "ENG",
-            "--base-url",
-            "https://acme.atlassian.net",
-            "--username",
-            "alice@acme.com",
-            "--since",
-            "2026-01-01T00:00:00+00:00",
-        ],
-    )
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS + _SINCE)
 
     assert result.exit_code == 0, result.output
-    assert ingest.call_count == 2
-    assert ingest.call_args_list[1].kwargs.get("since") is None
+    probe.assert_called_once()
+    ingest.assert_called_once()
+    assert ingest.call_args.kwargs.get("since") is None
     assert stored == [("doc_eng_chunks", "eng", whole)]
 
 
-def test_confluence_since_with_no_changes_leaves_the_stored_copy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from nlqueries.document_connectors import confluence
+def test_confluence_since_with_no_changes_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe, ingest, stored = _stub_confluence(monkeypatch, changed=False, whole=[])
 
-    ingest = MagicMock(return_value=[])
-    stored: list[Any] = []
-    monkeypatch.setenv("CONFLUENCE_API_TOKEN", "secret")
-    monkeypatch.setattr(
-        confluence.ConfluenceConnector, "ingest", lambda self, *a, **k: ingest(*a, **k)
-    )
-    monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "doc-sync-confluence",
-            "eng",
-            "ENG",
-            "--base-url",
-            "https://acme.atlassian.net",
-            "--username",
-            "alice@acme.com",
-            "--since",
-            "2026-01-01T00:00:00+00:00",
-        ],
-    )
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS + _SINCE)
 
     assert result.exit_code == 0, result.output
-    assert ingest.call_count == 1
+    probe.assert_called_once()
+    ingest.assert_not_called()
+    assert stored == []
+    assert "stored copy is unchanged" in result.output
+
+
+def test_confluence_full_sync_reading_nothing_stores_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mistyped space key or a lost permission returns no pages."""
+    probe, ingest, stored = _stub_confluence(monkeypatch, changed=True, whole=[])
+
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS)
+
+    assert result.exit_code == 1
+    assert "produced no text" in result.output
+    probe.assert_not_called()
     assert stored == []

@@ -596,12 +596,23 @@ def delete_chunks(collection: str, source_id: str) -> None:
     )
 
 
+class StaleChunksRemain(RuntimeError):
+    """The new chunks were stored but the earlier version's leftovers were not removed.
+
+    Raised by :func:`replace_chunks` when the delete after a successful upsert
+    fails. The collection then holds the new chunks *and* the old version's
+    tail, so a search can return text from both until a later replace succeeds.
+    """
+
+
 def replace_chunks(collection: str, source_id: str, chunks: list[DocumentChunk]) -> None:
     """Make *chunks* the whole of *source_id*'s content in *collection*.
 
     The new chunks are stored first and the source's other chunks deleted
-    after, so a failure part-way -- the embedder or Qdrant unavailable --
-    leaves the previous version searchable rather than nothing. Chunk IDs are
+    after, so a failure before the store -- the embedder or Qdrant unavailable
+    -- leaves the previous version untouched rather than nothing. A failure of
+    the delete after a successful store raises :class:`StaleChunksRemain`: the
+    new chunks are in place but so is the old version's tail. Chunk IDs are
     derived from the source and the chunk's position, so a shorter new version
     overwrites the start of the old one and the delete removes its tail. With
     no chunks every chunk of the source is removed: the document is now empty.
@@ -627,7 +638,13 @@ def replace_chunks(collection: str, source_id: str, chunks: list[DocumentChunk])
         if chunks
         else None,
     )
-    _get_client().delete(
-        collection_name=collection,
-        points_selector=FilterSelector(filter=filter_),
-    )
+    try:
+        _get_client().delete(
+            collection_name=collection,
+            points_selector=FilterSelector(filter=filter_),
+        )
+    except Exception as exc:
+        raise StaleChunksRemain(
+            f"the new chunks were stored, but the earlier version's leftover chunks "
+            f"could not be removed ({exc})"
+        ) from exc

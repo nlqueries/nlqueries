@@ -308,7 +308,8 @@ Streams reasoning tokens, then a JSON chunk with the validated SQL. `--dialect` 
 ```bash
 # Ingest a local file — SOURCE_ID is an opaque slug you choose (e.g. a UUID).
 # The chunks are embedded and stored in the Qdrant collection doc_{source_id}_chunks,
-# replacing what an earlier run stored for the same SOURCE_ID.
+# replacing what an earlier run stored for the same SOURCE_ID. A read that produces
+# no text stores nothing and exits 1; --allow-empty stores the empty result instead.
 nlq doc-ingest <source_id> <file_path>
 # e.g.
 nlq doc-ingest my-q1-report /path/to/report.pdf
