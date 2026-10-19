@@ -27,13 +27,13 @@
 
 | Capability | Description |
 |---|---|
-| **Database connectors** | PostgreSQL, MySQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB, SQLite — plus a generic SQLAlchemy connector for any other SQLAlchemy-reachable database, driven by a connection URL |
+| **Database connectors** | PostgreSQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB, SQLite — plus a generic SQLAlchemy connector, driven by a connection URL, for MySQL (`connect mysql`) and any other SQLAlchemy-reachable database |
 | **Document connectors** | PDF, Word, Excel, Notion, Confluence — ask questions over ingested documents with citations |
 | **Query pipeline** | Filter, cluster, and parameterize query history into reusable `QueryCapsule` templates |
 | **Knowledge base** | Auto-generated YAML schema + capsule file, with coverage reporting via `kb-stats` |
 | **Multi-agent orchestration** | Routes each question to a SQL agent, document agent, or both in parallel (hybrid) |
 | **Conversational follow-ups** | Carries context across questions so a follow-up like "and by region?" resolves against the previous query — on by default in `nlqueries query`, reset with `--new-session` |
-| **Semantic cache** | Returns previously-answered similar questions in under 50 ms, no LLM or DB round-trip |
+| **Semantic cache** | Recognises a question `query` or the MCP `query` tool has answered before, by meaning, and skips the LLM: it replays the stored answer and runs the stored SQL again so the rows are current (not with `--no-execute`). `ask` does not use it. Needs Qdrant |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |
 | **Feedback loop** | Rate an answer with `feedback`, review with `feedback-stats`, and `promote-feedback` the thumbs-up ones — their SQL is re-validated against the current schema and blended into later prompts as verified examples |
 | **Regression checks** | `eval` re-asks the agent's own mined capsules — and a golden question set too, with `--golden` — then checks the generated SQL parses and references only tables the agent knows |
@@ -98,7 +98,7 @@ nlqueries health
 Optional extras for specific connectors:
 
 ```bash
-pip install "nlqueries-core[mysql]"      # MySQL
+pip install "nlqueries-core[mysql]"      # MySQL (driver for the generic connector)
 pip install "nlqueries-core[snowflake]"  # Snowflake
 pip install "nlqueries-core[bigquery]"   # Google BigQuery
 pip install "nlqueries-core[redshift]"   # Amazon Redshift
