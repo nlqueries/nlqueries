@@ -148,8 +148,8 @@ class RedshiftConnector(DatabaseConnector):
         Returns a :class:`SchemaSpec` for every user table.  Row counts come
         from ``SVV_TABLE_INFO.tbl_rows`` (requires table-owner or superuser);
         a ``None`` count is returned if the view is inaccessible.
-        Column/table descriptions are not available in Redshift and are
-        returned as ``None``.
+        Column/table descriptions are returned as ``None``: Redshift keeps
+        ``COMMENT ON`` text in ``pg_description``, but it is not read here.
         """
         conn = self._require_conn()
         try:

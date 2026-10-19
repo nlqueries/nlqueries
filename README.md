@@ -33,7 +33,7 @@
 | **Knowledge base** | Auto-generated YAML schema + capsule file, with coverage reporting via `kb-stats` |
 | **Multi-agent orchestration** | Routes each question to a SQL agent, document agent, or both in parallel (hybrid) |
 | **Conversational follow-ups** | Carries context across questions so a follow-up like "and by region?" resolves against the previous query — on by default in `nlqueries query`, reset with `--new-session` |
-| **Semantic cache** | Recognises a question it has answered before, by meaning, and skips the LLM: it replays the stored answer and, where the command runs SQL (`query`), runs the stored SQL again so the rows are current. Needs Qdrant |
+| **Semantic cache** | Recognises a question `query` or the MCP `query` tool has answered before, by meaning, and skips the LLM: it replays the stored answer and runs the stored SQL again so the rows are current (not with `--no-execute`). `ask` does not use it. Needs Qdrant |
 | **Embedding daemon** | Keeps the embedding model resident in memory — ~10 ms per call instead of ~9 s |
 | **Feedback loop** | Rate an answer with `feedback`, review with `feedback-stats`, and `promote-feedback` the thumbs-up ones — their SQL is re-validated against the current schema and blended into later prompts as verified examples |
 | **Regression checks** | `eval` re-asks the agent's own mined capsules — and a golden question set too, with `--golden` — then checks the generated SQL parses and references only tables the agent knows |

@@ -409,7 +409,7 @@ nlqueries cache stats <connector-or-alias>                # cache statistics
 nlqueries cache clear <connector-or-alias>                 # invalidate all cached entries
 ```
 
-Cached answers include `from_cache: true`. A hit skips the LLM: the stored answer is replayed and, where the command runs SQL (`query`, not `ask`), the stored SQL is run again, so the rows are current and the database is still queried. Entries are written automatically after a query whose SQL passed validation — no setup beyond having Qdrant running.
+Cached answers include `from_cache: true`. The cache serves `query` and the MCP `query` tool; `ask` does not use it. A hit skips the LLM: the stored answer is replayed and the stored SQL is run again (not with `--no-execute`), so the rows are current and the database is still queried. Entries are written automatically after a query whose SQL passed validation — no setup beyond having Qdrant running.
 
 ---
 

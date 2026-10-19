@@ -372,9 +372,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 - **Documentation claims corrected against the code.**
   - The semantic cache does not answer "in under 50 ms with no LLM or
-    database round-trip". A hit skips the LLM and replays the stored answer;
-    where the command runs SQL, it runs the stored SQL again, so the rows are
-    current.
+    database round-trip". A hit skips the LLM and replays the stored answer,
+    and runs the stored SQL again unless execution is off, so the rows are
+    current. Only `query` and the MCP `query` tool use the cache; `ask` does
+    not.
   - MySQL is listed as running on the generic SQLAlchemy connector, which is
     what `connect mysql` uses.
   - BigQuery history reads `INFORMATION_SCHEMA.JOBS_BY_PROJECT`, which needs
