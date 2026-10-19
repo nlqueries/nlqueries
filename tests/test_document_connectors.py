@@ -875,6 +875,74 @@ def test_search_follows_the_next_link_when_there_is_no_total(
     assert client.cql.call_count == 2
 
 
+def test_a_page_repeated_across_batches_does_not_refuse_a_finished_read(
+    _stub_confluence_deps: None,
+) -> None:
+    """Offset paging over lastModified repeats a page edited during the read:
+    the de-duplicated count ends short of totalSize, but the read finished."""
+    first = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (1, 2)]
+    second = [_make_cql_result(str(i), f"P{i}", f"/p/{i}") for i in (2, 3)]
+    chunks, client = _ingest_with_search(
+        [{"results": first, "totalSize": 4}, {"results": second, "totalSize": 4}]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2", "3"}
+    assert client.cql.call_count == 2
+
+
+def test_the_next_link_cursor_is_followed_when_the_client_takes_one(
+    _stub_confluence_deps: None,
+) -> None:
+    """Cloud search is cursor-paginated and honours `start` only so far."""
+    first = [_make_cql_result("1", "P1", "/p/1")]
+    second = [_make_cql_result("2", "P2", "/p/2")]
+    next_link = "/rest/api/search?next=true&cursor=abc123&limit=100&start=1&cql=x"
+    chunks, client = _ingest_with_search(
+        [
+            {"results": first, "totalSize": 2, "_links": {"next": next_link}},
+            {"results": second, "totalSize": 2},
+        ]
+    )
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2"}
+    assert client.cql.call_args_list[0].kwargs == {"start": 0, "limit": 100}
+    assert client.cql.call_args_list[1].kwargs == {"limit": 100, "cursor": "abc123"}
+
+
+def test_a_client_without_a_cursor_argument_pages_by_start(_stub_confluence_deps: None) -> None:
+    """The 3.x/4.x and server `cql(cql, start, limit, ...)` has no cursor."""
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    calls: list[dict[str, Any]] = []
+    pages = iter(
+        [
+            {
+                "results": [_make_cql_result("1", "P1", "/p/1")],
+                "totalSize": 2,
+                "_links": {"next": "/rest/api/search?cursor=abc"},
+            },
+            {"results": [_make_cql_result("2", "P2", "/p/2")], "totalSize": 2},
+        ]
+    )
+
+    class _OldClient:
+        def cql(self, cql: str, start: int = 0, limit: int | None = None) -> dict[str, Any]:
+            calls.append({"start": start, "limit": limit})
+            return next(pages)
+
+        def get_page_by_id(self, page_id: str, **kw: Any) -> dict[str, Any]:
+            return _make_page_body(f"<p>Body of page {page_id}.</p>")
+
+    with patch("atlassian.Confluence", return_value=_OldClient()):
+        connector = ConfluenceConnector(
+            base_url="https://acme.atlassian.net", username="a@acme.com", api_token="t"
+        )
+        chunks = connector.ingest("ENG", source_id="src")
+
+    assert {c.metadata["page_id"] for c in chunks} == {"1", "2"}
+    assert calls == [{"start": 0, "limit": 100}, {"start": 1, "limit": 100}]
+
+
 def test_a_search_that_stops_advancing_is_refused(_stub_confluence_deps: None) -> None:
     """A client that ignores `start` returns the first page again; storing
     that as the whole space would remove every other page's chunks."""

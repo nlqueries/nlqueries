@@ -388,9 +388,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `ConfluenceConnector.has_changes_since` (one search, no page bodies), and
   any read is of the whole space, because a partial read numbers its chunks
   from zero and would overwrite other pages' chunks. The Confluence read now
-  pages through the search instead of stopping at its first 200 results, and
-  refuses (`IncompleteSpaceRead`) a read that stops advancing while
-  Confluence reports more, since storing it would remove the other pages.
+  pages through the search instead of stopping at its first 200 results,
+  following the next link's cursor where the installed client takes one and
+  `start` otherwise, counts progress in raw results so a page repeated by an
+  edit mid-read does not fail it, and refuses (`IncompleteSpaceRead`) a read
+  that stops advancing while Confluence reports more, since storing it would
+  remove the other pages.
   The docs no longer say `nlqueries query`
   routes questions to documents: it and the MCP `query` tool answer from the
   database.

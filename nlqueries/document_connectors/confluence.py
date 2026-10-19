@@ -22,9 +22,11 @@ Requires the ``wiki`` optional dependency group:
 from __future__ import annotations
 
 import hashlib
+import inspect
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
@@ -56,12 +58,28 @@ def _result_id(result: dict[str, Any]) -> str:
     return str(content.get("id", "")) or repr(sorted(result.items()))
 
 
-def _reports_more(response: dict[str, Any], collected: int) -> bool:
-    """Whether the search response says results remain beyond *collected*."""
-    total = response.get("totalSize")
-    if isinstance(total, int):
-        return collected < total
-    return bool((response.get("_links") or {}).get("next"))
+def _next_link(response: dict[str, Any]) -> str:
+    return str((response.get("_links") or {}).get("next") or "")
+
+
+def _cursor_of(next_link: str) -> str | None:
+    """The ``cursor`` query parameter of a search response's next link, if any."""
+    values = parse_qs(urlsplit(next_link).query).get("cursor") if next_link else None
+    return values[0] if values else None
+
+
+def _accepts_cursor(method: Any) -> bool:
+    """Whether the installed client's ``cql`` can be given a ``cursor``.
+
+    The ``atlassian-python-api`` range the wiki extra allows differs: the
+    3.x/4.x and server ``cql(cql, start, limit, ...)`` takes no cursor, the 5.x
+    Cloud client forwards keyword arguments to the search.
+    """
+    try:
+        params = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "cursor" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 class ConfluenceConnector(DocumentConnector):
@@ -107,32 +125,50 @@ class ConfluenceConnector(DocumentConnector):
 
     @staticmethod
     def _search_all(client: Any, cql: str) -> list[dict[str, Any]]:
-        """Every result of *cql*, read a page at a time with ``start``.
+        """Every result of *cql*, read a page at a time.
 
         One request used to be the whole read, capped at 200 results, so a
-        larger space was cut short with no sign of it. Results are de-duplicated
-        by page ID, and if a request brings nothing new while the response
-        still reports more (a client or server that ignores ``start``), this
-        raises :class:`IncompleteSpaceRead` instead of returning a partial list.
+        larger space was cut short with no sign of it. Confluence Cloud's search
+        is cursor-paginated and honours ``start`` only so far, so the cursor in
+        the response's next link is followed when the client can pass one, and
+        ``start`` is used otherwise.
+
+        Progress is the number of raw results consumed, compared with
+        ``totalSize`` (or, without one, the presence of a next link): offset
+        paging over ``lastModified`` repeats a page that is edited during the
+        read, so the de-duplicated count can end short of ``totalSize`` on a
+        read that finished. A request that brings nothing new while more is
+        reported -- empty, or only repeats, as from a server that ignores
+        ``start`` -- raises :class:`IncompleteSpaceRead` instead of returning a
+        partial list.
         """
         seen: set[str] = set()
         results: list[dict[str, Any]] = []
-        start = 0
+        consumed = 0
+        cursor: str | None = None
+        use_cursor = _accepts_cursor(client.cql)
         while True:
-            response: dict[str, Any] = client.cql(cql, start=start, limit=_SEARCH_PAGE_SIZE)
+            if cursor is not None:
+                response: dict[str, Any] = client.cql(cql, limit=_SEARCH_PAGE_SIZE, cursor=cursor)
+            else:
+                response = client.cql(cql, start=consumed, limit=_SEARCH_PAGE_SIZE)
             batch: list[dict[str, Any]] = response.get("results") or []
             new = [r for r in batch if _result_id(r) not in seen]
             for result in new:
                 seen.add(_result_id(result))
                 results.append(result)
-            if not _reports_more(response, len(results)):
+            consumed += len(batch)
+            next_link = _next_link(response)
+            total = response.get("totalSize")
+            more = consumed < total if isinstance(total, int) else bool(next_link)
+            if not more:
                 return results
             if not new:
                 raise IncompleteSpaceRead(
                     f"the search stopped advancing after {len(results)} page(s) while "
                     "Confluence reports more, so the space could not be read whole"
                 )
-            start += len(batch)
+            cursor = _cursor_of(next_link) if use_cursor else None
 
     def has_changes_since(self, space_key: str, since: datetime) -> bool:
         """Whether any page in *space_key* was modified after *since*.
