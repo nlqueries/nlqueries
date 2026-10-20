@@ -152,6 +152,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The image's dependency lock moves six packages to current fixed
+  releases.** `requirements/core.lock`, which the Docker image installs from,
+  now pins PyJWT 2.15.0 (was 2.13.0), urllib3 2.8.0 (was 2.7.0), aiohttp
+  3.14.4 (was 3.14.3), mcp 1.30.0 (was 1.29.1), multidict 6.9.1 (was 6.7.1)
+  and snowflake-connector-python 4.7.3 (was 4.7.2). yarl moves from 1.24.5 to
+  1.25.1 with them, because aiohttp 3.14.4 requires it. Every other pin is
+  unchanged, and so are the `pyproject.toml` floors, so a `pip install` of the
+  package resolves as before.
 - **The SQL prompt matches a quoted value as a value.** Read as exact, a
   value quoted with a stray space became a LIKE pattern with the space in it,
   and a "contains" became a case-sensitive INSTR, so the rows it named
