@@ -243,6 +243,34 @@ class TestFeedbackStore:
 
 
 class TestFeedbackStatsCli:
+    @pytest.fixture(autouse=True)
+    def _no_registered_connectors(self) -> object:
+        """`feedback-stats` resolves aliases from the connector registry; keep
+        these tests off the real ~/.nlqueries one."""
+        with patch("nlqueries.cli.main._load_connectors", return_value={}):
+            yield
+
+    def test_feedback_stats_resolves_an_alias(self) -> None:
+        """`feedback dev` stores under the connector ID the alias names, so
+        `feedback-stats dev` has to look there too; it reported "No feedback
+        recorded yet" for feedback that existed."""
+        from nlqueries.cli.main import cli
+
+        registry = {"postgres:localhost:mydb": {"alias": "dev"}}
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("nlqueries.feedback.store.config") as mock_cfg,
+            patch("nlqueries.cli.main._load_connectors", return_value=registry),
+        ):
+            mock_cfg.FEEDBACK_DIR = Path(tmpdir)
+            record_feedback(_make_fb(agent_id="postgres:localhost:mydb", rating="up"))
+            result = CliRunner().invoke(cli, ["feedback-stats", "dev"])
+
+        assert result.exit_code == 0, result.output
+        assert "No feedback recorded yet" not in result.output
+        assert "postgres:localhost:mydb" in result.output
+        assert "Total entries : 1" in result.output
+
     def test_feedback_stats_no_records(self) -> None:
         from nlqueries.cli.main import cli
 

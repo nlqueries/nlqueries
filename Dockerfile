@@ -18,7 +18,11 @@ WORKDIR /app
 
 # Redirect home-dir paths to a container-friendly location.
 # These can all be overridden at runtime via env vars or a mounted volume.
-ENV KB_PATH=/data/nlqueries/knowledge_base \
+# NLQ_STATE_DIR covers what the four below do not -- the CLI's session
+# files and the embedding daemon's pid file -- which otherwise land in
+# ~/.nlqueries, on the read-only root filesystem compose runs the image with.
+ENV NLQ_STATE_DIR=/data/nlqueries \
+    KB_PATH=/data/nlqueries/knowledge_base \
     CONNECTORS_FILE=/data/nlqueries/connectors.yaml \
     CAPSULES_DIR=/data/nlqueries/capsules \
     FEEDBACK_DIR=/data/nlqueries/feedback

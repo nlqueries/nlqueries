@@ -370,6 +370,32 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A `.env` in the working directory is read.** `load_dotenv()` with no
+  path searches upward from the file that calls it, which for an installed
+  package is `site-packages/nlqueries`, so the `nlqueries` command never found
+  the `.env` a user created with `cp .env.example .env` (it did under
+  `python -c`, which hid it). The search now starts from the working
+  directory; variables already in the environment still win.
+- **The CLI works inside the Docker image.** Compose runs the image on a
+  read-only root filesystem with one volume at `/data/nlqueries`, but the
+  state directory stayed at `~/.nlqueries`, so `nlqueries query` failed writing
+  its session file (`[Errno 30] Read-only file system`) and `embed-server
+  start` its PID file. The image now sets `NLQ_STATE_DIR=/data/nlqueries`. That
+  also puts the generated semantic-cache signing key on the volume, so the CLI
+  and the MCP server in one container verify each other's cache entries;
+  before, each process held its own key in memory and nothing was shared.
+- **`feedback-stats` accepts an alias.** `feedback dev` stores under the
+  connector ID the alias names, while `feedback-stats dev` looked under `dev`
+  and reported "No feedback recorded yet".
+- **`embed-server start`, `status` and `health` agree on the port.** `status`
+  always probed 8765, so a daemon started with `--port` read as "starting" for
+  ever, and clients only ever connect to `EMBED_SERVER_PORT`. `start` now
+  listens on `EMBED_SERVER_PORT` by default and warns when `--port` names a
+  port clients will not use; `status` checks `EMBED_SERVER_PORT` and takes
+  `--port`; `health` reports the port it reached. The daemon's own entry
+  point (`python -m nlqueries.embeddings.embed_server`, and `serve()`) also
+  defaults to `EMBED_SERVER_PORT`, and the client reads the port from
+  `config` rather than the environment, so every path agrees.
 - **`doc-ingest`, `doc-sync-notion` and `doc-sync-confluence` store what
   they ingest.** They chunked a source and printed a count, but nothing in
   core wrote the chunks anywhere, so `doc-ask doc_<source_id>_chunks`

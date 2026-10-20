@@ -2,7 +2,7 @@
 nlqueries.embeddings.embed_server
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Lightweight embedding daemon.  Loads all-MiniLM-L6-v2 once and serves
-POST /embed and POST /embed-batch over localhost:8765.
+POST /embed and POST /embed-batch over localhost, on EMBED_SERVER_PORT (8765).
 
 Two backends are supported via the ``EMBED_BACKEND`` environment variable:
 
@@ -65,7 +65,6 @@ from nlqueries import config
 #: agree: vectors written through one are read back through the other, and a
 #: divergence returns wrong neighbours rather than raising anything.
 _MODEL_NAME = config.EMBED_MODEL
-_DEFAULT_PORT = 8765
 #: The longest a request waits for its encode. Far beyond any encode and any
 #: client's timeout; it exists so that a pool that has stopped taking work fails
 #: the request, rather than holding it and the gate's slot forever (from #257's
@@ -733,18 +732,21 @@ def _apply_torch_thread_limit() -> None:
 # ---------------------------------------------------------------------------
 
 
-def serve(port: int = _DEFAULT_PORT, backend: str | None = None) -> None:
+def serve(port: int | None = None, backend: str | None = None) -> None:
     """Load the embedding model/backend and start the HTTP server.
 
     Blocks until ``SIGTERM`` or ``SIGINT`` is received.
 
     Args:
-        port:    TCP port to listen on (default 8765).
+        port:    TCP port to listen on (default ``EMBED_SERVER_PORT``, 8765:
+                 the port clients connect to).
         backend: ``"torch"`` or ``"onnx"``.  When ``None``, reads
                  ``EMBED_BACKEND`` from the environment (default ``"torch"``).
     """
     if backend is None:
         backend = os.getenv("EMBED_BACKEND", "torch").lower()
+    if port is None:
+        port = config.EMBED_SERVER_PORT
 
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _PID_FILE.write_text(str(os.getpid()))
@@ -836,7 +838,12 @@ def main(argv: list[str] | None = None) -> None:
     import argparse  # noqa: PLC0415
 
     p = argparse.ArgumentParser()
-    p.add_argument("--port", type=int, default=_DEFAULT_PORT)
+    p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to listen on (default: $EMBED_SERVER_PORT, else 8765).",
+    )
     p.add_argument("--backend", default=None, choices=["torch", "onnx"])
     p.add_argument(
         "--log-format",
@@ -846,7 +853,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = p.parse_args(argv)
     configure_logging(args.log_format)
-    serve(port=args.port, backend=args.backend)
+    port = config.EMBED_SERVER_PORT if args.port is None else args.port
+    serve(port=port, backend=args.backend)
 
 
 if __name__ == "__main__":

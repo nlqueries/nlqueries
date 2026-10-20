@@ -579,13 +579,13 @@ def _check_llm() -> _CheckResult:
 
 
 def _check_embedding() -> _CheckResult:
-    from nlqueries.embeddings.embed_server import _DEFAULT_PORT  # noqa: PLC0415
-    from nlqueries.embeddings.embedder import _try_daemon_single  # noqa: PLC0415
+    from nlqueries.embeddings.embedder import _DAEMON_PORT, _try_daemon_single  # noqa: PLC0415
 
     vec = _try_daemon_single("health")
     if vec is not None:
+        # The port the probe just reached: the client's, not the daemon's default.
         return _CheckResult(
-            "Embedding model", "ok", f"daemon running on port {_DEFAULT_PORT} (dim {len(vec)})"
+            "Embedding model", "ok", f"daemon running on port {_DAEMON_PORT} (dim {len(vec)})"
         )
     return _CheckResult(
         "Embedding model",
@@ -3371,7 +3371,7 @@ def feedback_stats(agent_id: str) -> None:
     """Show feedback statistics for an agent from the local JSONL store.
 
     \b
-    AGENT_ID  the agent identifier whose feedback to summarise
+    AGENT_ID  the connector ID or alias whose feedback to summarise
 
     Reads from ~/.nlqueries/feedback/<agent-id>.jsonl and prints a summary
     of thumbs-up / thumbs-down counts plus the most recent corrections.
@@ -3382,6 +3382,9 @@ def feedback_stats(agent_id: str) -> None:
     """
     from nlqueries.feedback.store import load_feedback
 
+    # `feedback` stores under the connector ID an alias names, so the alias
+    # has to resolve here too or its feedback reads as never recorded.
+    agent_id = _resolve_alias(agent_id)
     records = load_feedback(agent_id)
 
     if not records:
@@ -3825,14 +3828,19 @@ def embed_server_group() -> None:
 
 
 @embed_server_group.command("start")
-@click.option("--port", default=8765, show_default=True, help="Port to listen on.")
+@click.option(
+    "--port",
+    type=int,
+    default=None,
+    help="Port to listen on. Defaults to EMBED_SERVER_PORT (8765), the port clients use.",
+)
 @click.option(
     "--foreground",
     is_flag=True,
     default=False,
     help="Run in foreground (blocks; useful for debugging).",
 )
-def embed_server_start(port: int, foreground: bool) -> None:
+def embed_server_start(port: int | None, foreground: bool) -> None:
     """Start the embedding daemon in the background.
 
     \b
@@ -3844,7 +3852,13 @@ def embed_server_start(port: int, foreground: bool) -> None:
     import subprocess
     import sys
 
+    from nlqueries import config as _config
     from nlqueries.embeddings.embed_server import read_pid_file
+
+    # Clients connect to EMBED_SERVER_PORT, so listening anywhere else starts a
+    # daemon nothing uses unless the variable is set to match.
+    client_port = _config.EMBED_SERVER_PORT
+    port = client_port if port is None else port
 
     pid, stale = read_pid_file()
     if pid is not None:
@@ -3861,6 +3875,11 @@ def embed_server_start(port: int, foreground: bool) -> None:
         # As `python -m nlqueries.embeddings.embed_server` does, honouring
         # NLQ_LOG_FORMAT; without it nothing below WARNING reached the terminal.
         _daemon.configure_logging()
+        if port != client_port:
+            console.print(
+                f"  [yellow]⚠ Clients look for the daemon on port {client_port}; set "
+                f"EMBED_SERVER_PORT={port} where queries run.[/yellow]"
+            )
         _daemon.serve(port=port)
         return
 
@@ -3874,6 +3893,12 @@ def embed_server_start(port: int, foreground: bool) -> None:
         f"  [green]✓[/green] Embedding daemon started on port {port}. "
         "Future queries will skip model load (~10 ms embedding instead of ~9 s)."
     )
+    if port != client_port:
+        console.print(
+            f"  [yellow]⚠ Clients look for the daemon on port {client_port}. Set "
+            f"EMBED_SERVER_PORT={port} where queries run, or they will load the "
+            "model themselves.[/yellow]"
+        )
 
 
 @embed_server_group.command("stop")
@@ -3937,17 +3962,27 @@ def embed_server_stop() -> None:
 
 
 @embed_server_group.command("status")
-def embed_server_status() -> None:
+@click.option(
+    "--port",
+    type=int,
+    default=None,
+    help="Port to check. Defaults to EMBED_SERVER_PORT (8765), the port clients use.",
+)
+def embed_server_status(port: int | None) -> None:
     """Show whether the embedding daemon is running.
 
     \b
     Example:
       nlqueries embed-server status
+      nlqueries embed-server status --port 9000
     """
     import urllib.error
     import urllib.request
 
-    from nlqueries.embeddings.embed_server import _DEFAULT_PORT, read_pid_file
+    from nlqueries import config as _config
+    from nlqueries.embeddings.embed_server import read_pid_file
+
+    port = _config.EMBED_SERVER_PORT if port is None else port
 
     # Verifies the OS process is actually alive before checking HTTP, and
     # removes a stale file.
@@ -3964,20 +3999,21 @@ def embed_server_status() -> None:
 
     # Process alive — check whether HTTP server is ready yet.
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{_DEFAULT_PORT}/embed", timeout=1)
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/embed", timeout=1)
     except urllib.error.HTTPError:
         pass  # 405 on GET means the server is accepting connections
     except Exception:  # noqa: BLE001
         # Process running but HTTP not up yet — still loading the model.
         console.print(
-            f"  Daemon [yellow]starting[/yellow] (PID {pid}) — "
-            "model is still loading (~9 s). "
-            "Run [bold]embed-server status[/bold] again in a moment."
+            f"  Daemon [yellow]starting[/yellow] (PID {pid}) — nothing answers on "
+            f"port {port} yet; the model may still be loading (~9 s). Run "
+            "[bold]embed-server status[/bold] again in a moment, or pass the "
+            "--port it was started on."
         )
         return
 
     console.print(
-        f"  Daemon [green]running[/green] (PID {pid}, port {_DEFAULT_PORT}). "
+        f"  Daemon [green]running[/green] (PID {pid}, port {port}). "
         "Embedding calls will use the daemon (~10 ms each)."
     )
 

@@ -22,7 +22,6 @@ from __future__ import annotations
 import functools
 import json as _json
 import logging
-import os as _os
 import socket
 import urllib.error
 import urllib.request
@@ -39,7 +38,9 @@ logger = logging.getLogger(__name__)
 # Daemon connection
 # ---------------------------------------------------------------------------
 
-_DAEMON_PORT = int(_os.environ.get("EMBED_SERVER_PORT", "8765"))
+# From `config`, which `embed-server status`, `health` and the MCP health
+# tool read too, so the port they report is the one this client uses.
+_DAEMON_PORT = config.EMBED_SERVER_PORT
 _DAEMON_BASE = f"http://127.0.0.1:{_DAEMON_PORT}"
 
 #: Whether the daemon's model has been compared with this process's, and the
