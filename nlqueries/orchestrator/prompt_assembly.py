@@ -1141,12 +1141,18 @@ def _search_verified(
     Returns a list of payload dicts for hits above *threshold*, or ``[]`` when
     the collection does not exist or Qdrant is unreachable.
     """
-    # Derive the verified collection name from the schema collection name.
-    # schema collection:   agent_{safe_id}_schema
-    # verified collection: agent_{safe_id}_verified
-    if not collection.endswith("_schema"):
+    # Derive the verified collection name from the schema collection name, the
+    # way `promote-feedback` names it. The caller builds *collection* from the
+    # raw connector ID (`agent_postgres:localhost:mydb_schema`), while the
+    # promoter writes `agent_postgres_localhost_mydb_verified`; swapping the
+    # suffix alone looked for a collection that never exists, so promoted
+    # examples were never used. Sanitising is idempotent, so a caller that
+    # already passes the safe form still resolves.
+    if not (collection.startswith("agent_") and collection.endswith("_schema")):
         return []
-    verified_collection = collection[: -len("_schema")] + "_verified"
+    from nlqueries.feedback.promoter import _verified_collection  # noqa: PLC0415
+
+    verified_collection = _verified_collection(collection[len("agent_") : -len("_schema")])
 
     try:
         from qdrant_client import QdrantClient  # noqa: PLC0415

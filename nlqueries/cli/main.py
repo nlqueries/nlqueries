@@ -1295,7 +1295,7 @@ def promote_feedback_cmd(agent_id: str, include_anonymous: bool) -> None:
     """
     agent_id = _resolve_alias(agent_id)
 
-    from nlqueries.feedback.promoter import promote_feedback
+    from nlqueries.feedback.promoter import _verified_collection, promote_feedback
 
     console.print(f"[bold]Promoting feedback[/bold] for [cyan]{agent_id}[/cyan] …")
     try:
@@ -1308,7 +1308,7 @@ def promote_feedback_cmd(agent_id: str, include_anonymous: bool) -> None:
         console.print(
             f"  [bold green]✓[/bold green] [bold]{count}[/bold] verified "
             f"pair(s) upserted to Qdrant collection "
-            f"[cyan]agent_{agent_id}_verified[/cyan]."
+            f"[cyan]{_verified_collection(agent_id)}[/cyan]."
         )
     else:
         console.print(
