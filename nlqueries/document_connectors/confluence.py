@@ -41,12 +41,14 @@ logger = logging.getLogger(__name__)
 _CHUNK_SIZE = 800
 _CHUNK_OVERLAP = 100
 
-#: A Confluence space key: letters, digits and underscores, with a leading ``~``
-#: for a personal space. The key is placed inside a quoted CQL string, so
-#: anything else -- a quote above all -- is refused rather than escaped.
-#: Matched with ``fullmatch`` rather than anchored with ``^...$``, since ``$``
-#: also matches before a trailing newline.
-_SPACE_KEY = re.compile(r"~?[A-Za-z0-9_]+")
+#: A Confluence space key. A global space key is letters, digits and
+#: underscores. A personal space key is ``~`` and the owner's username or
+#: account id, which can also hold ``.``, ``-``, ``@`` and ``:``
+#: (``~john.smith``, ``~jane@acme.com``, ``~557058:f2d5e7a1-...``). The key is
+#: placed inside a quoted CQL string, so anything else -- a quote above all --
+#: is refused rather than escaped. Matched with ``fullmatch`` rather than
+#: anchored with ``^...$``, since ``$`` also matches before a trailing newline.
+_SPACE_KEY = re.compile(r"[A-Za-z0-9_]+|~[A-Za-z0-9_.@:-]+")
 
 
 def _make_chunk_id(source_id: str, chunk_index: int) -> str:
@@ -159,7 +161,8 @@ class ConfluenceConnector(DocumentConnector):
         if not _SPACE_KEY.fullmatch(space_key):
             raise ValueError(
                 f"Invalid Confluence space key {space_key!r}: expected letters, "
-                "digits and underscores, optionally after a leading '~'."
+                "digits and underscores, or for a personal space '~' and a "
+                "username of those and '.', '-', '@' or ':'."
             )
         if since is None:
             return f'space = "{space_key}" AND type = page ORDER BY created ASC'

@@ -279,7 +279,21 @@ def _result(page_id: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     "space_key",
-    ['ENG" OR space = "HR', "ENG\n", "", "EN G", "ENG-1", "~", "../ENG", "ENG;"],
+    [
+        'ENG" OR space = "HR',
+        "ENG\n",
+        "",
+        "EN G",
+        "ENG-1",
+        "ENG.1",
+        "~",
+        "../ENG",
+        "ENG;",
+        "~john smith",
+        '~john"smith',
+        "~john.smith\n",
+        "~john\\smith",
+    ],
 )
 def test_an_invalid_space_key_is_refused_before_any_query(
     space_key: str, confluence_client: MagicMock
@@ -294,7 +308,19 @@ def test_an_invalid_space_key_is_refused_before_any_query(
     confluence_client.cql.assert_not_called()
 
 
-@pytest.mark.parametrize("space_key", ["ENG", "eng_2", "~alice", "~5f00a1b2c3"])
+@pytest.mark.parametrize(
+    "space_key",
+    [
+        "ENG",
+        "eng_2",
+        "~alice",
+        "~5f00a1b2c3",
+        "~john.smith",
+        "~jane-doe",
+        "~jane@acme.com",
+        "~557058:f2d5e7a1-0b3c-4d5e-8f90-123456789abc",
+    ],
+)
 def test_a_valid_space_key_reaches_the_query(space_key: str, confluence_client: MagicMock) -> None:
     confluence_client.cql.return_value = {"results": []}
     assert _connector().ingest(space_key, source_id="s") == []
