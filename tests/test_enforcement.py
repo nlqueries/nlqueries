@@ -15,7 +15,14 @@ import pytest
 from nlqueries.auth.admission import AdmissionControl, TooManyRequests
 from nlqueries.auth.authorizer import ConfigAllowlistAuthorizer, DenyAll, Grant, LocalAuthorizer
 from nlqueries.auth.enforcement import NotAuthorized, guard
-from nlqueries.auth.principal import Action, AuditEvent, Principal, Source, local_principal
+from nlqueries.auth.principal import (
+    TOOL_ACTIONS,
+    Action,
+    AuditEvent,
+    Principal,
+    Source,
+    local_principal,
+)
 
 ALICE = Principal(subject="alice", source=Source.OIDC)
 
@@ -165,20 +172,58 @@ class TestTheToolsAreStillThemselves:
         assert published["invalidate_cache"] == {"agent_id"}
         assert published["list_connectors"] == set()
 
-    def test_every_registered_tool_went_through_the_guard(self) -> None:
-        """A tool registered without it is a tool with no authorisation.
-
-        Counting the tools would pass with the guard removed, so this looks for
-        the __wrapped__ attribute functools.wraps leaves behind — the evidence
-        that each registered callable is a wrapper around the original.
-        """
+    def test_every_registered_tool_is_registered(self) -> None:
         from nlqueries.mcp_server.server import _ALL_TOOLS, mcp
 
-        registered = mcp._tool_manager.list_tools()
+        registered = {tool.name for tool in mcp._tool_manager.list_tools()}
 
-        assert len(registered) == len(_ALL_TOOLS)
-        for tool in registered:
-            assert hasattr(tool.fn, "__wrapped__"), f"{tool.name} is not guarded"
+        assert registered == {fn.__name__ for fn in _ALL_TOOLS}
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("name", sorted(TOOL_ACTIONS))
+    async def test_every_registered_tool_went_through_the_guard(
+        self, name: str, monkeypatch, caplog, tmp_path
+    ) -> None:
+        """A tool registered without it is a tool with no authorisation.
+
+        Called through the server with an authorizer that denies everything,
+        every tool must come back refused and leave a deny record. Only the
+        guard does both. This used to look for the `__wrapped__` attribute
+        `functools.wraps` leaves, which the input-limit wrapper leaves too, so
+        `query` and `submit_feedback` would have passed with the guard gone.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from mcp.server.fastmcp.exceptions import ToolError
+        from nlqueries.mcp_server import server as mcp_server
+
+        monkeypatch.setattr(mcp_server, "_resolve_authorizer", lambda *a, **k: DenyAll())
+        server = mcp_server._build_server()
+        tool = server._tool_manager.get_tool(name)
+        assert tool is not None, f"{name} is not registered"
+        schema = tool.parameters or {}
+        arguments = {
+            param: "sales"
+            for param in schema.get("required", [])
+            if schema["properties"][param].get("type") == "string"
+        }
+
+        # Not reached with the guard in place. Without it, `query` would
+        # otherwise go looking for a knowledge base.
+        with (
+            patch("nlqueries.orchestrator.sync_runner.run_query", new_callable=AsyncMock),
+            patch.object(mcp_server.config, "KB_PATH", tmp_path),
+            caplog.at_level(logging.INFO, logger="nlqueries.audit"),
+            pytest.raises(ToolError, match="Not authorized"),
+        ):
+            await server.call_tool(name, arguments)
+
+        denials = [
+            r.audit
+            for r in caplog.records
+            if hasattr(r, "audit") and r.audit["decision"] == AuditEvent.DENY
+        ]
+        assert [d["action"] for d in denials] == [str(TOOL_ACTIONS[name])]
 
 
 class TestAnUndeterminedAgentFailsClosed:

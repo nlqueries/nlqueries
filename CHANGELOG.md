@@ -170,6 +170,32 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   endpoint, once per endpoint per process. The request is not refused, since
   in-cluster gateways commonly use http. Only the scheme, host and port are
   logged.
+- **MCP server: binding, transport checks and input limits.**
+  - A call that arrives as an HTTP request with no token is anonymous even on
+    a server set up for stdio (the module's `mcp` object mounted in an app), so
+    it is no longer treated as the process owner, and the local profile refuses
+    it. stdio calls are unchanged.
+  - The wildcard-bind check recognises every spelling of an unspecified address
+    (`0`, `0.0`, `0x0`, `::0`, `0:0:0:0:0:0:0:0`, `[::]`, `::ffff:0.0.0.0`, ...),
+    not only `0.0.0.0`, `::` and an empty host.
+  - On a bind other than loopback, the server accepts in the `Host` header
+    only `localhost`, `127.0.0.1` and `[::1]` (with any port or none) and the
+    host of `NLQ_MCP_RESOURCE_URL` (with no port or its port; on any port if
+    the URL names a non-default one), otherwise `421`. In `Origin` it accepts
+    only the resource URL's origin, in the same spellings as its host, and
+    `http://` on the same loopback names
+    (with any port or none), otherwise `403`. Set `NLQ_MCP_RESOURCE_URL` to the
+    URL clients use. The compose file keeps working at `localhost:8080` and
+    `127.0.0.1:8080`.
+  - SSE request bodies over 4 MiB get `413`, the limit the SDK already applies
+    to streamable HTTP.
+  - New `NLQ_MCP_MAX_QUESTION_CHARS` (default 4000) and `NLQ_MCP_MAX_SQL_CHARS`
+    (default 8000): a tool given a longer `question`, `generated_sql` or
+    `corrected_sql` returns a short refusal and does nothing.
+  - `health` lists agent IDs only to a caller also granted `agents:list`, and
+    gives the count to anyone else. "Agent not found" replies from `query` and
+    `get_agent_schema` no longer list the available agents.
+  - Requires `mcp>=1.29`.
 - **The SQL prompt matches a quoted value as a value.** Read as exact, a
   value quoted with a stray space became a LIKE pattern with the space in it,
   and a "contains" became a case-sensitive INSTR, so the rows it named

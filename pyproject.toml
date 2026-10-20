@@ -80,11 +80,13 @@ dependencies = [
     # nlqueries/mcp_server/server.py builds on. Porting to 2.x is its own piece
     # of work — until then an uncapped range silently breaks every fresh install.
     #
-    # Floored at 1.27 because that is where `FastMCP(token_verifier=..., auth=...)`
-    # and `RequireAuthMiddleware` exist. The old `>=1.0` floor would resolve to a
-    # release with no authentication support at all, and the failure would be an
-    # AttributeError at start-up on the one code path that must not be optional.
-    "mcp>=1.27,<2",
+    # Floored at 1.29 because that is where `RequestBodyLimitMiddleware` and
+    # `DEFAULT_MAX_REQUEST_BODY_SIZE` exist: the server puts the SDK's 4 MiB
+    # streamable-HTTP body cap in front of its SSE app too, and imports both at
+    # module load. The authentication it builds on (`FastMCP(token_verifier=...,
+    # auth=...)`, `RequireAuthMiddleware`) dates from 1.27. An older floor would
+    # resolve to a release where the import fails at start-up.
+    "mcp>=1.29,<2",
 
     # Validation
     "pydantic>=2.0",
