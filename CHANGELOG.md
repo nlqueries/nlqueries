@@ -131,6 +131,28 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     and `rejected: changed a literal grounding did not flag` when it changed
     any other literal.
 
+- **Bounds on document and wiki ingestion.** A PDF larger than
+  `NLQ_MAX_PDF_BYTES` (100 MiB) is refused before it is parsed, and one with
+  more than `NLQ_MAX_PDF_PAGES` (2,000) pages before any page is extracted;
+  both raise `DocumentTooComplexError`. The expansion-ratio limit for Word and
+  Excel files (`NLQ_MAX_DOCUMENT_EXPANSION_RATIO`) now also applies to each
+  member that expands to 4 MiB or more, so one highly compressed member is
+  not averaged away by a large incompressible one. A smaller member is cheap
+  to inflate whatever its ratio, so it is held only to the whole-archive
+  limits. Word extraction checks its
+  time budget every 1,000 paragraphs, not only between sections.
+  `doc-sync-confluence` refuses a space key that is not letters, digits and
+  underscores, or for a personal space `~` and a username or account id that
+  may also contain `.`, `-`, `@` and `:` (`~john.smith`). It logs a warning
+  for an `http://` base URL to a non-loopback host, and refuses a space over
+  `NLQ_MAX_CONFLUENCE_PAGES` (5,000) pages or `NLQ_MAX_CONFLUENCE_BYTES`
+  (200 MiB) of page body. `doc-sync-notion` refuses a page of more than
+  `NLQ_MAX_NOTION_BLOCKS` (10,000) blocks or `NLQ_MAX_NOTION_BYTES` (50 MiB)
+  of block text. A refused sync stores nothing and leaves the earlier copy in
+  place. Refusal messages give sizes in bytes, KiB or MiB by magnitude, so a
+  small limit never reads as zero; where a size and its limit would print
+  alike ("100 MiB, over the 100 MiB limit"), both are given in exact bytes.
+
 ### Changed
 
 - **A release waits on the full CI, and CI audits the shipped lock.**
@@ -153,6 +175,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   1.25.1 with them, because aiohttp 3.14.4 requires it. Every other pin is
   unchanged, and so are the `pyproject.toml` floors, so a `pip install` of the
   package resolves as before.
+- **A plain-http LLM gateway logs a warning.** When `ANTHROPIC_BASE_URL` or
+  an `api_base` override (for the Anthropic or the LiteLLM client, including
+  one passed in `extra`) uses `http://` to a host that is not `localhost` or a
+  loopback IP address, the client logs a warning naming the setting and the
+  endpoint, once per endpoint per process. The request is not refused, since
+  in-cluster gateways commonly use http. Only the scheme, host and port are
+  logged.
 - **The SQL prompt matches a quoted value as a value.** Read as exact, a
   value quoted with a stray space became a LIKE pattern with the space in it,
   and a "contains" became a case-sensitive INSTR, so the rows it named
