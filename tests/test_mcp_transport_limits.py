@@ -296,6 +296,57 @@ class TestHostChecksOnANonLoopbackBind:
         assert _post_message(server, "localhost:8080", Origin=origin) not in (421, 403)
 
     @pytest.mark.parametrize(
+        ("resource", "origin"),
+        [
+            ("https://mcp.example.com:443", "https://mcp.example.com"),
+            ("https://mcp.example.com:443", "https://mcp.example.com:443"),
+            ("https://mcp.example.com", "https://mcp.example.com"),
+            ("https://mcp.example.com", "https://mcp.example.com:443"),
+        ],
+    )
+    def test_the_resource_origin_is_accepted_with_or_without_its_default_port(
+        self, resource: str, origin: str, monkeypatch, tmp_path
+    ) -> None:
+        """A browser leaves the default port out of `Origin` however the URL
+        is written; other clients may put it in."""
+        server = _networked(monkeypatch, tmp_path, resource=resource)
+
+        status = _post_message(
+            server, "mcp.example.com", Origin=origin, Authorization=f"Bearer {GOOD_TOKEN}"
+        )
+
+        assert status not in (421, 403)
+
+    def test_a_default_port_resource_origin_refuses_other_ports(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        server = _networked(monkeypatch, tmp_path, resource="https://mcp.example.com")
+
+        status = _post_message(
+            server,
+            "mcp.example.com",
+            Origin="https://mcp.example.com:8443",
+            Authorization=f"Bearer {GOOD_TOKEN}",
+        )
+
+        assert status == 403
+
+    @pytest.mark.parametrize(
+        "origin",
+        ["https://mcp.example.com", "https://mcp.example.com:8443", "https://mcp.example.com:9000"],
+    )
+    def test_a_non_default_port_resource_origin_allows_any_port(
+        self, origin: str, monkeypatch, tmp_path
+    ) -> None:
+        server = _networked(monkeypatch, tmp_path, resource="https://mcp.example.com:8443")
+
+        status = _post_message(
+            server, "mcp.example.com", Origin=origin, Authorization=f"Bearer {GOOD_TOKEN}"
+        )
+
+        assert status not in (421, 403)
+
+    @pytest.mark.parametrize(
         "origin", ["http://evil.example", "https://localhost:3000", "http://localhost.evil.example"]
     )
     @pytest.mark.parametrize("resource", [None, "https://mcp.example.com"])

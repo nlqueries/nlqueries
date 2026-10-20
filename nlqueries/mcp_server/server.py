@@ -860,7 +860,8 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
     of `NLQ_MCP_RESOURCE_URL` -- and to `localhost`, `127.0.0.1` and `[::1]`,
     which is how a published container port is reached from its host. A request
     with any other `Host` gets 421. `Origin` follows the same names: the
-    resource URL's origin, and `http://` on each loopback name, as the SDK
+    resource URL's scheme on its host, in the same spellings as the host, and
+    `http://` on each loopback name, as the SDK
     allows on a loopback bind, so a client is not refused for naming as its
     origin a host it was let in on. Any other `Origin` gets 403; a client that
     sends none is not affected.
@@ -899,12 +900,14 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
         name = netloc[: -len(f":{explicit}")] if explicit is not None else netloc
         default = _DEFAULT_PORTS.get(scheme)
         effective = explicit if explicit is not None else default
-        allowed_hosts.append(name)
-        if effective is not None:
-            allowed_hosts.append(f"{name}:{effective}")
-        if explicit is not None and explicit != default:
-            allowed_hosts.append(f"{name}:*")
-        allowed_origins.append(f"{scheme}://{netloc}")
+        # The same spellings for the origin as for the host: a browser leaves
+        # the default port out of `Origin`, and other clients may write it.
+        for prefix, entries in (("", allowed_hosts), (f"{scheme}://", allowed_origins)):
+            entries.append(f"{prefix}{name}")
+            if effective is not None:
+                entries.append(f"{prefix}{name}:{effective}")
+            if explicit is not None and explicit != default:
+                entries.append(f"{prefix}{name}:*")
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=list(dict.fromkeys(allowed_hosts)),

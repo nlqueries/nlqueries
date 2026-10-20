@@ -64,8 +64,11 @@ happens to resolve to it. It accepts:
   `https`, 80 for `http`). If the URL names a port other than the default, the
   host is accepted on any port. So `https://mcp.example.com` accepts
   `mcp.example.com` and `mcp.example.com:443` but not `mcp.example.com:8443`;
-- as `Origin`, when a client sends one: the origin of `NLQ_MCP_RESOURCE_URL`,
-  written as the URL writes it (with its port only if the URL names one), and
+- as `Origin`, when a client sends one: the origin of `NLQ_MCP_RESOURCE_URL`
+  in the same spellings as its host above: with no port, with its port, and
+  with any port if the URL names a non-default one. So `https://mcp.example.com`
+  and `https://mcp.example.com:443` both accept `Origin: https://mcp.example.com`
+  (what a browser sends) and `https://mcp.example.com:443`. Also
   `http://localhost`, `http://127.0.0.1` and `http://[::1]`, with any port or
   none. The loopback origins match the loopback hosts above, so a client let in
   at `127.0.0.1:8080` is not refused for sending `Origin: http://127.0.0.1:8080`.
