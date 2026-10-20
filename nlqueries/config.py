@@ -708,15 +708,70 @@ own file. Width still matters to cost, which is what the runtime budget is for.
 MAX_EXTRACTION_SECONDS: float = _positive_float("NLQ_MAX_EXTRACTION_SECONDS", 120.0)
 """Wall-clock budget for extracting one document, across every connector.
 
-One budget rather than a page cap for PDFs, a paragraph cap for Word and a row
-cap for spreadsheets. Per-format counts are guesses about cost; a clock measures
-it. A 3,000-page PDF of scanned images and a 30-page one of dense tables cost
-very differently, and no page number distinguishes them.
+The general bound on cost. Per-format counts are guesses about cost; a clock
+measures it. A 3,000-page PDF of scanned images and a 30-page one of dense
+tables cost very differently, and no page number distinguishes them. The count
+caps below (PDF size and pages, spreadsheet rows) do not replace it: they refuse
+what is known to be too large before the work starts, and the clock bounds the
+rest.
 
-Checked between units of work -- pages, paragraphs, row batches -- so it bounds a
-long document rather than interrupting a single slow page. It is a ceiling on
-ingestion, not a latency target: ingestion is a background task, and the failure
-it prevents is a worker held for minutes by one upload.
+Checked between units of work -- pages, every 1,000 paragraphs, sections, row
+batches -- so it bounds a long document rather than interrupting a single slow
+page. It is a ceiling on ingestion, not a latency target: ingestion is a
+background task, and the failure it prevents is a worker held for minutes by one
+upload.
+"""
+
+MAX_PDF_BYTES: int = _positive_int("NLQ_MAX_PDF_BYTES", 100 * 1024 * 1024)
+"""Largest PDF file, on disk, that the PDF connector will open.
+
+A PDF is not a zip, so the expansion limits above never see it, and the clock
+only notices a costly one after the parser has spent the time. The size on disk
+is known before anything is parsed, so this refuses an oversized file for the
+cost of one ``stat``.
+"""
+
+MAX_PDF_PAGES: int = _positive_int("NLQ_MAX_PDF_PAGES", 2_000)
+"""Most pages in one PDF that the PDF connector will extract.
+
+Read from the page count the document declares before any page is extracted,
+and counted again while reading, since a malformed file can misstate it. Not a
+measure of cost -- the clock is that -- but a page count a person can check
+against their own file, and a document past it is better split than indexed
+whole.
+"""
+
+MAX_CONFLUENCE_PAGES: int = _positive_int("NLQ_MAX_CONFLUENCE_PAGES", 5_000)
+"""Most pages one Confluence sync will read from a space.
+
+A sync stores what it read as the whole space and removes everything else, so a
+space over the cap is refused rather than read in part.
+"""
+
+MAX_CONFLUENCE_BYTES: int = _positive_int("NLQ_MAX_CONFLUENCE_BYTES", 200 * 1024 * 1024)
+"""Most bytes of page body (HTML storage format) one Confluence sync will read.
+
+Counted as each body arrives, so a space of few but very large pages is bounded
+as well as one of many pages. Refused rather than truncated, for the reason
+given under :data:`MAX_CONFLUENCE_PAGES`.
+"""
+
+MAX_NOTION_BLOCKS: int = _positive_int("NLQ_MAX_NOTION_BLOCKS", 10_000)
+"""Most blocks read from one Notion page.
+
+Notion returns a page's blocks a hundred at a time and says whether more
+follow, so without a ceiling the read continues for as long as the page does. A
+page over the cap is refused rather than stored in part.
+"""
+
+MAX_NOTION_BYTES: int = _positive_int("NLQ_MAX_NOTION_BYTES", 50 * 1024 * 1024)
+"""Most bytes of block text (UTF-8) read from one Notion page.
+
+The block cap bounds how many blocks are read, not how much text each carries:
+a block's rich text has no length limit worth relying on, so a page of a few
+thousand very large blocks passes it. Counted as each block's text is kept, and
+refused rather than truncated for the reason given under
+:data:`MAX_NOTION_BLOCKS`.
 """
 
 
