@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing! NLQueries Core is open-source under [BSL 1.1](LICENSE).
 
+This file is the summary. [docs/contributing.md](docs/contributing.md) is the fuller version: what the project is looking for, a link to the CLA text, supported Python versions, where the live-engine tests are, pull request expectations, and what to attach to a bug report.
+
 ---
 
 ## Contributor License Agreement (CLA)

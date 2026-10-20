@@ -9,11 +9,12 @@
 # Usage:   ./scripts/lock-deps.sh
 # Output:  requirements/core.lock  (committed)
 #
-# The connector extras (snowflake, bigquery, mssql, ...) are deliberately not in
-# this closure. They are optional installs whose wheels are large and partly
-# platform-specific, and the deployment that needs one pins it in its own lock —
-# enterprise does exactly that. Locking them here would make every core build
-# carry drivers almost nobody uses.
+# Only the `dev` extra is compiled in. It lists the Snowflake, BigQuery and
+# DuckDB drivers so their tests run, so those are in the lock and the image. The
+# mssql, redshift, mysql and onnx extras, and the docs and wiki extras, are not:
+# they are optional installs whose wheels are large and partly platform-specific,
+# and a deployment that needs one installs and pins it itself. See
+# docs/dependency-locking.md.
 #
 # --allow-unsafe is required and is not what it sounds like: it tells pip-tools
 # to pin setuptools, which it otherwise leaves floating. A lock installed with

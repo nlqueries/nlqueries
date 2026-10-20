@@ -437,6 +437,35 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   The docs no longer say `nlqueries query`
   routes questions to documents: it and the MCP `query` tool answer from the
   database.
+- **Every user-facing doc checked against the code.** The README, getting
+  started, the CLI and configuration references, connectors, database
+  hardening, Qdrant setup, MCP authentication, architecture, troubleshooting,
+  the contributing guides, dependency locking and `SECURITY.md` were read
+  claim by claim against the code, and what did not hold was corrected. The
+  larger corrections:
+  - `configuration.md` drops settings nothing reads (`NLQ_EXPLAIN_VALIDATION`,
+    `KB_REFRESH_INTERVAL`, `LOG_LEVEL`, `DATABASE_URL`) and adds the ones it
+    was missing: the embedding daemon, the cache signing key, the connector
+    limits and pools, and `MCP_HOST`/`MCP_PORT`. `LLM_PROVIDER` takes
+    `anthropic`, `litellm` or `bedrock`, and `OPENAI_API_KEY` alone selects
+    OpenAI.
+  - `cli-reference.md` documents every option `--help` lists, says what
+    `query`, `ask`, `extract-schema` and `kb-stats` actually print, and
+    explains `promote-feedback --include-anonymous`.
+  - TLS is described per connector: only `postgres`, and libpq URLs on the
+    generic connector, take `ssl_mode`/`ssl_ca_cert`, set by hand in
+    `connectors.yaml`.
+  - `qdrant-setup.md` lists every collection core writes and reads, and says
+    plainly that capsules from `process-history --embed` are not yet read by
+    the question path.
+  - The Docker image's contents are stated: no MySQL, Redshift or SQL Server
+    driver, and no `docs` or `wiki` extra.
+  - `SECURITY.md` names everything core talks to, Qdrant and the one-time
+    model download included.
+  - The hint `process-history --embed` prints when Qdrant is down suggested
+    `docker run -p 6333:6333`, publishing an unauthenticated Qdrant on every
+    interface, and pointed at an "Appendix B" that does not exist. It now
+    publishes on `127.0.0.1` and points at `docs/qdrant-setup.md`.
 - **Documentation claims corrected against the code.**
   - The semantic cache does not answer "in under 50 ms with no LLM or
     database round-trip". A hit skips the LLM and replays the stored answer,

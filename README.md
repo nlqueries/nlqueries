@@ -10,7 +10,7 @@
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Visitors](https://visitor-badge.laobi.icu/badge?page_id=nlqueries.nlqueries)](https://github.com/nlqueries/nlqueries)
 
-**NLQueries Core** is an open-source natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a self-updating YAML knowledge base from your schema and query history, and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Markdown, plain text, Notion, Confluence), with citations.
+**NLQueries Core** is an open-source natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a YAML knowledge base from your schema and query history (rebuilt whenever you re-run `export-kb`), and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Markdown, plain text, Notion, Confluence), with citations.
 
 ## Links
 
@@ -28,7 +28,7 @@
 | Capability | Description |
 |---|---|
 | **Database connectors** | PostgreSQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB, SQLite — plus a generic SQLAlchemy connector, driven by a connection URL, for MySQL (`connect mysql`) and any other SQLAlchemy-reachable database |
-| **Document connectors** | PDF, Word, Excel, Notion, Confluence — ask questions over ingested documents with citations |
+| **Document connectors** | PDF, Word, Excel, Markdown, plain text, Notion, Confluence — ask questions over ingested documents with citations |
 | **Query pipeline** | Filter, cluster, and parameterize query history into reusable `QueryCapsule` templates |
 | **Knowledge base** | Auto-generated YAML schema + capsule file, with coverage reporting via `kb-stats` |
 | **Document Q&A** | `doc-ingest` (or `doc-sync-notion` / `doc-sync-confluence`) chunks, embeds and stores a source in Qdrant; `doc-ask` answers from it with citations |
@@ -86,6 +86,11 @@ This pulls `nlqueries/core:latest` and starts it alongside Qdrant (`:6333`), wit
 ```bash
 docker exec -it nlqueries-core nlqueries health
 ```
+
+The image includes the PostgreSQL, SQLite, Snowflake, BigQuery and DuckDB
+drivers. It does not include the MySQL, Redshift or SQL Server drivers, or the
+`docs` and `wiki` extras (PDF / Word / Excel ingestion, Notion / Confluence
+sync); for those, install with pip (Option B) and add the extra.
 
 ### Option B — pip install
 

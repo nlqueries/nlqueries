@@ -2,8 +2,6 @@
 
 This guide walks you from zero to your first natural-language query in six steps.
 
-**Time to complete:** ~10 minutes (excluding data-loading time in your database).
-
 ---
 
 ## Prerequisites
@@ -58,6 +56,8 @@ Or run individual commands directly without a shell:
 docker exec -it nlqueries-core nlqueries health
 ```
 
+The image includes the PostgreSQL, SQLite, Snowflake, BigQuery and DuckDB drivers. It does **not** include the MySQL, Redshift or SQL Server drivers, or the `[docs]` (PDF, Word, Excel) and `[wiki]` (Notion, Confluence) extras. For those, use Option B or C and install the extra you need.
+
 ### Option B: pip install
 
 ```bash
@@ -70,6 +70,8 @@ Set environment variables:
 export ANTHROPIC_API_KEY=sk-ant-...
 export QDRANT_URL=http://localhost:6333   # if you have Qdrant running
 ```
+
+Or put the same lines (without `export`) in a `.env` file in the directory you run `nlqueries` from, or in any parent directory. A variable already set in your environment takes precedence over the file.
 
 Verify the install:
 
@@ -111,7 +113,9 @@ nlqueries connect postgres \
     --alias dev
 ```
 
-The `--alias dev` lets you type `dev` instead of the full connector ID (`postgres:localhost:mydb`) on every later command. See [cli-reference.md](cli-reference.md#connector-aliases) for MySQL, Snowflake, BigQuery, Redshift, SQL Server, and DuckDB connection examples, and [connectors.md](connectors.md) for per-database setup notes (e.g. enabling query history capture).
+If you run the CLI inside the Docker container (Option A), `localhost` is the container itself, not your machine: pass the database's host name or address as the container sees it. On Docker Desktop, `host.docker.internal` reaches a database running on your machine.
+
+The `--alias dev` lets you type `dev` instead of the full connector ID (`postgres:localhost:mydb`) on every later command. See [cli-reference.md](cli-reference.md#connect) for MySQL, Snowflake, BigQuery, Redshift, SQL Server, and DuckDB connection examples, and [connectors.md](connectors.md) for per-database setup notes (e.g. enabling query history capture).
 
 On success you'll see:
 
@@ -122,6 +126,8 @@ On success you'll see:
   Config saved to ~/.nlqueries/connectors.yaml
   ✓ Password stored in OS keychain (not written to the config file).
 ```
+
+Where no keychain service is available, as inside the Docker container, the last line is a note instead: the password is kept in the config file.
 
 ---
 
@@ -170,10 +176,12 @@ Expected output:
   Queries scanned    : 142
   Capsules produced   : 12
   Annotated           : 12 / 12
-  Saved to            : ~/.nlqueries/capsules/dev.json
+  Saved to            : ~/.nlqueries/capsules/postgres_localhost_mydb.json
 ```
 
-If your database has no query history (e.g. a fresh dev DB), the pipeline produces zero capsules — that's fine. The knowledge base still includes full schema context.
+Files are named after the connector ID, not the alias, with `:` and other unsafe characters replaced by `_`.
+
+If your database has little or no query history (e.g. a fresh dev DB), the pipeline produces few or zero capsules — that's fine. SQLite, DuckDB and the generic SQLAlchemy connector (which MySQL uses) have no query history to read, so they always produce zero. Where the history cannot be read at all — PostgreSQL without the `pg_stat_statements` extension, for example — `process-history` stops with `✗ Query history unavailable:` and the reason. Either enable history capture (see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)) or go straight to Step 5. Either way the knowledge base still includes full schema context.
 
 ---
 
@@ -188,7 +196,7 @@ nlqueries export-kb dev
 Expected output:
 
 ```
-✓ Knowledge base written to ~/.nlqueries/knowledge_base/dev.yaml
+✓ Knowledge base written to ~/.nlqueries/knowledge_base/postgres_localhost_mydb.yaml
   Tables   : 12
   Columns  : 87
   Capsules : 12
@@ -208,7 +216,7 @@ Two commands answer questions — pick based on what you need:
 
 | Command | What it does |
 |---|---|
-| `nlqueries query` | Generates SQL, **executes it against the database**, and returns the answer with result rows. Use this to get data. |
+| `nlqueries query` | Generates SQL, **executes it against the database**, and prints the result rows. Use this to get data. |
 | `nlqueries ask` | Generates and validates SQL **without executing it**. Use this to preview what SQL will be produced. |
 
 ```bash
@@ -219,8 +227,13 @@ Output:
 
 ```
 Agent type : sql
-Answer     : 4,382 orders shipped last month.
 SQL        : SELECT COUNT(*) FROM orders WHERE shipped_at >= '2026-05-01' ...
+┏━━━━━━━┓
+┃ count ┃
+┡━━━━━━━┩
+│ 4382  │
+└───────┘
+1 row(s) in 12.4 ms
 Latency    : 1243 ms
 ```
 
@@ -237,7 +250,7 @@ nlqueries query dev "Top 10 customers by total revenue this year"
 nlqueries ask dev "Average order value by product category"   # preview SQL only, no execution
 ```
 
-> **First query takes ~9 s longer than expected?** That's the embedding model loading on first use. Start the embedding daemon once (`nlqueries embed-server start`) and subsequent queries embed in ~10 ms instead. See [cli-reference.md](cli-reference.md#embed-server).
+> **Every query takes ~9 s longer than expected?** Without the embedding daemon, each `nlqueries` command that embeds text loads the embedding model itself first. Start the daemon once (`nlqueries embed-server start`) and later commands use it instead, at ~10 ms per embedding call. See [cli-reference.md](cli-reference.md#embed-server).
 
 ---
 
@@ -251,7 +264,7 @@ nlqueries feedback dev --question "Orders last month" --thumbs-down --corrected-
 nlqueries feedback-stats dev
 ```
 
-`feedback-stats` prints "No feedback recorded yet" the first time you run it for a connector — that's expected on a fresh install, not an error.
+`feedback-stats` accepts the alias, like `feedback`. For a connector with no feedback recorded it prints "No feedback recorded yet" — that's expected, not an error.
 
 ### Ingest documents and ask about them
 
@@ -268,18 +281,22 @@ The Docker Compose stack runs an MCP server on port 8080. See [cli-reference.md]
 
 ### Run as a library
 
+`agent_id` is the full connector ID: the library does not resolve aliases, the CLI does. By default the library generates SQL without running it (`result.sql_result` is `None`); pass `execution=ExecutionPolicy.execute_read_only()` to run it and get the rows.
+
 ```python
 # Async
 import asyncio
+from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.sync_runner import run_query
 
 
 async def main() -> None:
     result = await run_query(
         question="How many orders last month?",
-        agent_id="postgres:localhost:mydb",  # connector ID or alias
+        agent_id="postgres:localhost:mydb",  # connector ID, not an alias
+        execution=ExecutionPolicy.execute_read_only(),
     )
-    print(result.answer, result.sql, result.agent_type)
+    print(result.sql, result.sql_result, result.agent_type)
 
 
 asyncio.run(main())
@@ -287,13 +304,15 @@ asyncio.run(main())
 
 ```python
 # Synchronous (blocking)
+from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.sync_runner import run_query_sync
 
 result = run_query_sync(
     question="How many orders last month?",
     agent_id="postgres:localhost:mydb",
+    execution=ExecutionPolicy.execute_read_only(),
 )
-print(result.answer, result.sql, result.agent_type)
+print(result.sql, result.sql_result, result.agent_type)
 ```
 
 ---
@@ -305,9 +324,9 @@ print(result.answer, result.sql, result.agent_type)
 | `Connector 'X' not found` | Run `nlqueries connect <db-type> ...` first |
 | `Connection failed: ...` | Check host/port/credentials; verify the DB is reachable from your machine (or from inside Docker) |
 | `No capsules found` | Run `nlqueries process-history <connector>` first |
-| `LLM call failed` / auth error | Check your API key is set and valid; see [troubleshooting.md#w5](troubleshooting.md#w5--llm-authentication-error) |
-| Qdrant connection refused | Start Qdrant (see [qdrant-setup.md](qdrant-setup.md)) or rerun with `--no-embed` to skip it |
-| `feedback-stats` errors on a new connector | Should print "No feedback recorded yet" — if it errors instead, that's a known first-run bug, see the project's known-issues log |
+| `✗ Query failed: ...` with an authentication error, or `✗ --annotate requires an LLM credential.` | Check your API key is set and valid; see [troubleshooting.md#w5](troubleshooting.md#w5--llm-authentication-error) |
+| Qdrant connection refused | Start Qdrant (see [qdrant-setup.md](qdrant-setup.md)). For `process-history`, you can instead leave out `--embed` (it is off by default) |
+| `feedback-stats` errors on a new connector | Should print "No feedback recorded yet" — if it errors instead, please [open an issue](https://github.com/nlqueries/nlqueries/issues) |
 
 For the full list of warnings you may see and what they mean, see [troubleshooting.md](troubleshooting.md).
 

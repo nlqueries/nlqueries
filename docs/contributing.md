@@ -1,6 +1,6 @@
 # Contributing
 
-NLQueries Core is open source under [BSL 1.1](../LICENSE) and maintained by Theorence Labs. Contributions of code, tests, documentation and bug reports are welcome. This page is the short version: what the project is looking for and how to get a change merged. The full policy lives in [CONTRIBUTING.md](../CONTRIBUTING.md) in the repository.
+NLQueries Core is open source under [BSL 1.1](../LICENSE) and maintained by Theorence Labs. Contributions of code, tests, documentation and bug reports are welcome. This page covers what the project is looking for and how to get a change merged. [CONTRIBUTING.md](../CONTRIBUTING.md) in the repository root is a shorter summary of the same policy (CLA, setup, branching, style, tests, commit messages); where the two differ in detail, this page is the fuller one.
 
 ---
 
@@ -8,7 +8,7 @@ NLQueries Core is open source under [BSL 1.1](../LICENSE) and maintained by Theo
 
 The areas below are where an outside change is most likely to land quickly, because the code is already built to take it.
 
-**Database connectors.** A dedicated engine is a self-contained module under `nlqueries/connectors/` that implements the connector base class, declares its capabilities, and ships with its own tests. Seven are dedicated today (PostgreSQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB, SQLite). MySQL is reached through the generic SQLAlchemy connector on the `mysql+pymysql` scheme rather than a module of its own — `docs/architecture.md` records it as "mysql (via base)" — so there is no `mysql.py` to start from. A new connector needs schema introspection, an optional query-history source, TLS handling, a statement timeout, and read-only execution. Start from the closest existing engine and open an issue first describing the use case, so the query-history source can be agreed before the code is written.
+**Database connectors.** A dedicated engine is a self-contained module under `nlqueries/connectors/` that implements the connector base class, declares its capabilities, and ships with its own tests. Seven are dedicated today (PostgreSQL, Snowflake, BigQuery, Redshift, SQL Server / Azure SQL, DuckDB, SQLite). MySQL is reached through the generic SQLAlchemy connector (`sqlalchemy_connector.py`) on the `mysql+pymysql` scheme rather than a module of its own, so there is no `mysql.py` to start from. A new connector needs schema introspection, an optional query-history source, TLS handling, a statement timeout, and read-only execution. Start from the closest existing engine and open an issue first describing the use case, so the query-history source can be agreed before the code is written.
 
 **Document connectors.** PDF, Word, Excel, Notion and Confluence live under `nlqueries/document_connectors/` and implement `ingest()` and `supports()` on the document connector base class. A new format or source follows the same shape and reuses the built-in chunker.
 
@@ -66,7 +66,7 @@ pytest
 pytest --cov=nlqueries --cov-report=term-missing   # with coverage
 ```
 
-All new features need tests. Aim for >90% coverage on new code. Connector tests that need a live engine live under `tests/integration/` and skip themselves when the driver or Docker is not available.
+All new features need tests. Aim for >90% coverage on new code. Tests that need a live engine skip themselves when the driver or Docker is not available. The SQL Server, DuckDB and Qdrant-backed cache tests are under `tests/integration/`; the PostgreSQL connector's are in `tests/test_postgres_connector.py`; and the security lab under `tests/security/` runs against a disposable PostgreSQL container (select it alone with `-m security`). The Docker-backed ones start their engine through testcontainers.
 
 ### 6. Write a commit message that explains why
 
@@ -91,4 +91,4 @@ Describe what changed, why, and how it was tested; the repository's pull request
 
 Be respectful and constructive. See [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) (Contributor Covenant).
 
-For the complete policy, including anything this page abbreviates, read [CONTRIBUTING.md](../CONTRIBUTING.md) in the repository.
+[CONTRIBUTING.md](../CONTRIBUTING.md) in the repository root summarises this page for readers on GitHub.

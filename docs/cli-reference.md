@@ -7,13 +7,15 @@ nlqueries --help
 nlqueries <command> --help
 ```
 
-Anywhere a connector ID (`<type>:<host>:<database>`) is accepted, a configured `--alias` works too — see [Connector aliases](#connector-aliases).
+Anywhere a connector ID (`<type>:<host>:<database>` by default — see [connect](#connect)) is accepted, a configured `--alias` works too — see [Connector aliases](#connector-aliases).
 
 ---
 
 ## connect
 
 Register a database connection. Connection metadata (host, port, database, user) is written to `~/.nlqueries/connectors.yaml` (mode `0600`).
+
+`connect` tests the connection, then prints the connector ID it registered. By default the ID is `<type>:<host>:<database>`; DuckDB and SQLite use `<type>:<path>` (`<type>::memory:` for an in-memory database), and the generic connector `sqlalchemy:<driver>:<host>:<database>`, leaving out any part the URL does not have (`sqlalchemy:<driver>:db` if it has neither). `--connector-id NAME` registers it under a name of your choosing instead.
 
 **Password storage:** the password itself does not go in that file. `connect` stores it in your OS keychain (macOS Keychain, Windows Credential Manager, or Linux Secret Service, via the `keyring` package) and prints `✓ Password stored in OS keychain` on success. If keyring is unavailable on the machine — headless CI without a secret service, for example — it falls back to embedding the password in the stored connection URL instead, and prints a warning telling you so. To rotate a password later without re-running `connect`, use `nlqueries update-password <connector-id>`.
 
@@ -93,14 +95,14 @@ See [connectors.md](connectors.md) for per-database query-history and schema-int
 
 ## update-password
 
-Rotate the stored password for a connector without re-running `connect`. The new password replaces whatever is in the OS keychain (or the config-file fallback); the connector's other settings are untouched.
+Rotate the stored password for a connector without re-running `connect`. The new password is written to the OS keychain, replacing what is there. A connector whose password was embedded in its stored URL (the fallback `connect` uses without keyring) is switched to the keychain and the old password removed from the URL; the connector's other settings are untouched.
 
 ```bash
 nlqueries update-password postgres:localhost:mydb   # prompts for the new password, hidden input
 nlqueries update-password dev --password-env DB_PASSWORD
 ```
 
-`CONNECTOR_ID` accepts an alias. This does not re-test the connection — run `nlqueries extract-schema <connector-or-alias>` afterwards to confirm the new password actually works. If keyring is unavailable, the command prints a warning instead of silently writing the password to the config file.
+`CONNECTOR_ID` accepts an alias. This does not re-test the connection — run `nlqueries extract-schema <connector-or-alias>` afterwards to confirm the new password actually works. If keyring is unavailable, nothing is stored: the command prints a warning saying so and that the password has to be set by hand in the connector's URL in `connectors.yaml`.
 
 ---
 
@@ -118,7 +120,7 @@ Once set, `prod` works anywhere `postgres:db.example.com:prod` would.
 
 ## extract-schema
 
-Inspect a registered connector and print schema statistics — table/column counts, types, foreign keys, row estimates. No data is read.
+Connect to a registered connector, read its schema, and print a summary: the database name, the table count, the total column count, the extraction time, and a table of the first 20 tables with each one's schema, column count and row count. Column types and foreign keys are not printed. Row counts are what the connector reports: a catalogue figure on most engines (an estimate on PostgreSQL and DuckDB), an exact `COUNT(*)` of each table on SQLite, and none (`—`) from the generic SQLAlchemy connector.
 
 ```bash
 nlqueries extract-schema <connector-or-alias>
@@ -209,11 +211,11 @@ Structured coverage and quality report for the exported knowledge base: schema c
 
 ```bash
 nlqueries kb-stats <connector-or-alias>
-nlqueries kb-stats <connector-or-alias> --verbose   # per-table/per-column breakdown
+nlqueries kb-stats <connector-or-alias> --verbose   # adds a per-table breakdown (rows, columns, column-description %, table description)
 nlqueries kb-stats <connector-or-alias> --json
 ```
 
-Exit code `0` if the KB exists, `1` if missing — useful as a CI gate before deployment. Works from the local KB file alone if the database is unreachable (DB-derived fields show `N/A`).
+Exit code `0` if the KB exists, `1` if missing — useful as a CI gate before deployment. Works from the local KB file alone if the database is unreachable: the database-derived lines (tables and columns in the database, join coverage) are left out, and are `null` in `--json`.
 
 ### Glossary hierarchy
 
@@ -247,16 +249,17 @@ nlqueries annotate <connector-or-alias>
 
 ## query
 
-Generates SQL, **executes it against the database**, and returns the natural-language answer plus result rows.
+Generates SQL, **executes it against the database**, and prints the result rows.
 
 ```bash
 nlqueries query <connector-or-alias> "Top 10 customers by revenue this year"
 nlqueries query <connector-or-alias> "..." --json        # structured output including rows
 nlqueries query <connector-or-alias> "..." --no-execute  # generate SQL without running it
 nlqueries query <connector-or-alias> "..." --new-session # discard prior conversation context
+nlqueries query <connector-or-alias> "..." --paraphrase  # also print the SQL as one English sentence
 ```
 
-Output includes agent type, answer, generated SQL, and latency. `query` answers from the database; to ask about ingested documents, use [`doc-ask`](#document-connectors).
+Plain output shows the agent type, the generated SQL, the result rows as a table with their count and execution time, and the latency (plus the resolved question when a follow-up was rewritten). The natural-language answer text is printed only when the question was not answered with SQL and there are no rows to show; `--json` always includes it. `query` answers from the database; to ask about ingested documents, use [`doc-ask`](#document-connectors).
 
 | Flag | Default | Description |
 |---|---|---|
@@ -264,6 +267,8 @@ Output includes agent type, answer, generated SQL, and latency. `query` answers 
 | `--execute` / `--no-execute` | on | Execute the generated SQL and display rows |
 | `--session` / `--no-session` | on | Carry conversation context across queries for follow-up questions |
 | `--new-session` | off | Start a fresh conversation, discarding prior context |
+| `--explain` | off | Collect answer provenance (route, capsules, cache, checks, timings) and include it in the `--json` output |
+| `--paraphrase` | off | Render the generated SQL back into one plain-English sentence (deterministic, no LLM); printed as `In English`, and included in the `--json` output |
 | `--dialect` | the connector's type, else `postgres` | SQL dialect used for generation: `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`. Without it, the agent's connector type decides (for a `sqlalchemy` connector, the engine its URL names), and `postgres` when that names none |
 
 Conversational context is persisted per agent in `~/.nlqueries/sessions/` and carried forward automatically between calls.
@@ -293,13 +298,13 @@ Each case passes when the generated SQL parses as a `SELECT` referencing only kn
 
 ## ask
 
-Generates and validates SQL **without executing it** — no database connection is made. Use this to preview what SQL a question would produce.
+Generates and validates SQL **without executing it**. Use this to preview what SQL a question would produce. The generated statement is never run, but with literal grounding on (the default, `NLQ_LITERAL_GROUNDING`) `ask` can still open the agent's connector, read-only, to look up the values a column stores and check the statement's string literals against them — see [configuration.md](configuration.md).
 
 ```bash
 nlqueries ask <connector-or-alias> "Top 10 customers by revenue"
 ```
 
-Streams reasoning tokens, then a JSON chunk with the validated SQL. `--dialect` works as it does for [`query`](#query): any of `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`, defaulting to the connector's type, else `postgres`.
+On a terminal, it waits for the whole response, prints its text, then prints the validated SQL as a `SQL: …` line; the JSON chunk is not shown. When output is piped or redirected, it streams every token as it arrives, ending with a JSON chunk carrying the validated SQL, for scripts to parse. `--dialect` works as it does for [`query`](#query): any of `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`, defaulting to the connector's type, else `postgres`.
 
 ---
 
@@ -316,23 +321,28 @@ nlq doc-ingest my-q1-report /path/to/report.pdf
 
 # Ask a question against an ingested collection
 # COLLECTION is the Qdrant collection name: doc_{source_id}_chunks
-nlq doc-ask <collection> "What did the report say about churn?"
+# --source-id restricts retrieval to one source; --top-k sets how many chunks are retrieved (default 5)
+nlq doc-ask <collection> "What did the report say about churn?" [--source-id <source_id>] [--top-k 5]
 # e.g.
 nlq doc-ask doc_my-q1-report_chunks "What did the report say about churn?"
 
-# Sync a Notion page — requires NOTION_API_TOKEN env var
-nlq doc-sync-notion <source_id> <page_id>
+# Sync a Notion page — requires NOTION_API_TOKEN env var. Stored in doc_{source_id}_chunks,
+# replacing the earlier copy. --since <ISO 8601 timestamp> leaves the stored copy as it is
+# when the page has not changed since then; --allow-empty works as for doc-ingest.
+nlq doc-sync-notion <source_id> <page_id> [--since 2024-01-15T00:00:00+00:00] [--allow-empty]
 # e.g.
 NOTION_API_TOKEN=secret_... nlq doc-sync-notion my-wiki-src abc123def456
 
-# Sync a Confluence space — requires CONFLUENCE_API_TOKEN env var
-nlq doc-sync-confluence <source_id> <space_key> --base-url <url> --username <user>
+# Sync a Confluence space — requires CONFLUENCE_API_TOKEN env var. Stored in doc_{source_id}_chunks,
+# replacing the earlier copy. With --since, if any page changed after that timestamp the
+# space is re-read in full, and if none did the stored copy is left; --allow-empty as above.
+nlq doc-sync-confluence <source_id> <space_key> --base-url <url> --username <user> [--since <timestamp>] [--allow-empty]
 # e.g.
 CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \
     --base-url https://acme.atlassian.net --username alice@acme.com
 ```
 
-Formats: PDF, Word (`.docx`), Excel (`.xlsx`), Notion pages, Confluence spaces. Install with `pip install "nlqueries-core[docs]"` (PDF/Word/Excel) or `pip install "nlqueries-core[wiki]"` (Notion/Confluence). See [connectors.md](connectors.md#document-connectors).
+Formats: Markdown (`.md`, `.markdown`, sectioned at `#` and `##` headings) and plain text (`.txt`, UTF-8) on a base install; PDF, Word (`.docx`), Excel (`.xlsx`), Notion pages, Confluence spaces with an extra. Install with `pip install "nlqueries-core[docs]"` (PDF/Word/Excel) or `pip install "nlqueries-core[wiki]"` (Notion/Confluence). See [connectors.md](connectors.md#document-connectors).
 
 ---
 
@@ -353,19 +363,22 @@ nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-
 nlqueries feedback-stats <connector-or-alias>
 ```
 
-Prints total rated, thumbs-up/down rate, and recent corrections. Prints "No feedback recorded yet" for a connector with none — this is expected on first use, not an error.
+Prints the total number of entries, the thumbs-up and thumbs-down counts, and, when there are corrections, how many and the five most recent. Prints "No feedback recorded yet" for a connector with none — this is expected on first use, not an error.
 
 ---
 
 ## promote-feedback
 
-Promotes all thumbs-up feedback for an agent into the verified Qdrant collection (`agent_{id}_verified`), so future `ask` and `query` calls can blend those (question, SQL) pairs into the prompt as high-confidence examples.
+Promotes thumbs-up feedback for an agent into the verified Qdrant collection (`agent_{id}_verified`), so future `ask` and `query` calls can blend those (question, SQL) pairs into the prompt as high-confidence examples. Each pair's SQL is validated against the current knowledge base schema first.
 
 ```bash
 nlqueries promote-feedback <connector-or-alias>
+nlqueries promote-feedback <connector-or-alias> --include-anonymous
 ```
 
-This is also called automatically at the end of every `export-kb` run. Run it manually after submitting a batch of thumbs-up ratings between KB exports.
+Feedback submitted over the MCP transport, and feedback recorded before origins were tracked, is skipped, because who gave the rating cannot be established and a promoted pair steers generation for everyone using the agent. Review those records and pass `--include-anonymous` to promote them as well.
+
+This is also called automatically at the end of every `export-kb` run, without `--include-anonymous`. Run it manually after submitting a batch of thumbs-up ratings between KB exports.
 
 ---
 
@@ -391,7 +404,7 @@ Validates the token signature, expiry, audience, and issuer. Exits 1 on any veri
 
 ## cache
 
-Semantic cache management — two questions are considered the same if their embeddings have cosine similarity ≥ 0.97. The cache is enabled automatically once Qdrant is reachable.
+Semantic cache management. A question is served from the cache by an exact match on its normalised text (Tier 0), by a stored answer whose question's embedding has cosine similarity ≥ `NLQ_CACHE_ANSWER_THRESHOLD` (default 0.97, Tier 1), or by a stored SQL template at ≥ `NLQ_CACHE_TEMPLATE_THRESHOLD` (default 0.90, Tier 2) with the question's entities bound into it. `NLQ_CACHE_ANSWER_TIERS` limits which tiers serve — see [configuration.md](configuration.md). The cache is enabled automatically once Qdrant is reachable.
 
 ```bash
 nlqueries cache list <connector-or-alias> [--limit 50]   # list cached questions and their generated SQL
@@ -405,15 +418,15 @@ Cached answers include `from_cache: true`. The cache serves `query` and the MCP 
 
 ## embed-server
 
-Every embedding-dependent command (`query`, `ask`, `process-history --embed`) loads the sentence-transformer model on startup (~9 s, ~130 MB RAM). The daemon loads it once and serves requests over `localhost:8765`, cutting per-call latency to ~10 ms.
+Every embedding-dependent command (`query`, `ask`, `process-history --embed`) loads the sentence-transformer model itself (~9 s) when no daemon is running. The daemon loads it once and serves requests on `localhost` at `EMBED_SERVER_PORT` (default 8765), cutting per-call latency to ~10 ms.
 
 ```bash
 nlqueries embed-server start [--port 8765] [--foreground]   # --foreground blocks and is useful for debugging
-nlqueries embed-server status   # not running | starting | running
+nlqueries embed-server status [--port 8765]   # not running | starting | running
 nlqueries embed-server stop
 ```
 
-Not restarted automatically on reboot — add the `start` command to your shell profile or a startup task if you want it always on. Override the default port with `--port` or the `EMBED_SERVER_PORT` environment variable.
+Not restarted automatically on reboot — add the `start` command to your shell profile or a startup task if you want it always on. To change the port, set `EMBED_SERVER_PORT`: it is the port the daemon listens on and the port clients, `status` and `health` look for it on. `start --port` and `status --port` override it for that command only; `start` warns when its port differs from `EMBED_SERVER_PORT`, because clients would not find the daemon there.
 
 ---
 
@@ -425,6 +438,8 @@ Manage and start the NLQueries MCP server. Two transports are supported:
 nlqueries mcp-server start                        # stdio — for Claude Desktop (default)
 nlqueries mcp-server start --sse --port 8000      # SSE on 127.0.0.1
 ```
+
+With `--sse`, `--host` sets the bind address (default `127.0.0.1`) and `--port` the port (default `8000`).
 
 The SSE listener **will not start without authentication**: configure an
 identity provider or a pre-shared token as

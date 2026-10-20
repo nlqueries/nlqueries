@@ -7,9 +7,9 @@ graph TD
     CLI["CLI (nlqueries / nlq)"]
     MCP["MCP Server"]
     ORCH["MultiAgentOrchestrator"]
-    IC["Intent Classifier\n(sql / document / hybrid)"]
-    SQLA["SQL Agent"]
-    DOCA["Document Agent"]
+    IC["Intent Classifier\n(sql / document / hybrid)\nPython API only"]
+    SQLA["SQL Agent\n(Orchestrator)"]
+    DOCA["Document Agent\n(DocumentOrchestrator)"]
     RM["Result Merger"]
     KB["Knowledge Base (YAML)"]
     CACHE["Semantic Cache"]
@@ -21,9 +21,12 @@ graph TD
     PROC["Query Pipeline\n(filter, cluster, parameterize, annotate)"]
     FB["Feedback Store (JSONL)"]
 
-    CLI --> ORCH
-    MCP --> ORCH
-    ORCH --> IC
+    CLI -- "query, eval" --> ORCH
+    MCP -- "query tool" --> ORCH
+    CLI -- "ask (no cache)" --> SQLA
+    CLI -- "doc-ask" --> DOCA
+    ORCH -- "SQL agent only (CLI and MCP)" --> SQLA
+    ORCH -. "more than one agent type enabled" .-> IC
     IC --> SQLA
     IC --> DOCA
     SQLA --> RM
@@ -44,29 +47,39 @@ graph TD
     CLI --> FB
 ```
 
-A question from `nlqueries query` or the MCP `query` tool reaches the `MultiAgentOrchestrator`; `nlqueries ask` uses the single-agent `Orchestrator` directly, with no cache. The `MultiAgentOrchestrator` first checks the semantic cache; on a miss it dispatches to an agent. `query` and the MCP `query` tool enable only the SQL agent, so their questions go straight to it without classification. The intent classifier and the result merger, which can send a question to the document agent or to both in parallel (hybrid), apply only when a caller of the Python API enables more than one agent type. Questions about documents are asked with `doc-ask`, which searches the chunks `doc-ingest` stored.
+A question from `nlqueries query` or the MCP `query` tool reaches the `MultiAgentOrchestrator` (`nlqueries eval` generates its SQL through it too); `nlqueries ask` uses the single-agent `Orchestrator` directly, with no cache. The `MultiAgentOrchestrator` first checks the semantic cache; on a miss it dispatches to an agent. `query` and the MCP `query` tool enable only the SQL agent, so their questions go straight to it without classification. The intent classifier and the result merger, which can send a question to the document agent or to both in parallel (hybrid), apply only when a caller of the Python API enables more than one agent type. Questions about documents are asked with `doc-ask`, which searches the chunks `doc-ingest` stored.
 
 ## Module layout
 
 ```
 nlqueries/
 ├── cli/                 CLI commands (click + rich) — connect, query, ask, health, kb-stats, etc.
-├── connectors/           DB connector implementations + BaseConnector ABC
-│   ├── postgres.py, mysql (via base), snowflake.py, bigquery.py
-│   └── redshift.py, mssql.py, duckdb.py        (optional extras)
-├── document_connectors/  PDF, Word, Excel, Notion, Confluence + BaseConnector ABC
+├── connectors/           DB connector implementations + DatabaseConnector ABC (base.py)
+│   ├── postgres.py, sqlite.py
+│   ├── sqlalchemy_connector.py                  (generic SQLAlchemy-URL connector; MySQL runs on it)
+│   └── snowflake.py, bigquery.py, redshift.py, mssql.py, duckdb.py   (optional extras)
+├── document_connectors/  PDF, Word, Excel, Markdown/text, Notion, Confluence + DocumentConnector ABC, chunker
 ├── processing/           Query filter, clusterer, parameterizer, intent annotator, pipeline
-├── knowledge/            YAML knowledge base generator (kb_generator.py) + kb-stats report (kb_stats.py)
+├── knowledge/            YAML knowledge base generator (kb_generator.py), kb-stats report (kb_stats.py),
+│                         dbt artifact importer (dbt_importer.py)
 ├── embeddings/           Sentence-transformer embedder, Qdrant store, embedding daemon (embed_server.py)
-├── cache/                Semantic cache (semantic_cache.py)
+├── cache/                Semantic cache (semantic_cache.py) + entry signing (envelope.py)
 ├── llm/                  LLM client abstraction — Anthropic, generic client, LiteLLM
 ├── orchestrator/         Orchestrator, intent classifier, multi-agent + document orchestrators,
 │                         prompt assembly, SQL generation + sqlglot validation, result merger,
 │                         conversation / follow-up handling
+├── verbalizer/           Deterministic SQL-to-English paraphrase (no LLM)
 ├── analysis/             Query analyzer
-├── auth/                 OIDC token verification utilities
-├── feedback/             Local JSONL feedback store + models
+├── auth/                 OIDC token verification (oidc_token.py), MCP bearer-token verifier
+│                         (mcp_verifier.py), principal + audit record (principal.py), authorizer,
+│                         per-tool enforcement, per-principal admission limits (admission.py)
+├── feedback/             Local JSONL feedback store + models, promotion of rated answers to Qdrant
 ├── mcp_server/           MCP server entry point
+├── sql_policy.py         Which generated statements may run (whole-tree sqlglot checks)
+├── sql_policy_report.py  Reports what sql_policy would refuse, without refusing it
+├── execution.py          Execution permission carried from the entry point to the connector
+├── kb_eval.py            KB eval harness behind `nlqueries eval`
+├── state_files.py        File permissions for what NLQueries writes under the state directory
 ├── telemetry.py          OpenTelemetry integration
 └── config.py             Environment-variable configuration
 ```
@@ -158,7 +171,7 @@ would either match nothing or -- far worse -- match everything, and the
 difference between those is a cache that grows and a cache that is gone. It was
 measured on v1.9.3 and v1.18.2 and holds indexed, keyword-indexed and unindexed
 alike: correctness never depended on the index. `docker-compose.yml` now pins
-v1.12.4 and enterprise pins v1.18.2 -- v1.9.3 predates the `query_points` API
+v1.18.2 -- v1.9.3 predates the `query_points` API
 every search here goes through, so it was never a version this project could run
 against, only one it used to ship.
 
