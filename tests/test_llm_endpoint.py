@@ -6,6 +6,7 @@ import logging
 from collections.abc import Iterator
 from unittest.mock import patch
 
+import httpx
 import pytest
 from nlqueries.llm import endpoint
 from nlqueries.llm.anthropic_client import AnthropicClient
@@ -167,3 +168,22 @@ def test_litellm_client_quiet_for_loopback_and_https(
             model="openai/gpt-4o", extra={"api_base": "http://gateway.internal"}, api_base=url
         )
     assert _warnings(caplog) == []
+
+
+def test_a_non_string_url_is_read_through_str(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        warn_if_plain_http(httpx.URL("http://gateway.internal:4000"), "api_base")
+        warn_if_plain_http(httpx.URL("https://gateway.internal"), "api_base")
+    assert _warnings(caplog) == [_expected("api_base", "http://gateway.internal:4000")]
+
+
+def test_litellm_client_accepts_a_non_string_api_base_in_extra(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``extra`` is forwarded verbatim, so its api_base need not be a ``str``."""
+    url = httpx.URL("http://gateway.internal:4000")
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        client = LiteLLMClient(model="openai/gpt-4o", extra={"api_base": url})
+    assert _warnings(caplog) == [_expected("api_base", "http://gateway.internal:4000")]
+    # Still forwarded as given: the check reads the value, it does not replace it.
+    assert client._auth_kwargs()["api_base"] is url

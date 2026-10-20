@@ -34,18 +34,25 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def warn_if_plain_http(base_url: str | None, setting: str) -> None:
+def warn_if_plain_http(base_url: object, setting: str) -> None:
     """Log a warning, once per endpoint per process, for a non-loopback http URL.
 
     *setting* names where the URL came from (``ANTHROPIC_BASE_URL``,
     ``api_base``) so an operator knows what to change. Only the scheme, host
     and port are logged: a base URL can carry credentials in its userinfo or
     query string, and those do not belong in a log line.
+
+    *base_url* is anything whose ``str()`` is the URL, not only a ``str``: an
+    ``api_base`` in LiteLLM's ``extra`` is forwarded verbatim and may be an
+    ``httpx.URL`` or a pydantic URL, and that is still the endpoint called.
     """
-    if not base_url:
+    if base_url is None:
+        return
+    text = str(base_url).strip()
+    if not text:
         return
     try:
-        parts = urlsplit(base_url.strip())
+        parts = urlsplit(text)
         host = (parts.hostname or "").lower()
         port = parts.port
     except ValueError:
