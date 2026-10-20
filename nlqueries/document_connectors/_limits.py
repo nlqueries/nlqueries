@@ -106,6 +106,15 @@ class DocumentExtractionTimeout(DocumentTooComplexError):
 #: tests refer to, and so a connector reads ``_limits.<NAME>`` at call time.
 MAX_EXPANDED_BYTES: int = MAX_DOCUMENT_EXPANDED_BYTES
 MAX_EXPANSION_RATIO: int = MAX_DOCUMENT_EXPANSION_RATIO
+
+#: Smallest expanded size at which one archive member is held to
+#: ``MAX_EXPANSION_RATIO`` on its own. The risk is the absolute expanded size,
+#: not the ratio: a small repetitive member can't exhaust memory however well it
+#: compresses, and ordinary writers produce such members (20,000 identical Word
+#: paragraphs give a ``document.xml`` of about 4 MB at about 250x). The
+#: whole-archive ratio and ``MAX_EXPANDED_BYTES`` apply to every archive
+#: regardless.
+MEMBER_RATIO_FLOOR_BYTES: int = 4 * 1024 * 1024
 MAX_ROWS: int = MAX_DOCUMENT_ROWS
 MAX_SECONDS: float = MAX_EXTRACTION_SECONDS
 PDF_BYTES: int = MAX_PDF_BYTES
@@ -155,6 +164,15 @@ class ExtractionBudget:
             )
 
 
+def _size(n: int) -> str:
+    """*n* bytes for a message, in a unit that never rounds a non-zero size to zero."""
+    if n < 1024:
+        return f"{n:,} bytes"
+    if n < 1024 * 1024:
+        return f"{n / 1024:,.1f} KiB"
+    return f"{n / (1024 * 1024):,.1f} MiB"
+
+
 def check_archive_expansion(source: str | Path) -> None:
     """Refuse a zip-based document that would expand beyond the limits.
 
@@ -191,14 +209,15 @@ def check_archive_expansion(source: str | Path) -> None:
     # Each member as well as the whole. The whole-archive ratio can be diluted:
     # one member that expands 1000x beside a large stored (incompressible) one
     # averages out under the limit, yet the parser still inflates the bomb in
-    # full. Same zero-denominator guard as above, for the same reasons.
+    # full. Only members of at least MEMBER_RATIO_FLOOR_BYTES expanded, since a
+    # smaller one is cheap to inflate whatever its ratio. Same zero-denominator
+    # guard as above, for the same reasons.
     for entry in entries:
-        if entry.compress_size > 0:
+        if entry.file_size >= MEMBER_RATIO_FLOOR_BYTES and entry.compress_size > 0:
             member_ratio = entry.file_size / entry.compress_size
             if member_ratio > MAX_EXPANSION_RATIO:
                 raise DocumentTooComplexError(
                     f"{path.name}: member {entry.filename!r} expands {member_ratio:.0f}x "
-                    f"({entry.compress_size // 1024} KiB to "
-                    f"{entry.file_size // (1024 * 1024)} MiB), over the "
+                    f"({_size(entry.compress_size)} to {_size(entry.file_size)}), over the "
                     f"{MAX_EXPANSION_RATIO}x limit."
                 )

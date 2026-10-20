@@ -135,9 +135,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `NLQ_MAX_PDF_BYTES` (100 MiB) is refused before it is parsed, and one with
   more than `NLQ_MAX_PDF_PAGES` (2,000) pages before any page is extracted;
   both raise `DocumentTooComplexError`. The expansion-ratio limit for Word and
-  Excel files (`NLQ_MAX_DOCUMENT_EXPANSION_RATIO`) now applies to each member
-  of the archive as well as to the whole, so one highly compressed member is
-  not averaged away by a large incompressible one. Word extraction checks its
+  Excel files (`NLQ_MAX_DOCUMENT_EXPANSION_RATIO`) now also applies to each
+  member that expands to 4 MiB or more, so one highly compressed member is
+  not averaged away by a large incompressible one. A smaller member is cheap
+  to inflate whatever its ratio, so it is held only to the whole-archive
+  limits. Word extraction checks its
   time budget every 1,000 paragraphs, not only between sections.
   `doc-sync-confluence` refuses a space key that is not letters, digits and
   underscores, or for a personal space `~` and a username or account id that

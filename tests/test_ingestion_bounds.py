@@ -144,7 +144,7 @@ def test_a_pdf_that_understates_its_pages_is_still_counted(
 # ---------------------------------------------------------------------------
 
 
-def _diluted_archive(path: Path) -> Path:
+def _diluted_archive(path: Path, member_bytes: int = 8 * 1024 * 1024) -> Path:
     """One member that expands about 1000x, diluted by a large stored member.
 
     The stored member is random bytes, so it neither compresses nor expands,
@@ -153,7 +153,7 @@ def _diluted_archive(path: Path) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
             zipfile.ZipInfo("word/document.xml"),
-            b"\0" * (8 * 1024 * 1024),
+            b"\0" * member_bytes,
             compress_type=zipfile.ZIP_DEFLATED,
         )
         archive.writestr(
@@ -183,6 +183,112 @@ def test_the_word_connector_refuses_a_diluted_archive(tmp_path: Path) -> None:
     path = _diluted_archive(tmp_path / "diluted.docx")
     with pytest.raises(DocumentTooComplexError, match="member"):
         WordConnector().ingest(path, source_id="s")
+
+
+def test_a_repetitive_member_under_the_floor_is_accepted(tmp_path: Path) -> None:
+    """A real Word document whose ``document.xml`` is far over the ratio but small.
+
+    15,000 identical paragraphs rather than 20,000: at 20,000 the member is
+    4,181,548 bytes and the whole archive 98x, both just under their limits, so
+    a writer update could tip the control over for reasons unrelated to it.
+    """
+    docx = pytest.importorskip("docx")
+
+    path = tmp_path / "repetitive.docx"
+    document = docx.Document()
+    for _ in range(15_000):
+        document.add_paragraph("some text that compresses well " * 5)
+    document.save(str(path))
+
+    with zipfile.ZipFile(path) as archive:
+        member = archive.getinfo("word/document.xml")
+        infos = archive.infolist()
+    ratio = member.file_size / member.compress_size
+    whole = sum(i.file_size for i in infos) / sum(i.compress_size for i in infos)
+    assert ratio > 2 * _limits.MAX_EXPANSION_RATIO, f"premise failed: member {ratio:.0f}x"
+    assert member.file_size < _limits.MEMBER_RATIO_FLOOR_BYTES, "premise failed: member size"
+    assert whole < _limits.MAX_EXPANSION_RATIO, f"premise failed: whole ratio {whole:.0f}x"
+
+    check_archive_expansion(path)  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("member_bytes", "refused"),
+    [
+        (_limits.MEMBER_RATIO_FLOOR_BYTES - 1, False),
+        (_limits.MEMBER_RATIO_FLOOR_BYTES, True),
+        (_limits.MEMBER_RATIO_FLOOR_BYTES + 1, True),
+    ],
+)
+def test_the_member_ratio_applies_from_the_floor(
+    member_bytes: int, refused: bool, tmp_path: Path
+) -> None:
+    """About 1000x either side of the floor, diluted so only the member rule can fire."""
+    path = _diluted_archive(tmp_path / "edge.docx", member_bytes=member_bytes)
+    with zipfile.ZipFile(path) as archive:
+        member = archive.getinfo("word/document.xml")
+        infos = archive.infolist()
+    assert member.file_size / member.compress_size > _limits.MAX_EXPANSION_RATIO
+    whole = sum(i.file_size for i in infos) / sum(i.compress_size for i in infos)
+    assert whole < _limits.MAX_EXPANSION_RATIO, f"premise failed: whole ratio {whole:.0f}x"
+
+    if refused:
+        with pytest.raises(DocumentTooComplexError, match="member 'word/document.xml'"):
+            check_archive_expansion(path)
+    else:
+        check_archive_expansion(path)  # must not raise
+
+
+def test_the_member_message_never_rounds_a_size_to_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory may claim any compressed size, including under one KiB.
+
+    The entry is faked because deflate cannot reach that ratio, and the
+    directory is what the check reads.
+    """
+    entry = zipfile.ZipInfo("xl/worksheets/sheet1.xml")
+    entry.compress_size = 500
+    entry.file_size = 5 * 1024 * 1024 + 123_456
+    # A stored member large enough to hold the whole-archive ratio under 100x.
+    stored = zipfile.ZipInfo("xl/media/image1.png")
+    stored.compress_size = stored.file_size = 1024 * 1024
+
+    class _Archive:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        def __enter__(self) -> _Archive:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def infolist(self) -> list[zipfile.ZipInfo]:
+            return [entry, stored]
+
+    monkeypatch.setattr(_limits.zipfile, "is_zipfile", lambda path: True)
+    monkeypatch.setattr(_limits.zipfile, "ZipFile", _Archive)
+    monkeypatch.setattr(_limits, "MAX_EXPANSION_RATIO", 100)
+
+    with pytest.raises(DocumentTooComplexError) as refused:
+        check_archive_expansion(tmp_path / "claims.xlsx")
+    assert "(500 bytes to 5.1 MiB)" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("size", "text"),
+    [
+        (1, "1 bytes"),
+        (1023, "1,023 bytes"),
+        (1024, "1.0 KiB"),
+        (5_000, "4.9 KiB"),
+        (1024 * 1024, "1.0 MiB"),
+        (3_000 * 1024 * 1024, "3,000.0 MiB"),
+    ],
+)
+def test_sizes_are_shown_in_a_unit_that_keeps_them_non_zero(size: int, text: str) -> None:
+    assert _limits._size(size) == text
 
 
 def test_ordinary_documents_pass_the_per_member_check(tmp_path: Path) -> None:
