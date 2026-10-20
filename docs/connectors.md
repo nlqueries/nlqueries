@@ -7,9 +7,17 @@ NLQueries reads two kinds of sources: databases (for structured SQL answers) and
 ## Before you connect: the role to use
 
 Give NLQueries a login that cannot write and cannot read more than you would put
-in an answer. The connector requires TLS, and every engine that can express a
-read-only execution is asked for one, but neither limits *what* the role can
-read, and neither is a substitute for a least-privilege grant.
+in an answer. What the connectors do on their side differs by engine. TLS: the
+`postgres` connector requires it unless its entry sets a weaker `ssl_mode`, the
+generic connector applies `ssl_mode`/`ssl_ca_cert` only to libpq PostgreSQL URLs,
+`redshift` always connects with `ssl=True`, and `mssql` and `connect mysql` set no
+TLS options at all ([Transport security](database-hardening.md#transport-security)).
+Read-only: PostgreSQL and Redshift are asked for a read-only transaction (directly
+or through the generic connector), and SQLite and DuckDB files are opened
+read-only; every other engine gets at most a transaction that is never committed
+([What each connector enforces](database-hardening.md#what-each-connector-enforces)).
+None of this limits *what* the role can read, and none of it is a substitute for a
+least-privilege grant.
 
 How much the connector can enforce differs by engine, and the gap worth knowing
 is **DDL**. A rolled-back transaction undoes an `INSERT` on a transactional
@@ -30,17 +38,17 @@ why the role matters more than the transaction does.
 
 | Connector | Install | Query history source |
 |---|---|---|
-| PostgreSQL | included | `pg_stat_statements` extension |
+| PostgreSQL | included | `pg_stat_statements` extension: `SELECT`/`WITH` statements recorded for this database, most-called first (see below for the privilege needed to see other roles' statements) |
 | MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone. It sets no TLS; see below |
-| Snowflake | `pip install "nlqueries-core[snowflake]"` | `QUERY_HISTORY` view in `INFORMATION_SCHEMA` |
-| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (requires `bigquery.jobs.listAll`, for example through `roles/bigquery.resourceViewer`) |
+| Snowflake | `pip install "nlqueries-core[snowflake]"` | `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` (requires `IMPORTED PRIVILEGES` on the `SNOWFLAKE` database); if that cannot be read, the `INFORMATION_SCHEMA.QUERY_HISTORY()` table function, which covers the last 7 days only. If neither can be read, `process-history` stops with an error |
+| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (requires `bigquery.jobs.listAll`, for example through `roles/bigquery.resourceViewer`), completed `SELECT` jobs only, read from one region: see below |
 | Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`; provisioned clusters only, see below) |
 | SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`) |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
 | SQLite | included (stdlib `sqlite3`) | None — file-based, no persisted history |
 | Generic SQLAlchemy | included (SQLAlchemy is a base dependency); install the URL's own driver | None — no portable source across dialects |
 
-The generic `sqlalchemy` type reaches anything with a SQLAlchemy dialect installed — MariaDB, Oracle, and the engines above if you would rather supply a URL than the discrete flags. It is configured by `--url` rather than the per-field flags, and introspects schema through SQLAlchemy's dialect-agnostic inspector rather than engine-specific catalog SQL. `--password` and `--password-env` still apply, and are the better habit — a password inside the URL is a command-line argument and lands in shell history. See [cli-reference.md](cli-reference.md#connect).
+The generic `sqlalchemy` type reaches anything with a SQLAlchemy dialect installed — MariaDB, Oracle, and the engines above if you would rather supply a URL than the discrete flags. It is configured by `--url` rather than the per-field flags, and introspects schema through SQLAlchemy's dialect-agnostic inspector rather than engine-specific catalog SQL. That reflection is narrower than the dedicated connectors': it reads the tables (not views) of the connection's default schema only, keeps column comments as descriptions, and leaves row counts and table descriptions empty. `--password` and `--password-env` still apply, and are the better habit — a password inside the URL is a command-line argument and lands in shell history. See [cli-reference.md](cli-reference.md#connect).
 
 See [cli-reference.md](cli-reference.md#connect) for `connect` examples per type.
 
@@ -76,7 +84,13 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 3. Run `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;` once per database
 4. Verify: `SELECT count(*) FROM pg_stat_statements;`
 
-Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't record per-query timestamps, so all history since the last `pg_stat_statements_reset()` is returned. `--days` is honoured on Snowflake and BigQuery, which do track execution time.
+The view is cluster-wide; `process-history` reads only this database's rows, and only statements that begin with `SELECT` or `WITH`, ordered by call count. For a login that is neither a superuser nor a member of `pg_read_all_stats`, PostgreSQL shows other roles' statements as `<insufficient privilege>`; those rows are skipped, so the history holds only the login's own statements. To include everyone's queries, `GRANT pg_read_all_stats TO <login>;`.
+
+Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't record per-query timestamps, so all history since the last `pg_stat_statements_reset()` is returned. `--days` is honoured on Snowflake, BigQuery, Redshift and SQL Server, which do track execution time. (On SQL Server it filters on each cached plan's last execution time.)
+
+### BigQuery: query history region
+
+`JOBS_BY_PROJECT` is a regional view, and the connector reads one region of it: the location of the `--dataset-id` dataset when one is given and its location can be read, otherwise `region-us`. Jobs that ran in another location are not in that view, so for a project whose data is outside the US multi-region, register the connector with `--dataset-id`.
 
 ### BigQuery: authentication
 
@@ -132,7 +146,8 @@ Query history comes from `STL_QUERY`, which only provisioned clusters have. On a
 `REDSHIFT_SOCKET_TIMEOUT_SECONDS` bounds the whole connection, not just the
 handshake: the driver sets it on the socket before connecting and never clears
 it, so it also limits how long a query may go without sending data. It therefore
-defaults to your statement timeout plus 30 seconds (150 by default) and must stay
+defaults to your statement timeout plus 30 seconds, and never less than 60 (150
+with the default 120-second `CONNECTOR_STATEMENT_TIMEOUT_SECONDS`), and must stay
 above it — below, a long query is killed by the client and reported as a network
 fault instead of being cancelled by the server.
 
@@ -171,6 +186,8 @@ Built on the standard-library `sqlite3` driver, so no extra install is needed. T
 | PDF | `.pdf` | `pip install "nlqueries-core[docs]"` |
 | Word | `.docx` | `pip install "nlqueries-core[docs]"` |
 | Excel | `.xlsx` | `pip install "nlqueries-core[docs]"` |
+| Markdown | `.md`, `.markdown` (UTF-8; sectioned at `#` and `##` headings) | included |
+| Plain text | `.txt` (UTF-8) | included |
 | Notion | Notion pages | `pip install "nlqueries-core[wiki]"`, `NOTION_API_TOKEN` |
 | Confluence | Confluence spaces | `pip install "nlqueries-core[wiki]"`, `CONFLUENCE_API_TOKEN` (the URL and user are the `--base-url` and `--username` options) |
 
@@ -192,9 +209,9 @@ CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \
     --base-url https://acme.atlassian.net --username alice@acme.com
 ```
 
-Each command chunks the source, embeds the chunks and stores them in the Qdrant collection `doc_{source_id}_chunks` (Qdrant is required — see [qdrant-setup.md](qdrant-setup.md)). A later run for the same `SOURCE_ID` replaces what the earlier one stored. The new chunks are written before the old ones are removed: if writing fails, the command exits with an error and the earlier copy is untouched; if only the removal of the old version's leftover chunks fails, the command says so, and `doc-ask` may return text from both versions until a rerun succeeds.
+Each command chunks the source, embeds the chunks and stores them in the Qdrant collection `doc_{source_id}_chunks` (Qdrant is required — see [qdrant-setup.md](qdrant-setup.md)). A later run for the same `SOURCE_ID` replaces what the earlier one stored. The new chunks are written, in batches of 256, before the old ones are removed: if the first batch fails, the command exits with an error and the earlier copy is untouched; if a later batch fails, or only the removal of the old version's leftover chunks fails, the command says so and exits with an error, and `doc-ask` may return text from both versions until a rerun succeeds.
 
-A read that produces no text (a mistyped space key, a lost permission, a scanned PDF with no text layer) stores nothing and exits with an error, leaving the stored copy as it was. If the source really is empty now, pass `--allow-empty` to remove its stored chunks.
+A read that produces no text (a mistyped space key, a lost permission, a scanned PDF with no text layer) stores nothing and exits with an error, leaving the stored copy as it was. If the source really is empty now, pass `--allow-empty` to remove its stored chunks. (`doc-sync-notion --since` is the exception: there an empty read is taken to mean the page is unchanged, and the command leaves the stored copy as it was without an error.) A Confluence space that cannot be read to the end stops the command with an error before anything is stored.
 
 With `--since`, an unchanged Notion page or Confluence space is left as it is. For Confluence, one search checks whether any page changed since then; if one did, the whole space is read, so the stored copy stays whole. `--since` only sees pages modified since then: a page that was deleted, moved to another space or had its permissions withdrawn is not noticed, and its chunks stay searchable until a full sync (no `--since`). Run a full sync periodically.
 

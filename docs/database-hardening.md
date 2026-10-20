@@ -174,16 +174,48 @@ outcome it is meant to remove.
 What it looks for: `SUPERUSER`, `BYPASSRLS`, `CREATEDB`, `CREATEROLE`,
 `REPLICATION`, and membership of `pg_read_server_files`,
 `pg_write_server_files`, `pg_execute_server_program`, `pg_read_all_data` or
-`pg_write_all_data`. It also reports `search_path` and whether the role sets
-`default_transaction_read_only`, so a path or a default you did not intend is
-visible.
+`pg_write_all_data`. It also reads `search_path` and
+`default_transaction_read_only`, but does not report or judge either: the health
+line names only the login, the database and the findings above. Check those two
+yourself with `SHOW search_path;` and the first query in step 6.
 
 ---
 
 ## Transport security
 
-The connector refuses a server that offers no TLS. What it verifies beyond that
-depends on `ssl_mode` and whether `ssl_ca_cert` is configured.
+This section is about the `postgres` connector, the only per-vendor connector
+that reads `ssl_mode` and `ssl_ca_cert` (with `ssl_client_cert` and
+`ssl_client_key`); the generic connector applies the same settings to libpq
+PostgreSQL URLs, [below](#the-generic-connector). The others take no TLS
+settings: `redshift` always connects with `ssl=True` and offers no mode or CA,
+and `mssql` and `connect mysql` set no TLS options, so their sessions are
+encrypted only if the server or the driver insists. `nlqueries health` prints a
+transport line only for `postgres` connectors and for `sqlalchemy` connectors
+that settle a mode (see below).
+
+With no `ssl_mode` set, the `postgres` connector uses `require` and so refuses a
+server that offers no TLS. An explicit `ssl_mode` is honoured as given,
+including `disable`, `allow` and `prefer`, which permit an unencrypted connection
+(`nlqueries health` reports that). What it verifies beyond encryption depends on
+`ssl_mode` and whether `ssl_ca_cert` is configured.
+
+**Where to set them.** `nlqueries connect` has no TLS options. Register the
+connector first, then add the keys by hand to its entry in `connectors.yaml` (the
+path in `CONNECTORS_FILE` if set, otherwise `$NLQ_STATE_DIR/connectors.yaml`,
+which is `~/.nlqueries/connectors.yaml` by default and
+`/data/nlqueries/connectors.yaml` in the Docker image):
+
+```yaml
+postgres:db.internal:shop:
+  db_type: postgres
+  # ... the other keys `connect` wrote ...
+  ssl_ca_cert: /etc/ssl/certs/db-ca.pem
+```
+
+`connect` tests the connection under the default `require` before it writes the
+entry, so a server that offers no TLS cannot be registered this way. Running
+`connect` again for the same connector replaces its whole entry, so add the
+`ssl_*` keys back afterwards.
 
 Measured against PostgreSQL 16 and libpq, using servers presenting a correct
 certificate, one naming a different host, one signed by an untrusted CA, and an
@@ -221,14 +253,14 @@ for a hostname is the usual cause.
 
 ### The generic connector
 
-Everything above describes the per-vendor connectors, which take `ssl_mode` and
+Everything above describes the `postgres` connector, which takes `ssl_mode` and
 `ssl_ca_cert` as configuration. The generic `sqlalchemy` connector takes a whole
 SQLAlchemy URL instead, and its posture comes from that URL.
 
 It applies `ssl_mode`, `ssl_ca_cert`, `ssl_client_cert` and `ssl_client_key` when
-the URL names a libpq-based PostgreSQL driver — `postgresql://` or
-`postgresql+psycopg://` — because those are the drivers whose parameter names
-map onto these settings directly.
+the URL names a libpq-based PostgreSQL driver — `postgresql://`,
+`postgresql+psycopg2://` or `postgresql+psycopg://` — because those are the
+drivers whose parameter names map onto these settings directly.
 
 For any other driver it **refuses to connect** rather than ignoring them:
 
@@ -245,8 +277,8 @@ failure the `require` default elsewhere in this document exists to prevent. Put
 the driver's own parameters in the URL query string instead, for example
 `mysql+pymysql://…/shop?ssl_ca=/etc/ssl/ca.pem`.
 
-Where it does apply them it resolves the mode the same way the per-vendor
-connectors do, so a root certificate with no `ssl_mode` selects `verify-full`
+Where it does apply them it resolves the mode the same way the `postgres`
+connector does, so a root certificate with no `ssl_mode` selects `verify-full`
 rather than leaving you on libpq's `prefer` — and the certificate counts whether
 you supplied it in the credentials or in the URL's query string.
 
@@ -277,7 +309,7 @@ Splitting them across the two is fine, because nothing is then overruled:
 the connector's settings connects as you would expect.
 
 `nlqueries health` reports the posture for a `sqlalchemy` connector exactly as
-for the per-vendor ones, reading the URL's TLS parameters and the connector's
+for a `postgres` one, reading the URL's TLS parameters and the connector's
 `ssl_*` settings together — so a split configuration is described by what is
 actually in force rather than by half of it.
 

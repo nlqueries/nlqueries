@@ -48,15 +48,29 @@ unpinned package, which is a comment and therefore fails nothing on its own —
 version pin. Without it the lock fixes the version but not the bytes, and a
 re-upload of the same version number would install.
 
-## What is not in the closure
+## What is in the closure
 
-The connector extras — `snowflake`, `bigquery`, `mssql`, `redshift`, `mysql`,
-`onnx` — are deliberately excluded. They are optional installs whose wheels are
-large and partly platform-specific, and a deployment that needs one pins it in
-its own lock; nlqueries-enterprise does exactly that. Locking them here would
-make every core build carry drivers almost nobody uses.
+`scripts/lock-deps.sh` compiles `pyproject.toml` with `--extra dev` and no other
+extra, so the lock holds the base dependencies plus the `dev` extra. Besides the
+test and lint tooling (pytest, ruff, mypy, testcontainers), `dev` lists the
+Snowflake, BigQuery and DuckDB drivers (`snowflake-connector-python`,
+`google-cloud-bigquery`, `google-auth`, `duckdb`) so their tests run, which means
+those drivers are in the lock and in the image.
 
-The `dev` extra **is** included, so CI and the image agree about the tooling.
+Not in the closure:
+
+- the `mssql`, `redshift`, `mysql` and `onnx` extras. They are optional installs
+  whose wheels are large and partly platform-specific, and a deployment that needs
+  one installs and pins it itself.
+- the `docs` extra (`pdfplumber`, `python-docx`, `openpyxl`) and the `wiki` extra
+  (`notion-client`, `atlassian-python-api`, `beautifulsoup4`). An image built from
+  the lock cannot ingest PDF, Word or Excel files or sync Notion or Confluence
+  sources until those are added.
+
+The lock is used only by the image build. CI does not install from it: the test
+jobs in `.github/workflows/ci.yml` and `release.yml` run
+`pip install -e ".[dev,docs]"`, which resolves the `>=` floors afresh, so CI can
+test newer versions than the image ships.
 
 ## pip-tools version
 

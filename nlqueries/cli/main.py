@@ -632,8 +632,8 @@ def cli() -> None:
     """NLQueries — natural-language query engine.
 
     \b
-    Translate plain-English questions into SQL, build a self-updating YAML
-    knowledge base from your schema, and expose everything via MCP or CLI.
+    Translate plain-English questions into SQL, build a YAML knowledge base
+    from your schema and query history, and expose everything via MCP or CLI.
 
     \b
     Typical workflow:
@@ -1714,9 +1714,9 @@ def process_history(
                 f"[bold red]✗ --embed requires Qdrant to be running at "
                 f"{QDRANT_URL}[/bold red]\n"
                 "  Start it with: [bold]docker run -d --name qdrant "
-                "-p 6333:6333 qdrant/qdrant[/bold]\n"
+                "-p 127.0.0.1:6333:6333 qdrant/qdrant[/bold]\n"
                 "  Or skip embedding with [bold]--no-embed[/bold] and run it later.\n"
-                "  See Appendix B in the guide for full setup instructions."
+                "  See docs/qdrant-setup.md for full setup instructions."
             )
             sys.exit(1)
 

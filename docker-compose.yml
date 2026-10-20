@@ -3,15 +3,15 @@
 #
 # Quickstart:
 #   cp .env.example .env
-#   # edit .env — set DATABASE_URL, your LLM API key, QDRANT_API_KEY and
-#   #   NLQ_MCP_STATIC_TOKEN (generate each with: openssl rand -hex 32)
+#   # edit .env — set your LLM API key, QDRANT_API_KEY and NLQ_MCP_STATIC_TOKEN
+#   #   (generate the last two with: openssl rand -hex 32)
 #   docker compose up
 #
 #   Once running:
 #   docker exec -it nlqueries-core nlqueries connect postgres \
-#       --host host.docker.internal --database mydb --user me --password YOUR_PASSWORD
-#   docker exec -it nlqueries-core nlqueries ask postgres:localhost:mydb \
-#       "How many orders this week?"
+#       --host host.docker.internal --database mydb --user me --password YOUR_PASSWORD \
+#       --alias mydb
+#   docker exec -it nlqueries-core nlqueries ask mydb "How many orders this week?"
 #
 # Tier: [OSS] — github.com/nlqueries/nlqueries (BSL 1.1)
 # =============================================================================

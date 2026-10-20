@@ -10,11 +10,11 @@ None of the warnings below require action unless stated otherwise — they're li
 'SHOW TRANSACTION ISOLATION LEVEL' contains unsupported syntax. Falling back to parsing as a 'Command'.
 ```
 
-**When:** During `process-history` with a PostgreSQL connector.
+**When:** During `process-history` with `--verbose`. Without `--verbose`, `process-history` sets the `sqlglot` logger to `ERROR`, so these warnings are not printed.
 
-**Why:** `pg_stat_statements` records every query the database sees, including internal driver handshake queries (e.g. `psycopg2` checking session settings). sqlglot doesn't recognise PostgreSQL `SHOW` commands and logs this before falling back to a generic representation.
+**Why:** `pg_stat_statements` records every query the database sees, including internal driver handshake queries (e.g. `psycopg2` checking session settings). The filter step discards statements that start with `SHOW`, `SET`, `RESET`, `BEGIN`, `COMMIT`, `ROLLBACK`, `DEALLOCATE`, `DECLARE`, `CLOSE`, `FETCH` or `DISCARD` before they reach sqlglot, so those no longer produce the warning; other statements sqlglot cannot parse fully can still produce it under `--verbose`.
 
-**Risk:** None — these rows are discarded by the filter step before they can influence the knowledge base.
+**Risk:** None — statements that are not a `SELECT` are discarded by the filter step before they can influence the knowledge base.
 
 **Action:** None required.
 
@@ -39,15 +39,17 @@ Warning: You are sending unauthenticated requests to the HF Hub.
 ## W3 — Qdrant connection refused
 
 ```
-Connection refused (os error 111)
-# Windows: [WinError 10061] No connection could be made because the target machine actively refused it
+✗ --embed requires Qdrant to be running at http://localhost:6333
+  Start it with: docker run -d --name qdrant -p 127.0.0.1:6333:6333 qdrant/qdrant
+  Or skip embedding with --no-embed and run it later.
+  See docs/qdrant-setup.md for full setup instructions.
 ```
 
-**When:** `--embed` is passed to `process-history`, or the semantic cache tries to connect, and Qdrant isn't running.
+**When:** `process-history --embed` checks Qdrant's `/healthz` at `QDRANT_URL` before it reads any query history, and exits with status 1 and this message if Qdrant does not answer. `doc-ingest`, `doc-sync-notion` and `doc-sync-confluence` store their chunks in Qdrant and, if that fails, print `✗ Could not store the chunks in Qdrant: …` followed by `The earlier version was not deleted. Is Qdrant running?` and exit with status 1.
 
-**Risk:** None to your data — pipeline stages before the embed step already completed; only the Qdrant upload was skipped.
+**Risk:** None to your data — `process-history` stops before the pipeline runs, and a failed document store leaves the earlier version in place.
 
-**Action:** Start Qdrant (see [qdrant-setup.md](qdrant-setup.md)), or rerun with `--no-embed` to continue without it.
+**Action:** Start Qdrant (see [qdrant-setup.md](qdrant-setup.md)). For `process-history`, you can instead run without `--embed` (`--no-embed` is the default).
 
 ---
 
@@ -66,12 +68,14 @@ failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
 ## W5 — LLM authentication error
 
 ```
-Could not resolve authentication method. Expected one of api_key, auth_token, or credentials to be set.
+✗ --annotate requires an LLM credential.
+  Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or configure Bedrock, before running this command.
+  To skip annotation, run with --no-annotate.
 ```
 
-**When:** `--annotate` runs (or defaults on) with no LLM API key set.
+**When:** `process-history` runs with `--annotate` (the default) and no LLM credential is configured: no `ANTHROPIC_API_KEY`, no `OPENAI_API_KEY`, and neither `LLM_PROVIDER=bedrock` nor a `bedrock/` model in `LLM_MODEL`. The command exits with status 1 before it reads any query history.
 
-**Why:** NLQueries defaults to Anthropic. Setting `OPENAI_API_KEY` alone does **not** switch the provider — you also need `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/gpt-4o`.
+**Why:** NLQueries defaults to Anthropic. When `LLM_PROVIDER` is not set, `OPENAI_API_KEY` is set and `ANTHROPIC_API_KEY` is not, the provider is detected as `litellm` and the model defaults to `openai/gpt-4o`, so the OpenAI key alone is enough. If both keys are set, Anthropic is used unless you set `LLM_PROVIDER` and `LLM_MODEL` explicitly.
 
 **Action:**
 
@@ -79,10 +83,11 @@ Could not resolve authentication method. Expected one of api_key, auth_token, or
 # Anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# OpenAI
+# OpenAI (LLM_PROVIDER and LLM_MODEL are only needed if ANTHROPIC_API_KEY is also set,
+# or to pick a model other than openai/gpt-4o)
+export OPENAI_API_KEY=sk-proj-...
 export LLM_PROVIDER=litellm
 export LLM_MODEL=openai/gpt-4o
-export OPENAI_API_KEY=sk-proj-...
 ```
 
 To skip annotation entirely, use `--no-annotate`.

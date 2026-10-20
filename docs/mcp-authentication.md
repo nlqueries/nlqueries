@@ -31,6 +31,18 @@ every caller everything, which is what the server did before. It is deliberately
 port is reachable, this one says you know anyone who reaches it may run SQL
 against your database.
 
+Authentication does not lift the bind check. The Docker image and
+`python -m nlqueries.mcp_server` take the bind address from `MCP_HOST` (default
+`127.0.0.1`) and the port from `MCP_PORT` (default `8000`); `mcp-server start
+--sse` takes `--host` and `--port` with the same defaults. A wildcard host
+(`0.0.0.0`, `::` or empty) is refused on a networked transport even with a
+verifier configured, unless `NLQ_ALLOW_INSECURE_BIND=1` is set. The image sets
+`MCP_HOST=0.0.0.0` and `MCP_PORT=8080` but not `NLQ_ALLOW_INSECURE_BIND`, so a
+plain `docker run` of it refuses to start until you set that variable; the
+boundary is then the address you publish the port on (for example
+`-p 127.0.0.1:8080:8080`). The shipped `docker-compose.yml` sets it and publishes the port on `127.0.0.1`
+by default (`BIND_ADDR`).
+
 ### Option 1 — an identity provider
 
 ```bash
@@ -180,7 +192,10 @@ previous behaviour should hand you.
 
 ## What gets recorded
 
-Every decision, allowed and denied, goes to the `nlqueries.audit` logger:
+Every decision, allowed and denied, goes to the `nlqueries.audit` logger. The
+message is `authorization denied` or `authorization allowed`; the record itself
+is attached to the log record as `extra={"audit": payload}`, a dict of this
+shape:
 
 ```json
 {"at": "2026-08-28T09:00:00+00:00", "principal": "alice@example.com",
@@ -189,8 +204,10 @@ Every decision, allowed and denied, goes to the `nlqueries.audit` logger:
 ```
 
 Denials log at `WARNING` and allows at `INFO`, so the two can be routed
-differently without parsing messages. Neither carries the token nor the token's
-claims — these records travel into support bundles.
+differently without parsing messages. A default formatter prints only the
+message; to write the payload out, attach a handler to `nlqueries.audit` whose
+formatter reads the record's `audit` attribute. Neither carries the token nor
+the token's claims — these records travel into support bundles.
 
 The refusal returned to the caller names the action and the agent and never the
 reason. A caller learning which agents exist from the wording of a denial is one

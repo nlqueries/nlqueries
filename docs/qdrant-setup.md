@@ -1,14 +1,22 @@
 # Setting Up Qdrant
 
-Qdrant is a vector database NLQueries uses for three things:
+Qdrant is a vector database. NLQueries creates these collections in it:
 
-| Feature | What's stored |
-|---|---|
-| `process-history --embed` | Query capsule embeddings for semantic search |
-| Semantic cache | Cached answers indexed by question embedding |
-| Document connectors | Document chunk embeddings for retrieval |
+| Collection | What's stored | Written by | Read by |
+|---|---|---|---|
+| `QDRANT_COLLECTION` (default `nlqueries`) | Query capsule embeddings | `process-history --embed` | nothing (see below) |
+| `cache_<agent>` | Cached answers indexed by question embedding | the semantic cache, as questions are answered | the semantic cache; `cache stats`, `cache list`, `cache clear` |
+| `doc_<source_id>_chunks` | Document chunk embeddings | `doc-ingest`, `doc-sync-notion`, `doc-sync-confluence` | `doc-ask` |
+| `agent_<id>_verified` | Question/SQL pairs from positively rated feedback | `promote-feedback`, and `export-kb` at the end of its run | the question path, as example queries |
+| `agent_<id>_schema` | Table and column description embeddings | `generate_knowledge_base(..., embed=True)` in the Python API; no `nlqueries` command passes `embed=True` | the question path, for relevant tables; it also searches this collection for example queries, though nothing writes capsules to it |
 
-Qdrant is **optional** — NLQueries works without it, but `--embed`, semantic caching, and document retrieval won't be available.
+Each collection is created on first write with 384-dimension vectors (`nlqueries.config.EMBED_DIMENSIONS`, a constant rather than a setting), cosine distance and INT8 scalar quantization. In the names above, `cache_<agent>` and `agent_<id>_verified` replace every character other than letters, digits, `_` and `-` in the agent ID with `_`, so `postgres:localhost:mydb` becomes `agent_postgres_localhost_mydb_verified`; `agent_<id>_schema` uses the ID as given.
+
+**Current limitation:**
+
+- Capsules written by `process-history --embed` go to `QDRANT_COLLECTION`, which nothing reads. The question path searches `agent_<id>_schema` for capsules instead, and when none of its searches return anything it falls back to the first capsules in the knowledge base file that `export-kb` wrote, without ranking them against the question.
+
+Qdrant is **optional** — NLQueries works without it, but semantic caching, document retrieval and the vector searches above won't be available.
 
 ## Check if it's already running
 
@@ -106,10 +114,13 @@ Nothing in it is worth preserving — a benchmark run rebuilds its own fixtures.
 
 **What that costs.** Nothing in Qdrant here is a system of record, but the parts
 are not equally cheap to rebuild. The semantic cache regenerates on its own as
-questions are asked. Schema and capsule vectors come back from
-`nlqueries process-history --embed`. Document chunks need their sources
-re-ingested, which is the only part that costs real time — if you have ingested a
-large corpus, plan for it rather than discovering it afterwards.
+questions are asked. The `QDRANT_COLLECTION` capsules come back by running
+`nlqueries process-history --embed` again, and the verified examples from
+`nlqueries promote-feedback` (or the next `export-kb`), which reads the feedback
+records kept outside Qdrant. `agent_<id>_schema` comes back only by calling
+`generate_knowledge_base(..., embed=True)` again from Python. Document chunks need
+their sources re-ingested, which is the only part that costs real time — if you
+have ingested a large corpus, plan for it rather than discovering it afterwards.
 
 
 ## Option A — Docker (recommended for local development)
@@ -136,11 +147,15 @@ Port 6333 (HTTP REST) is what NLQueries uses; port 6334 (gRPC) is optional.
 If you're already running the NLQueries Docker Compose stack, Qdrant is included — no separate setup:
 
 ```bash
-cp .env.example .env   # set your LLM API key
+cp .env.example .env
+# edit .env: set your LLM API key, QDRANT_API_KEY and NLQ_MCP_STATIC_TOKEN
+# (generate each with: openssl rand -hex 32)
 docker compose up
 ```
 
-Available at `http://qdrant:6333` inside the Compose network, `http://localhost:6333` on your host.
+`QDRANT_API_KEY` and `NLQ_MCP_STATIC_TOKEN` ship empty in `.env.example`, and `docker compose up` refuses to start until both are set. The compose file starts Qdrant with `QDRANT_API_KEY` as its API key and hands the same key to the NLQueries container.
+
+Available at `http://qdrant:6333` inside the Compose network, and at `http://localhost:6333` on your host (published on loopback only, unless you set `BIND_ADDR`). Requests from tools on the host need the key as well, sent in Qdrant's `api-key` header.
 
 ## Option C — Qdrant Cloud (managed, no local install)
 
@@ -175,13 +190,14 @@ Starts on port 6333 by default; data stored in `./storage` relative to the binar
 export QDRANT_URL=http://localhost:6333
 ```
 
-NLQueries creates its collection (`nlqueries` by default) automatically on first use.
+NLQueries creates each collection listed at the top of this page automatically on its first write.
 
 ## Verify
 
 ```bash
-curl -s http://localhost:6333/healthz
-nlqueries cache stats <connector-or-alias>
+nlqueries health
 ```
 
-If Qdrant is reachable, `cache stats` prints collection statistics. A connection error means the port doesn't match `QDRANT_URL` or the container/binary isn't running — see [troubleshooting.md#w3](troubleshooting.md#w3--qdrant-connection-refused).
+The first check listed is Qdrant: `[OK]` with `reachable at <host> (version …, … ms)` when a request to `QDRANT_URL` succeeds, or `[FAIL]` with `connection refused — is Qdrant running at <url>?` when it does not. The check sends no `QDRANT_API_KEY`, and it reports an error response from the server with the same message as a refused connection; `nlqueries health --verbose` shows the underlying error. A refused connection means the port doesn't match `QDRANT_URL` or the container/binary isn't running — see [troubleshooting.md#w3](troubleshooting.md#w3--qdrant-connection-refused).
+
+(`nlqueries cache stats` is not a connectivity check: it reports `Total entries: 0` when Qdrant cannot be reached.)
