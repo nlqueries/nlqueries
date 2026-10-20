@@ -45,7 +45,8 @@ services:
       # Qdrant is a write path into the semantic cache, and cached SQL is
       # executed against your database. An anonymous writer here reached a
       # committed side effect in an audit, so the key is required rather than
-      # optional; the app refuses to start without it for a non-loopback URL.
+      # optional: compose refuses to start without it, and the app refuses to
+      # open a Qdrant client for a non-loopback URL without it, on first use.
       QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
     ports:
       # Loopback by default. The app reaches Qdrant over the compose network,
