@@ -27,6 +27,15 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.name == _LOGGER]
 
 
+def _expected(setting: str, endpoint_shown: str) -> str:
+    """The whole warning, spelled out, so a test compares it exactly."""
+    return (
+        f"{setting} points the LLM client at {endpoint_shown} over plain http. "
+        "Prompts and the API key will cross the network unencrypted. Use https "
+        "unless this gateway is only reachable on a trusted network."
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -73,10 +82,10 @@ def test_warned_once_per_endpoint(caplog: pytest.LogCaptureFixture) -> None:
         for _ in range(3):
             warn_if_plain_http("http://gateway.internal:4000/v1", "api_base")
         warn_if_plain_http("http://other.internal:4000", "api_base")
-    messages = _warnings(caplog)
-    assert len(messages) == 2
-    assert "http://gateway.internal:4000" in messages[0]
-    assert "http://other.internal:4000" in messages[1]
+    assert _warnings(caplog) == [
+        _expected("api_base", "http://gateway.internal:4000"),
+        _expected("api_base", "http://other.internal:4000"),
+    ]
 
 
 def test_credentials_in_the_url_are_not_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -86,7 +95,7 @@ def test_credentials_in_the_url_are_not_logged(caplog: pytest.LogCaptureFixture)
     assert "s3cret" not in message
     assert "t0ken" not in message
     assert "user" not in message
-    assert "http://gateway.internal" in message
+    assert message == _expected("api_base", "http://gateway.internal")
 
 
 def _anthropic(**kwargs: str) -> AnthropicClient:
