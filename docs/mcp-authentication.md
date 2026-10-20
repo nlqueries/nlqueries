@@ -17,6 +17,11 @@ already has whatever the process has: the knowledge base, the connector file,
 the stored credentials. Requiring a token there would be theatre. The calls are
 still authorised and audited, against a principal that is the process owner.
 
+That holds only for calls that arrive over stdio. If a server set up for stdio
+is served over HTTP anyway (for example by mounting the module's `mcp` object in
+an ASGI app), a call that arrived as an HTTP request with no token is anonymous,
+not the process owner, and the local profile refuses it.
+
 ## A networked transport will not start without a verifier
 
 A networked transport refuses to start unless one of the two below is
@@ -36,12 +41,39 @@ Authentication does not lift the bind check. The Docker image and
 `127.0.0.1`) and the port from `MCP_PORT` (default `8000`); `mcp-server start
 --sse` takes `--host` and `--port` with the same defaults. A wildcard host
 (`0.0.0.0`, `::` or empty) is refused on a networked transport even with a
-verifier configured, unless `NLQ_ALLOW_INSECURE_BIND=1` is set. The image sets
+verifier configured, unless `NLQ_ALLOW_INSECURE_BIND=1` is set. Every other
+spelling of an unspecified address counts as a wildcard too: `0`, `0.0`, `0x0`,
+`::0`, `0:0:0:0:0:0:0:0`, `[::]`, `::ffff:0.0.0.0` and so on, as the socket layer
+reads them. The image sets
 `MCP_HOST=0.0.0.0` and `MCP_PORT=8080` but not `NLQ_ALLOW_INSECURE_BIND`, so a
 plain `docker run` of it refuses to start until you set that variable; the
 boundary is then the address you publish the port on (for example
 `-p 127.0.0.1:8080:8080`). The shipped `docker-compose.yml` sets it and publishes the port on `127.0.0.1`
 by default (`BIND_ADDR`).
+
+### Host and Origin checks
+
+On a loopback bind (`127.0.0.1`, `localhost`, `::1`) the MCP SDK already accepts
+only loopback names in the `Host` header. On any other bind the server checks
+them itself, so a page in a browser cannot reach it through a DNS name that
+happens to resolve to it. It accepts:
+
+- as `Host`: the host of `NLQ_MCP_RESOURCE_URL` (with its port, if it names
+  one), and `localhost` and `127.0.0.1` on any port;
+- as `Origin`, when a client sends one: the origin of `NLQ_MCP_RESOURCE_URL`.
+
+Any other `Host` gets `421 Misdirected Request`; any other `Origin` gets `403`.
+Set `NLQ_MCP_RESOURCE_URL` to the URL clients actually use. The shipped compose
+file sets it to `http://localhost:8080`, and clients can reach it there or at
+`127.0.0.1:8080`. A server running with `NLQ_ALLOW_UNAUTHENTICATED_MCP` usually
+has no resource URL, so it answers only to the loopback names; put a proxy in
+front that forwards one of those, or set `NLQ_MCP_RESOURCE_URL` to the address
+clients use.
+
+### Request size
+
+A request body over 4 MiB gets `413` on both networked transports. The SDK
+applies that limit to streamable HTTP; the server applies the same one to SSE.
 
 ### Option 1 — an identity provider
 
@@ -183,12 +215,29 @@ loop will exhaust it and see the rest refused. Size both numbers for the
 deployment rather than for one person, or move to an identity provider if you
 need to tell callers apart.
 
-stdio has no limits — the caller owns the process, and rationing them against
+stdio has no rate or concurrency limits — the caller owns the process, and rationing them against
 themselves would achieve nothing — and neither does a transport running with
 `NLQ_ALLOW_UNAUTHENTICATED_MCP`, where every request is the same anonymous
 caller. There, a limit would not ration anybody: it would put one budget across
 a deployment that had none before, which is not what a switch asking for the
 previous behaviour should hand you.
+
+### Input size
+
+Every tool refuses an over-long argument before it does anything, on every
+transport, stdio included:
+
+| Variable | Default | What it bounds |
+| --- | --- | --- |
+| `NLQ_MCP_MAX_QUESTION_CHARS` | 4000 | `question`, in `query` and `submit_feedback` |
+| `NLQ_MCP_MAX_SQL_CHARS` | 8000 | `generated_sql` and `corrected_sql`, in `submit_feedback` |
+
+An over-limit call gets a short refusal naming the argument and the limit; no
+model is called, no feedback is stored, and nothing reaches the database (the
+authorisation decision for the call is still audited). The
+values count characters, not bytes. A value that is not a positive whole number
+falls back to the default with a warning; there is no setting that removes the
+limit, so raise it instead.
 
 ## What gets recorded
 
@@ -212,6 +261,15 @@ the token's claims — these records travel into support bundles.
 The refusal returned to the caller names the action and the agent and never the
 reason. A caller learning which agents exist from the wording of a denial is one
 of the disclosures this exists to prevent.
+
+For the same reason, the other replies that could name agents follow
+`agents:list`:
+
+- `health` lists agent IDs only to a caller who is also granted `agents:list`.
+  Anyone else, such as a monitor granted only `health:read`, gets the number of
+  agents. Over stdio the caller has every grant and sees the IDs.
+- A call naming an agent that does not exist (`query`, `get_agent_schema`) says
+  so and names no other agent. `list_agents` is the way to find them.
 
 ## Enterprise
 

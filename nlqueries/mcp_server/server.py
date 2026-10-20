@@ -25,16 +25,28 @@ get_cache_stats     Return cache size and collection info for an agent.
 
 from __future__ import annotations
 
+import functools
 import getpass
+import inspect
+import ipaddress
 import logging
 import os
+import socket
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import anyio
 from mcp.server.fastmcp import FastMCP
+from mcp.server.streamable_http_manager import (
+    DEFAULT_MAX_REQUEST_BODY_SIZE,
+    RequestBodyLimitMiddleware,
+)
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
 
 from nlqueries import config
 from nlqueries.auth.principal import Principal, Source, local_principal
@@ -123,7 +135,7 @@ def get_agent_schema(agent_id: str) -> str:
     safe_id = re.sub(r"[^\w.-]", "_", agent_id)
     kb_path = config.KB_PATH / f"{safe_id}.yaml"
     if not kb_path.exists():
-        return f"Agent '{agent_id}' not found. Available: {list_agents()}"
+        return _agent_not_found(agent_id)
 
     try:
         kb: dict[str, Any] = yaml.safe_load(kb_path.read_text(encoding="utf-8")) or {}
@@ -185,6 +197,15 @@ def get_agent_schema(agent_id: str) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _agent_not_found(agent_id: str) -> str:
+    """The reply for an agent that does not exist.
+
+    It names no other agent. Which agents exist is what `list_agents` answers,
+    under its own permission; a mistyped ID is not a way round that.
+    """
+    return f"Agent '{agent_id}' not found. Use list_agents() to see the agents you can use."
 
 
 #: How long the MCP `query` tool waits for an answer.
@@ -262,13 +283,7 @@ async def query(
             f"{_STATEMENT_BUDGET_SECONDS} s."
         )
     except FileNotFoundError:
-        available = list_agents()
-        hint = (
-            f"Available agents: {available}"
-            if available
-            else "No agents found — run 'nlqueries export-kb' first."
-        )
-        return f"Agent '{agent_id}' not found. {hint}"
+        return _agent_not_found(agent_id)
     except Exception as exc:  # noqa: BLE001
         _log.exception("MCP query tool error for agent %r", agent_id)
         return f"Query failed: {exc}"
@@ -385,6 +400,13 @@ def submit_feedback(
     return msg
 
 
+#: Whether the caller of the `health` call being served may see agent IDs: set
+#: per call by the registered tool (see `_health_tool`) from the caller's
+#: `agents:list` grant. False by default, so the report gives a count unless a
+#: grant says otherwise.
+_AGENT_IDS_VISIBLE: ContextVar[bool] = ContextVar("nlq_agent_ids_visible", default=False)
+
+
 def health(probe_llm: bool = False) -> str:
     """Check connectivity to all NLQueries dependencies.
 
@@ -475,8 +497,10 @@ def health(probe_llm: bool = False) -> str:
 
     # Config
     agents = list_agents()
-    if agents:
+    if agents and _AGENT_IDS_VISIBLE.get():
         lines.append(f"✅ **Config** — {len(agents)} agent(s): {', '.join(agents)}")
+    elif agents:
+        lines.append(f"✅ **Config** — {len(agents)} agent(s)")
     else:
         lines.append(
             f"⚠️  **Config** — KB_PATH ({config.KB_PATH}) has no agents yet "
@@ -640,6 +664,133 @@ _ALL_TOOLS: list[Callable[..., Any]] = [
 ]
 
 
+#: The longest question a tool accepts, in characters.
+_MAX_QUESTION_CHARS_ENV = "NLQ_MCP_MAX_QUESTION_CHARS"
+_DEFAULT_MAX_QUESTION_CHARS = 4_000
+
+#: The longest SQL a tool accepts, in characters.
+_MAX_SQL_CHARS_ENV = "NLQ_MCP_MAX_SQL_CHARS"
+_DEFAULT_MAX_SQL_CHARS = 8_000
+
+
+def _char_limit(name: str, default: int) -> int:
+    """A character limit from the environment, or *default*.
+
+    Anything but a positive whole number falls back to the default with a
+    warning. There is no value that turns the limit off: a typo should not
+    remove it, and an operator who needs more can set a larger number.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        _log.warning("%s is not a positive number (%r); using %d.", name, raw, default)
+        return default
+    return value
+
+
+def _input_limits() -> dict[str, int]:
+    """The character limit for each tool argument that has one, by name."""
+    question = _char_limit(_MAX_QUESTION_CHARS_ENV, _DEFAULT_MAX_QUESTION_CHARS)
+    sql = _char_limit(_MAX_SQL_CHARS_ENV, _DEFAULT_MAX_SQL_CHARS)
+    return {"question": question, "generated_sql": sql, "corrected_sql": sql}
+
+
+def _bounded(func: Callable[..., Any], limits: dict[str, int]) -> Callable[..., Any]:
+    """Wrap *func* so an over-long argument is refused before it runs.
+
+    A question is sent to the model and embedded, and feedback is stored and can
+    be promoted into retrieval, so their size is what a call costs. The check
+    comes before the tool's body (`guard` has already authorised and admitted
+    the call): an over-limit call gets a short refusal, and no model is called
+    and nothing is stored.
+
+    The signature is kept (`functools.wraps`), for the reason `guard` keeps it:
+    FastMCP publishes each tool's schema from it.
+    """
+    signature = inspect.signature(func)
+    names = [name for name in limits if name in signature.parameters]
+    if not names:
+        return func
+
+    def refusal(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+        try:
+            arguments = signature.bind_partial(*args, **kwargs).arguments
+        except TypeError:
+            return None
+        for name in names:
+            value = arguments.get(name)
+            if isinstance(value, str) and len(value) > limits[name]:
+                return (
+                    f"Refused: {name} is {len(value):,} characters, over the limit of "
+                    f"{limits[name]:,}. Nothing was run."
+                )
+        return None
+
+    if inspect.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def async_bounded(*args: Any, **kwargs: Any) -> Any:
+            refused = refusal(args, kwargs)
+            if refused is not None:
+                return refused
+            return await func(*args, **kwargs)
+
+        return async_bounded
+
+    @functools.wraps(func)
+    def bounded(*args: Any, **kwargs: Any) -> Any:
+        refused = refusal(args, kwargs)
+        if refused is not None:
+            return refused
+        return func(*args, **kwargs)
+
+    return bounded
+
+
+def _health_tool(authorizer: Any, resolve: Callable[[], Principal]) -> Callable[..., Any]:
+    """`health` as served: agent IDs only for a caller granted `agents:list`.
+
+    `health:read` is the grant a monitor gets, and a monitor needs to know the
+    server has agents, not what they are called. Listing them is what
+    `agents:list` grants, so the IDs follow that grant and everyone else gets
+    the count.
+    """
+    from nlqueries.auth.principal import Action  # noqa: PLC0415
+
+    @functools.wraps(health)
+    def health_tool(*args: Any, **kwargs: Any) -> str:
+        visible = authorizer.authorize(resolve(), Action.AGENTS_LIST, None).allowed
+        token = _AGENT_IDS_VISIBLE.set(visible)
+        try:
+            return health(*args, **kwargs)
+        finally:
+            _AGENT_IDS_VISIBLE.reset(token)
+
+    return health_tool
+
+
+class _Server(FastMCP):
+    """FastMCP with the SSE transport's request bodies capped.
+
+    The SDK caps a streamable-HTTP request body at 4 MiB and answers 413 above
+    that. In 1.29, the oldest release this supports, its SSE transport reads a
+    POSTed message whole, with no cap. The same middleware, with the same
+    limit, goes in front of the SSE app here so the two networked transports
+    accept the same sizes. Later releases cap SSE themselves; the check is then
+    made twice, at the same limit, which costs nothing.
+    """
+
+    def sse_app(self, mount_path: str | None = None) -> Starlette:
+        app = super().sse_app(mount_path)
+        app.add_middleware(RequestBodyLimitMiddleware, max_body_size=DEFAULT_MAX_REQUEST_BODY_SIZE)
+        return app
+
+
 def _build_server(
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -664,7 +815,14 @@ def _build_server(
         verifier, settings = configured
         auth_args = {"token_verifier": verifier, "auth": settings}
 
-    server = FastMCP("nlqueries", instructions=_INSTRUCTIONS, host=host, port=port, **auth_args)
+    server = _Server(
+        "nlqueries",
+        instructions=_INSTRUCTIONS,
+        host=host,
+        port=port,
+        transport_security=_transport_security(host) if networked else None,
+        **auth_args,
+    )
 
     # One guard, at the one place every tool is registered. Nine call sites
     # would be nine chances for the tenth tool to be added without one.
@@ -684,9 +842,43 @@ def _build_server(
     # part of what it gives up.
     admission = from_config() if (networked and authenticated) else None
     resolve = _principal_for_call(networked=networked)
+    limits = _input_limits()
     for fn in _ALL_TOOLS:
-        server.add_tool(guard(fn, authorizer, resolve, admission))
+        if fn is health:
+            fn = _health_tool(authorizer, resolve)
+        server.add_tool(guard(_bounded(fn, limits), authorizer, resolve, admission))
     return server
+
+
+def _transport_security(host: str) -> TransportSecuritySettings | None:
+    """Host and Origin checks for a listener bound beyond loopback.
+
+    On a loopback bind the SDK turns these on itself, allowing the loopback
+    names. On any other bind it turns them off, so a page in a browser on the
+    same network could reach the server through a DNS name that resolves to it.
+    Here the server answers only to the name it is published under -- the host
+    of `NLQ_MCP_RESOURCE_URL` -- and to `localhost` and `127.0.0.1` on any
+    port, which is how a published container port is reached from its host. A
+    request with any other `Host` gets 421; one with an `Origin` other than the
+    resource URL's gets 403. A client that sends no `Origin` is not affected.
+    """
+    if _is_loopback(host):
+        return None
+
+    from nlqueries.auth.mcp_verifier import RESOURCE_URL_ENV  # noqa: PLC0415
+
+    allowed_hosts = ["localhost:*", "127.0.0.1:*"]
+    allowed_origins: list[str] = []
+    resource = urlsplit(os.getenv(RESOURCE_URL_ENV, "").strip())
+    if resource.scheme and resource.hostname:
+        netloc = resource.netloc.rpartition("@")[2].lower()
+        allowed_hosts.append(netloc)
+        allowed_origins.append(f"{resource.scheme.lower()}://{netloc}")
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
 
 
 def _principal_for_call(*, networked: bool) -> Callable[[], Principal]:
@@ -701,6 +893,12 @@ def _principal_for_call(*, networked: bool) -> Callable[[], Principal]:
     That last case used to fall through to the process owner, so every remote
     call was recorded against the account the server runs as. An audit trail
     that names the wrong party is worse than one that says it does not know.
+
+    The transport is also checked per call, for a server built as stdio and
+    then served over HTTP anyway (the module-level `mcp` mounted in an app, or
+    run with another transport). The local principal stands for whoever
+    launched the process, and a request that arrived over HTTP is not that, so
+    it is anonymous too.
     """
 
     def resolve() -> Principal:
@@ -711,11 +909,23 @@ def _principal_for_call(*, networked: bool) -> Callable[[], Principal]:
         token = get_access_token()
         if token is not None:
             return principal_from(token)
-        if networked:
+        if networked or _over_http():
             return Principal(subject="anonymous", source=Source.ANONYMOUS)
         return local_principal(getpass.getuser())
 
     return resolve
+
+
+def _over_http() -> bool:
+    """Whether the call being served arrived as an HTTP request.
+
+    The SDK puts the HTTP request on the request context for its HTTP
+    transports and leaves it empty for stdio.
+    """
+    from mcp.server.lowlevel.server import request_ctx  # noqa: PLC0415
+
+    context = request_ctx.get(None)
+    return context is not None and context.request is not None
 
 
 def _resolve_authorizer(authenticated: bool, *, networked: bool = False) -> Any:
@@ -762,8 +972,50 @@ mcp = _build_server()
 
 
 #: Hosts that expose the listener beyond this machine. `0.0.0.0` and `::` are
-#: every interface; an empty host is how some stacks spell the same thing.
+#: every interface; an empty host is how some stacks spell the same thing. Any
+#: other spelling of an unspecified address counts too: see `_is_wildcard`.
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # noqa: S104
+
+
+def _address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """*host* as an IP address, or None for a name.
+
+    Read the way the socket layer reads it, not only the way `ipaddress` does:
+    `0`, `0.0` and `0x0` are all `0.0.0.0` to `bind`, though `ipaddress`
+    rejects them. An IPv4-mapped IPv6 address is returned as the IPv4 address
+    it maps.
+    """
+    text = host.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        try:
+            address = ipaddress.IPv4Address(socket.inet_aton(text))
+        except (OSError, ValueError):
+            return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def _is_wildcard(host: str) -> bool:
+    """Whether binding *host* listens on every interface."""
+    if host.strip() in _WILDCARD_HOSTS:
+        return True
+    address = _address(host)
+    return address is not None and address.is_unspecified
+
+
+def _is_loopback(host: str) -> bool:
+    """Whether binding *host* listens on this machine only."""
+    if host.strip().lower() == "localhost":
+        return True
+    address = _address(host)
+    return address is not None and address.is_loopback
+
 
 #: Set to `1` to bind a network interface anyway. Named for what it does.
 _INSECURE_BIND_ENV = "NLQ_ALLOW_INSECURE_BIND"
@@ -792,7 +1044,7 @@ def _refuse_unauthenticated_exposure(host: str, *, authenticated: bool = False) 
     force -- the shipped compose file, which sets the switch and configures a
     token, logged exactly that on every start.
     """
-    if host not in _WILDCARD_HOSTS:
+    if not _is_wildcard(host):
         return
     if os.getenv(_INSECURE_BIND_ENV, "").strip().lower() in {"1", "true", "yes"}:
         if authenticated:

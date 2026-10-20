@@ -817,13 +817,18 @@ class TestHealth:
         assert "⚠" in out
 
     def test_agents_listed_when_present(self) -> None:
-        from nlqueries.mcp_server.server import health
+        """As served over stdio, whose caller may list agents. Called directly,
+        with no caller, `health` gives the count only."""
+        from nlqueries.mcp_server.server import health, mcp
 
         with self._patches(agents=["sales", "support"]):
-            out = health()
+            out = mcp._tool_manager.get_tool("health").fn()
+            direct = health()
 
         assert "sales" in out
         assert "support" in out
+        assert "2 agent(s)" in direct
+        assert "sales" not in direct
 
 
 # ---------------------------------------------------------------------------
