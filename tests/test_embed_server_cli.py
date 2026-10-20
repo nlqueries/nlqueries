@@ -383,3 +383,41 @@ def test_start_on_another_port_says_clients_will_not_find_it(
 
     assert result.exit_code == 0, out.getvalue()
     assert "EMBED_SERVER_PORT=9000" in out.getvalue()
+
+
+def test_the_module_entry_point_listens_on_the_port_clients_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`python -m nlqueries.embeddings.embed_server`, the run path a host
+    without the CLI uses, still defaulted to 8765 whatever EMBED_SERVER_PORT
+    said, so clients and `status` looked somewhere else."""
+    from nlqueries import config
+
+    monkeypatch.setattr(config, "EMBED_SERVER_PORT", 9123)
+    serve = MagicMock()
+    with (
+        patch.object(embed_server, "serve", serve),
+        patch.object(embed_server, "configure_logging", MagicMock()),
+    ):
+        embed_server.main([])
+
+    assert serve.call_args.kwargs["port"] == 9123
+
+
+def test_the_client_reads_its_port_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client read EMBED_SERVER_PORT from os.environ itself, agreeing with
+    `config` (which `status` and `health` use) only because of import order."""
+    import importlib
+
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    monkeypatch.delenv("EMBED_SERVER_PORT", raising=False)
+    monkeypatch.setattr(config, "EMBED_SERVER_PORT", 9123)
+    try:
+        importlib.reload(embedder)
+        assert embedder._DAEMON_PORT == 9123
+        assert embedder._DAEMON_BASE == "http://127.0.0.1:9123"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(embedder)

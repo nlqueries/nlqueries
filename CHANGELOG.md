@@ -392,7 +392,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   ever, and clients only ever connect to `EMBED_SERVER_PORT`. `start` now
   listens on `EMBED_SERVER_PORT` by default and warns when `--port` names a
   port clients will not use; `status` checks `EMBED_SERVER_PORT` and takes
-  `--port`; `health` reports the port it reached.
+  `--port`; `health` reports the port it reached. The daemon's own entry
+  point (`python -m nlqueries.embeddings.embed_server`, and `serve()`) also
+  defaults to `EMBED_SERVER_PORT`, and the client reads the port from
+  `config` rather than the environment, so every path agrees.
 - **`doc-ingest`, `doc-sync-notion` and `doc-sync-confluence` store what
   they ingest.** They chunked a source and printed a count, but nothing in
   core wrote the chunks anywhere, so `doc-ask doc_<source_id>_chunks`
