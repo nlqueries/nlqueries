@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, cast
@@ -21,6 +22,7 @@ from nlqueries.llm.client import (
     exhausted,
     looks_like_timeout,
 )
+from nlqueries.llm.endpoint import warn_if_plain_http
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, record_usage
 
@@ -158,6 +160,11 @@ class AnthropicClient(LLMClient):
         # env-derived config default; api_base overrides the endpoint when given.
         key = api_key if api_key is not None else config.ANTHROPIC_API_KEY
         base_kwargs: dict[str, Any] = {"base_url": api_base} if api_base is not None else {}
+        # The SDK reads ANTHROPIC_BASE_URL itself when no base_url is passed.
+        if api_base is not None:
+            warn_if_plain_http(api_base, "api_base")
+        else:
+            warn_if_plain_http(os.environ.get("ANTHROPIC_BASE_URL"), "ANTHROPIC_BASE_URL")
         # On the SDK client rather than per call: the Anthropic SDK applies it
         # to every request made through it, including the ones inside a stream,
         # so there is no path that can be added later and quietly miss it.

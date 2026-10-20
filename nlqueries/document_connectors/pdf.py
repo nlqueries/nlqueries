@@ -12,8 +12,14 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
-from nlqueries.document_connectors._limits import ExtractionBudget
+from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._limits import (
+    DocumentTooComplexError,
+    ExtractionBudget,
+    _size_over,
+)
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -22,6 +28,32 @@ def _make_chunk_id(source_id: str, page_number: int, chunk_index: int) -> str:
     """Deterministic 16-char hex ID: sha256(source_id:page:index)[:16]."""
     raw = f"{source_id}:{page_number}:{chunk_index}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _declared_page_count(pdf: Any) -> int | None:
+    """The page count the document's page tree declares, or ``None``.
+
+    Read from ``/Pages /Count`` in the catalog, which pdfminer has parsed by the
+    time ``pdfplumber.open`` returns; no page is built or extracted to learn it.
+    Self-reported, like a zip directory, so it is a cheap first gate and the
+    pages are counted again before extraction. Anything unreadable returns
+    ``None`` and is left to that second count.
+    """
+    try:
+        from pdfminer.pdftypes import resolve1
+
+        count = resolve1(resolve1(pdf.doc.catalog["Pages"])["Count"])
+    except Exception:  # noqa: BLE001 -- a malformed tree is the parser's to report
+        return None
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def _refuse_page_count(name: str, pages: int) -> None:
+    if pages > _limits.PDF_PAGES:
+        raise DocumentTooComplexError(
+            f"{name} has {pages} pages, over the {_limits.PDF_PAGES}-page limit "
+            "for a single document; split it and ingest the parts."
+        )
 
 
 class PdfConnector(DocumentConnector):
@@ -45,6 +77,19 @@ class PdfConnector(DocumentConnector):
             ) from exc
 
         source_path = Path(source)
+        # Refused on its size on disk before the parser opens it. A file that
+        # cannot be stat'ed is left for the parser to report, which names the
+        # problem better than anything this could.
+        try:
+            size = source_path.stat().st_size
+        except OSError:
+            size = None
+        if size is not None and size > _limits.PDF_BYTES:
+            shown, cap = _size_over(size, _limits.PDF_BYTES)
+            raise DocumentTooComplexError(
+                f"{source_path.name} is {shown}, over the {cap} limit for a PDF."
+            )
+
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self._CHUNK_SIZE,
             chunk_overlap=self._CHUNK_OVERLAP,
@@ -53,11 +98,16 @@ class PdfConnector(DocumentConnector):
         chunks: list[DocumentChunk] = []
         # A PDF is not a zip, so the expansion gate never saw it. Page count is a
         # poor proxy for cost -- a 3,000-page PDF of scanned images and a 30-page
-        # one of dense tables differ by orders of magnitude -- so this is bounded
-        # by the clock instead, checked once per page.
+        # one of dense tables differ by orders of magnitude -- so cost is bounded
+        # by the clock, checked once per page. The page cap is a separate,
+        # deterministic refusal of a document known to be too long.
         budget = ExtractionBudget(name=source_path.name)
         with pdfplumber.open(source_path) as pdf:
+            declared = _declared_page_count(pdf)
+            if declared is not None:
+                _refuse_page_count(source_path.name, declared)
             total_pages = len(pdf.pages)
+            _refuse_page_count(source_path.name, total_pages)
             for page in pdf.pages:
                 budget.check(f"{page.page_number - 1} of {total_pages} pages")
                 page_number = page.page_number  # 1-based in pdfplumber

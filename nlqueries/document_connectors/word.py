@@ -28,6 +28,9 @@ _HEADING_STYLES = {"Heading 1", "Heading 2"}
 _SPLIT_THRESHOLD = 1_200
 _CHUNK_SIZE = 800
 _CHUNK_OVERLAP = 100
+#: Paragraphs walked between budget checks. A document of a few huge sections
+#: would otherwise reach its first check only after every paragraph was read.
+_BUDGET_CHECK_EVERY = 1_000
 
 
 def _make_chunk_id(source_id: str, chunk_index: int) -> str:
@@ -74,7 +77,10 @@ class WordConnector(DocumentConnector):
         current_heading = "untitled"
         current_lines: list[str] = []
 
-        for para in doc.paragraphs:
+        paragraphs = doc.paragraphs
+        for para_number, para in enumerate(paragraphs):
+            if para_number and para_number % _BUDGET_CHECK_EVERY == 0:
+                budget.check(f"{para_number} of {len(paragraphs)} paragraphs")
             style_name = para.style.name if para.style else ""
             text = para.text.strip()
 
@@ -96,7 +102,7 @@ class WordConnector(DocumentConnector):
 
         # If the document had no headings at all, treat everything as one section.
         if not sections:
-            all_text = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
+            all_text = "\n".join(p.text.strip() for p in paragraphs if p.text.strip())
             if all_text:
                 sections = [("untitled", all_text)]
 
