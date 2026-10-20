@@ -1,0 +1,21 @@
+# Keeps the GitHub Actions in .github/workflows/ up to date. The workflows pin
+# every action to a full commit SHA with the version in a trailing comment
+# (`@<sha> # v4`); Dependabot updates both the SHA and the comment.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # One PR per week for all action updates rather than one per action.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    open-pull-requests-limit: 5
