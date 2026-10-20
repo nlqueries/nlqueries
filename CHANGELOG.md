@@ -377,7 +377,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   path built the name from the raw ID instead, so for every ID `connect`
   produces it looked for a collection that never exists and the verified
   examples were never used. It now names the collection the same way, and
-  `promote-feedback` prints the name it actually wrote to.
+  `promote-feedback` prints the name it actually wrote to. Because two IDs
+  that differ only in the replaced characters now share a collection, the
+  lookup also matches the `agent_id` each pair was promoted for.
 - **A `.env` in the working directory is read.** `load_dotenv()` with no
   path searches upward from the file that calls it, which for an installed
   package is `site-packages/nlqueries`, so the `nlqueries` command never found
