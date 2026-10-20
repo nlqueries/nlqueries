@@ -71,6 +71,8 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `MCP_TRANSPORT` | No | `stdio` (the Docker image: `sse`) | Transport for `python -m nlqueries.mcp_server` and the Docker image: `stdio`, `sse` or `streamable-http`. `nlqueries mcp-server start` takes `--sse` instead |
 | `MCP_HOST` | No | `127.0.0.1` (the Docker image: `0.0.0.0`) | Bind address for a networked transport, for `python -m nlqueries.mcp_server` and the Docker image. A wildcard address is refused unless `NLQ_ALLOW_INSECURE_BIND=1`; `mcp-server start` takes `--host` |
 | `MCP_PORT` | No | `8000` (the Docker image: `8080`) | Port for a networked transport, for `python -m nlqueries.mcp_server` and the Docker image; `mcp-server start` takes `--port` |
+| `NLQ_MCP_MAX_QUESTION_CHARS` | No | `4000` | Longest `question` an MCP tool accepts, in characters. A longer one is refused before the tool runs. Not a positive whole number: the default, with a warning. Applies on every MCP transport; see [mcp-authentication.md](mcp-authentication.md#input-size) |
+| `NLQ_MCP_MAX_SQL_CHARS` | No | `8000` | Longest SQL an MCP tool accepts (`submit_feedback`'s `generated_sql` and `corrected_sql`), in characters, with the same rules |
 | `NLQ_MCP_*`, `NLQ_ALLOW_UNAUTHENTICATED_MCP`, `NLQ_ALLOW_INSECURE_BIND` | For a networked MCP transport | — | Authentication, grants, limits and the bind override for the MCP server; a networked transport will not start without authentication. See [mcp-authentication.md](mcp-authentication.md) |
 
 ### Provider and model must agree
