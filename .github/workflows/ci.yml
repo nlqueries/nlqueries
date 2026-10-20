@@ -114,7 +114,12 @@ jobs:
         with:
           # The version the lock is compiled for (scripts/lock-deps.sh).
           python-version: "3.11"
-          cache: pip
+          # No `cache: pip`: checking hashes downloads the lock's whole closure,
+          # torch and the CUDA wheels included, so a cache saved here would be
+          # gigabytes. setup-python keys the cache on the dependency files, not
+          # the job, so this job could write the entry the other 3.11 jobs
+          # restore, and crowd the image build's cache out of the quota. Only
+          # pip-audit is installed here, so there is nothing to gain from it.
 
       - name: pip-audit (lock)
         run: |

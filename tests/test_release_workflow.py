@@ -54,8 +54,24 @@ def test_the_publishing_jobs_are_the_ones_expected() -> None:
 
 @pytest.mark.parametrize("name", sorted(n for n, j in _jobs().items() if _publishes(j)))
 def test_every_publishing_job_runs_only_on_a_tag_push(name: str) -> None:
-    """A manual run is a dry run; it must never reach an environment or a secret."""
-    assert PUSH_GUARD in str(_jobs()[name].get("if", ""))
+    """A manual run is a dry run; it must never reach an environment or a secret.
+
+    Compared exactly, not as a substring: `... == 'push' || inputs.publish`
+    contains the guard and would publish from a manual run.
+    """
+    assert str(_jobs()[name].get("if", "")).strip() == PUSH_GUARD
+
+
+def test_a_push_runs_the_release_only_for_a_version_tag() -> None:
+    """The push guard means "a release" only because the push trigger is tags
+    only. A `branches` filter beside it would make an ordinary push to `main`
+    satisfy every guard and publish."""
+    workflow = yaml.safe_load(RELEASE.read_text(encoding="utf-8"))
+    # YAML 1.1, which PyYAML follows, reads the bare key `on` as True.
+    triggers = workflow[True]
+    assert set(triggers) == {"push", "workflow_dispatch"}
+    assert set(triggers["push"]) == {"tags"}
+    assert all(str(tag).startswith("v") for tag in triggers["push"]["tags"])
 
 
 def test_nothing_widens_the_workflow_wide_permissions() -> None:
