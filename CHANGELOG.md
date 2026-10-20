@@ -163,6 +163,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   1.25.1 with them, because aiohttp 3.14.4 requires it. Every other pin is
   unchanged, and so are the `pyproject.toml` floors, so a `pip install` of the
   package resolves as before.
+- **A plain-http LLM gateway logs a warning.** When `ANTHROPIC_BASE_URL` or
+  an `api_base` override (for the Anthropic or the LiteLLM client, including
+  one passed in `extra`) uses `http://` to a host that is not `localhost` or a
+  loopback IP address, the client logs a warning naming the setting and the
+  endpoint, once per endpoint per process. The request is not refused, since
+  in-cluster gateways commonly use http. Only the scheme, host and port are
+  logged.
 - **The SQL prompt matches a quoted value as a value.** Read as exact, a
   value quoted with a stray space became a LIKE pattern with the space in it,
   and a "contains" became a case-sensitive INSTR, so the rows it named

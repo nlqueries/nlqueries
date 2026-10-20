@@ -6,7 +6,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | One of these two, except on [Bedrock](#amazon-bedrock) | — | Anthropic API key |
 | `OPENAI_API_KEY` | One of these two, except on [Bedrock](#amazon-bedrock) | — | OpenAI API key |
-| `ANTHROPIC_BASE_URL` | No | — | Endpoint for the Anthropic client, read by the Anthropic SDK — for a gateway in front of the API. While it is set, the check in [Provider and model must agree](#provider-and-model-must-agree) is skipped. |
+| `ANTHROPIC_BASE_URL` | No | — | Endpoint for the Anthropic client, read by the Anthropic SDK — for a gateway in front of the API. While it is set, the check in [Provider and model must agree](#provider-and-model-must-agree) is skipped. An `http://` URL to a host other than `localhost` or a loopback address logs a warning once per endpoint, since prompts and the API key would cross the network unencrypted; it is not refused. |
 | `LLM_MODEL` | No | `claude-sonnet-5-5`, or `openai/gpt-4o` when `OPENAI_API_KEY` selected the provider | LLM model identifier |
 | `LLM_PROVIDER` | No | Auto-detected | `anthropic`, `litellm`, or `bedrock` (which resolves to `litellm`). Any other value, `openai` included, fails with `Unknown LLM provider` when an LLM client is created. Unset, the provider is detected in this order: an `LLM_MODEL` starting `bedrock/` selects Bedrock (see [Amazon Bedrock](#amazon-bedrock)); then `ANTHROPIC_API_KEY` selects `anthropic`; then `OPENAI_API_KEY` selects `litellm`, with `LLM_MODEL` defaulting to `openai/gpt-4o` and `LLM_MODEL_FAST` to `openai/gpt-4o-mini`. With both keys set Anthropic wins, so to use OpenAI then, set `LLM_PROVIDER=litellm` and `LLM_MODEL=openai/<model>`. |
 | `QDRANT_URL` | No | `http://localhost:6333` | Qdrant URL. Required for `--embed`, the semantic cache, and document connectors. |
@@ -101,6 +101,14 @@ Two cases are deliberately not refused:
 - **A gateway.** When `api_base` or `ANTHROPIC_BASE_URL` points the client
   somewhere other than api.anthropic.com, the check is skipped: the premise no
   longer holds and your gateway may expect prefixed ids.
+
+A gateway URL, from `ANTHROPIC_BASE_URL` or an `api_base` override for either
+client, that uses `http://` to a host other than `localhost` or an IP address
+that is loopback (`127.0.0.0/8`, `::1`) logs one warning per endpoint per
+process. The request still goes out: an in-cluster gateway on plain http is a
+legitimate setup. Hostnames are not resolved, so a name that points at
+127.0.0.1 still warns. The warning shows only the scheme, host and port, never
+credentials in the URL.
 
 ### Amazon Bedrock
 
