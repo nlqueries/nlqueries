@@ -1146,13 +1146,13 @@ def _search_verified(
     # raw connector ID (`agent_postgres:localhost:mydb_schema`), while the
     # promoter writes `agent_postgres_localhost_mydb_verified`; swapping the
     # suffix alone looked for a collection that never exists, so promoted
-    # examples were never used. Sanitising is idempotent, so a caller that
-    # already passes the safe form still resolves.
+    # examples were never used.
     if not (collection.startswith("agent_") and collection.endswith("_schema")):
         return []
     from nlqueries.feedback.promoter import _verified_collection  # noqa: PLC0415
 
-    verified_collection = _verified_collection(collection[len("agent_") : -len("_schema")])
+    agent_id = collection[len("agent_") : -len("_schema")]
+    verified_collection = _verified_collection(agent_id)
 
     try:
         from qdrant_client import QdrantClient  # noqa: PLC0415
@@ -1173,8 +1173,14 @@ def _search_verified(
         response = client.query_points(
             collection_name=verified_collection,
             query=vector,
+            # Two IDs that differ only in characters the name replaces share a
+            # collection; the agent_id the promoter writes into every payload is
+            # what keeps one agent's confirmed pairs out of the other's prompt.
             query_filter=Filter(
-                must=[FieldCondition(key="verified", match=MatchValue(value=True))]
+                must=[
+                    FieldCondition(key="verified", match=MatchValue(value=True)),
+                    FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
+                ]
             ),
             limit=top_k,
         )

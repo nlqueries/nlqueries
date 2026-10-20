@@ -67,10 +67,34 @@ def test_a_promoted_pair_is_found_for_a_connector_id_with_colons(qdrant: QdrantC
     assert [h["sql"] for h in hits] == ["SELECT COUNT(*) FROM orders"]
 
 
-def test_an_already_safe_id_still_resolves(qdrant: QdrantClient) -> None:
-    """Callers that pass the sanitised form keep working: sanitising is idempotent."""
-    safe = _verified_collection(_AGENT_ID)[len("agent_") : -len("_verified")]
+def test_an_agent_whose_id_sanitises_the_same_does_not_get_anothers_pairs(
+    qdrant: QdrantClient,
+) -> None:
+    """`postgres:db.prod:sales` and `postgres:db_prod:sales` both become
+    `agent_postgres_db_prod_sales_verified`, so their pairs share a collection
+    and only the `agent_id` the promoter writes into each payload tells them
+    apart."""
+    first, second = "postgres:db.prod:sales", "postgres:db_prod:sales"
+    collection = _verified_collection(first)
+    assert collection == _verified_collection(second)
+    qdrant.create_collection(
+        collection,
+        vectors_config=VectorParams(size=config.EMBED_DIMENSIONS, distance=Distance.COSINE),
+    )
+    qdrant.upsert(
+        collection,
+        points=[
+            PointStruct(
+                id=10 + n,
+                vector=_unit_vector(),
+                payload={"question": "q", "sql": sql, "agent_id": agent, "verified": True},
+            )
+            for n, (agent, sql) in enumerate(
+                [(first, "SELECT 1 FROM prod_sales"), (second, "SELECT 1 FROM other_sales")]
+            )
+        ],
+    )
 
-    hits = _search_verified(f"agent_{safe}_schema", "q", vector=_unit_vector())
+    hits = _search_verified(f"agent_{first}_schema", "q", vector=_unit_vector())
 
-    assert len(hits) == 1
+    assert [h["sql"] for h in hits] == ["SELECT 1 FROM prod_sales"]
