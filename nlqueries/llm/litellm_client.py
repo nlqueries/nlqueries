@@ -20,6 +20,7 @@ from nlqueries.llm.client import (
     exhausted,
     looks_like_timeout,
 )
+from nlqueries.llm.endpoint import warn_if_plain_http
 from nlqueries.llm.override import output_budget
 from nlqueries.llm.usage import UsageRecord, estimate_tokens, record_usage
 
@@ -320,6 +321,9 @@ class LiteLLMClient(LLMClient):
         self._api_key = api_key
         self._api_base = api_base
         self._extra = extra
+        # The api_base each call will actually send: _auth_kwargs lets the
+        # constructor's win over one in ``extra``.
+        warn_if_plain_http(self._auth_kwargs().get("api_base"), "api_base")
 
     def _auth_kwargs(self) -> dict[str, Any]:
         """Per-call kwargs: ``extra`` first, then api_key/api_base when set.
