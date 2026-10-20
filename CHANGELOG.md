@@ -370,6 +370,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **Promoted feedback reaches the prompt.** `promote-feedback`, and `export-kb`
+  which runs it, write confirmed (question, SQL) pairs to
+  `agent_<id>_verified` with the connector ID made safe for a collection name
+  (`postgres:localhost:mydb` becomes `postgres_localhost_mydb`). The question
+  path built the name from the raw ID instead, so for every ID `connect`
+  produces it looked for a collection that never exists and the verified
+  examples were never used. It now names the collection the same way, and
+  `promote-feedback` prints the name it actually wrote to.
 - **A `.env` in the working directory is read.** `load_dotenv()` with no
   path searches upward from the file that calls it, which for an installed
   package is `site-packages/nlqueries`, so the `nlqueries` command never found
