@@ -11,61 +11,37 @@ name: Release — PyPI Publish
 #      - Repository: nlqueries
 #      - Workflow:   release.yml
 #      - Environment: pypi
+#
+# Dry run: `gh workflow run release.yml --ref <branch>` (or "Run workflow" in
+# the Actions tab) runs `ci` and `build` as a release would, then
+# `release-dry-run`, which downloads the built packages and builds the
+# multi-platform image without pushing it. Every job that publishes is
+# skipped, so a dry run requests no environment, no OIDC token and no
+# secret. Use it to exercise a change to this file, or a bump of the actions
+# it pins, before a real tag does.
 
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
 
+# The publishing jobs widen this for themselves: `publish-pypi` adds
+# id-token for trusted publishing, `github-release` adds contents: write.
 permissions:
   contents: read
-  id-token: write   # required for OIDC trusted publishing
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Run the full CI suite before publishing (belt-and-suspenders)
+  # 1. Run the full CI workflow before publishing
+  #    ci.yml itself, called as a reusable workflow, so everything below
+  #    waits on every one of its jobs: lint, type-check, the test matrix, both
+  #    pip-audit scans, the gitleaks secret scan and the import-boundary
+  #    check. The pytest environment, TESTCONTAINERS_RYUK_DISABLED included,
+  #    is set there and nowhere else.
   # ---------------------------------------------------------------------------
   ci:
-    name: CI checks (lint + tests)
-    runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install dev dependencies
-        run: pip install -e ".[dev,docs]"
-        working-directory: ${{ github.workspace }}
-
-      - name: Ruff lint
-        run: ruff check .
-        working-directory: ${{ github.workspace }}
-
-      - name: Ruff format check
-        run: ruff format --check .
-        working-directory: ${{ github.workspace }}
-
-      - name: Mypy
-        run: mypy nlqueries/
-        working-directory: ${{ github.workspace }}
-
-      - name: Pytest
-        run: pytest --tb=short -q
-        working-directory: ${{ github.workspace }}
-        env:
-          # Second copy of this flag. Why either is set is not recorded --
-          # see the note on the same line in ci.yml before changing or
-          # removing it, and change both together or neither.
-          TESTCONTAINERS_RYUK_DISABLED: "true"
+    uses: ./.github/workflows/ci.yml
 
   # ---------------------------------------------------------------------------
   # 2. Build the source distribution and wheel
@@ -104,6 +80,10 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: [build]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write   # required for OIDC trusted publishing
     environment:
       name: pypi
       url: https://pypi.org/p/nlqueries-core
@@ -128,6 +108,11 @@ jobs:
     name: Publish Docker image
     runs-on: ubuntu-latest
     needs: [ci]   # run in parallel with PyPI build, not after it
+    if: github.event_name == 'push'
+    # Holds DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and is restricted to v*
+    # tags with a required reviewer, so the credentials reach only this job
+    # on a release. A dry run builds the image in `release-dry-run` instead.
+    environment: dockerhub
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -161,12 +146,56 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ---------------------------------------------------------------------------
+  # 4b. Dry run: on a manual run only, everything a release does short of
+  #     publishing. It downloads the packages `build` stored, as
+  #     `publish-pypi` and `github-release` do, and builds the same
+  #     multi-platform image as `publish-docker` with push: false. Same
+  #     pinned actions as those jobs, so an action bump runs here first. No
+  #     environment and no secrets: docker/login-action and the PyPI upload
+  #     are the two steps a dry run cannot exercise.
+  # ---------------------------------------------------------------------------
+  release-dry-run:
+    name: Release dry run (nothing published)
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download distribution packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: List the packages a release would upload
+        run: ls -l dist/
+
+      - name: Set up QEMU (for multi-platform builds)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build image (not pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: nlqueries/core:dry-run
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
   # 5. Create a GitHub Release with the built artifacts attached
   # ---------------------------------------------------------------------------
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: [publish-pypi]
+    if: github.event_name == 'push'
     permissions:
       contents: write   # required to create releases
 
@@ -202,6 +231,7 @@ jobs:
     name: Trigger chat index rebuild
     runs-on: ubuntu-latest
     needs: [github-release]
+    if: github.event_name == 'push'
 
     steps:
       - name: Dispatch core-repo-updated to nlqueries-website-chat
