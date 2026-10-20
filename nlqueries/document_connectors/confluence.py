@@ -23,16 +23,30 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import ipaddress
+import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._limits import DocumentTooComplexError
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
+logger = logging.getLogger(__name__)
+
 _CHUNK_SIZE = 800
 _CHUNK_OVERLAP = 100
+
+#: A Confluence space key: letters, digits and underscores, with a leading ``~``
+#: for a personal space. The key is placed inside a quoted CQL string, so
+#: anything else -- a quote above all -- is refused rather than escaped.
+#: Matched with ``fullmatch`` rather than anchored with ``^...$``, since ``$``
+#: also matches before a trailing newline.
+_SPACE_KEY = re.compile(r"~?[A-Za-z0-9_]+")
 
 
 def _make_chunk_id(source_id: str, chunk_index: int) -> str:
@@ -68,6 +82,15 @@ def _cursor_of(next_link: str) -> str | None:
     return values[0] if values else None
 
 
+def _is_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _accepts_cursor(method: Any) -> bool:
     """Whether the installed client's ``cql`` can be given a ``cursor``.
 
@@ -95,6 +118,16 @@ class ConfluenceConnector(DocumentConnector):
         self._base_url = base_url.rstrip("/")
         self._username = username
         self._api_token = api_token
+        parts = urlsplit(self._base_url)
+        if parts.scheme.lower() == "http" and not _is_loopback(parts.hostname or ""):
+            # Warned rather than refused: a server on a private network may be
+            # plain HTTP. The API token travels with every request, though, so
+            # an operator should know it is being sent in the clear.
+            logger.warning(
+                "Confluence base URL %s uses http://, so the API token is sent "
+                "unencrypted; use https:// unless the host is trusted.",
+                self._base_url,
+            )
 
     def _client(self) -> Any:
         try:
@@ -119,7 +152,15 @@ class ConfluenceConnector(DocumentConnector):
         over ``lastModified`` let a page edited during the read jump ahead of
         the window already read and be skipped, and a sync stores what it read
         as the whole space, so that page's chunks were deleted.
+
+        Raises :class:`ValueError` for a *space_key* that is not a space key,
+        before it is placed in the query.
         """
+        if not _SPACE_KEY.fullmatch(space_key):
+            raise ValueError(
+                f"Invalid Confluence space key {space_key!r}: expected letters, "
+                "digits and underscores, optionally after a leading '~'."
+            )
         if since is None:
             return f'space = "{space_key}" AND type = page ORDER BY created ASC'
         since_str = since.strftime("%Y-%m-%d %H:%M")
@@ -165,6 +206,15 @@ class ConfluenceConnector(DocumentConnector):
             consumed += len(batch)
             next_link = _next_link(response)
             total = response.get("totalSize")
+            # Refused, not truncated: a sync stores what it read as the whole
+            # space. ``totalSize`` refuses on the first response when the
+            # server reports it; the count refuses whatever it reports.
+            declared = total if isinstance(total, int) else 0
+            if max(declared, len(results)) > _limits.CONFLUENCE_PAGES:
+                raise DocumentTooComplexError(
+                    f"the space has more than {_limits.CONFLUENCE_PAGES} pages, the "
+                    "limit for one sync (NLQ_MAX_CONFLUENCE_PAGES)"
+                )
             more = consumed < total if isinstance(total, int) else bool(next_link)
             if not more:
                 if isinstance(total, int) and len(results) < total:
@@ -229,6 +279,7 @@ class ConfluenceConnector(DocumentConnector):
 
         all_chunks: list[DocumentChunk] = []
         chunk_index = 0
+        body_bytes = 0
 
         for page_result in page_results:
             # CQL results may wrap the content under a "content" key.
@@ -247,6 +298,15 @@ class ConfluenceConnector(DocumentConnector):
 
             if not html_body:
                 continue
+
+            # Counted before the body is parsed, and refused rather than
+            # truncated for the reason the page cap is.
+            body_bytes += len(html_body.encode("utf-8"))
+            if body_bytes > _limits.CONFLUENCE_BYTES:
+                raise DocumentTooComplexError(
+                    f"the space's page bodies exceed {_limits.CONFLUENCE_BYTES // (1024 * 1024)} "
+                    "MiB, the limit for one sync (NLQ_MAX_CONFLUENCE_BYTES)"
+                )
 
             # Strip HTML tags to obtain plain text.
             soup = BeautifulSoup(html_body, "html.parser")

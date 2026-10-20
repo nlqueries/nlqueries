@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._limits import DocumentTooComplexError
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -122,6 +124,7 @@ class NotionConnector(DocumentConnector):
 
         # Fetch all blocks, following Notion's pagination cursor.
         all_text_parts: list[str] = []
+        blocks_read = 0
         has_more = True
         start_cursor: str | None = None
 
@@ -131,7 +134,17 @@ class NotionConnector(DocumentConnector):
                 kwargs["start_cursor"] = start_cursor
 
             response: dict[str, Any] = client.blocks.children.list(**kwargs)
-            for block in response.get("results", []):
+            blocks: list[dict[str, Any]] = response.get("results", [])
+            # Every block counts, text or not: the cap bounds what is read, and
+            # refuses rather than truncates since the result replaces the
+            # stored copy of the page whole.
+            blocks_read += len(blocks)
+            if blocks_read > _limits.NOTION_BLOCKS:
+                raise DocumentTooComplexError(
+                    f"Notion page {page_id} has more than {_limits.NOTION_BLOCKS} "
+                    "blocks, the limit for one page (NLQ_MAX_NOTION_BLOCKS)"
+                )
+            for block in blocks:
                 text = _extract_block_text(block)
                 if text:
                     all_text_parts.append(text)

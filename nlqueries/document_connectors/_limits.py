@@ -38,10 +38,15 @@ import zipfile
 from pathlib import Path
 
 from nlqueries.config import (
+    MAX_CONFLUENCE_BYTES,
+    MAX_CONFLUENCE_PAGES,
     MAX_DOCUMENT_EXPANDED_BYTES,
     MAX_DOCUMENT_EXPANSION_RATIO,
     MAX_DOCUMENT_ROWS,
     MAX_EXTRACTION_SECONDS,
+    MAX_NOTION_BLOCKS,
+    MAX_PDF_BYTES,
+    MAX_PDF_PAGES,
 )
 
 
@@ -52,9 +57,10 @@ class DocumentTooComplexError(Exception):
     file is refused" from "this file is broken", and the enterprise ingestion
     task reports the two differently to the user.
 
-    Raised directly only by the *deterministic* limits -- the expansion gate and
-    the row cap. Both read a property of the file, so a caller that retries gets
-    the same answer and has spent a download and a parse to learn nothing.
+    Raised directly only by the *deterministic* limits -- the expansion gate, the
+    row cap, the PDF size and page caps and the wiki read caps. Each reads a
+    property of the source, so a caller that retries gets the same answer and has
+    spent a download and a parse to learn nothing.
     :class:`DocumentExtractionTimeout` is the partial exception to that -- read
     its docstring before retrying one, since it is not always transient -- and is
     a subclass precisely so an existing ``except DocumentTooComplexError`` keeps
@@ -97,11 +103,16 @@ class DocumentExtractionTimeout(DocumentTooComplexError):
 #: an operator's override was silently ignored.
 #:
 #: Bound as module attributes so they remain the names this module's callers and
-#: tests refer to.
+#: tests refer to, and so a connector reads ``_limits.<NAME>`` at call time.
 MAX_EXPANDED_BYTES: int = MAX_DOCUMENT_EXPANDED_BYTES
 MAX_EXPANSION_RATIO: int = MAX_DOCUMENT_EXPANSION_RATIO
 MAX_ROWS: int = MAX_DOCUMENT_ROWS
 MAX_SECONDS: float = MAX_EXTRACTION_SECONDS
+PDF_BYTES: int = MAX_PDF_BYTES
+PDF_PAGES: int = MAX_PDF_PAGES
+CONFLUENCE_PAGES: int = MAX_CONFLUENCE_PAGES
+CONFLUENCE_BYTES: int = MAX_CONFLUENCE_BYTES
+NOTION_BLOCKS: int = MAX_NOTION_BLOCKS
 
 
 class ExtractionBudget:
@@ -113,14 +124,15 @@ class ExtractionBudget:
     and the case no size predicts -- a small file that is simply expensive to
     parse.
 
-    One budget across every connector, rather than a page cap for PDFs, a
-    paragraph cap for Word and a row cap for spreadsheets. Per-format counts are
-    guesses about cost; a clock measures it. A 3,000-page PDF of scanned images
-    and a 30-page one of dense tables cost very differently, and no page number
-    tells them apart.
+    One budget across every connector, and the general bound on cost.
+    Per-format counts are guesses about cost; a clock measures it. A 3,000-page
+    PDF of scanned images and a 30-page one of dense tables cost very
+    differently, and no page number tells them apart. The count caps -- PDF size
+    and pages, spreadsheet rows -- refuse what is known to be too large up
+    front; they do not stand in for this.
 
-    :meth:`check` is called *between* units of work -- a page, a paragraph
-    section, a batch of rows -- so the budget bounds a long document rather than
+    :meth:`check` is called *between* units of work -- a page, every 1,000 Word
+    paragraphs, a section, a batch of rows -- so the budget bounds a long document rather than
     interrupting one slow page part-way. A parser that hangs inside a single unit
     is not something this can stop, and is not what it claims to.
     """
@@ -175,3 +187,18 @@ def check_archive_expansion(source: str | Path) -> None:
                 f"{path.name} expands {ratio:.0f}x ({compressed // 1024} KiB to "
                 f"{expanded // (1024 * 1024)} MiB), over the {MAX_EXPANSION_RATIO}x limit."
             )
+
+    # Each member as well as the whole. The whole-archive ratio can be diluted:
+    # one member that expands 1000x beside a large stored (incompressible) one
+    # averages out under the limit, yet the parser still inflates the bomb in
+    # full. Same zero-denominator guard as above, for the same reasons.
+    for entry in entries:
+        if entry.compress_size > 0:
+            member_ratio = entry.file_size / entry.compress_size
+            if member_ratio > MAX_EXPANSION_RATIO:
+                raise DocumentTooComplexError(
+                    f"{path.name}: member {entry.filename!r} expands {member_ratio:.0f}x "
+                    f"({entry.compress_size // 1024} KiB to "
+                    f"{entry.file_size // (1024 * 1024)} MiB), over the "
+                    f"{MAX_EXPANSION_RATIO}x limit."
+                )

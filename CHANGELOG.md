@@ -131,6 +131,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
     and `rejected: changed a literal grounding did not flag` when it changed
     any other literal.
 
+- **Bounds on document and wiki ingestion.** A PDF larger than
+  `NLQ_MAX_PDF_BYTES` (100 MiB) is refused before it is parsed, and one with
+  more than `NLQ_MAX_PDF_PAGES` (2,000) pages before any page is extracted;
+  both raise `DocumentTooComplexError`. The expansion-ratio limit for Word and
+  Excel files (`NLQ_MAX_DOCUMENT_EXPANSION_RATIO`) now applies to each member
+  of the archive as well as to the whole, so one highly compressed member is
+  not averaged away by a large incompressible one. Word extraction checks its
+  time budget every 1,000 paragraphs, not only between sections.
+  `doc-sync-confluence` refuses a space key that is not letters, digits and
+  underscores (with an optional leading `~`), logs a warning for an `http://`
+  base URL to a non-loopback host, and refuses a space over
+  `NLQ_MAX_CONFLUENCE_PAGES` (5,000) pages or `NLQ_MAX_CONFLUENCE_BYTES`
+  (200 MiB) of page body. `doc-sync-notion` refuses a page of more than
+  `NLQ_MAX_NOTION_BLOCKS` (10,000) blocks. A refused sync stores nothing and
+  leaves the earlier copy in place.
+
 ### Changed
 
 - **The SQL prompt matches a quoted value as a value.** Read as exact, a

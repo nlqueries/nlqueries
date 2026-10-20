@@ -1,0 +1,498 @@
+"""Bounds on document and wiki ingestion.
+
+The PDF, Word and archive cases use the real parsers, for the reason given in
+``test_document_expansion_limits.py``: a limit on what a parser consumes is only
+meaningful against the parser. The wiki connectors talk to a remote API, so their
+clients are stubbed and the stub records what the connector asked for.
+
+Every limit is lowered for the test rather than a document made large enough to
+reach the default: the behaviour under test is the comparison.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import zipfile
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._limits import (
+    DocumentTooComplexError,
+    check_archive_expansion,
+)
+
+
+def _pdf(path: Path, pages: int, declared: int | None = None) -> Path:
+    """A syntactically valid PDF with *pages* pages, written by hand.
+
+    *declared* is the ``/Count`` the page tree claims, which defaults to the
+    truth; setting it apart from *pages* makes a document that misstates itself.
+    """
+    objects: list[bytes] = []
+    kids = " ".join(f"{3 + i} 0 R" for i in range(pages))
+    count = pages if declared is None else declared
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {count} >>".encode())
+    for _ in range(pages):
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>")
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for offset in offsets[1:]:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n".encode()
+    out += f"startxref\n{xref_at}\n%%EOF\n".encode()
+    path.write_bytes(bytes(out))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# PDF
+# ---------------------------------------------------------------------------
+
+
+def test_an_oversized_pdf_is_refused_before_it_is_parsed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdfplumber = pytest.importorskip("pdfplumber")
+    from nlqueries.document_connectors.pdf import PdfConnector
+
+    path = _pdf(tmp_path / "big.pdf", pages=2)
+    monkeypatch.setattr(_limits, "PDF_BYTES", path.stat().st_size - 1)
+
+    def _must_not_be_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("pdfplumber opened a PDF the size cap should have refused")
+
+    monkeypatch.setattr(pdfplumber, "open", _must_not_be_called)
+
+    with pytest.raises(DocumentTooComplexError, match="MiB limit for a PDF"):
+        PdfConnector().ingest(path, source_id="s")
+
+
+def test_a_pdf_at_the_size_cap_is_ingested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cap is a ceiling: a file exactly at it is allowed."""
+    pytest.importorskip("pdfplumber")
+    from nlqueries.document_connectors.pdf import PdfConnector
+
+    path = _pdf(tmp_path / "fits.pdf", pages=2)
+    monkeypatch.setattr(_limits, "PDF_BYTES", path.stat().st_size)
+
+    assert PdfConnector().ingest(path, source_id="s") == []  # blank pages, no text
+
+
+def test_a_pdf_over_the_page_cap_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("pdfplumber")
+    from nlqueries.document_connectors.pdf import PdfConnector
+
+    path = _pdf(tmp_path / "long.pdf", pages=5)
+    monkeypatch.setattr(_limits, "PDF_PAGES", 5)
+    PdfConnector().ingest(path, source_id="s")  # at the cap: allowed
+
+    monkeypatch.setattr(_limits, "PDF_PAGES", 4)
+    with pytest.raises(DocumentTooComplexError, match="5 pages, over the 4-page limit"):
+        PdfConnector().ingest(path, source_id="s")
+
+
+def test_the_declared_page_count_refuses_before_pages_are_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page tree's ``/Count`` is read before any page is built.
+
+    The file declares 10 pages and holds 3, so only the declared count can
+    produce "10 pages": the count taken from the built pages would say 3 and
+    pass.
+    """
+    pytest.importorskip("pdfplumber")
+    from nlqueries.document_connectors.pdf import PdfConnector
+
+    path = _pdf(tmp_path / "claims-more.pdf", pages=3, declared=10)
+    monkeypatch.setattr(_limits, "PDF_PAGES", 5)
+
+    with pytest.raises(DocumentTooComplexError, match="10 pages"):
+        PdfConnector().ingest(path, source_id="s")
+
+
+def test_a_pdf_that_understates_its_pages_is_still_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declared count is self-reported, so the pages are counted again."""
+    pytest.importorskip("pdfplumber")
+    from nlqueries.document_connectors.pdf import PdfConnector
+
+    path = _pdf(tmp_path / "claims-less.pdf", pages=6, declared=1)
+    monkeypatch.setattr(_limits, "PDF_PAGES", 4)
+
+    with pytest.raises(DocumentTooComplexError, match="6 pages"):
+        PdfConnector().ingest(path, source_id="s")
+
+
+# ---------------------------------------------------------------------------
+# OOXML archives
+# ---------------------------------------------------------------------------
+
+
+def _diluted_archive(path: Path) -> Path:
+    """One member that expands about 1000x, diluted by a large stored member.
+
+    The stored member is random bytes, so it neither compresses nor expands,
+    and the whole-archive ratio averages out well under the limit.
+    """
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            zipfile.ZipInfo("word/document.xml"),
+            b"\0" * (8 * 1024 * 1024),
+            compress_type=zipfile.ZIP_DEFLATED,
+        )
+        archive.writestr(
+            zipfile.ZipInfo("word/media/image1.bin"),
+            os.urandom(1024 * 1024),
+            compress_type=zipfile.ZIP_STORED,
+        )
+    return path
+
+
+def test_a_diluted_archive_is_refused_on_its_worst_member(tmp_path: Path) -> None:
+    path = _diluted_archive(tmp_path / "diluted.docx")
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+    whole = sum(i.file_size for i in infos) / sum(i.compress_size for i in infos)
+    assert whole < _limits.MAX_EXPANSION_RATIO, f"premise failed: whole ratio {whole:.0f}x"
+    assert sum(i.file_size for i in infos) < _limits.MAX_EXPANDED_BYTES
+
+    with pytest.raises(DocumentTooComplexError, match="member 'word/document.xml'"):
+        check_archive_expansion(path)
+
+
+def test_the_word_connector_refuses_a_diluted_archive(tmp_path: Path) -> None:
+    pytest.importorskip("docx")
+    from nlqueries.document_connectors.word import WordConnector
+
+    path = _diluted_archive(tmp_path / "diluted.docx")
+    with pytest.raises(DocumentTooComplexError, match="member"):
+        WordConnector().ingest(path, source_id="s")
+
+
+def test_ordinary_documents_pass_the_per_member_check(tmp_path: Path) -> None:
+    """The control: real files from the real writers, at the default limits."""
+    docx = pytest.importorskip("docx")
+    openpyxl = pytest.importorskip("openpyxl")
+
+    document = docx.Document()
+    for n in range(2_000):
+        document.add_paragraph(f"Paragraph {n} of an ordinary report, with some prose.")
+    document.save(str(tmp_path / "report.docx"))
+    check_archive_expansion(tmp_path / "report.docx")
+
+    workbook = openpyxl.Workbook(write_only=True)
+    sheet = workbook.create_sheet("data")
+    for n in range(5_000):
+        sheet.append([n, n * 2, f"row {n}", 1.5, "category"])
+    workbook.save(str(tmp_path / "data.xlsx"))
+    check_archive_expansion(tmp_path / "data.xlsx")
+
+
+# ---------------------------------------------------------------------------
+# Word
+# ---------------------------------------------------------------------------
+
+
+def test_the_word_budget_is_checked_during_the_paragraph_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A document with no headings is one section, so the per-section check
+    would come only after every paragraph was walked; the walk checks too."""
+    docx = pytest.importorskip("docx")
+    from nlqueries.document_connectors import word as word_module
+
+    path = tmp_path / "flat.docx"
+    document = docx.Document()
+    for n in range(2_500):
+        document.add_paragraph(f"line {n}")
+    document.save(str(path))
+
+    progress: list[str] = []
+
+    class _RecordingBudget:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def check(self, stage: str) -> None:
+            progress.append(stage)
+
+    monkeypatch.setattr(word_module, "ExtractionBudget", _RecordingBudget)
+    word_module.WordConnector().ingest(path, source_id="s")
+
+    walked = [p for p in progress if "paragraphs" in p]
+    assert walked == ["1000 of 2500 paragraphs", "2000 of 2500 paragraphs"], progress
+
+
+# ---------------------------------------------------------------------------
+# Confluence
+# ---------------------------------------------------------------------------
+
+
+class _Soup:
+    """Enough of BeautifulSoup for the connector, without the wiki extra."""
+
+    def __init__(self, markup: str, parser: str = "html.parser") -> None:
+        self._markup = markup
+
+    def get_text(self, separator: str = "", strip: bool = False) -> str:
+        return self._markup.strip() if strip else self._markup
+
+
+@pytest.fixture
+def confluence_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """A stubbed Confluence client, returned by the connector's ``_client``."""
+    client = MagicMock()
+    atlassian = MagicMock()
+    atlassian.Confluence.return_value = client
+    bs4 = MagicMock()
+    bs4.BeautifulSoup = _Soup
+    monkeypatch.setitem(sys.modules, "atlassian", atlassian)
+    monkeypatch.setitem(sys.modules, "bs4", bs4)
+    return client
+
+
+def _connector(base_url: str = "https://acme.atlassian.net") -> Any:
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    return ConfluenceConnector(base_url=base_url, username="u", api_token="t")
+
+
+def _result(page_id: str) -> dict[str, Any]:
+    return {"content": {"id": page_id, "title": f"Page {page_id}", "_links": {}}}
+
+
+@pytest.mark.parametrize(
+    "space_key",
+    ['ENG" OR space = "HR', "ENG\n", "", "EN G", "ENG-1", "~", "../ENG", "ENG;"],
+)
+def test_an_invalid_space_key_is_refused_before_any_query(
+    space_key: str, confluence_client: MagicMock
+) -> None:
+    from datetime import UTC, datetime
+
+    connector = _connector()
+    with pytest.raises(ValueError, match="Invalid Confluence space key"):
+        connector.ingest(space_key, source_id="s")
+    with pytest.raises(ValueError, match="Invalid Confluence space key"):
+        connector.has_changes_since(space_key, datetime(2024, 1, 1, tzinfo=UTC))
+    confluence_client.cql.assert_not_called()
+
+
+@pytest.mark.parametrize("space_key", ["ENG", "eng_2", "~alice", "~5f00a1b2c3"])
+def test_a_valid_space_key_reaches_the_query(space_key: str, confluence_client: MagicMock) -> None:
+    confluence_client.cql.return_value = {"results": []}
+    assert _connector().ingest(space_key, source_id="s") == []
+    assert f'space = "{space_key}"' in confluence_client.cql.call_args[0][0]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "warns"),
+    [
+        ("http://confluence.example.com", True),
+        ("HTTP://10.0.0.5:8090/", True),
+        ("https://confluence.example.com", False),
+        ("http://localhost:8090", False),
+        ("http://127.0.0.1:8090", False),
+        ("http://[::1]:8090", False),
+    ],
+)
+def test_an_http_base_url_to_a_remote_host_warns(
+    base_url: str, warns: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="nlqueries.document_connectors.confluence"):
+        _connector(base_url)
+    warned = [r for r in caplog.records if "http://" in r.getMessage()]
+    assert bool(warned) is warns, caplog.text
+
+
+def test_a_space_over_the_page_cap_is_refused_on_its_reported_size(
+    confluence_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``totalSize`` refuses on the first response, before any body is read."""
+    monkeypatch.setattr(_limits, "CONFLUENCE_PAGES", 5)
+    confluence_client.cql.return_value = {
+        "results": [_result(str(n)) for n in range(3)],
+        "totalSize": 6,
+    }
+    with pytest.raises(DocumentTooComplexError, match="more than 5 pages"):
+        _connector().ingest("ENG", source_id="s")
+    assert confluence_client.cql.call_count == 1
+    confluence_client.get_page_by_id.assert_not_called()
+
+
+def test_a_space_over_the_page_cap_is_refused_by_count(
+    confluence_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ``totalSize`` the pages read are counted, and the search stops."""
+    monkeypatch.setattr(_limits, "CONFLUENCE_PAGES", 5)
+
+    def _search(cql: str, start: int = 0, limit: int = 0, **_: Any) -> dict[str, Any]:
+        batch = [_result(str(n)) for n in range(start, start + 3)]
+        return {"results": batch, "_links": {"next": "/rest/api/search?next"}}
+
+    confluence_client.cql.side_effect = _search
+    with pytest.raises(DocumentTooComplexError, match="more than 5 pages"):
+        _connector().ingest("ENG", source_id="s")
+    assert confluence_client.cql.call_count == 2
+    confluence_client.get_page_by_id.assert_not_called()
+
+
+def test_a_space_at_the_page_cap_is_read(
+    confluence_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_limits, "CONFLUENCE_PAGES", 3)
+    confluence_client.cql.return_value = {
+        "results": [_result(str(n)) for n in range(3)],
+        "totalSize": 3,
+    }
+    confluence_client.get_page_by_id.return_value = {"body": {"storage": {"value": "text"}}}
+    assert len(_connector().ingest("ENG", source_id="s")) == 3
+
+
+def test_a_space_over_the_byte_cap_is_refused(
+    confluence_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bodies are counted as they arrive; the read stops at the one that crosses."""
+    confluence_client.cql.return_value = {"results": [_result(str(n)) for n in range(5)]}
+    confluence_client.get_page_by_id.return_value = {"body": {"storage": {"value": "x" * 1000}}}
+
+    monkeypatch.setattr(_limits, "CONFLUENCE_BYTES", 5000)
+    chunks = _connector().ingest("ENG", source_id="s")  # exactly at the cap
+    assert {c.metadata["page_id"] for c in chunks} == {"0", "1", "2", "3", "4"}
+
+    confluence_client.get_page_by_id.reset_mock()
+    monkeypatch.setattr(_limits, "CONFLUENCE_BYTES", 2500)
+    with pytest.raises(DocumentTooComplexError, match="NLQ_MAX_CONFLUENCE_BYTES"):
+        _connector().ingest("ENG", source_id="s")
+    assert confluence_client.get_page_by_id.call_count == 3
+
+
+def test_the_byte_cap_counts_encoded_bytes_not_characters(
+    confluence_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1,000 three-byte characters are 3,000 bytes, not 1,000."""
+    confluence_client.cql.return_value = {"results": [_result("1")]}
+    confluence_client.get_page_by_id.return_value = {"body": {"storage": {"value": "€" * 1000}}}
+    monkeypatch.setattr(_limits, "CONFLUENCE_BYTES", 2000)
+    with pytest.raises(DocumentTooComplexError):
+        _connector().ingest("ENG", source_id="s")
+
+
+# ---------------------------------------------------------------------------
+# Notion
+# ---------------------------------------------------------------------------
+
+
+def _blocks(texts: list[str], next_cursor: str | None) -> dict[str, Any]:
+    return {
+        "results": [
+            {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": t}]}} for t in texts
+        ],
+        "has_more": next_cursor is not None,
+        "next_cursor": next_cursor,
+    }
+
+
+@pytest.fixture
+def notion_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    client = MagicMock()
+    client.pages.retrieve.return_value = {"last_edited_time": "", "properties": {}}
+    client.blocks.children.list.side_effect = [
+        _blocks(["one", "two", "three"], next_cursor="c1"),
+        _blocks(["four", "five", "six"], next_cursor="c2"),
+        _blocks(["seven"], next_cursor=None),
+    ]
+    module = MagicMock()
+    module.Client.return_value = client
+    monkeypatch.setitem(sys.modules, "notion_client", module)
+    return client
+
+
+def test_a_notion_page_over_the_block_cap_is_refused(
+    notion_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    monkeypatch.setattr(_limits, "NOTION_BLOCKS", 5)
+    with pytest.raises(DocumentTooComplexError, match="more than 5 blocks"):
+        NotionConnector(api_token="t").ingest("page", source_id="s")
+    assert notion_client.blocks.children.list.call_count == 2  # stopped, not read to the end
+
+
+def test_a_notion_page_at_the_block_cap_is_read(
+    notion_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    monkeypatch.setattr(_limits, "NOTION_BLOCKS", 7)
+    chunks = NotionConnector(api_token="t").ingest("page", source_id="s")
+    assert "seven" in " ".join(c.text for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("config_name", "limits_name"),
+    [
+        ("MAX_PDF_BYTES", "PDF_BYTES"),
+        ("MAX_PDF_PAGES", "PDF_PAGES"),
+        ("MAX_CONFLUENCE_PAGES", "CONFLUENCE_PAGES"),
+        ("MAX_CONFLUENCE_BYTES", "CONFLUENCE_BYTES"),
+        ("MAX_NOTION_BLOCKS", "NOTION_BLOCKS"),
+    ],
+)
+def test_the_new_limits_come_from_config(config_name: str, limits_name: str) -> None:
+    import nlqueries.config as config_module
+
+    assert getattr(_limits, limits_name) == getattr(config_module, config_name)
+
+
+def test_the_new_settings_read_their_environment_variables(tmp_path: Path) -> None:
+    """Each setting is read from the variable the docs name.
+
+    In a fresh interpreter, since ``config`` reads the environment once, at
+    import. Run from an empty directory so no ``.env`` file is picked up.
+    """
+    import json
+    import subprocess
+
+    values = {
+        "NLQ_MAX_PDF_BYTES": "11",
+        "NLQ_MAX_PDF_PAGES": "12",
+        "NLQ_MAX_CONFLUENCE_PAGES": "13",
+        "NLQ_MAX_CONFLUENCE_BYTES": "14",
+        "NLQ_MAX_NOTION_BLOCKS": "15",
+    }
+    script = (
+        "import json, nlqueries.config as c; print(json.dumps([c.MAX_PDF_BYTES, "
+        "c.MAX_PDF_PAGES, c.MAX_CONFLUENCE_PAGES, c.MAX_CONFLUENCE_BYTES, "
+        "c.MAX_NOTION_BLOCKS]))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, **values},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == [11, 12, 13, 14, 15]
