@@ -268,6 +268,61 @@ class TestHostChecksOnANonLoopbackBind:
 
         assert status not in (421, 403)
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "localhost",
+            "127.0.0.1",
+            "[::1]",
+            "[::1]:8080",
+            "mcp.example.com",
+            "mcp.example.com:443",
+        ],
+    )
+    def test_every_form_a_client_or_proxy_sends_is_accepted(
+        self, host: str, monkeypatch, tmp_path
+    ) -> None:
+        """The SDK matches `name:*` only when a port follows, so a bare name has
+        to be listed itself. A proxy on a scheme's default port sends no port;
+        some clients send the default port explicitly."""
+        server = _networked(monkeypatch, tmp_path, resource="https://mcp.example.com")
+
+        status = _post_message(server, host, Authorization=f"Bearer {GOOD_TOKEN}")
+
+        assert status not in (421, 403)
+
+    @pytest.mark.parametrize("host", ["evil.example", "mcp.example.com:8443", "evil.example:443"])
+    def test_other_hosts_and_ports_are_refused(self, host: str, monkeypatch, tmp_path) -> None:
+        """A resource URL on the default port allows that port and no other."""
+        server = _networked(monkeypatch, tmp_path, resource="https://mcp.example.com")
+
+        status = _post_message(server, host, Authorization=f"Bearer {GOOD_TOKEN}")
+
+        assert status == 421
+
+    @pytest.mark.parametrize(
+        "host", ["mcp.example.com", "mcp.example.com:8443", "mcp.example.com:9000"]
+    )
+    def test_a_non_default_port_allows_the_host_on_any_port(
+        self, host: str, monkeypatch, tmp_path
+    ) -> None:
+        server = _networked(monkeypatch, tmp_path, resource="https://mcp.example.com:8443")
+
+        status = _post_message(server, host, Authorization=f"Bearer {GOOD_TOKEN}")
+
+        assert status not in (421, 403)
+
+    def test_a_resource_url_with_a_bad_port_adds_nothing(self, monkeypatch) -> None:
+        """`urlsplit` raises on reading such a port; the server still starts,
+        answering to the loopback names only."""
+        monkeypatch.setenv("NLQ_MCP_RESOURCE_URL", "https://mcp.example.com:99999")
+
+        security = mcp_server._transport_security("0.0.0.0")
+
+        assert security is not None
+        assert not any("example" in h for h in security.allowed_hosts)
+        assert security.allowed_origins == []
+
     def test_streamable_http_checks_the_host_too(self, monkeypatch, tmp_path) -> None:
         server = _networked(monkeypatch, tmp_path, resource=None)
 

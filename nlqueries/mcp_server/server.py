@@ -857,28 +857,52 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
     names. On any other bind it turns them off, so a page in a browser on the
     same network could reach the server through a DNS name that resolves to it.
     Here the server answers only to the name it is published under -- the host
-    of `NLQ_MCP_RESOURCE_URL` -- and to `localhost` and `127.0.0.1` on any
-    port, which is how a published container port is reached from its host. A
-    request with any other `Host` gets 421; one with an `Origin` other than the
-    resource URL's gets 403. A client that sends no `Origin` is not affected.
+    of `NLQ_MCP_RESOURCE_URL` -- and to `localhost`, `127.0.0.1` and `[::1]`,
+    which is how a published container port is reached from its host. A request
+    with any other `Host` gets 421; one with an `Origin` other than the resource
+    URL's gets 403. A client that sends no `Origin` is not affected.
+
+    The SDK matches a `Host` exactly, or against `name:*` as "name, a colon and
+    a port", so `localhost:*` does not match a bare `localhost`. Each name is
+    therefore listed in every form a client or proxy sends: a proxy on a scheme's
+    default port sends no port at all, and some clients send the default port
+    explicitly.
     """
     if _is_loopback(host):
         return None
 
     from nlqueries.auth.mcp_verifier import RESOURCE_URL_ENV  # noqa: PLC0415
 
-    allowed_hosts = ["localhost:*", "127.0.0.1:*"]
+    allowed_hosts = ["localhost", "localhost:*", "127.0.0.1", "127.0.0.1:*", "[::1]", "[::1]:*"]
     allowed_origins: list[str] = []
     resource = urlsplit(os.getenv(RESOURCE_URL_ENV, "").strip())
-    if resource.scheme and resource.hostname:
+    scheme = resource.scheme.lower()
+    try:
+        explicit = resource.port
+    except ValueError:
+        # Not a port number. Nothing about the resource host can be trusted,
+        # so it is left out, as an unparseable URL is.
+        scheme = ""
+    if scheme and resource.hostname:
         netloc = resource.netloc.rpartition("@")[2].lower()
-        allowed_hosts.append(netloc)
-        allowed_origins.append(f"{resource.scheme.lower()}://{netloc}")
+        name = netloc[: -len(f":{explicit}")] if explicit is not None else netloc
+        default = _DEFAULT_PORTS.get(scheme)
+        effective = explicit if explicit is not None else default
+        allowed_hosts.append(name)
+        if effective is not None:
+            allowed_hosts.append(f"{name}:{effective}")
+        if explicit is not None and explicit != default:
+            allowed_hosts.append(f"{name}:*")
+        allowed_origins.append(f"{scheme}://{netloc}")
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=allowed_hosts,
+        allowed_hosts=list(dict.fromkeys(allowed_hosts)),
         allowed_origins=allowed_origins,
     )
+
+
+#: The port a client leaves out of `Host` for each scheme.
+_DEFAULT_PORTS = {"https": 443, "http": 80}
 
 
 def _principal_for_call(*, networked: bool) -> Callable[[], Principal]:

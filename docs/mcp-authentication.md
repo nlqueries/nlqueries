@@ -58,9 +58,14 @@ only loopback names in the `Host` header. On any other bind the server checks
 them itself, so a page in a browser cannot reach it through a DNS name that
 happens to resolve to it. It accepts:
 
-- as `Host`: the host of `NLQ_MCP_RESOURCE_URL` (with its port, if it names
-  one), and `localhost` and `127.0.0.1` on any port;
-- as `Origin`, when a client sends one: the origin of `NLQ_MCP_RESOURCE_URL`.
+- as `Host`: `localhost`, `127.0.0.1` and `[::1]`, with any port or none;
+- as `Host`: the host of `NLQ_MCP_RESOURCE_URL`, with no port or with its
+  port, which is the one the URL names or else the scheme's default (443 for
+  `https`, 80 for `http`). If the URL names a port other than the default, the
+  host is accepted on any port. So `https://mcp.example.com` accepts
+  `mcp.example.com` and `mcp.example.com:443` but not `mcp.example.com:8443`;
+- as `Origin`, when a client sends one: the origin of `NLQ_MCP_RESOURCE_URL`,
+  written as the URL writes it (with its port only if the URL names one).
 
 Any other `Host` gets `421 Misdirected Request`; any other `Origin` gets `403`.
 Set `NLQ_MCP_RESOURCE_URL` to the URL clients actually use. The shipped compose
@@ -68,7 +73,8 @@ file sets it to `http://localhost:8080`, and clients can reach it there or at
 `127.0.0.1:8080`. A server running with `NLQ_ALLOW_UNAUTHENTICATED_MCP` usually
 has no resource URL, so it answers only to the loopback names; put a proxy in
 front that forwards one of those, or set `NLQ_MCP_RESOURCE_URL` to the address
-clients use.
+clients use. A resource URL whose port is not a number is ignored, with the same
+result.
 
 ### Request size
 

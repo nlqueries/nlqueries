@@ -141,10 +141,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   - The wildcard-bind check recognises every spelling of an unspecified address
     (`0`, `0.0`, `0x0`, `::0`, `0:0:0:0:0:0:0:0`, `[::]`, `::ffff:0.0.0.0`, ...),
     not only `0.0.0.0`, `::` and an empty host.
-  - On a bind other than loopback, the server accepts only the host of
-    `NLQ_MCP_RESOURCE_URL`, `localhost` and `127.0.0.1` in the `Host` header
-    (otherwise `421`) and only the resource URL's origin in `Origin` (otherwise
-    `403`). Set `NLQ_MCP_RESOURCE_URL` to the URL clients use. The compose file
+  - On a bind other than loopback, the server accepts in the `Host` header
+    only `localhost`, `127.0.0.1` and `[::1]` (with any port or none) and the
+    host of `NLQ_MCP_RESOURCE_URL` (with no port or its port; on any port if
+    the URL names a non-default one), otherwise `421`, and only the resource
+    URL's origin in `Origin`, otherwise `403`. Set `NLQ_MCP_RESOURCE_URL` to the URL clients use. The compose file
     keeps working at `localhost:8080` and `127.0.0.1:8080`.
   - SSE request bodies over 4 MiB get `413`, the limit the SDK already applies
     to streamable HTTP.
