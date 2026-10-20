@@ -194,7 +194,11 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    needs: [boundary-check, security, lock-audit, lint]
+    # Not lock-audit: it downloads the lock's whole closure (torch and the CUDA
+    # wheels) to check hashes, so waiting on it would hold the matrix back
+    # rather than fail it cheaply. It still fails this run, and release.yml's
+    # `needs: [ci]` waits for it like every other job here.
+    needs: [boundary-check, security, lint]
     strategy:
       fail-fast: false
       matrix:
