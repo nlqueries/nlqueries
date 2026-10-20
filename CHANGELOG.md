@@ -133,6 +133,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **A release waits on the full CI, and CI audits the shipped lock.**
+  `release.yml` used to run its own copy of lint, type-check and tests before
+  publishing. It now calls `ci.yml` as a reusable workflow, so building and
+  publishing also wait on both pip-audit scans, the gitleaks secret scan and
+  the import-boundary check. A new `lock-audit` job in `ci.yml` runs
+  `pip-audit -r requirements/core.lock --require-hashes` against the pins the
+  image installs. The `id-token: write` permission moves from the whole
+  release workflow to the `publish-pypi` job, and `publish-docker` takes its
+  Docker Hub credentials from the `dockerhub` environment. `release.yml` can
+  also be run by hand (`gh workflow run release.yml --ref <branch>`) as a dry
+  run: CI, the package build and a multi-platform image build with nothing
+  pushed or published.
 - **The image's dependency lock moves six packages to current fixed
   releases.** `requirements/core.lock`, which the Docker image installs from,
   now pins PyJWT 2.15.0 (was 2.13.0), urllib3 2.8.0 (was 2.7.0), aiohttp

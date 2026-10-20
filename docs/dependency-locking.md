@@ -67,10 +67,18 @@ Not in the closure:
   the lock cannot ingest PDF, Word or Excel files or sync Notion or Confluence
   sources until those are added.
 
-The lock is used only by the image build. CI does not install from it: the test
-jobs in `.github/workflows/ci.yml` and `release.yml` run
-`pip install -e ".[dev,docs]"`, which resolves the `>=` floors afresh, so CI can
-test newer versions than the image ships.
+The lock is installed only by the image build. CI does not install from it: the
+test jobs in `.github/workflows/ci.yml`, which `release.yml` calls before it
+publishes anything, run `pip install -e ".[dev,docs]"`, which resolves the `>=`
+floors afresh, so CI can test newer versions than the image ships.
+
+CI does audit the lock. The `lock-audit` job in `ci.yml` runs
+`pip-audit -r requirements/core.lock --require-hashes` on every CI run, and a
+release waits on it like every other CI job. A pinned version with a published
+advisory fails the job, and a release with it, until the lock is regenerated
+(see [Regenerating](#regenerating)) at a fixed version. The separate `security`
+job audits the resolved `.[dev,docs]` environment, which includes the `docs`
+extra the lock leaves out.
 
 ## pip-tools version
 

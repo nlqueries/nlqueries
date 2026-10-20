@@ -151,10 +151,11 @@ fi
 # reason for switching off the only cleanup that survives an abnormal exit
 # did not survive being checked.
 #
-# `ci.yml` and `release.yml` both still set the flag on their own Pytest steps.
-# Why either does is not recorded anywhere, and on an ephemeral runner the reaper
-# makes no difference either way, so both are left alone rather than changed on a
-# guess. Each carries a note saying so, and the two move together or not at all.
+# `ci.yml` still sets the flag on its Pytest step, and `release.yml` runs that
+# same job by calling ci.yml rather than keeping a copy. Why it is set is not
+# recorded anywhere, and on an ephemeral runner the reaper makes no difference
+# either way, so it is left alone rather than changed on a guess. The step
+# carries a note saying so.
 #
 # THE REAPER IS A PREREQUISITE OF A LOCAL RUN, and it would fail quietly, so
 # there is a preflight for it *above*, just after the image build. It is

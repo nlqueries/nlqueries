@@ -14,6 +14,15 @@ on:
   # from `main` being green. Without this trigger the only remedy was an empty
   # commit.
   workflow_dispatch:
+  # Called by release.yml as its `ci` job, so a release waits on every job
+  # below, not on a copy of some of them. A called workflow runs with the
+  # caller's event and ref: on a tag push it checks out the tag.
+  workflow_call:
+
+# Nothing here writes to the repository. A called workflow can only narrow
+# what its caller grants, so this holds for release.yml's run as well.
+permissions:
+  contents: read
 
 jobs:
   # -------------------------------------------------------------------------
@@ -84,9 +93,33 @@ jobs:
           # for real (a fix exists), rather than ignoring the advisory.
           pip install --upgrade "setuptools>=83.0.0"
           # --skip-editable: nlqueries-core is installed as -e . and is not on PyPI.
-          # CVE-2025-3000: affects torch (transitive via sentence-transformers); no upstream
-          #   fix is available yet. Review and remove this ignore once torch publishes a patch.
-          pip-audit --skip-editable --ignore-vuln CVE-2025-3000
+          pip-audit --skip-editable
+
+  # -------------------------------------------------------------------------
+  # 2b. Dependency CVE audit of the shipped lock
+  #    The job above audits what `pip install -e ".[dev,docs]"` resolves
+  #    today, which is not what the image ships: the image installs
+  #    requirements/core.lock. This audits those exact pins and checks each
+  #    one's hashes, so a lock that falls behind a fix fails here rather
+  #    than at a release. Both are kept: the job above also covers the
+  #    `docs` extra, which the lock does not include.
+  # -------------------------------------------------------------------------
+  lock-audit:
+    name: Lock CVE scan (pip-audit, requirements/core.lock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          # The version the lock is compiled for (scripts/lock-deps.sh).
+          python-version: "3.11"
+          cache: pip
+
+      - name: pip-audit (lock)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements/core.lock --require-hashes
 
   # -------------------------------------------------------------------------
   # 3. Secret scan (SOC 2 REM-02)
@@ -161,7 +194,7 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    needs: [boundary-check, security, lint]
+    needs: [boundary-check, security, lock-audit, lint]
     strategy:
       fail-fast: false
       matrix:
@@ -188,9 +221,9 @@ jobs:
           # passes and strands nothing. On an ephemeral runner it makes no
           # observable difference either way, so this is left as it is rather than
           # changed on a guess. If it ever needs touching, start by finding out
-          # what the original failure actually was -- and note that
-          # release.yml sets the same flag on its own Pytest step, so the two
-          # move together or not at all.
+          # what the original failure actually was. This is the only copy:
+          # release.yml no longer runs its own Pytest step but calls this
+          # workflow, so a release runs the suite with this same setting.
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
       - name: Upload coverage report
