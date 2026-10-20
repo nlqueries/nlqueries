@@ -859,14 +859,18 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
     Here the server answers only to the name it is published under -- the host
     of `NLQ_MCP_RESOURCE_URL` -- and to `localhost`, `127.0.0.1` and `[::1]`,
     which is how a published container port is reached from its host. A request
-    with any other `Host` gets 421; one with an `Origin` other than the resource
-    URL's gets 403. A client that sends no `Origin` is not affected.
+    with any other `Host` gets 421. `Origin` follows the same names: the
+    resource URL's origin, and `http://` on each loopback name, as the SDK
+    allows on a loopback bind, so a client is not refused for naming as its
+    origin a host it was let in on. Any other `Origin` gets 403; a client that
+    sends none is not affected.
 
-    The SDK matches a `Host` exactly, or against `name:*` as "name, a colon and
-    a port", so `localhost:*` does not match a bare `localhost`. Each name is
-    therefore listed in every form a client or proxy sends: a proxy on a scheme's
-    default port sends no port at all, and some clients send the default port
-    explicitly.
+    The SDK matches a `Host` or `Origin` exactly, or against `name:*` as "name,
+    a colon and a port", so `localhost:*` does not match a bare `localhost`.
+    Each name is therefore listed in every form a client or proxy sends: a proxy
+    on a scheme's default port sends no port at all, some clients send the
+    default port explicitly, and a browser leaves the default port out of
+    `Origin`.
     """
     if _is_loopback(host):
         return None
@@ -874,7 +878,14 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
     from nlqueries.auth.mcp_verifier import RESOURCE_URL_ENV  # noqa: PLC0415
 
     allowed_hosts = ["localhost", "localhost:*", "127.0.0.1", "127.0.0.1:*", "[::1]", "[::1]:*"]
-    allowed_origins: list[str] = []
+    allowed_origins = [
+        "http://localhost",
+        "http://localhost:*",
+        "http://127.0.0.1",
+        "http://127.0.0.1:*",
+        "http://[::1]",
+        "http://[::1]:*",
+    ]
     resource = urlsplit(os.getenv(RESOURCE_URL_ENV, "").strip())
     scheme = resource.scheme.lower()
     try:
@@ -897,7 +908,7 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=list(dict.fromkeys(allowed_hosts)),
-        allowed_origins=allowed_origins,
+        allowed_origins=list(dict.fromkeys(allowed_origins)),
     )
 
 

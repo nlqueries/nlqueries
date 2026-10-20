@@ -65,7 +65,11 @@ happens to resolve to it. It accepts:
   host is accepted on any port. So `https://mcp.example.com` accepts
   `mcp.example.com` and `mcp.example.com:443` but not `mcp.example.com:8443`;
 - as `Origin`, when a client sends one: the origin of `NLQ_MCP_RESOURCE_URL`,
-  written as the URL writes it (with its port only if the URL names one).
+  written as the URL writes it (with its port only if the URL names one), and
+  `http://localhost`, `http://127.0.0.1` and `http://[::1]`, with any port or
+  none. The loopback origins match the loopback hosts above, so a client let in
+  at `127.0.0.1:8080` is not refused for sending `Origin: http://127.0.0.1:8080`.
+  With no resource URL, only the loopback origins are accepted.
 
 Any other `Host` gets `421 Misdirected Request`; any other `Origin` gets `403`.
 Set `NLQ_MCP_RESOURCE_URL` to the URL clients actually use. The shipped compose

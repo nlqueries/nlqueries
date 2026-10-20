@@ -144,9 +144,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   - On a bind other than loopback, the server accepts in the `Host` header
     only `localhost`, `127.0.0.1` and `[::1]` (with any port or none) and the
     host of `NLQ_MCP_RESOURCE_URL` (with no port or its port; on any port if
-    the URL names a non-default one), otherwise `421`, and only the resource
-    URL's origin in `Origin`, otherwise `403`. Set `NLQ_MCP_RESOURCE_URL` to the URL clients use. The compose file
-    keeps working at `localhost:8080` and `127.0.0.1:8080`.
+    the URL names a non-default one), otherwise `421`. In `Origin` it accepts
+    only the resource URL's origin and `http://` on the same loopback names
+    (with any port or none), otherwise `403`. Set `NLQ_MCP_RESOURCE_URL` to the
+    URL clients use. The compose file keeps working at `localhost:8080` and
+    `127.0.0.1:8080`.
   - SSE request bodies over 4 MiB get `413`, the limit the SDK already applies
     to streamable HTTP.
   - New `NLQ_MCP_MAX_QUESTION_CHARS` (default 4000) and `NLQ_MCP_MAX_SQL_CHARS`

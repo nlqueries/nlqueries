@@ -258,6 +258,57 @@ class TestHostChecksOnANonLoopbackBind:
         assert good not in (421, 403)
         assert bad == 403
 
+    def test_compose_accepts_a_client_naming_127_0_0_1_as_its_origin(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Compose sets the resource URL to http://localhost:8080 and publishes
+        on 127.0.0.1. A client let in on `Host: 127.0.0.1:8080` must not then be
+        refused for sending that same host as its `Origin`."""
+        server = _networked(monkeypatch, tmp_path, resource="http://localhost:8080")
+
+        status = _post_message(
+            server,
+            "127.0.0.1:8080",
+            Origin="http://127.0.0.1:8080",
+            Authorization=f"Bearer {GOOD_TOKEN}",
+        )
+
+        assert status not in (421, 403)
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://localhost:3000",
+            "http://localhost",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "http://[::1]",
+            "http://[::1]:8080",
+        ],
+    )
+    def test_with_no_resource_url_the_loopback_origins_are_accepted(
+        self, origin: str, monkeypatch, tmp_path
+    ) -> None:
+        """Bare as well as with a port: a browser leaves port 80 out of
+        `Origin`, and the SDK's `:*` matches only when a port follows."""
+        server = _networked(monkeypatch, tmp_path, resource=None)
+
+        assert _post_message(server, "localhost:8080", Origin=origin) not in (421, 403)
+
+    @pytest.mark.parametrize(
+        "origin", ["http://evil.example", "https://localhost:3000", "http://localhost.evil.example"]
+    )
+    @pytest.mark.parametrize("resource", [None, "https://mcp.example.com"])
+    def test_any_other_origin_gets_403(
+        self, origin: str, resource: str | None, monkeypatch, tmp_path
+    ) -> None:
+        server = _networked(monkeypatch, tmp_path, resource=resource)
+        host = "mcp.example.com" if resource else "localhost:8080"
+
+        status = _post_message(server, host, Origin=origin, Authorization=f"Bearer {GOOD_TOKEN}")
+
+        assert status == 403
+
     @pytest.mark.parametrize("host", ["localhost:8080", "127.0.0.1:8080"])
     def test_the_compose_deployment_keeps_working(self, host: str, monkeypatch, tmp_path) -> None:
         """docker-compose.yml publishes on 127.0.0.1 and sets the resource URL to
@@ -321,7 +372,7 @@ class TestHostChecksOnANonLoopbackBind:
 
         assert security is not None
         assert not any("example" in h for h in security.allowed_hosts)
-        assert security.allowed_origins == []
+        assert not any("example" in o for o in security.allowed_origins)
 
     def test_streamable_http_checks_the_host_too(self, monkeypatch, tmp_path) -> None:
         server = _networked(monkeypatch, tmp_path, resource=None)
