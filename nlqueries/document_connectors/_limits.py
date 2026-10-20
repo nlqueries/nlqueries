@@ -45,6 +45,7 @@ from nlqueries.config import (
     MAX_DOCUMENT_ROWS,
     MAX_EXTRACTION_SECONDS,
     MAX_NOTION_BLOCKS,
+    MAX_NOTION_BYTES,
     MAX_PDF_BYTES,
     MAX_PDF_PAGES,
 )
@@ -122,6 +123,7 @@ PDF_PAGES: int = MAX_PDF_PAGES
 CONFLUENCE_PAGES: int = MAX_CONFLUENCE_PAGES
 CONFLUENCE_BYTES: int = MAX_CONFLUENCE_BYTES
 NOTION_BLOCKS: int = MAX_NOTION_BLOCKS
+NOTION_BYTES: int = MAX_NOTION_BYTES
 
 
 class ExtractionBudget:
@@ -173,6 +175,19 @@ def _size(n: int) -> str:
     return f"{n / (1024 * 1024):,.1f} MiB"
 
 
+def _size_over(size: int, limit: int) -> tuple[str, str]:
+    """*size* and the *limit* it exceeds, formatted so they read as different.
+
+    :func:`_size` rounds to a tenth of the unit, so a size just over its limit
+    can format the same as the limit ("100.0 MiB, over the 100.0 MiB limit").
+    When it would, both are given in exact bytes instead.
+    """
+    shown, cap = _size(size), _size(limit)
+    if shown == cap:
+        return f"{size:,} bytes", f"{limit:,} bytes"
+    return shown, cap
+
+
 def check_archive_expansion(source: str | Path) -> None:
     """Refuse a zip-based document that would expand beyond the limits.
 
@@ -190,9 +205,9 @@ def check_archive_expansion(source: str | Path) -> None:
         compressed = sum(entry.compress_size for entry in entries)
 
     if expanded > MAX_EXPANDED_BYTES:
+        shown, cap = _size_over(expanded, MAX_EXPANDED_BYTES)
         raise DocumentTooComplexError(
-            f"{path.name} expands to {expanded // (1024 * 1024)} MiB, over the "
-            f"{MAX_EXPANDED_BYTES // (1024 * 1024)} MiB limit for a single document."
+            f"{path.name} expands to {shown}, over the {cap} limit for a single document."
         )
 
     # Guarded against a zero denominator: an archive of stored (uncompressed)
@@ -202,8 +217,8 @@ def check_archive_expansion(source: str | Path) -> None:
         ratio = expanded / compressed
         if ratio > MAX_EXPANSION_RATIO:
             raise DocumentTooComplexError(
-                f"{path.name} expands {ratio:.0f}x ({compressed // 1024} KiB to "
-                f"{expanded // (1024 * 1024)} MiB), over the {MAX_EXPANSION_RATIO}x limit."
+                f"{path.name} expands {ratio:.0f}x ({_size(compressed)} to "
+                f"{_size(expanded)}), over the {MAX_EXPANSION_RATIO}x limit."
             )
 
     # Each member as well as the whole. The whole-archive ratio can be diluted:

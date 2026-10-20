@@ -32,7 +32,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from nlqueries.document_connectors import _limits
-from nlqueries.document_connectors._limits import DocumentTooComplexError
+from nlqueries.document_connectors._limits import DocumentTooComplexError, _size_over
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -84,6 +84,21 @@ def _cursor_of(next_link: str) -> str | None:
     return values[0] if values else None
 
 
+def _sends_token_in_clear(base_url: str) -> bool:
+    """Whether *base_url* is ``http://`` to a host that is not loopback.
+
+    A URL that cannot be parsed (an unbalanced IPv6 bracket, say) is "cannot
+    tell", not an error: the constructor must not raise on it, and the request
+    that uses it reports the problem as a failed sync.
+    """
+    try:
+        parts = urlsplit(base_url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    return parts.scheme.lower() == "http" and not _is_loopback(host)
+
+
 def _is_loopback(host: str) -> bool:
     if host.lower() == "localhost":
         return True
@@ -120,8 +135,7 @@ class ConfluenceConnector(DocumentConnector):
         self._base_url = base_url.rstrip("/")
         self._username = username
         self._api_token = api_token
-        parts = urlsplit(self._base_url)
-        if parts.scheme.lower() == "http" and not _is_loopback(parts.hostname or ""):
+        if _sends_token_in_clear(self._base_url):
             # Warned rather than refused: a server on a private network may be
             # plain HTTP. The API token travels with every request, though, so
             # an operator should know it is being sent in the clear.
@@ -306,9 +320,10 @@ class ConfluenceConnector(DocumentConnector):
             # truncated for the reason the page cap is.
             body_bytes += len(html_body.encode("utf-8"))
             if body_bytes > _limits.CONFLUENCE_BYTES:
+                shown, cap = _size_over(body_bytes, _limits.CONFLUENCE_BYTES)
                 raise DocumentTooComplexError(
-                    f"the space's page bodies exceed {_limits.CONFLUENCE_BYTES // (1024 * 1024)} "
-                    "MiB, the limit for one sync (NLQ_MAX_CONFLUENCE_BYTES)"
+                    f"the space's page bodies reached {shown}, over the {cap} limit "
+                    "for one sync (NLQ_MAX_CONFLUENCE_BYTES)"
                 )
 
             # Strip HTML tags to obtain plain text.

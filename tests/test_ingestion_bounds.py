@@ -76,8 +76,53 @@ def test_an_oversized_pdf_is_refused_before_it_is_parsed(
 
     monkeypatch.setattr(pdfplumber, "open", _must_not_be_called)
 
-    with pytest.raises(DocumentTooComplexError, match="MiB limit for a PDF"):
+    with pytest.raises(DocumentTooComplexError, match="limit for a PDF"):
         PdfConnector().ingest(path, source_id="s")
+
+
+def _refusal_for_pdf_of(size: int, limit: int, tmp_path: Path, monkeypatch: Any) -> str:
+    """The PDF connector's size refusal for a file of *size* bytes.
+
+    The file is sparse: it has the size on disk without the bytes, and the
+    parser is never reached.
+    """
+    pdfplumber = pytest.importorskip("pdfplumber")
+    from nlqueries.document_connectors.pdf import PdfConnector
+
+    path = tmp_path / "big.pdf"
+    with path.open("wb") as handle:
+        handle.truncate(size)
+    monkeypatch.setattr(_limits, "PDF_BYTES", limit)
+    monkeypatch.setattr(pdfplumber, "open", MagicMock(side_effect=AssertionError("parsed")))
+    with pytest.raises(DocumentTooComplexError) as refused:
+        PdfConnector().ingest(path, source_id="s")
+    return str(refused.value)
+
+
+def test_a_pdf_just_over_the_limit_does_not_read_as_at_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """100.5 MiB against 100 MiB once read "100 MiB, over the 100 MiB limit"."""
+    message = _refusal_for_pdf_of(
+        100 * 1024 * 1024 + 512 * 1024, 100 * 1024 * 1024, tmp_path, monkeypatch
+    )
+    assert "is 100.5 MiB, over the 100.0 MiB limit for a PDF" in message
+
+
+def test_a_pdf_one_byte_over_the_limit_is_shown_in_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where both would round to the same figure, both are given exactly."""
+    message = _refusal_for_pdf_of(100 * 1024 * 1024 + 1, 100 * 1024 * 1024, tmp_path, monkeypatch)
+    assert "is 104,857,601 bytes, over the 104,857,600 bytes limit" in message
+
+
+def test_a_sub_mib_pdf_limit_prints_non_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator's 500 KiB limit once read "0 MiB, over the 0 MiB limit"."""
+    message = _refusal_for_pdf_of(600 * 1024, 500 * 1024, tmp_path, monkeypatch)
+    assert "is 600.0 KiB, over the 500.0 KiB limit for a PDF" in message
 
 
 def test_a_pdf_at_the_size_cap_is_ingested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,6 +336,40 @@ def test_sizes_are_shown_in_a_unit_that_keeps_them_non_zero(size: int, text: str
     assert _limits._size(size) == text
 
 
+@pytest.mark.parametrize(
+    ("size", "limit", "expected"),
+    [
+        (2048, 1024, ("2.0 KiB", "1.0 KiB")),
+        (1025, 1024, ("1,025 bytes", "1,024 bytes")),
+        (500, 100, ("500 bytes", "100 bytes")),
+    ],
+)
+def test_a_size_and_its_limit_never_format_alike(
+    size: int, limit: int, expected: tuple[str, str]
+) -> None:
+    assert _limits._size_over(size, limit) == expected
+
+
+def test_the_whole_archive_messages_print_small_sizes_non_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both whole-archive refusals, on an archive far under one MiB."""
+    path = tmp_path / "small.xlsx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", b"\0" * 200_000)
+
+    monkeypatch.setattr(_limits, "MAX_EXPANDED_BYTES", 100_000)
+    with pytest.raises(DocumentTooComplexError) as refused:
+        check_archive_expansion(path)
+    assert "expands to 195.3 KiB, over the 97.7 KiB limit" in str(refused.value)
+
+    monkeypatch.setattr(_limits, "MAX_EXPANDED_BYTES", 10**12)
+    with pytest.raises(DocumentTooComplexError) as refused:
+        check_archive_expansion(path)
+    assert "bytes to 195.3 KiB)" in str(refused.value)
+    assert " 0 KiB" not in str(refused.value)
+
+
 def test_ordinary_documents_pass_the_per_member_check(tmp_path: Path) -> None:
     """The control: real files from the real writers, at the default limits."""
     docx = pytest.importorskip("docx")
@@ -433,6 +512,26 @@ def test_a_valid_space_key_reaches_the_query(space_key: str, confluence_client: 
     assert f'space = "{space_key}"' in confluence_client.cql.call_args[0][0]
 
 
+def test_an_unparseable_base_url_does_not_raise_in_the_constructor(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unbalanced IPv6 bracket makes ``urlsplit`` raise; the constructor must not.
+
+    The CLI builds the connector outside the ``try`` that reports a failed sync,
+    so a raise here was a traceback. Such a URL is "cannot tell" for the
+    warning, and fails when it is used.
+    """
+    from urllib.parse import urlsplit
+
+    base_url = "http://[fe80::1:8090"
+    with pytest.raises(ValueError):
+        urlsplit(base_url)  # the premise
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.document_connectors.confluence"):
+        _connector(base_url)
+    assert not caplog.records, caplog.text
+
+
 @pytest.mark.parametrize(
     ("base_url", "warns"),
     [
@@ -510,8 +609,9 @@ def test_a_space_over_the_byte_cap_is_refused(
 
     confluence_client.get_page_by_id.reset_mock()
     monkeypatch.setattr(_limits, "CONFLUENCE_BYTES", 2500)
-    with pytest.raises(DocumentTooComplexError, match="NLQ_MAX_CONFLUENCE_BYTES"):
+    with pytest.raises(DocumentTooComplexError, match="NLQ_MAX_CONFLUENCE_BYTES") as refused:
         _connector().ingest("ENG", source_id="s")
+    assert "reached 2.9 KiB, over the 2.4 KiB limit" in str(refused.value)
     assert confluence_client.get_page_by_id.call_count == 3
 
 
@@ -577,6 +677,45 @@ def test_a_notion_page_at_the_block_cap_is_read(
     assert "seven" in " ".join(c.text for c in chunks)
 
 
+def test_a_notion_page_under_the_block_cap_but_over_the_byte_cap_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three blocks of 1,000 bytes each: well under the block cap, over 2,500 bytes."""
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    client = MagicMock()
+    client.pages.retrieve.return_value = {"last_edited_time": "", "properties": {}}
+    client.blocks.children.list.return_value = _blocks(["x" * 1000] * 3, next_cursor=None)
+    module = MagicMock()
+    module.Client.return_value = client
+    monkeypatch.setitem(sys.modules, "notion_client", module)
+    monkeypatch.setattr(_limits, "NOTION_BLOCKS", 100)
+
+    monkeypatch.setattr(_limits, "NOTION_BYTES", 3000)
+    chunks = NotionConnector(api_token="t").ingest("page", source_id="s")  # at the cap
+    assert chunks
+
+    monkeypatch.setattr(_limits, "NOTION_BYTES", 2500)
+    with pytest.raises(DocumentTooComplexError, match="NLQ_MAX_NOTION_BYTES") as refused:
+        NotionConnector(api_token="t").ingest("page", source_id="s")
+    assert "reached 2.9 KiB of text, over the 2.4 KiB limit" in str(refused.value)
+
+
+def test_the_notion_byte_cap_counts_encoded_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """1,000 three-byte characters are 3,000 bytes, not 1,000."""
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    client = MagicMock()
+    client.pages.retrieve.return_value = {"last_edited_time": "", "properties": {}}
+    client.blocks.children.list.return_value = _blocks(["€" * 1000], next_cursor=None)
+    module = MagicMock()
+    module.Client.return_value = client
+    monkeypatch.setitem(sys.modules, "notion_client", module)
+    monkeypatch.setattr(_limits, "NOTION_BYTES", 2000)
+    with pytest.raises(DocumentTooComplexError):
+        NotionConnector(api_token="t").ingest("page", source_id="s")
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
@@ -590,6 +729,7 @@ def test_a_notion_page_at_the_block_cap_is_read(
         ("MAX_CONFLUENCE_PAGES", "CONFLUENCE_PAGES"),
         ("MAX_CONFLUENCE_BYTES", "CONFLUENCE_BYTES"),
         ("MAX_NOTION_BLOCKS", "NOTION_BLOCKS"),
+        ("MAX_NOTION_BYTES", "NOTION_BYTES"),
     ],
 )
 def test_the_new_limits_come_from_config(config_name: str, limits_name: str) -> None:
@@ -613,11 +753,12 @@ def test_the_new_settings_read_their_environment_variables(tmp_path: Path) -> No
         "NLQ_MAX_CONFLUENCE_PAGES": "13",
         "NLQ_MAX_CONFLUENCE_BYTES": "14",
         "NLQ_MAX_NOTION_BLOCKS": "15",
+        "NLQ_MAX_NOTION_BYTES": "16",
     }
     script = (
         "import json, nlqueries.config as c; print(json.dumps([c.MAX_PDF_BYTES, "
         "c.MAX_PDF_PAGES, c.MAX_CONFLUENCE_PAGES, c.MAX_CONFLUENCE_BYTES, "
-        "c.MAX_NOTION_BLOCKS]))"
+        "c.MAX_NOTION_BLOCKS, c.MAX_NOTION_BYTES]))"
     )
     done = subprocess.run(
         [sys.executable, "-c", script],
@@ -627,4 +768,4 @@ def test_the_new_settings_read_their_environment_variables(tmp_path: Path) -> No
         text=True,
         check=True,
     )
-    assert json.loads(done.stdout.strip().splitlines()[-1]) == [11, 12, 13, 14, 15]
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == [11, 12, 13, 14, 15, 16]

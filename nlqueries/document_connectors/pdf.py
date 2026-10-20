@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from nlqueries.document_connectors import _limits
-from nlqueries.document_connectors._limits import DocumentTooComplexError, ExtractionBudget
+from nlqueries.document_connectors._limits import (
+    DocumentTooComplexError,
+    ExtractionBudget,
+    _size_over,
+)
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -81,9 +85,9 @@ class PdfConnector(DocumentConnector):
         except OSError:
             size = None
         if size is not None and size > _limits.PDF_BYTES:
+            shown, cap = _size_over(size, _limits.PDF_BYTES)
             raise DocumentTooComplexError(
-                f"{source_path.name} is {size // (1024 * 1024)} MiB, over the "
-                f"{_limits.PDF_BYTES // (1024 * 1024)} MiB limit for a PDF."
+                f"{source_path.name} is {shown}, over the {cap} limit for a PDF."
             )
 
         splitter = RecursiveCharacterTextSplitter(

@@ -764,6 +764,16 @@ follow, so without a ceiling the read continues for as long as the page does. A
 page over the cap is refused rather than stored in part.
 """
 
+MAX_NOTION_BYTES: int = _positive_int("NLQ_MAX_NOTION_BYTES", 50 * 1024 * 1024)
+"""Most bytes of block text (UTF-8) read from one Notion page.
+
+The block cap bounds how many blocks are read, not how much text each carries:
+a block's rich text has no length limit worth relying on, so a page of a few
+thousand very large blocks passes it. Counted as each block's text is kept, and
+refused rather than truncated for the reason given under
+:data:`MAX_NOTION_BLOCKS`.
+"""
+
 
 CONNECTOR_MAX_FETCH_ROWS: int = int(os.getenv("CONNECTOR_MAX_FETCH_ROWS", "10000"))
 """Most rows a connector will materialise from one query.

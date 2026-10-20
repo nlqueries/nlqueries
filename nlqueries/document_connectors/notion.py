@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from nlqueries.document_connectors import _limits
-from nlqueries.document_connectors._limits import DocumentTooComplexError
+from nlqueries.document_connectors._limits import DocumentTooComplexError, _size_over
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
 
@@ -125,6 +125,7 @@ class NotionConnector(DocumentConnector):
         # Fetch all blocks, following Notion's pagination cursor.
         all_text_parts: list[str] = []
         blocks_read = 0
+        text_bytes = 0
         has_more = True
         start_cursor: str | None = None
 
@@ -147,6 +148,15 @@ class NotionConnector(DocumentConnector):
             for block in blocks:
                 text = _extract_block_text(block)
                 if text:
+                    # The block cap bounds how many blocks, not how much text
+                    # each carries, so the text kept is counted too.
+                    text_bytes += len(text.encode("utf-8"))
+                    if text_bytes > _limits.NOTION_BYTES:
+                        shown, cap = _size_over(text_bytes, _limits.NOTION_BYTES)
+                        raise DocumentTooComplexError(
+                            f"Notion page {page_id} reached {shown} of text, over the "
+                            f"{cap} limit for one page (NLQ_MAX_NOTION_BYTES)"
+                        )
                     all_text_parts.append(text)
 
             has_more = bool(response.get("has_more", False))

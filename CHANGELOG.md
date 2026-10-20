@@ -147,8 +147,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   for an `http://` base URL to a non-loopback host, and refuses a space over
   `NLQ_MAX_CONFLUENCE_PAGES` (5,000) pages or `NLQ_MAX_CONFLUENCE_BYTES`
   (200 MiB) of page body. `doc-sync-notion` refuses a page of more than
-  `NLQ_MAX_NOTION_BLOCKS` (10,000) blocks. A refused sync stores nothing and
-  leaves the earlier copy in place.
+  `NLQ_MAX_NOTION_BLOCKS` (10,000) blocks or `NLQ_MAX_NOTION_BYTES` (50 MiB)
+  of block text. A refused sync stores nothing and leaves the earlier copy in
+  place. Refusal messages give sizes in bytes, KiB or MiB by magnitude, so a
+  small limit never reads as zero; where a size and its limit would print
+  alike ("100 MiB, over the 100 MiB limit"), both are given in exact bytes.
 
 ### Changed
 
