@@ -289,20 +289,40 @@ class TestHostChecksOnANonLoopbackBind:
         assert "[::1]:*" in security.allowed_hosts
 
 
+def _post_sse_body(monkeypatch, tmp_path: Path, size: int) -> int:
+    """POST *size* bytes to the SSE message endpoint, with only the server's cap
+    in the way.
+
+    From mcp 1.30 the SDK caps SSE bodies itself, at the same 4 MiB, and would
+    answer 413 whether or not the server adds its own cap. Its limit is raised
+    here, where the setting exists, so a 413 at 4 MiB can only come from the
+    server's middleware. On 1.29 there is no such setting and no SDK cap.
+    """
+    server = _networked(monkeypatch, tmp_path, resource=None)
+    if "max_request_body_size" in type(server.settings).model_fields:
+        server.settings.max_request_body_size = 64 * 1024 * 1024
+    client = TestClient(server.sse_app())
+
+    response = client.post(
+        "/messages/?session_id=" + "0" * 32,
+        content=b"x" * size,
+        headers={"Host": "localhost:8080", "Content-Type": "application/json"},
+    )
+    return response.status_code
+
+
 class TestTheSseBodyCap:
     def test_an_oversized_body_gets_413(self, monkeypatch, tmp_path) -> None:
         from mcp.server.streamable_http_manager import DEFAULT_MAX_REQUEST_BODY_SIZE
 
-        server = _networked(monkeypatch, tmp_path, resource=None)
-        client = TestClient(server.sse_app())
+        assert _post_sse_body(monkeypatch, tmp_path, DEFAULT_MAX_REQUEST_BODY_SIZE + 1) == 413
 
-        response = client.post(
-            "/messages/?session_id=" + "0" * 32,
-            content=b"x" * (DEFAULT_MAX_REQUEST_BODY_SIZE + 1),
-            headers={"Host": "localhost:8080", "Content-Type": "application/json"},
-        )
+    def test_a_body_at_the_cap_gets_through(self, monkeypatch, tmp_path) -> None:
+        """It reaches the transport, which finds no such session. The cap is
+        4 MiB exactly, not something smaller."""
+        from mcp.server.streamable_http_manager import DEFAULT_MAX_REQUEST_BODY_SIZE
 
-        assert response.status_code == 413
+        assert _post_sse_body(monkeypatch, tmp_path, DEFAULT_MAX_REQUEST_BODY_SIZE) != 413
 
     def test_the_cap_is_the_streamable_http_one(self) -> None:
         from mcp.server.streamable_http_manager import DEFAULT_MAX_REQUEST_BODY_SIZE
