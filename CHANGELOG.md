@@ -478,6 +478,32 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **Errors no longer pass on what a driver or the connectors file quoted.**
+  When the MCP `query` tool reports a failed query, it now shows the first
+  line of the error and a short reference id. The server logs the same first
+  line at WARNING with that reference (`[ref …]`), and the full error at DEBUG
+  under the same reference only, so a log shipped elsewhere does not carry a
+  DSN or password. The lines a driver adds after the
+  first, where it quotes the statement, its parameters or a connection
+  string, no longer reach the client. The same holds for a hybrid answer: when
+  its query fails, the failure note in the SQL table (which is the whole
+  answer when the documents found nothing, and the SQL part of the prompt for
+  a combined answer) carries the first line only. Both use the new
+  `connectors.base.short_error_text`. `QueryResult.error` itself is
+  unchanged. A `connectors.yaml` that is not valid YAML is now reported by
+  line number and problem, as `Failed to read connectors file: line 4:
+  mapping values are not allowed here`, without the line the parser quoted,
+  which may hold a password. That applies to the MCP `list_connectors` tool
+  and to the CLI, where the parse error used to escape as a traceback and is
+  now an ordinary error with exit status 1. `health` reports it as a failed
+  `Database` check and still runs its other checks, so `health --json` still
+  prints a report. The loader raises `ConnectorsFileError`, a `ValueError`,
+  for it, and `list_connectors` now reads the file through the loader rather
+  than parsing it itself. The loader reads the file as UTF-8 whatever the
+  locale, so a non-ASCII password is read as written on a cp1252 Windows
+  machine too, and a file that is not UTF-8 is reported as `Failed to read
+  connectors file: it is not UTF-8 (the first invalid byte is at offset N)`,
+  without the byte itself. `nlqueries connect` writes the file as UTF-8 too.
 - **Promoted feedback reaches the prompt.** `promote-feedback`, and `export-kb`
   which runs it, write confirmed (question, SQL) pairs to
   `agent_<id>_verified` with the connector ID made safe for a collection name

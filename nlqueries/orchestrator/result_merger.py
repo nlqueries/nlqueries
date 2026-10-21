@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nlqueries.connectors.base import QueryResult
+from nlqueries.connectors.base import QueryResult, short_error_text
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 
@@ -79,7 +79,10 @@ def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
         # columns, and answering "(no data)" tells the synthesis model that the
         # query ran and found nothing -- a different statement, and a wrong one.
         if sql_result.error:
-            return f"(no data; this query failed: {_cell(sql_result.error)})"
+            # The first line only: this text is a hybrid answer when the
+            # document side found nothing, and a driver quotes what it was
+            # sent (a DSN, the parameters) on the lines after it.
+            return f"(no data; this query failed: {_cell(short_error_text(sql_result.error))})"
         return "(no data)"
     header = "| " + " | ".join(_cell(c) for c in sql_result.columns) + " |"
     separator = "| " + " | ".join(["---"] * len(sql_result.columns)) + " |"
@@ -126,7 +129,7 @@ def _format_sql_table(sql_result: QueryResult, max_rows: int = 20) -> str:
         # text, with nothing saying that running it had failed. The model then
         # described the statement as though it were the answer, and the prose
         # the reader gets said nothing about the failure at all.
-        lines.append(f"\n(this query failed: {_cell(sql_result.error)})")
+        lines.append(f"\n(this query failed: {_cell(short_error_text(sql_result.error))})")
     return "\n".join(lines)
 
 

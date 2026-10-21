@@ -31,6 +31,7 @@ import inspect
 import ipaddress
 import logging
 import os
+import secrets
 import socket
 import time
 from collections.abc import Callable
@@ -208,6 +209,11 @@ def _agent_not_found(agent_id: str) -> str:
     return f"Agent '{agent_id}' not found. Use list_agents() to see the agents you can use."
 
 
+def _reference() -> str:
+    """A short id tying a failure in a tool reply to its full entry in the log."""
+    return secrets.token_hex(4)
+
+
 #: How long the MCP `query` tool waits for an answer.
 _QUERY_BUDGET_SECONDS = 45
 #: The database's own limit on the statement, at or just under the tool's wait
@@ -246,6 +252,7 @@ async def query(
         (for SQL/hybrid agents), and source citations (for document/hybrid agents).
         Includes per-query latency and agent-type metadata.
     """
+    from nlqueries.connectors.base import short_cause, short_error_text  # noqa: PLC0415
     from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
@@ -285,8 +292,9 @@ async def query(
     except FileNotFoundError:
         return _agent_not_found(agent_id)
     except Exception as exc:  # noqa: BLE001
-        _log.exception("MCP query tool error for agent %r", agent_id)
-        return f"Query failed: {exc}"
+        reference = _reference()
+        _log.exception("MCP query tool error for agent %r [ref %s]", agent_id, reference)
+        return f"Query failed: {short_cause(exc)} (reference {reference})"
 
     parts: list[str] = [result.answer]
 
@@ -302,7 +310,20 @@ async def query(
             parts.append(f"\n\n**In plain English**\n{described.text}{hint}")
 
     if result.sql_result and result.sql_result.error:
-        parts.append(f"\n\n⚠ SQL execution error: {result.sql_result.error}")
+        # `sql_result.error` itself stays raw, as the correction loop needs it.
+        # The full text is logged at DEBUG only: a log usually reaches a wider
+        # audience than connectors.yaml, and the lines after the first are
+        # where a driver quotes the DSN. The reference ties the two together.
+        reference = _reference()
+        summary = short_error_text(result.sql_result.error)
+        _log.warning("SQL execution error for agent %r [ref %s]: %s", agent_id, reference, summary)
+        _log.debug(
+            "SQL execution error for agent %r [ref %s], in full: %s",
+            agent_id,
+            reference,
+            result.sql_result.error,
+        )
+        parts.append(f"\n\n⚠ SQL execution error: {summary} (reference {reference})")
 
     if result.sql_result and not result.sql_result.error and result.sql_result.rows:
         qr = result.sql_result
@@ -542,14 +563,20 @@ def list_connectors() -> str:
         Formatted list of connector IDs and their db-types, or a message
         when no connectors are registered.
     """
-    import yaml  # noqa: PLC0415
+    from nlqueries.connectors.loader import (  # noqa: PLC0415
+        ConnectorsFileError,
+        _read_connectors_root,
+    )
 
     if not config.CONNECTORS_FILE.exists():
         return "No connectors registered. Use 'nlqueries connect' to add one."
 
     try:
-        # `object`: YAML can hold any shape, and the checks below are for that.
-        raw: object = yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
+        # The loader's reader, so this tool reads the file as every other path
+        # does. `object`: YAML can hold any shape, and the checks below are for that.
+        raw: object = _read_connectors_root() or {}
+    except ConnectorsFileError as exc:
+        return str(exc)
     except Exception as exc:  # noqa: BLE001
         return f"Failed to read connectors file: {exc}"
 
