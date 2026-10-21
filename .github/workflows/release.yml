@@ -19,6 +19,12 @@ name: Release — PyPI Publish
 # skipped, so a dry run requests no environment, no OIDC token and no
 # secret. Use it to exercise a change to this file, or a bump of the actions
 # it pins, before a real tag does.
+#
+# Only a final version tag (vX.Y.Z, nothing after it) moves
+# nlqueries/core:latest. A pre-release tag such as v1.0.0-rc1 pushes its own
+# image tag and nothing else. docker-compose.yml pins the image by version, not
+# :latest, so cutting a final release includes bumping that pin, and the tag
+# shown in README.md and docs/getting-started.md, to the new version.
 
 on:
   push:
@@ -74,6 +80,60 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
+  # 2b. A CycloneDX SBOM of the wheel
+  #     Its own job, so the step most likely to fail (it resolves the wheel's
+  #     whole dependency closure from PyPI) cannot stop the packages being
+  #     stored or published. `publish-pypi` does not wait on it; only
+  #     `github-release`, which attaches it and can be re-run, does.
+  # ---------------------------------------------------------------------------
+  wheel-sbom:
+    name: Build the wheel's SBOM
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Download distribution packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      # The wheel is installed into a virtualenv created without pip, by the
+      # runner's pip, so the environment holds the wheel and its dependencies
+      # and nothing else: no pip or setuptools, and not the generator, which
+      # runs from the runner's own Python. The resolution is the one for this
+      # runner, linux/amd64 and CPython 3.11, on the day of the release.
+      - name: Generate the wheel's SBOM (CycloneDX)
+        run: |
+          python -m venv --without-pip "$RUNNER_TEMP/wheel-env"
+          pip --python "$RUNNER_TEMP/wheel-env/bin/python" install --no-cache-dir dist/*.whl
+          pip install "cyclonedx-bom==7.5.0"
+          wheel="$(basename dist/*.whl)"
+          mkdir -p sbom
+          cyclonedx-py environment \
+            --pyproject pyproject.toml \
+            --mc-type library \
+            --of JSON \
+            -o "sbom/${wheel}.cdx.json" \
+            "$RUNNER_TEMP/wheel-env/bin/python"
+
+      # Not in dist/: the PyPI upload takes every file there.
+      - name: Store the wheel's SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-sbom
+          path: sbom/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
   # 3. Publish to PyPI using OIDC trusted publishing (no stored secrets)
   # ---------------------------------------------------------------------------
   publish-pypi:
@@ -117,9 +177,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+      # `latest` follows final versions only: v1.2.3 pushes 1.2.3 and latest,
+      # v1.2.3-rc1 pushes 1.2.3-rc1 alone, so a plain `docker pull` never
+      # lands on a pre-release.
+      - name: Choose image tags
+        id: tags
+        shell: bash
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          tags="nlqueries/core:${version}"
+          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tags="${tags},nlqueries/core:latest"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -139,17 +209,30 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            nlqueries/core:latest
-            nlqueries/core:${{ steps.version.outputs.version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          # A BuildKit SBOM attestation per platform, pushed with the image.
+          # Read it with:
+          #   docker buildx imagetools inspect nlqueries/core:<version> \
+          #     --format '{{ json .SBOM }}'
+          # The scanner BuildKit runs to produce it is pinned by digest, like
+          # the base image and every action here, so the same commit builds the
+          # same SBOM and a change to the `stable-1` tag cannot fail a release
+          # part-way through. The tag is kept beside the digest for
+          # readability. To update, deliberately:
+          #   docker buildx imagetools inspect docker/buildkit-syft-scanner:stable-1
+          sbom: generator=docker/buildkit-syft-scanner:stable-1@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ---------------------------------------------------------------------------
   # 4b. Dry run: on a manual run only, everything a release does short of
-  #     publishing. It downloads the packages `build` stored, as
-  #     `publish-pypi` and `github-release` do, and builds the same
-  #     multi-platform image as `publish-docker` with push: false. Same
+  #     publishing. It downloads the packages `build` stored and the SBOM
+  #     `wheel-sbom` stored, as `publish-pypi` and `github-release` do, and
+  #     builds the same multi-platform image as `publish-docker` with
+  #     push: false. The image is exported as an OCI tarball to /dev/null
+  #     rather than discarded, so the build has an exporter to attach its
+  #     SBOM attestations to and the SBOM generator runs here first, without
+  #     writing both platforms' layers to the runner's disk. Same
   #     pinned actions as those jobs, so an action bump runs here first. No
   #     environment and no secrets: docker/login-action and the PyPI upload
   #     are the two steps a dry run cannot exercise.
@@ -157,7 +240,7 @@ jobs:
   release-dry-run:
     name: Release dry run (nothing published)
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, wheel-sbom]
     if: github.event_name == 'workflow_dispatch'
 
     steps:
@@ -169,8 +252,14 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Download the wheel's SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wheel-sbom
+          path: sbom/
+
       - name: List the packages a release would upload
-        run: ls -l dist/
+        run: ls -l dist/ sbom/
 
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -185,6 +274,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           tags: nlqueries/core:dry-run
+          # Same generator as publish-docker.
+          sbom: generator=docker/buildkit-syft-scanner:stable-1@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          # Without an exporter there is nothing to attach an SBOM to. The
+          # OCI exporter generates and exports both platforms and their
+          # attestations, and /dev/null keeps the multi-GB tarball off the
+          # runner's disk.
+          outputs: type=oci,dest=/dev/null
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -194,7 +290,9 @@ jobs:
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish-pypi]
+    # wheel-sbom too: a failed SBOM holds back only this job, which can be
+    # re-run once the packages are already on PyPI.
+    needs: [publish-pypi, wheel-sbom]
     if: github.event_name == 'push'
     permissions:
       contents: write   # required to create releases
@@ -210,6 +308,12 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Download the wheel's SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wheel-sbom
+          path: sbom/
+
       - name: Extract tag name
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
@@ -219,7 +323,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
-            dist/* \
+            dist/* sbom/* \
             --title "nlqueries-core ${{ steps.tag.outputs.tag }}" \
             --generate-notes \
             --verify-tag

@@ -6,6 +6,21 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **SBOMs for each release.** The Docker image is built with a BuildKit SBOM
+  attestation, so each platform in a pushed `nlqueries/core` manifest carries
+  an SPDX SBOM (`docker buildx imagetools inspect nlqueries/core:<version>
+  --format '{{ json .SBOM }}'`). The scanner that produces it,
+  `docker/buildkit-syft-scanner`, is pinned by digest. The wheel gets a
+  CycloneDX SBOM: a separate `wheel-sbom` job installs it into a virtualenv created
+  without pip, describes that environment with `cyclonedx-py`, and the GitHub
+  release attaches `nlqueries_core-<version>-py3-none-any.whl.cdx.json`. It is
+  not uploaded to PyPI. It records the resolution on linux/amd64 with CPython
+  3.11 at release time; other platforms and Pythons resolve differently. PyPI
+  publishing does not wait on the SBOM job, so a failure there holds back only
+  the GitHub release, which can be re-run. The manual dry run exports its
+  image as an OCI tarball to `/dev/null`, so it builds the image's SBOM
+  attestations too without writing the image to the runner's disk. See
+  "SBOMs" in `docs/dependency-locking.md`.
 - **`QueryResult.executed_sql`: the statement the database actually ran.**
   `None`, the default, means the statement passed to `execute_query` ran
   unchanged, and no connector in core sets it, because none rewrites. A
@@ -155,6 +170,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **`nlqueries/core:latest` moves only on a final release.** A tag of the form
+  `vX.Y.Z` pushes the image as `X.Y.Z` and `latest`; a pre-release tag such as
+  `v1.0.0-rc1` pushes `1.0.0-rc1` alone, so `docker pull nlqueries/core` no
+  longer lands on a release candidate.
+- **`docker-compose.yml` pins the image by version.** It now uses
+  `nlqueries/core:0.3.0` instead of `:latest`, so `docker compose up` starts the
+  release the file was written for and a later pull does not move it. Each
+  final release bumps the tag; to run another release, change the `image:`
+  line.
+- **The image no longer contains `curl`.** Nothing in it used `curl`: the
+  healthcheck is a Python TCP connect. The Dockerfile now installs no system
+  packages over the base image. A script that ran `curl` inside the container
+  needs another HTTP client, such as `python -c "import urllib.request ..."`.
 - **`.env` is read from the working directory only.** `nlqueries` loads
   `./.env` when that file exists and no longer searches parent directories
   for one, so a `.env` belonging to an enclosing directory no longer sets this

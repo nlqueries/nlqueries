@@ -80,6 +80,42 @@ advisory fails the job, and a release with it, until the lock is regenerated
 job audits the resolved `.[dev,docs]` environment, which includes the `docs`
 extra the lock leaves out.
 
+## SBOMs
+
+Each release publishes a software bill of materials for both of its artefacts.
+
+- **The image.** `release.yml` builds it with a BuildKit SBOM attestation, so
+  every platform in the pushed manifest carries an SPDX SBOM listing the
+  packages in that image, the lock's closure and the base image's own included.
+  Read it with:
+
+  ```
+  docker buildx imagetools inspect nlqueries/core:<version> --format '{{ json .SBOM }}'
+  ```
+
+  The scanner BuildKit runs to produce it, `docker/buildkit-syft-scanner`, is
+  pinned by digest in `release.yml` (`sbom: generator=...@sha256:...`), like the
+  base image, so the same commit produces the same SBOM. Update it the same
+  deliberate way, with `docker buildx imagetools inspect
+  docker/buildkit-syft-scanner:stable-1`.
+
+- **The wheel.** A CycloneDX SBOM. The `wheel-sbom` job installs the wheel into
+  a virtualenv created without pip, so the environment holds only the wheel and
+  its dependencies, and describes it with `cyclonedx-py`. The result,
+  `nlqueries_core-<version>-py3-none-any.whl.cdx.json`, is attached to the
+  GitHub release beside the wheel and sdist. It is not uploaded to PyPI.
+
+  The wheel declares `>=` floors rather than the lock, so this SBOM records one
+  resolution: the one on linux/amd64 with CPython 3.11, the release runner's
+  platform and interpreter, at the time of the release. Other platforms and
+  Python versions resolve differently (`torch`, for one, brings CUDA packages
+  on Linux and none on macOS), and a later install can resolve newer versions.
+
+  The SBOM job runs after `build` and apart from it. PyPI publishing does not
+  wait on it; the GitHub release does, so if generating the SBOM fails, the
+  packages still reach PyPI and only the GitHub release is held back until the
+  job is re-run.
+
 ## pip-tools version
 
 `scripts/lock-deps.sh` pins pip-tools itself. Version 8 changes the default for

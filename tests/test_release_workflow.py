@@ -4,11 +4,15 @@
 run by hand as a dry run. On a manual run, only the
 `if: github.event_name == 'push'` on each publishing job stands between a run on
 any branch and a real publish, so these checks fail when an edit drops one, or
-adds a publishing job without one.
+adds a publishing job without one. The rest pin down what a release
+publishes: which image tags a version tag pushes, and the SBOMs.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -91,3 +95,151 @@ def test_the_dry_run_job_has_no_environment_or_secret() -> None:
     assert "environment" not in dry_run
     assert "secrets." not in yaml.safe_dump(dry_run)
     assert "workflow_dispatch" in str(dry_run.get("if", ""))
+
+
+def _steps(job: str) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = _jobs()[job]["steps"]
+    return steps
+
+
+def _step(job: str, name: str) -> dict[str, Any]:
+    return next(step for step in _steps(job) if step.get("name") == name)
+
+
+def _image_builds() -> dict[str, dict[str, Any]]:
+    """The docker/build-push-action step of each job that builds the image."""
+    return {
+        name: step
+        for name in _jobs()
+        for step in _jobs()[name].get("steps", [])
+        if str(step.get("uses", "")).startswith("docker/build-push-action@")
+    }
+
+
+def _image_tags_for(ref: str, tmp_path: Path) -> set[str]:
+    """Run the `Choose image tags` step as a tag push of *ref* would."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+    step = _step("publish-docker", "Choose image tags")
+    assert step.get("shell") == "bash"
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    subprocess.run(
+        [bash, "-e", "-c", step["run"]],
+        env={"GITHUB_REF": ref, "GITHUB_OUTPUT": str(output), "PATH": os.environ["PATH"]},
+        check=True,
+    )
+    lines = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    return set(lines["tags"].split(","))
+
+
+@pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        ("refs/tags/v1.2.3", {"nlqueries/core:1.2.3", "nlqueries/core:latest"}),
+        ("refs/tags/v10.20.30", {"nlqueries/core:10.20.30", "nlqueries/core:latest"}),
+        ("refs/tags/v1.0.0-rc1", {"nlqueries/core:1.0.0-rc1"}),
+        ("refs/tags/v1.0.0rc1", {"nlqueries/core:1.0.0rc1"}),
+        ("refs/tags/v1.0.0-beta.2", {"nlqueries/core:1.0.0-beta.2"}),
+        ("refs/tags/v1.0.0.dev1", {"nlqueries/core:1.0.0.dev1"}),
+    ],
+)
+def test_only_a_final_version_moves_latest(ref: str, expected: set[str], tmp_path: Path) -> None:
+    """A pre-release pushes its own tag and never `latest`, which is what a
+    plain `docker pull nlqueries/core` resolves to."""
+    assert _image_tags_for(ref, tmp_path) == expected
+
+
+def test_the_published_image_takes_its_tags_from_that_step() -> None:
+    """The filter above proves nothing if the push names `latest` itself."""
+    push = _image_builds()["publish-docker"]
+    assert push["with"]["push"] is True
+    assert push["with"]["tags"] == "${{ steps.tags.outputs.tags }}"
+
+
+@pytest.mark.parametrize("job", ["publish-docker", "release-dry-run"])
+def test_every_image_build_attaches_an_sbom(job: str) -> None:
+    """The dry run builds with the same setting, so it exercises it first."""
+    assert set(_image_builds()) == {"publish-docker", "release-dry-run"}
+    sbom = _image_builds()[job]["with"].get("sbom")
+    assert sbom == _image_builds()["publish-docker"]["with"]["sbom"]
+    assert str(sbom).startswith("generator=docker/buildkit-syft-scanner:")
+
+
+def test_the_sbom_generator_is_pinned_by_digest() -> None:
+    """`sbom: true` runs BuildKit's default scanner, resolved by a mutable tag
+    at build time: the one build input that would not be pinned while the base
+    image, the actions and the lock are. Every `sbom:` in the workflow names
+    its generator by digest."""
+    lines = [
+        line.strip()
+        for line in RELEASE.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("sbom:")
+    ]
+    assert lines
+    for line in lines:
+        assert line.startswith("sbom: generator="), line
+        assert "@sha256:" in line, line
+
+
+def test_the_wheel_sbom_is_built_outside_dist() -> None:
+    """`publish-pypi` uploads every file in dist/, and PyPI refuses anything
+    that is not a distribution, so the SBOM has its own directory and artifact."""
+    script = _step("wheel-sbom", "Generate the wheel's SBOM (CycloneDX)")["run"]
+    assert "cyclonedx-py environment" in script
+    assert '-o "sbom/' in script
+    upload = _step("wheel-sbom", "Store the wheel's SBOM")
+    assert upload["with"] == {"name": "wheel-sbom", "path": "sbom/", "retention-days": 7}
+
+
+def test_the_wheel_sbom_has_a_job_of_its_own_that_publishes_nothing() -> None:
+    """Generating it resolves the wheel's whole closure from PyPI, the step
+    most likely to fail, so it runs apart from `build` and with nothing to
+    publish with: no environment, no secret, no token, read-only contents."""
+    job = _jobs()["wheel-sbom"]
+    assert job["needs"] == ["build"]
+    assert job["permissions"] == {"contents": "read"}
+    assert not _publishes(job)
+    assert "if" not in job, "a dry run needs the SBOM too"
+    assert not [s for s in _steps("build") if "cyclonedx" in yaml.safe_dump(s)]
+
+
+def test_publishing_to_pypi_does_not_wait_on_the_sbom() -> None:
+    """A failed SBOM must not stop the packages reaching PyPI after the image
+    is already pushed; `publish-docker` needs only `ci`."""
+    assert _jobs()["publish-pypi"]["needs"] == ["build"]
+
+
+@pytest.mark.parametrize("job", ["github-release", "release-dry-run"])
+def test_the_jobs_that_take_the_sbom_wait_for_it(job: str) -> None:
+    """Only the GitHub release, which can be re-run, is held back by it."""
+    assert "wheel-sbom" in _jobs()[job]["needs"]
+
+
+def test_the_sbom_environment_holds_only_the_wheel_and_its_dependencies() -> None:
+    """A virtualenv seeded with pip would list pip and setuptools as
+    components of the release. The runner's pip installs into it instead."""
+    script = _step("wheel-sbom", "Generate the wheel's SBOM (CycloneDX)")["run"]
+    assert 'python -m venv --without-pip "$RUNNER_TEMP/wheel-env"' in script
+    assert 'pip --python "$RUNNER_TEMP/wheel-env/bin/python" install' in script
+    assert "wheel-env/bin/pip" not in script
+
+
+def test_the_dry_run_exports_the_image_so_its_sbom_is_built() -> None:
+    """With no exporter BuildKit has nothing to attach an attestation to, so
+    the dry run exports the image as an OCI tarball, to /dev/null: both
+    platforms' layers would otherwise land on the runner's disk."""
+    build = _image_builds()["release-dry-run"]["with"]
+    assert build["push"] is False
+    assert build["outputs"] == "type=oci,dest=/dev/null"
+
+
+def test_the_github_release_attaches_the_wheel_sbom() -> None:
+    downloads = [
+        step["with"]
+        for step in _steps("github-release")
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+    ]
+    assert {"name": "wheel-sbom", "path": "sbom/"} in downloads
+    assert "dist/* sbom/*" in _step("github-release", "Create GitHub Release")["run"]
