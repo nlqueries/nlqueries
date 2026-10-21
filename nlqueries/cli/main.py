@@ -2338,10 +2338,10 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
     """
     import yaml
 
-    from nlqueries.knowledge.dbt_importer import load_dbt_artifacts
+    from nlqueries.knowledge.dbt_importer import load_dbt_metrics, load_dbt_models, match_dbt_docs
 
-    docs, metrics = load_dbt_artifacts(artifacts)
-    if not docs and not metrics:
+    models, metrics = load_dbt_models(artifacts), load_dbt_metrics(artifacts)
+    if not models and not metrics:
         click.echo("No dbt docs or metrics found in the given artifacts.")
         return
 
@@ -2353,10 +2353,9 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
 
     tables = (kb.get("schema") or {}).get("tables") or []
     matched = 0
-    for table in tables:
+    for table, doc in zip(tables, match_dbt_docs(models, tables), strict=True):
         if not isinstance(table, dict):
             continue
-        doc = docs.get(str(table.get("name") or ""))
         if doc is None:
             continue
         matched += 1
@@ -2366,10 +2365,12 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
         if doc.description and not (table.get("description") and t_src in ("manual", "")):
             table["description"] = doc.description
             table["description_source"] = "dbt"
+        # Case folded like the table match: Snowflake's ORDER_ID is dbt's order_id.
+        col_docs = {name.lower(): text for name, text in doc.columns.items()}
         for col in table.get("columns") or []:
             if not isinstance(col, dict):
                 continue
-            col_doc = doc.columns.get(str(col.get("name") or ""))
+            col_doc = col_docs.get(str(col.get("name") or "").lower())
             if not col_doc:
                 continue
             src = str(col.get("description_source") or "")
@@ -2383,7 +2384,7 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
 
     click.echo(
         f"Merged dbt docs for {matched} of {len(tables)} tables into {out_file}.\n"
-        f"Found {len(docs)} documented models and {len(metrics)} metrics "
+        f"Found {len(models)} documented models and {len(metrics)} metrics "
         f"({sum(1 for m in metrics if m.column)} resolved to a measure)."
     )
     if metrics:

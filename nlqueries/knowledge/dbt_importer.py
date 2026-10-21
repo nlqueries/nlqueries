@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "model"
 
+#: Longest description kept from dbt, for a model or a column. dbt docs are
+#: written for a docs site and can run to pages; the knowledge base wants what
+#: the table or column is, and every prompt renders it again.
+MAX_DESCRIPTION_CHARS = 2000
+
 
 @dataclass
 class DbtTableDoc:
@@ -51,6 +56,10 @@ class DbtTableDoc:
     description: str = ""
     #: column name → description (only non-empty descriptions are kept)
     columns: dict[str, str] = field(default_factory=dict)
+    #: the model's physical table name (its alias when set)
+    name: str = ""
+    #: the schema dbt builds the model into, or "" when the manifest has none
+    schema: str = ""
 
 
 @dataclass
@@ -92,16 +101,21 @@ def _model_table_name(node: dict[str, Any]) -> str:
     return str(node.get("name") or "").strip()
 
 
-def parse_dbt_docs(manifest: dict[str, Any] | Path | str) -> dict[str, DbtTableDoc]:
-    """Model + column descriptions from a dbt ``manifest.json``.
+def _description(raw: Any) -> str:
+    """A dbt description, stripped and cut to :data:`MAX_DESCRIPTION_CHARS`."""
+    text = str(raw or "").strip()
+    return text[:MAX_DESCRIPTION_CHARS].rstrip()
 
-    Accepts a parsed dict or a path. Returns ``{table_name: DbtTableDoc}`` for
-    every model that carries at least one non-empty description (a model with no
-    docs at all is omitted, so the result is exactly the docs dbt actually has).
-    Whitespace-only descriptions are treated as empty.
+
+def parse_dbt_models(manifest: dict[str, Any] | Path | str) -> list[DbtTableDoc]:
+    """Every documented model in a dbt ``manifest.json``, with its name and schema.
+
+    Unlike :func:`parse_dbt_docs` this keeps two models that share a table name
+    in different schemas apart, which is what :func:`match_dbt_docs` needs to
+    give each knowledge-base table the docs of its own model.
     """
     data = manifest if isinstance(manifest, dict) else _load(manifest)
-    docs: dict[str, DbtTableDoc] = {}
+    models: list[DbtTableDoc] = []
 
     for node in (data.get("nodes") or {}).values():
         if not isinstance(node, dict) or node.get("resource_type") != _MODEL:
@@ -109,16 +123,70 @@ def parse_dbt_docs(manifest: dict[str, Any] | Path | str) -> dict[str, DbtTableD
         table = _model_table_name(node)
         if not table:
             continue
-        description = str(node.get("description") or "").strip()
+        description = _description(node.get("description"))
         columns: dict[str, str] = {}
         for col_name, col in (node.get("columns") or {}).items():
             if isinstance(col, dict):
-                desc = str(col.get("description") or "").strip()
+                desc = _description(col.get("description"))
                 if desc:
                     columns[str(col_name)] = desc
         if description or columns:
-            docs[table] = DbtTableDoc(description=description, columns=columns)
-    return docs
+            schema = str(node.get("schema") or "").strip()
+            models.append(
+                DbtTableDoc(description=description, columns=columns, name=table, schema=schema)
+            )
+    return models
+
+
+def parse_dbt_docs(manifest: dict[str, Any] | Path | str) -> dict[str, DbtTableDoc]:
+    """Model + column descriptions from a dbt ``manifest.json``.
+
+    Accepts a parsed dict or a path. Returns ``{table_name: DbtTableDoc}`` for
+    every model that carries at least one non-empty description (a model with no
+    docs at all is omitted, so the result is exactly the docs dbt actually has).
+    Whitespace-only descriptions are treated as empty, and each description is
+    cut to :data:`MAX_DESCRIPTION_CHARS`. Keyed by table name alone: where two
+    schemas hold a model of the same name, use :func:`parse_dbt_models`.
+    """
+    return {doc.name: doc for doc in parse_dbt_models(manifest)}
+
+
+def match_dbt_docs(models: list[DbtTableDoc], tables: list[Any]) -> list[DbtTableDoc | None]:
+    """The dbt docs for each knowledge-base table in *tables*, in order, or ``None``.
+
+    A table that records its schema takes the model built into that schema with
+    its name. Otherwise the bare name decides, as it did before schemas were compared, but
+    only when one model has that name and no other table already took it by
+    schema: ``staging.orders`` must not take the docs of ``analytics.orders``
+    because both are called ``orders``. Both comparisons ignore letter case, as
+    warehouses fold identifiers: Snowflake reports ``ORDERS`` for dbt's ``orders``.
+    """
+    by_relation: dict[tuple[str, str], DbtTableDoc] = {}
+    by_name: dict[str, list[DbtTableDoc]] = {}
+    for model in models:
+        by_relation.setdefault((model.schema.lower(), model.name.lower()), model)
+        by_name.setdefault(model.name.lower(), []).append(model)
+
+    qualified: list[DbtTableDoc | None] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            qualified.append(None)
+            continue
+        schema = str(table.get("schema") or "").strip().lower()
+        name = str(table.get("name") or "").lower()
+        qualified.append(by_relation.get((schema, name)) if schema and name else None)
+
+    claimed = {id(found) for found in qualified if found is not None}
+    matched: list[DbtTableDoc | None] = []
+    for table, found in zip(tables, qualified, strict=True):
+        if found is not None or not isinstance(table, dict):
+            matched.append(found)
+            continue
+        candidates = [
+            m for m in by_name.get(str(table.get("name") or "").lower(), []) if id(m) not in claimed
+        ]
+        matched.append(candidates[0] if len(candidates) == 1 else None)
+    return matched
 
 
 def _measure_ref(type_params: dict[str, Any]) -> str:
@@ -180,13 +248,21 @@ def load_dbt_artifacts(path: Path | str) -> tuple[dict[str, DbtTableDoc], list[D
     files simply yield empty results — a docs-only project (no semantic layer)
     returns metrics ``[]``, and vice versa.
     """
+    docs = {doc.name: doc for doc in load_dbt_models(path)}
+    return docs, load_dbt_metrics(path)
+
+
+def load_dbt_metrics(path: Path | str) -> list[DbtMetric]:
+    """The metrics of a dbt artifacts directory's ``semantic_manifest.json``;
+    ``[]`` for a manifest file or a directory without one."""
+    p = Path(path)
+    sem_path = p / "semantic_manifest.json"
+    return parse_dbt_metrics(sem_path) if p.is_dir() and sem_path.exists() else []
+
+
+def load_dbt_models(path: Path | str) -> list[DbtTableDoc]:
+    """The documented models (see :func:`parse_dbt_models`) of a dbt artifacts
+    directory or a single manifest file; ``[]`` when there is no manifest."""
     p = Path(path)
     manifest_path = p / "manifest.json" if p.is_dir() else p
-    docs = parse_dbt_docs(manifest_path) if manifest_path.exists() else {}
-
-    metrics: list[DbtMetric] = []
-    if p.is_dir():
-        sem_path = p / "semantic_manifest.json"
-        if sem_path.exists():
-            metrics = parse_dbt_metrics(sem_path)
-    return docs, metrics
+    return parse_dbt_models(manifest_path) if manifest_path.exists() else []

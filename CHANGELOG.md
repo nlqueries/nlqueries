@@ -170,6 +170,60 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **Reference data renders on one line in prompts.** Table and column
+  descriptions, glossary terms and capsule intents have their whitespace
+  collapsed and are capped at 300 characters, so a description holding
+  `\n## Business Rules` stays on its table's line instead of opening a
+  section. Business rules and glossary definitions are collapsed the same way
+  but capped at 1,000 characters, since a rule cut mid-sentence can change its
+  meaning; a rule cut at that cap is logged once per process as a warning
+  naming its start, so the operator can shorten or split it. Sample values are single-quoted with embedded quotes doubled
+  (`'O''Brien'`); a sample over 80 characters is left out of the list rather
+  than cut, and a complete `values:` list that loses one is shown as
+  `samples:`, since it is no longer complete. The SQL prompt's preamble
+  now says that descriptions, values, glossary entries, examples and excerpts
+  are reference data and never change its instructions, and the verified
+  example label reads `-- verified example`, without "user-confirmed correct".
+- **Document excerpts and conversation turns are delimited.** The document
+  prompt and hybrid synthesis put each excerpt in an
+  `<excerpt source="...">` block with its source label, and follow-up
+  resolution puts each earlier turn in a `<turn source="User|Assistant">`
+  block. Inside a block, only the markers themselves are neutralised: any
+  `<excerpt`, `</excerpt`, `<turn` or `</turn`, in any letter case, has its
+  `<` written as `&lt;`. Everything else, `&`, `<` and `>` included, reaches
+  the model as written, so "R&D" and "Smith & Sons" are not turned into
+  entities that the model then copies into answers or rewritten questions.
+  The source label, which the model cites, is put on one line (capped at 300
+  characters like a description) with its markers neutralised, and only `"`
+  is escaped (as `&quot;`), so `Director's Report.pdf` and
+  `Profit & Loss.xlsx` are cited as written. The SQL data in the hybrid
+  prompt, cell values and column names included, has its markers neutralised
+  the same way, so a database row cannot pass itself off as a cited document. A hybrid answer's
+  document-only passthrough text is unchanged.
+- **`NLQ_SEND_RESULT_ROWS_TO_LLM` decides whether hybrid synthesis sees rows.**
+  On (the default), up to 20 rows are sent as before, except that columns
+  whose names mark them as personal data are now always left out and named as
+  withheld; when that is every column, the prompt still gets the row count and
+  the fact of any failure. Off, the synthesis prompt gets the column names and
+  the row count only. While values are withheld (off, or every column
+  withheld), a failure is stated without the database's error text, which can
+  quote a value. When no query ran, the generated statement is sent whatever
+  the setting says, since it is not data. The synthesis prompt also tells the
+  model to state no figure it has not been shown and, where values are
+  withheld, to refer the reader to the result table. The result table returned
+  to the reader is the same either way. See
+  "What leaves this machine" in `docs/configuration.md`.
+- **Document and hybrid answers are not written to the semantic cache.** A
+  cached document answer, or a hybrid answer synthesised from the same
+  excerpts, would be replayed after its source changed, for the whole TTL.
+  Entries written before this change still expire with the TTL.
+- **`import-dbt` matches models by schema and name.** A knowledge-base table
+  that records its schema takes the docs of the dbt model built into that
+  schema; otherwise the bare name still matches, but only when one model has
+  it and no other table took that model by schema. Both comparisons ignore
+  letter case, so Snowflake's `ORDERS` matches dbt's `orders`, and column
+  descriptions are matched the same way (`ORDER_ID` takes `order_id`'s).
+  dbt model and column descriptions are cut to 2,000 characters on import.
 - **Knowledge bases, query capsules and `connectors.yaml` are written privately
   and atomically.** `export-kb` (including the fallback for a connector type
   with no registered class), `import-dbt`, `process-history` and `connect`

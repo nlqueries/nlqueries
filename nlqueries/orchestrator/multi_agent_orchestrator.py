@@ -131,9 +131,6 @@ def _final_sql_chunk(tokens: list[str]) -> dict[str, Any] | None:
 def _executed_table(chunk: dict[str, Any]) -> dict[str, Any] | None:
     """The executed result inside *chunk*, or ``None`` when nothing ran.
 
-    One definition of "executed", because two callers depend on it and must not
-    drift: the extraction below, and the cache-write decision in
-    ``handle_question``, which declines to store prose built from live figures.
     Asked of the chunk rather than of the resulting ``QueryResult``, whose
     fallback is identified only by its column being named ``sql_query`` -- a
     query that genuinely selected a column of that name would be misread.
@@ -142,12 +139,6 @@ def _executed_table(chunk: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(table, dict) and table.get("columns"):
         return table
     return None
-
-
-def _carries_executed_data(tokens: list[str]) -> bool:
-    """Whether the SQL sub-agent ran a query and returned columns for it."""
-    chunk = _final_sql_chunk(tokens)
-    return chunk is not None and _executed_table(chunk) is not None
 
 
 def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
@@ -375,7 +366,16 @@ def _merge_hybrid(
             collection=f"doc_{agent_id}_chunks",
         )
 
-    return merge_results(question, sql_result=sql_query_result, document_result=doc_retrieval)
+    # Whether a query ran: when not, the result is the statement-only fallback,
+    # and its one cell is the generated statement rather than data.
+    final_chunk = _final_sql_chunk(sql_tokens) if sql_tokens else None
+    executed = final_chunk is not None and _executed_table(final_chunk) is not None
+    return merge_results(
+        question,
+        sql_result=sql_query_result,
+        document_result=doc_retrieval,
+        sql_executed=executed,
+    )
 
 
 def _is_executable_select(sql: str, dialect: str) -> bool:
@@ -746,9 +746,11 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            _schedule_cache_write(
-                _cache, _cache_lookup_key, effective_question, "document", seen, cache_context
-            )
+            # Document answers are not cached, and no write is scheduled: the
+            # answer restates excerpts as they read now, and a replay would
+            # outlive an edit to the document for the whole TTL.
+            # `SemanticCache.put` refuses them for the same reason (see
+            # `_write_refusal`).
             return
 
         hybrid_result: HybridQueryResult | None = None
@@ -766,35 +768,17 @@ class MultiAgentOrchestrator:
             )
             hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
 
-            # Cache write for hybrid (background task), but only when the
-            # prose carries no live figures.
+            # Hybrid answers are not cached, and no write is scheduled.
             #
-            # A hybrid entry stores the merged answer and nothing else -- no
-            # statement, no citations -- and a hit replays it verbatim for the
-            # whole TTL. The SQL branch re-runs its stored statement instead,
-            # for the reason `_execute_cached_sql` records: stored prose cannot
-            # carry fresh rows. That was harmless while a hybrid answer was
-            # synthesised from the statement text alone. Now that it is
-            # synthesised from executed rows, caching it would answer a
-            # semantically similar question hours later with figures from the
-            # first run, stated as current -- the same shape of defect this
-            # change exists to fix, and not worth trading for a cache hit.
-            #
-            # Answers where nothing ran still cache, and they are the ones the
-            # cache was helping: generate-only mode, a refused execution, a
-            # statement that failed validation. Re-synthesising on a hit would
-            # keep the rest, but it needs the statement and the citations stored
-            # too, and a synthesis call on every hit -- a larger change, and one
-            # to make deliberately rather than as a side effect of this one.
-            if hybrid_result is not None and not _carries_executed_data(sql_tokens):
-                _schedule_cache_write(
-                    _cache,
-                    _cache_lookup_key,
-                    effective_question,
-                    "hybrid",
-                    [hybrid_result.merged_answer or ""],
-                    cache_context,
-                )
+            # A hybrid entry would store the merged prose and nothing else -- no
+            # statement, no citations -- and a hit would replay it verbatim for
+            # the whole TTL. That prose is synthesised from document excerpts,
+            # so a replay would outlive an edit to the document, and when the
+            # query ran, from executed rows, so it would state the first run's
+            # figures as current. `SemanticCache.put` refuses hybrid answers for
+            # the same reason (see `_write_refusal`). Caching them again means
+            # storing the statement and the citations and re-synthesising on
+            # every hit: a deliberate change of its own.
 
         if intent == IntentType.hybrid and hybrid_result is not None:
             sql_table_dict = None

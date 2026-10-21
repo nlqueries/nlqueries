@@ -276,28 +276,33 @@ def test_a_hybrid_answer_built_from_live_rows_is_not_cached() -> None:
     cache.put.assert_not_called()
 
 
-def test_a_hybrid_answer_that_executed_nothing_is_still_cached() -> None:
-    """The other half, or the fix would be "stop caching hybrid answers".
+def _assert_no_cache_write_scheduled(sql_tokens: list[str]) -> None:
+    with patch("nlqueries.orchestrator.multi_agent_orchestrator._schedule_cache_write") as schedule:
+        cache, _ = _drive_hybrid(sql_tokens)
+    schedule.assert_not_called()
+    cache.put.assert_not_called()
 
-    Generate-only mode, a refused execution and a failed validation all produce
-    prose synthesised from the statement text alone. It carries no figures, so
-    it cannot go stale, and those are the answers the cache was helping.
+
+def test_a_hybrid_answer_that_executed_nothing_schedules_no_cache_write() -> None:
+    """Generate-only mode, a refused execution and a failed validation.
+
+    The prose carries no figures, and was once cached for that reason. It is
+    still synthesised from document excerpts, so a replay would outlive an edit
+    to the document; no hybrid answer is cached, and none is even offered to the
+    cache.
     """
-    cache, _ = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=None))])
-    cache.put.assert_called_once()
+    _assert_no_cache_write_scheduled(["Answering.", json.dumps(_payload(sql_table=None))])
 
 
-def test_an_execution_error_does_not_count_as_live_data() -> None:
+def test_a_hybrid_answer_after_an_execution_error_schedules_no_cache_write() -> None:
     """`sql_table` is `{"error": ...}` with no columns when the connector raised.
 
-    No figures reached the prose, so the entry is cacheable by the same
-    reasoning -- and this is the branch that is easiest to get wrong, since the
-    table is present but holds nothing.
+    The branch that once counted as cacheable because no figures reached the
+    prose; like every hybrid answer, it is no longer offered to the cache.
     """
-    cache, _ = _drive_hybrid(
+    _assert_no_cache_write_scheduled(
         ["Answering.", json.dumps(_payload(sql_table={"error": "connection refused"}))]
     )
-    cache.put.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

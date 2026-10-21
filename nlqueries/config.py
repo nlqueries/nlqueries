@@ -612,6 +612,20 @@ the question mentions, plus their hierarchy ancestors (context) and descendants
 Off by default: the full glossary ships in the static prompt exactly as before.
 Business rules are always injected in full regardless of this flag."""
 
+SEND_RESULT_ROWS_TO_LLM: bool = os.getenv("NLQ_SEND_RESULT_ROWS_TO_LLM", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""Whether executed result rows are sent to the LLM when a hybrid answer is synthesised.
+
+On (default): the synthesis prompt carries up to 20 result rows, with the values of
+columns whose names mark them as personal data (the same rule that keeps their
+sample values out of the knowledge base) always left out. Off: the prompt carries
+the column names and the row count only, and the answer is written without seeing
+any value. The reader's own result table is the same either way.
+"""
+
 # ---------------------------------------------------------------------------
 # Connectors registry
 # ---------------------------------------------------------------------------
