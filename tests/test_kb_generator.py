@@ -728,6 +728,10 @@ def test_contact_details_are_pii() -> None:
         "private_key",
         "otp_code",
         "user_otp",
+        "totp",
+        "totp_code",
+        "totp_key",
+        "hotp_counter",
         "iban",
         "account_number",
         "account_no",
@@ -744,6 +748,9 @@ def test_contact_details_are_pii() -> None:
         "auth_code",
         "oauth_code",
         "region_auth",
+        "authorization",
+        "authorisation",
+        "authorization_header",
         "pin",
         "card_pin",
         "signing_key",
@@ -773,6 +780,8 @@ def test_more_credentials_identifiers_and_names_are_pii(name: str) -> None:
         "authorized_by",
         "co_author",
         "footprint",
+        "hotpot",
+        "hotplate",
         "account_notes",
         "customer_key",
         "date_key",
@@ -783,6 +792,13 @@ def test_ordinary_names_that_contain_a_sensitive_word_are_not_pii(name: str) -> 
     # `pin` counts only as a whole word, `otp` only at the start of one, `auth`
     # not when it goes on to `or`, `account_no` not before another letter; bare
     # `key`, `name` and `account`, and a `_key` suffix, not at all.
+    assert is_pii_column(name) is False, name
+
+
+@pytest.mark.parametrize("name", ["xtotp", "ahotp_count"])
+def test_totp_and_hotp_count_only_at_the_start_of_a_word(name: str) -> None:
+    # No ordinary column name puts a letter straight before `totp` or `hotp`, so
+    # these made-up ones pin the anchor that the kept list cannot reach.
     assert is_pii_column(name) is False, name
 
 

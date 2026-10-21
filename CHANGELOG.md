@@ -175,16 +175,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `national_id`, `passport`, `tax_id`, `first_name`, `last_name`, `full_name`,
   `given_name`, `family_name`, `session` and `cookie` anywhere in the name,
   plus `auth` anywhere except where it goes on to `or` (`oauth_code`,
-  `region_auth`, not `author`, `authority` or `co_author`), `otp` at the start
-  of a word (`user_otp`, not `footprint`), `account_no` when no letter follows
-  (not `account_notes`), `pin` as a whole word (`card_pin`, not `shipping`),
-  and names ending `_token`, `_hash` or `_secret`. Bare `key`, `name` and
-  `account`, and a `_key` suffix, are not matched, so `keyword`,
-  `product_name`, `account_type` and warehouse join keys such as
-  `customer_key` and `date_key` keep their values; a key that holds a secret
-  is named on its own, as above. The `export-kb` path for a connector with no
-  registered connector class, which writes whole `sample_rows`, now leaves
-  these columns out of each row as well; it used to copy every column.
+  `region_auth`, not `author`, `authority` or `co_author`) and `authorization`
+  / `authorisation` wherever they appear, `otp` at the start of a word
+  (`user_otp`, not `footprint`), `totp` and `hotp` at the start of a word with
+  no letter after (`totp_code`, `hotp_counter`, not `hotpot`), `account_no`
+  when no letter follows (not `account_notes`), and `pin` as a whole word
+  (`card_pin`, not `shipping`). Bare `key`, `name` and `account`, and a `_key`
+  suffix, are not matched, so `keyword`, `product_name`, `account_type` and
+  warehouse join keys such as `customer_key` and `date_key` keep their values;
+  a key that holds a secret is named on its own, as above. The `export-kb`
+  path for a connector with no registered connector class, which writes whole
+  `sample_rows`, now leaves these columns out of each row as well; it used to
+  copy every column.
 - **A release waits on the full CI, and CI audits the shipped lock.**
   `release.yml` used to run its own copy of lint, type-check and tests before
   publishing. It now calls `ci.yml` as a reusable workflow, so building and

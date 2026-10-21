@@ -20,11 +20,12 @@ logger = logging.getLogger(__name__)
 # No word boundaries: underscore-delimited names like `user_email` must match.
 # The exceptions are anchored where a plain substring would catch ordinary
 # names: `pin` must stand alone between non-alphanumerics (`card_pin`, not
-# `shipping`), `otp` must start a word (`user_otp`, not `footprint`), `auth`
-# must not go on to `or` (`oauth_token`, not `author` or `authority`), and
-# `account_no` must not go on to another letter (not `account_notes`). The
-# `_token` / `_hash` / `_secret` suffixes are also matched. Bare `key`, `name`
-# and `account`, and a `_key` suffix, are left out on purpose: they would catch
+# `shipping`), `otp` must start a word (`user_otp`, not `footprint`), and so
+# must `totp` / `hotp` with no letter after (`totp_code`, not `hotpot`),
+# `auth` must not go on to `or` (`oauth_token`, not `author` or `authority`)
+# unless it spells `authorization` / `authorisation`, and `account_no` must
+# not go on to another letter (not `account_notes`). Bare `key`, `name` and
+# `account`, and a `_key` suffix, are left out on purpose: they would catch
 # `keyword`, `product_name`, `account_type` and warehouse join keys such as
 # `customer_key` and `date_key`. Keys that hold a secret are named one by one
 # instead (`api_key`, `signing_key`, `license_key`, ...); `secret_key` is
@@ -32,14 +33,13 @@ logger = logging.getLogger(__name__)
 _PII_COLUMN_RE = re.compile(
     r"password|passwd|pwd|secret|token|hash|salt|ssn|credential|"
     r"api.?key|access.?key|private.?key|signing.?key|encryption.?key|ssh.?key|"
-    r"master.?key|licen[cs]e.?key|(?<![a-z0-9])otp|"
+    r"master.?key|licen[cs]e.?key|(?<![a-z0-9])otp|(?<![a-z0-9])[th]otp(?![a-z])|"
     r"credit.?card|card.?num|cvv|iban|account.?(?:num|no(?![a-z]))|"
     r"national.?id|passport|tax.?id|"
     r"dob|birth|email|phone|address|"
     r"(?:first|last|full|given|family).?name|"
-    r"session|cookie|auth(?!or)|"
-    r"(?<![a-z0-9])pin(?![a-z0-9])|"
-    r"_(?:token|hash|secret)$",
+    r"session|cookie|auth(?!or)|authori[sz]ation|"
+    r"(?<![a-z0-9])pin(?![a-z0-9])",
     re.IGNORECASE,
 )
 
