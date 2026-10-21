@@ -101,12 +101,19 @@ def test_no_execute_reaches_the_orchestrator() -> None:
 def _statements_the_cli_executed(sql: str, *, sql_is_valid: bool) -> list[str]:
     """Run ``nlqueries query`` against a spy connector; return what it executed.
 
-    Shared by the pair below so the refusal and its control are measured through
-    one harness. The connector is substituted in ``CONNECTOR_REGISTRY`` itself
-    rather than by rebinding a name in ``cli.main``, because the CLI resolves
-    through ``connector_class_for``, which reads that mapping in its own module.
+    Shared by the pair below, which both assert that nothing was executed. A
+    negative like that passes just as well when the harness never gets near a
+    connector, so the harness checks that it does: the command must exit 0 and
+    print the statement, which happens after the point where the removed
+    fallback executed, and, under the same patches, the entry the command reads
+    must resolve to the substituted class through ``connector_class_for``. The
+    connector is substituted in ``CONNECTOR_REGISTRY`` itself rather than by
+    rebinding a name in ``cli.main``, because that is the mapping
+    ``connector_class_for`` reads in its own module.
     """
+    from nlqueries.cli import main as cli_main
     from nlqueries.cli.main import cli
+    from nlqueries.connectors import connector_class_for
 
     executed: list[str] = []
 
@@ -137,8 +144,18 @@ def _statements_the_cli_executed(sql: str, *, sql_is_valid: bool) -> list[str]:
         # and `_save_turn` writes through `STATE_DIR`, which is bound at import
         # and redirected by nothing here, so every run of this harness appended
         # turns to the operator's real `~/.nlqueries/sessions/demo_agent.jsonl`.
-        CliRunner().invoke(cli, ["query", "demo_agent", "how many?", "--no-session"])
+        result = CliRunner().invoke(cli, ["query", "demo_agent", "how many?", "--no-session"])
 
+        # Live controls, under the same patches the command ran under.
+        cfg = cli_main._require_connector("demo_agent")  # noqa: SLF001
+        resolved = connector_class_for(str(cfg["db_type"]), cfg)
+
+    assert result.exit_code == 0, result.output
+    assert sql in result.output, f"the command never reported the statement: {result.output}"
+    assert resolved is _Connector, (
+        f"the entry resolves to {resolved}, not the substituted connector, so an "
+        "empty `executed` would not show that nothing ran"
+    )
     return executed
 
 
@@ -161,26 +178,24 @@ def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
     )
 
 
-def test_the_cli_does_reach_the_connector_when_the_sql_is_valid() -> None:
-    """The control for the test above, which asserts a negative.
+def test_the_cli_does_not_execute_sql_itself_even_when_it_is_valid() -> None:
+    """The orchestrator executes; the command only reports what it returned.
 
-    "Nothing was executed" is also what a harness that never reached a connector
-    at all produces — a substituted class the CLI does not resolve, a stubbed
-    helper that makes it return early — and the assertion cannot tell the two
-    apart. Verified: with the connector registered under a db-type the CLI does
-    not ask for, the refusal test still passes, proving it alone measures
-    nothing about resolution.
+    The command used to run the statement a second time whenever the result
+    came back with no rows object, on a connector it opened directly -- around
+    `open_connector_for_agent` and whatever is wrapped around it for a request.
+    `sql_result is None` is also the orchestrator declining to run a statement,
+    so that fallback could run what the orchestrator had held back.
 
-    So the same harness is run with the statement accepted, and the connector
-    must see it. This is also what holds the CLI's resolution honest: it reaches
-    a class substituted in ``CONNECTOR_REGISTRY``, through the seam rather than
-    by reading the registry itself.
+    The harness checks that the command ran to completion and that the entry
+    resolves to the spy, so this negative cannot pass for want of a connector
+    to reach.
     """
     executed = _statements_the_cli_executed(_SQL, sql_is_valid=True)
 
-    assert executed == [_SQL], (
-        "the CLI did not execute SQL the validator accepted, so the refusal test "
-        "beside this one is passing without reaching a connector"
+    assert executed == [], (
+        "the CLI executed SQL itself; execution belongs to the orchestrator, "
+        "behind open_connector_for_agent"
     )
 
 

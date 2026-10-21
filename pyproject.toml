@@ -121,7 +121,9 @@ mysql     = ["pymysql>=1.1"]
 openai    = ["openai>=1.0"]
 # Tier-1 additional database connectors
 redshift  = ["redshift-connector>=2.1"]
-mssql     = ["pymssql>=2.3"]
+# 2.4.3 is the first release that applies its `encryption` argument; earlier
+# ones accept it and connect unencrypted whatever it says.
+mssql     = ["pymssql>=2.4.3"]
 duckdb    = ["duckdb>=0.10"]
 # Document ingestion connectors (PDF, Word, Excel, etc.)
 docs      = ["pdfplumber>=0.11", "python-docx>=1.1", "openpyxl>=3.1"]

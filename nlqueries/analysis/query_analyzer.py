@@ -24,6 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from nlqueries import sql_policy
 from nlqueries.connectors.base import DatabaseConnector
 
 logger = logging.getLogger(__name__)
@@ -205,8 +206,10 @@ def analyze_query(
 
     Steps:
     1. Mark the query as slow if ``execution_time_ms >= SLOW_QUERY_THRESHOLD_MS``.
-    2. For Postgres: run ``EXPLAIN (ANALYZE, FORMAT JSON) {sql}`` via the connector
-       and parse the JSON plan tree.  For other dialects: ``plan`` is ``None``.
+    2. For Postgres: check ``sql`` with :func:`nlqueries.sql_policy.evaluate`
+       and, if it is allowed, run ``EXPLAIN (ANALYZE, FORMAT JSON) {sql}`` via
+       the connector and parse the JSON plan tree.  For other dialects, or a
+       statement the policy refuses: ``plan`` is ``None``.
     3. Scan the plan for known anti-patterns and populate ``warnings``.
     4. If ``is_slow`` and ``generate_recommendation=True``, call the LLM for an
        optimisation suggestion (at most the top 3 warnings are included).
@@ -230,7 +233,21 @@ def analyze_query(
     warnings: list[str] = []
 
     # --- Fetch and parse EXPLAIN plan (Postgres only) ---
-    if dialect.lower() in _EXPLAIN_SUPPORTED_DIALECTS:
+    # `EXPLAIN ANALYZE` runs the statement it wraps, and the wrapper is not a
+    # query the SQL policy would pass, so the statement inside it is checked
+    # here, on its own, before it is run that way. Nothing in this function
+    # knows where *sql* came from.
+    decision = (
+        sql_policy.evaluate(sql, dialect)
+        if dialect.lower() in _EXPLAIN_SUPPORTED_DIALECTS
+        else None
+    )
+    if decision is not None and not decision.allowed:
+        logger.warning(
+            "analyze_query: not running EXPLAIN, the statement is refused by the SQL policy: %s",
+            decision.summary(),
+        )
+    elif decision is not None:
         try:
             result = connector.execute_query(f"EXPLAIN (ANALYZE, FORMAT JSON) {sql}")
             if not result.error:

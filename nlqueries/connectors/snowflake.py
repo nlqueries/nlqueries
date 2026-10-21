@@ -10,8 +10,10 @@ part of the public OSS API and has no dependency on the enterprise layer.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -146,16 +148,26 @@ class SnowflakeConnector(DatabaseConnector):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _query(connection: Any, sql: str) -> list[dict[str, Any]]:
+    def _query(
+        connection: Any, sql: str, params: Sequence[Any] | None = None
+    ) -> list[dict[str, Any]]:
         """Run ``sql`` and return rows as a list of ``{column_name: value}`` dicts.
 
         Snowflake's driver returns column names in upper case by default
         (identifiers are folded to upper case unless quoted), so callers
         should look up keys like ``"TABLE_NAME"`` rather than ``"table_name"``.
+
+        *params* are bound by the driver to the ``%s`` placeholders in *sql*.
+        A value never goes into the text: a database or schema name is
+        configuration, and configuration with a quote in it must not be able
+        to change what the catalog query says.
         """
         cursor = connection.cursor(snowflake.connector.DictCursor)
         try:
-            cursor.execute(sql)
+            if params is None:
+                cursor.execute(sql)
+            else:
+                cursor.execute(sql, params)
             return list(cursor.fetchall())
         finally:
             cursor.close()
@@ -263,11 +275,12 @@ class SnowflakeConnector(DatabaseConnector):
             connection,
             f"""
             SELECT table_schema, table_name, row_count, comment
-            FROM {database}.INFORMATION_SCHEMA.TABLES
+            FROM {_quote_identifier(database)}.INFORMATION_SCHEMA.TABLES
             WHERE table_type = 'BASE TABLE'
-              AND table_schema NOT IN ({_in_clause(_SYSTEM_SCHEMAS)})
+              AND table_schema NOT IN ({_placeholders(_SYSTEM_SCHEMAS)})
             ORDER BY table_schema, table_name
             """,
+            params=_SYSTEM_SCHEMAS,
         )
         result: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows:
@@ -287,10 +300,11 @@ class SnowflakeConnector(DatabaseConnector):
             connection,
             f"""
             SELECT table_schema, table_name, column_name, data_type, is_nullable, comment
-            FROM {database}.INFORMATION_SCHEMA.COLUMNS
-            WHERE table_schema NOT IN ({_in_clause(_SYSTEM_SCHEMAS)})
+            FROM {_quote_identifier(database)}.INFORMATION_SCHEMA.COLUMNS
+            WHERE table_schema NOT IN ({_placeholders(_SYSTEM_SCHEMAS)})
             ORDER BY table_schema, table_name, ordinal_position
             """,
+            params=_SYSTEM_SCHEMAS,
         )
         result: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows:
@@ -340,18 +354,20 @@ class SnowflakeConnector(DatabaseConnector):
         identity to determine which columns participate in a PRIMARY KEY or
         FOREIGN KEY constraint.
         """
+        quoted = _quote_identifier(database)
         rows = cls._query(
             connection,
             f"""
             SELECT tc.table_schema, tc.table_name, tc.constraint_type, kcu.column_name
-            FROM {database}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-            JOIN {database}.INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+            FROM {quoted}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+            JOIN {quoted}.INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
                 ON kcu.constraint_name = tc.constraint_name
                AND kcu.constraint_schema = tc.constraint_schema
                AND kcu.table_name = tc.table_name
             WHERE tc.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
-              AND tc.table_schema NOT IN ({_in_clause(_SYSTEM_SCHEMAS)})
+              AND tc.table_schema NOT IN ({_placeholders(_SYSTEM_SCHEMAS)})
             """,
+            params=_SYSTEM_SCHEMAS,
         )
         primary_keys: dict[tuple[str, str], set[str]] = {}
         foreign_keys: dict[tuple[str, str], set[str]] = {}
@@ -420,7 +436,7 @@ class SnowflakeConnector(DatabaseConnector):
             WHERE start_time >= DATEADD('day', -{int(days)}, CURRENT_TIMESTAMP())
             GROUP BY query_text
             ORDER BY execution_count DESC
-            LIMIT {limit}
+            LIMIT {int(limit)}
             """,
         )
         return [cls._row_to_query_record(row) for row in rows]
@@ -443,7 +459,7 @@ class SnowflakeConnector(DatabaseConnector):
             ))
             GROUP BY query_text
             ORDER BY execution_count DESC
-            LIMIT {limit}
+            LIMIT {int(limit)}
             """,
         )
         return [cls._row_to_query_record(row) for row in rows]
@@ -637,7 +653,8 @@ class SnowflakeConnector(DatabaseConnector):
                 "SELECT POLICY_NAME, POLICY_KIND, REF_SCHEMA_NAME, REF_ENTITY_NAME, "
                 "REF_COLUMN_NAME "
                 "FROM SNOWFLAKE.ACCOUNT_USAGE.POLICY_REFERENCES "
-                f"WHERE REF_DATABASE_NAME = '{database}'",
+                "WHERE REF_DATABASE_NAME = %s",
+                params=(_identifier_name(database),),
             )
         except Exception:  # noqa: BLE001 — ACCOUNT_USAGE may be ungranted; degrade to empty
             logger.warning(
@@ -669,9 +686,40 @@ class SnowflakeConnector(DatabaseConnector):
         return SecurityPolicyReport(supported=True, policies=policies)
 
 
-def _in_clause(values: tuple[str, ...]) -> str:
-    """Render ``('A', 'B', ...)`` -> ``'A', 'B', ...`` for use inside a SQL ``IN (...)``."""
-    return ", ".join(f"'{value}'" for value in values)
+def _placeholders(values: tuple[str, ...]) -> str:
+    """One ``%s`` per value, for a bound ``IN (...)`` list."""
+    return ", ".join("%s" for _ in values)
+
+
+#: An identifier Snowflake accepts unquoted, and therefore folds to upper case.
+_UNQUOTED_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
+
+def _identifier_name(value: str) -> str:
+    """The name Snowflake stores for the identifier *value* as configured.
+
+    The driver passes the configured ``database`` to the session unquoted, so
+    ``analytics`` opens ``ANALYTICS``; the catalog queries have to name the
+    same object once the identifier is quoted. A name written with its own
+    double quotes is taken exactly, as Snowflake would. Anything else that
+    is not a plain identifier is taken as written: unquoted it would not
+    have parsed at all.
+    """
+    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+        return value[1:-1].replace('""', '"')
+    if _UNQUOTED_IDENTIFIER.fullmatch(value):
+        return value.upper()
+    return value
+
+
+def _quote_identifier(value: str) -> str:
+    """*value* as a quoted Snowflake identifier, naming the same object.
+
+    Interpolated unquoted, a database name is SQL: a configured name with a
+    space, a dot or a quote in it rewrites the catalog query it is placed in.
+    Quoted, with embedded quotes doubled, it can only ever name an object.
+    """
+    return '"' + _identifier_name(value).replace('"', '""') + '"'
 
 
 def _utc_now_iso() -> str:

@@ -366,7 +366,7 @@ _CONSTRAINT_ROWS = [
 ]
 
 
-def _query_side_effect(_connection, sql):
+def _query_side_effect(_connection, sql, params=None):
     if "INFORMATION_SCHEMA.TABLES" in sql:
         return list(_TABLES_ROWS)
     if "INFORMATION_SCHEMA.COLUMNS" in sql:
@@ -416,17 +416,90 @@ def test_extract_schema_queries_use_the_connected_database():
     connector, _ = _connector_with_mock_connection()
     seen_sql: list[str] = []
 
-    def record_and_delegate(_connection, sql):
+    def record_and_delegate(_connection, sql, params=None):
         seen_sql.append(sql)
-        return _query_side_effect(_connection, sql)
+        return _query_side_effect(_connection, sql, params)
 
     with patch.object(SnowflakeConnector, "_query", side_effect=record_and_delegate):
         connector.extract_schema()
 
-    assert any("ANALYTICS.INFORMATION_SCHEMA.TABLES" in sql for sql in seen_sql)
-    assert any("ANALYTICS.INFORMATION_SCHEMA.COLUMNS" in sql for sql in seen_sql)
-    assert any("ANALYTICS.INFORMATION_SCHEMA.TABLE_CONSTRAINTS" in sql for sql in seen_sql)
-    assert any("ANALYTICS.INFORMATION_SCHEMA.KEY_COLUMN_USAGE" in sql for sql in seen_sql)
+    assert any('"ANALYTICS".INFORMATION_SCHEMA.TABLES' in sql for sql in seen_sql)
+    assert any('"ANALYTICS".INFORMATION_SCHEMA.COLUMNS' in sql for sql in seen_sql)
+    assert any('"ANALYTICS".INFORMATION_SCHEMA.TABLE_CONSTRAINTS' in sql for sql in seen_sql)
+    assert any('"ANALYTICS".INFORMATION_SCHEMA.KEY_COLUMN_USAGE' in sql for sql in seen_sql)
+
+
+@pytest.mark.parametrize(
+    ("configured", "quoted"),
+    [
+        # Unquoted, Snowflake folds a plain identifier to upper case; the quoted
+        # form has to name that same database.
+        ("analytics", '"ANALYTICS"'),
+        ("ANALYTICS", '"ANALYTICS"'),
+        # Written with its own quotes, a name is taken exactly.
+        ('"MixedCase"', '"MixedCase"'),
+        # Not a plain identifier: quoted as written, embedded quotes doubled.
+        ("my-db", '"my-db"'),
+        ('x" OR 1=1 --', '"x"" OR 1=1 --"'),
+    ],
+)
+def test_catalog_queries_quote_the_database_identifier(configured, quoted):
+    """The database name is configuration, and was interpolated as SQL.
+
+    A name with a space, a dot or a quote in it rewrote the catalog query it was
+    placed in. Quoted, with embedded quotes doubled, it can only name an object.
+    """
+    connector, _ = _connector_with_mock_connection()
+    connector._database = configured
+    seen_sql: list[str] = []
+
+    def record_and_delegate(_connection, sql, params=None):
+        seen_sql.append(sql)
+        return _query_side_effect(_connection, sql, params)
+
+    with patch.object(SnowflakeConnector, "_query", side_effect=record_and_delegate):
+        connector.extract_schema()
+
+    assert len(seen_sql) == 3
+    for sql in seen_sql:
+        assert f"{quoted}.INFORMATION_SCHEMA." in sql, sql
+        if configured != quoted:
+            assert f" {configured}.INFORMATION_SCHEMA" not in sql, sql
+
+
+def test_catalog_queries_bind_the_schema_names_they_exclude():
+    """String values are bound by the driver, never written into the text."""
+    connector, mock_connection = _connector_with_mock_connection()
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    mock_connection.cursor.return_value = cursor
+
+    connector.extract_schema()
+
+    assert cursor.execute.call_count == 3
+    for call in cursor.execute.call_args_list:
+        sql, params = call.args
+        assert "'INFORMATION_SCHEMA'" not in sql, sql
+        assert "NOT IN (%s)" in sql, sql
+        assert tuple(params) == ("INFORMATION_SCHEMA",)
+
+
+def test_list_security_policies_binds_the_database_name():
+    """The name it filters on is bound, and is the one Snowflake stores: the
+    configured `analytics` opens `ANALYTICS`, and `POLICY_REFERENCES` records
+    that."""
+    connector, mock_connection = _connector_with_mock_connection()
+    connector._database = "analytics"
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    mock_connection.cursor.return_value = cursor
+
+    connector.list_security_policies()
+
+    sql, params = cursor.execute.call_args.args
+    assert "REF_DATABASE_NAME = %s" in sql
+    assert "analytics" not in sql.lower()
+    assert tuple(params) == ("ANALYTICS",)
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +535,7 @@ def test_extract_query_history_prefers_account_usage():
 def test_extract_query_history_falls_back_to_information_schema(caplog):
     connector, _ = _connector_with_mock_connection()
 
-    def side_effect(_connection, sql):
+    def side_effect(_connection, sql, params=None):
         if "ACCOUNT_USAGE" in sql:
             raise RuntimeError("SQL access control error: ACCOUNT_USAGE not authorized")
         return [_HISTORY_ROW]
@@ -726,7 +799,7 @@ def test_the_lock_is_released_when_the_query_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _no_constraint_views(_connection, sql):
+def _no_constraint_views(_connection, sql, params=None):
     """Snowflake's answer for a shared database: the two views do not exist."""
     if "TABLE_CONSTRAINTS" in sql:
         raise snowflake.connector.errors.ProgrammingError(
@@ -736,7 +809,7 @@ def _no_constraint_views(_connection, sql):
                 "exist or not authorized."
             )
         )
-    return _query_side_effect(_connection, sql)
+    return _query_side_effect(_connection, sql, params)
 
 
 def test_extract_schema_survives_a_database_with_no_constraint_views():
@@ -778,12 +851,12 @@ def test_an_unrelated_programming_error_still_fails_the_extraction():
     """
     connector, _ = _connector_with_mock_connection()
 
-    def denied(_connection, sql):
+    def denied(_connection, sql, params=None):
         if "TABLE_CONSTRAINTS" in sql:
             raise snowflake.connector.errors.ProgrammingError(
                 msg="002003 (42S02): SQL compilation error:\nInsufficient privileges."
             )
-        return _query_side_effect(_connection, sql)
+        return _query_side_effect(_connection, sql, params)
 
     with (
         patch.object(SnowflakeConnector, "_query", side_effect=denied),

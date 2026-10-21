@@ -7,8 +7,10 @@ database SQLAlchemy can reach, driven by a full SQLAlchemy URL.
 Unlike the per-database connectors, this one issues no dialect-specific catalog
 SQL: schema is introspected through SQLAlchemy's dialect-agnostic
 :class:`~sqlalchemy.engine.reflection.Inspector`, so it works for PostgreSQL,
-MySQL/MariaDB, SQLite, Oracle, SQL Server, and anything else with a SQLAlchemy
-dialect installed. The only credential is the URL::
+MySQL/MariaDB, Oracle, SQL Server, and anything else with a SQLAlchemy dialect
+installed. SQLite and DuckDB URLs are refused: each has a dedicated connector
+that opens the file read-only and sandboxed, which this one does not. The only
+credential is the URL::
 
     connector = SQLAlchemyConnector()
     connector.connect({"url": "mysql+pymysql://user:pass@host:3306/analytics"})
@@ -27,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import Connection, Engine, make_url
+from sqlalchemy.engine import URL, Connection, Engine, make_url
 from sqlalchemy.exc import DatabaseError
 
 from nlqueries import config
@@ -60,19 +62,24 @@ def _apply_read_only(conn: Connection) -> None:
     spelled: DML and DDL anywhere in the call graph, and sequence functions,
     refused by name.
 
-    MySQL and MariaDB are deliberately left to the rollback. Their form is
-    ``SET SESSION TRANSACTION READ ONLY``, which sets the mode for *subsequent*
-    transactions and is refused with error 1568 inside an open one -- and by the
-    time anything here can run, SQLAlchemy has already emitted ``BEGIN`` on the
-    first execute. ``START TRANSACTION READ ONLY`` would be the right statement
-    and is not something a caller can issue when SQLAlchemy owns the transaction.
-    Issuing the session form anyway would turn every MySQL query into an error,
-    which is a worse outcome than the rollback it would be layered on top of.
+    MySQL and MariaDB take ``START TRANSACTION READ ONLY``, which opens the
+    transaction itself. SQLAlchemy's MySQL dialects send no ``BEGIN`` of their
+    own -- ``do_begin`` is the default no-op, and the server opens a transaction
+    implicitly on the first statement -- so this is that first statement, and
+    the rollback in ``_execute_query`` ends it. The statement timeout is set
+    after it: ``START TRANSACTION`` commits implicitly, and the
+    ``SET SESSION`` timeout is then in force for the query it precedes.
 
-    And the rollback does not cover MySQL's non-transactional storage engines at
-    all: an ``INSERT`` into a MyISAM or MEMORY table survives, and the server
-    reports warning 1196 rather than an error. Nothing here can prevent that; the
-    grant is the control.
+    Measured through this connector with PyMySQL 1.2.3 and SQLAlchemy 2.0
+    against MySQL 8.0.46, MySQL 8.4.11 and MariaDB 10.11.14: a ``SELECT``
+    runs; an ``INSERT`` into an InnoDB table and into a MyISAM table are both
+    refused with error 1792, where before the MyISAM row survived the rollback;
+    the timeout reads back as set and cancels a query over it; and the next
+    use of the same pooled connection is not read-only, because the mode
+    belongs to the transaction. (``SET SESSION TRANSACTION READ ONLY`` would
+    outlive the query on the pooled connection, which is why it is not the
+    form used.) DDL still commits implicitly, ending the transaction first, so
+    a ``CREATE TABLE`` stands.
 
     Oracle is a gap rather than a limit, and the distinction is worth keeping.
     It has a transaction-scoped ``SET TRANSACTION READ ONLY`` that must be the
@@ -88,6 +95,8 @@ def _apply_read_only(conn: Connection) -> None:
     name = conn.engine.dialect.name
     if name in ("postgresql", "redshift"):
         conn.execute(text("SET TRANSACTION READ ONLY"))
+    elif name in _MYSQL_BACKENDS:
+        conn.execute(text("START TRANSACTION READ ONLY"))
 
 
 def _apply_statement_timeout(conn: Connection, seconds: float) -> None:
@@ -115,6 +124,85 @@ def _apply_statement_timeout(conn: Connection, seconds: float) -> None:
             conn.execute(text(f"SET SESSION max_execution_time = {ms}"))
     else:
         logger.debug("No statement-timeout mechanism for dialect %r; running unbounded", name)
+
+
+#: Backends that have a dedicated connector, mapped to its db type. A URL for
+#: one of these is refused here rather than opened: the dedicated connectors open
+#: the file read-only and, for DuckDB, with external file access switched off.
+#: Through this connector the same URL opens the file read-write, with
+#: ``ATTACH`` and DuckDB's file-reading functions available to any query.
+_DEDICATED_BACKENDS = {"sqlite": "sqlite", "duckdb": "duckdb"}
+
+#: Backend names SQLAlchemy uses for MySQL and MariaDB.
+_MYSQL_BACKENDS = frozenset({"mysql", "mariadb"})
+
+#: ``CLIENT_MULTI_STATEMENTS`` in the MySQL protocol: lets one call carry
+#: several ``;``-separated statements, which the server then runs in turn.
+_CLIENT_MULTI_STATEMENTS = 1 << 16
+
+#: URL parameters that carry the MySQL client capability flags: ``client_flag``
+#: for mysqlclient, PyMySQL and MariaDB Connector/Python, ``client_flags`` for
+#: MySQL Connector/Python.
+_CLIENT_FLAG_PARAMS = ("client_flag", "client_flags")
+
+#: URL parameters that would switch ``LOAD DATA LOCAL INFILE`` back on.
+_LOCAL_INFILE_PARAMS = ("local_infile", "allow_local_infile")
+
+
+def _refuse_dedicated_backend(parsed: URL) -> None:
+    """Raise if *parsed* names an engine that has a connector of its own."""
+    backend = parsed.get_backend_name()
+    if backend in _DEDICATED_BACKENDS:
+        db_type = _DEDICATED_BACKENDS[backend]
+        raise ValueError(
+            f"SQLAlchemyConnector does not open {backend} URLs. Use the dedicated "
+            f"'{db_type}' connector (nlqueries connect {db_type}), which opens the "
+            f"database read-only and sandboxed."
+        )
+
+
+def _harden_mysql(parsed: URL) -> tuple[URL, dict[str, Any]]:
+    """*parsed* with the MySQL settings this connector does not allow taken out.
+
+    Returns the URL to build the engine from and the connect args to add. A
+    URL for any other backend comes back unchanged with no connect args.
+
+    ``LOAD DATA LOCAL INFILE`` asks the *client* to send a file from its own
+    disk, and the server chooses the file name -- so with it enabled, the host
+    running this process will upload whatever readable file a statement or the
+    server names. It is disabled in the connect args, which SQLAlchemy lets
+    win over the URL, and any URL parameter enabling it is dropped so the URL
+    does not claim otherwise.
+
+    The multi-statements capability is stripped from any client flag the URL
+    sets. The SQL policy already refuses more than one statement; this makes
+    the driver refuse it too, so a second statement is not one the server will
+    run whatever reaches it. ``init_command`` and the other parameters are left
+    alone.
+    """
+    if parsed.get_backend_name() not in _MYSQL_BACKENDS:
+        return parsed, {}
+
+    query = {k: v for k, v in parsed.query.items() if k not in _LOCAL_INFILE_PARAMS}
+    for param in _CLIENT_FLAG_PARAMS:
+        if param not in query:
+            continue
+        raw = query[param]
+        # A repeated query parameter arrives as a tuple; the driver takes the last.
+        value = raw[-1] if isinstance(raw, tuple) else raw
+        try:
+            flags = int(value)
+        except ValueError:
+            raise ValueError(
+                f"SQLAlchemyConnector: the URL's {param} must be an integer, not {value!r}."
+            ) from None
+        query[param] = str(flags & ~_CLIENT_MULTI_STATEMENTS)
+
+    if parsed.get_driver_name() == "mysqlconnector":
+        connect_args: dict[str, Any] = {"allow_local_infile": False}
+    else:
+        connect_args = {"local_infile": 0}
+    return parsed.set(query=query), connect_args
 
 
 #: Credential keys that configure TLS, mapped to the libpq connection
@@ -288,8 +376,14 @@ class SQLAlchemyConnector(DatabaseConnector):
         """Build a SQLAlchemy engine from ``credentials["url"]``.
 
         The URL is a standard SQLAlchemy URL, e.g.
-        ``postgresql+psycopg://user:pass@host/db`` or ``sqlite:////data/db.sqlite``.
-        Raises :class:`ValueError` when no URL is supplied.
+        ``postgresql+psycopg://user:pass@host/db`` or
+        ``mysql+pymysql://user:pass@host/db``. Raises :class:`ValueError` when
+        no URL is supplied, and for a SQLite or DuckDB URL, which have
+        dedicated connectors.
+
+        MySQL and MariaDB URLs are opened with ``LOAD DATA LOCAL INFILE``
+        disabled and the multi-statements client flag removed; see
+        :func:`_harden_mysql`.
 
         TLS settings configured alongside the URL are applied when the driver
         is one whose parameter names we know; see :func:`_tls_connect_args`. A
@@ -299,6 +393,8 @@ class SQLAlchemyConnector(DatabaseConnector):
         if not url or not str(url).strip():
             raise ValueError("SQLAlchemyConnector requires a 'url' credential (a SQLAlchemy URL).")
         url = str(url).strip()
+        parsed = make_url(url)
+        _refuse_dedicated_backend(parsed)
         connect_args = _tls_connect_args(url, credentials)
         merged = _merged_tls_view(url, credentials)
         # Record what was resolved, the way PostgresConnector does. `nlqueries
@@ -312,7 +408,12 @@ class SQLAlchemyConnector(DatabaseConnector):
         # From both sources: a split configuration is now permitted, so neither
         # half describes the connection on its own.
         self._tls = _posture_for(merged, connect_args)
-        self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+        hardened, mysql_args = _harden_mysql(parsed)
+        connect_args.update(mysql_args)
+        # Only a MySQL URL is rebuilt; any other reaches the engine exactly as
+        # it was given.
+        engine_url = hardened if mysql_args else url
+        self._engine = create_engine(engine_url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

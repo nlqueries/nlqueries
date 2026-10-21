@@ -163,7 +163,10 @@ def test_the_engines_with_a_surprising_gap_declare_it() -> None:
     """
     assert "DDL" in CAPABILITIES["snowflake"].not_covered
     assert "DDL" in CAPABILITIES["sqlalchemy"].not_covered
-    assert "MyISAM" in CAPABILITIES["sqlalchemy"].not_covered
+    # MySQL and MariaDB now open a read-only transaction, which refuses a write
+    # to a MyISAM table too, so that is no longer a gap to declare.
+    assert "MyISAM" not in CAPABILITIES["sqlalchemy"].not_covered
+    assert "mysql" in CAPABILITIES["sqlalchemy"].read_only_mechanism
 
     # SQL Server's DDL *is* transactional, so it has no surprising gap and must
     # not manufacture one -- an empty field is the correct answer, not prose.

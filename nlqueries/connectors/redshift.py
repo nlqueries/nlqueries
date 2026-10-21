@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -50,6 +51,16 @@ _SYSTEM_SCHEMAS = frozenset(
     }
 )
 
+#: Longest a query waits for the connector's transaction lock when no statement
+#: timeout applies. The same bound, for the same reason, as the Snowflake
+#: connector's: with the statement timeout disabled nothing bounds the holder,
+#: so this bounds the waiter instead.
+_LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
+
+#: Added to the statement timeout when deriving the lock wait, to cover the row
+#: fetch and the rollback that happen inside the span after the query returns.
+_LOCK_WAIT_MARGIN_SECONDS = 30.0
+
 
 class RedshiftConnector(DatabaseConnector):
     """Connector for Amazon Redshift.
@@ -71,6 +82,15 @@ class RedshiftConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._conn: Any = None
         self._database: str = ""
+        #: Serialises the SET TRANSACTION READ ONLY ... rollback span in
+        #: `_execute_query`. This connector holds one connection for its
+        #: lifetime, `loader.py` caches instances, and callers arrive through
+        #: `asyncio.to_thread`, so two queries can overlap on it. A transaction
+        #: belongs to the connection, not the cursor: interleaved, the second
+        #: query's `SET TRANSACTION READ ONLY` lands inside the first one's
+        #: transaction and fails, or the first one's rollback ends the
+        #: transaction the second is still reading in.
+        self._txn_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -493,6 +513,47 @@ class RedshiftConnector(DatabaseConnector):
             else config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS
         )
         start = time.perf_counter()
+        # Bounded, as Snowflake's is: whoever holds the lock cannot legitimately
+        # outlast their own statement timeout by more than the fetch and the
+        # rollback, so a wedged connection degrades to a failed query rather
+        # than blocking every later query on this connector.
+        lock_wait = (
+            effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
+            if effective_timeout is not None and effective_timeout > 0
+            else _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS
+        )
+        if not self._txn_lock.acquire(timeout=lock_wait):
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "RedshiftConnector: gave up after %.0fs waiting for the connector's "
+                "transaction lock. This connector holds one connection, so queries "
+                "on it run one at a time.",
+                lock_wait,
+            )
+            return QueryResult(
+                columns=[],
+                rows=[],
+                row_count=0,
+                execution_time_ms=elapsed_ms,
+                error=(
+                    f"The Redshift connector was busy for {lock_wait:.0f}s and the query "
+                    f"was not run. Queries on one connector run one at a time, because "
+                    f"a transaction belongs to the connection rather than the cursor."
+                ),
+            )
+        try:
+            return self._execute_locked(sql, effective_timeout, max_rows, start)
+        finally:
+            self._txn_lock.release()
+
+    def _execute_locked(
+        self,
+        sql: str,
+        effective_timeout: float | None,
+        max_rows: int | None,
+        start: float,
+    ) -> QueryResult:
+        """The read-only/statement/rollback sequence, run under `_txn_lock`."""
         try:
             conn = self._require_conn()
             cur = conn.cursor()

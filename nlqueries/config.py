@@ -896,6 +896,38 @@ that has also disabled the statement timeout wants.
 Lowering it to fail faster on an unreachable host shortens every query budget by
 the same amount."""
 
+
+def _optional_positive_int(name: str) -> int | None:
+    """A positive integer from the environment, or None when *name* is unset.
+
+    Unlike :func:`_positive_int`, a malformed or non-positive value raises. The
+    setting this reads is a cost ceiling whose absence means "no ceiling", so
+    falling back on a typo would quietly remove the cap the operator set.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number of bytes, not {raw!r}") from None
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than zero, not {raw!r}; unset it for no cap")
+    return value
+
+
+BIGQUERY_MAX_BYTES_BILLED: int | None = _optional_positive_int("BIGQUERY_MAX_BYTES_BILLED")
+"""Most bytes one BigQuery query job may bill, or None for no cap.
+
+Set on every job the BigQuery connector runs as ``maximum_bytes_billed``.
+BigQuery fails a job that would bill more before it runs, so the query costs
+nothing and the answer reports the error. Unset by default, which is the
+behaviour before the setting existed: a generated query is billed for whatever
+it scans.
+
+Applies to answering questions, not to reading the schema or query history.
+"""
+
 # ---------------------------------------------------------------------------
 # Query Capsules
 # ---------------------------------------------------------------------------

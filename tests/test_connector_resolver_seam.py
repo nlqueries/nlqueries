@@ -664,58 +664,15 @@ def _redirect_kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_main, "KB_PATH", kb)
 
 
-def _query() -> None:
-    """The ``query`` command, with generation stubbed so execution is reached.
-
-    The site sits behind `execute_sql and result.sql_is_valid and result.sql and
-    agent_type == "sql" and sql_result is None`, so a result satisfying all five
-    is what makes the command build a connector at all.
-    """
-    from unittest.mock import patch
-
-    from nlqueries.orchestrator.sync_runner import AgentQueryResult
-
-    result = AgentQueryResult(
-        question="how many?",
-        resolved_question="how many?",
-        agent_type="sql",
-        answer="",
-        sql="SELECT 1",
-        sql_result=None,
-        citations=[],
-        merged_answer=None,
-        latency_ms=1,
-        session_id=None,
-        sql_is_valid=True,
-        execution_mode="execute_read_only",
-    )
-    # `--no-session`, because `--session` defaults to on and the session branch
-    # runs *before* the resolution site: `_save_turn` writes through
-    # `private_dir(STATE_DIR / "sessions")`, with `STATE_DIR` bound at import from
-    # `nlqueries.config`, so nothing this file redirects reaches it. Left on, each
-    # run appends turns to the operator's real session log -- which is the side
-    # effect `_redirect_kb` and the conftest guard exist to prevent, and it wrote
-    # fourteen of them here before review caught it. Turning it off changes
-    # nothing this case measures.
-    with patch(
-        "nlqueries.orchestrator.sync_runner.run_query_sync",
-        return_value=result,
-    ):
-        _run("query", _AGENT, "how many?", "--no-session")
-
-
 #: One entry per resolution site in ``cli/main.py`` that reads an entry.
 #:
 #: ``connect`` is absent because it has no entry to read; it is covered by the
 #: registration tests above.
 #:
-#: ``query`` is here rather than delegated to
-#: ``tests/security/test_execution_boundary.py``. That file substitutes the
-#: connector through ``CONNECTOR_REGISTRY`` and installs no resolver, so it
-#: passes whichever way the class is found -- the very criterion this block
-#: applies to the other five. Recording it as covered there was a claim this
-#: file's own standard contradicts, and it is the site that connects and
-#: executes generated SQL.
+#: ``query`` is absent because it no longer builds a connector: the orchestrator
+#: executes through ``open_connector_for_agent``, and the command's own fallback
+#: execution was removed. ``tests/security/test_execution_boundary.py`` asserts
+#: that it runs nothing itself.
 _CLI_SITES = {
     "doctor": _doctor,
     "extract-schema": lambda: _run("extract-schema", _AGENT),
@@ -724,7 +681,6 @@ _CLI_SITES = {
     ),
     "export-kb": lambda: _run("export-kb", _AGENT),
     "kb-stats": lambda: _run("kb-stats", _AGENT),
-    "query": _query,
 }
 
 

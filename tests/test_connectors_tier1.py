@@ -356,7 +356,12 @@ class TestDuckDBConnector:
         sandbox goes on regardless of which database it is."""
         mock_duckdb = MagicMock()
         with patch.dict(sys.modules, {"duckdb": mock_duckdb}):
-            from nlqueries.connectors.duckdb import _SANDBOX, DuckDBConnector
+            from nlqueries.connectors.duckdb import (
+                _SANDBOX,
+                _SANDBOX_STATEMENTS,
+                DuckDBConnector,
+                _private_temp_directory,
+            )
 
             connector = granted(DuckDBConnector())
             connector.connect({})
@@ -366,9 +371,61 @@ class TestDuckDBConnector:
                 # it is private to this process and gone when it exits, so
                 # there is nothing in it to protect.
                 read_only=False,
-                config=_SANDBOX,
+                config={**_SANDBOX, "temp_directory": _private_temp_directory()},
             )
+            executed = [c.args[0] for c in mock_duckdb.connect.return_value.execute.call_args_list]
+            assert executed == list(_SANDBOX_STATEMENTS)
             assert connector._database == ":memory:"
+
+    @pytest.mark.parametrize(
+        ("external_access", "locked"),
+        [(True, True), (False, False), (True, False)],
+    )
+    def test_a_failed_sandbox_statement_still_raises_unless_the_sandbox_holds(
+        self, external_access: bool, locked: bool
+    ) -> None:
+        """Only an instance that is already locked with external access off is
+        accepted when the sandbox statements are refused; the connection is
+        closed and the error raised for any other state."""
+        mock_duckdb = MagicMock()
+        conn = mock_duckdb.connect.return_value
+
+        def _execute(sql: str) -> MagicMock:
+            if sql.startswith("SET "):
+                raise RuntimeError("Cannot change configuration option")
+            result = MagicMock()
+            result.fetchone.return_value = (external_access, locked)
+            return result
+
+        conn.execute.side_effect = _execute
+        with patch.dict(sys.modules, {"duckdb": mock_duckdb}):
+            from nlqueries.connectors.duckdb import DuckDBConnector
+
+            connector = DuckDBConnector()
+            with pytest.raises(RuntimeError, match="Cannot change"):
+                connector.connect({})
+        conn.close.assert_called_once()
+        assert connector._conn is None
+
+    def test_an_already_sandboxed_instance_is_accepted(self) -> None:
+        mock_duckdb = MagicMock()
+        conn = mock_duckdb.connect.return_value
+
+        def _execute(sql: str) -> MagicMock:
+            if sql.startswith("SET "):
+                raise RuntimeError("the configuration has been locked")
+            result = MagicMock()
+            result.fetchone.return_value = (False, True)
+            return result
+
+        conn.execute.side_effect = _execute
+        with patch.dict(sys.modules, {"duckdb": mock_duckdb}):
+            from nlqueries.connectors.duckdb import DuckDBConnector
+
+            connector = DuckDBConnector()
+            connector.connect({})
+        conn.close.assert_not_called()
+        assert connector._conn is conn
 
     def test_test_connection_true(self) -> None:
         """test_connection returns True when SELECT 1 executes."""

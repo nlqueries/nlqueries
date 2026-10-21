@@ -20,7 +20,9 @@ from ``sys.dm_exec_query_stats`` + ``sys.dm_exec_sql_text``, which requires
 from __future__ import annotations
 
 import logging
+import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -46,6 +48,111 @@ logger = logging.getLogger(__name__)
 # SQL Server built-in schemas that contain no user data.
 _SYSTEM_SCHEMAS = frozenset({"sys", "INFORMATION_SCHEMA", "guest", "db_owner"})
 
+#: The values a connector entry's ``encryption`` key may take, each passed to
+#: pymssql's ``encryption`` argument unchanged. pymssql also accepts
+#: ``default``, which defers to FreeTDS's own configuration; it is left out so
+#: that the posture `nlqueries health` reports is one this connector chose
+#: rather than one it cannot see.
+ENCRYPTION_LEVELS = ("require", "request", "off")
+
+#: Applied when the entry sets no ``encryption``. It changes nothing for an
+#: existing deployment: measured against SQL Server 2022, which offers TLS
+#: without forcing it, ``request`` connects with the session unencrypted
+#: (``sys.dm_exec_connections.encrypt_option`` reads FALSE), as no setting did.
+#: Only ``require`` encrypted the session, so it is the setting to choose once
+#: the server is known to offer TLS; it refuses a server that does not.
+DEFAULT_ENCRYPTION = "request"
+
+#: The first pymssql release that applies ``encryption``. Measured against SQL
+#: Server 2022: 2.3.0 to 2.4.2 accept the argument and connect unencrypted
+#: under ``require``; 2.4.3 to 2.4.5 encrypt.
+PYMSSQL_APPLIES_ENCRYPTION = (2, 4, 3)
+
+
+def _pymssql_applies_encryption(version: object) -> bool:
+    """Whether the pymssql *version* string is one that applies ``encryption``.
+
+    A version that cannot be read is taken as one that does not, so the posture
+    reported is never stronger than the one in force.
+    """
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(version))
+    if match is None:
+        return False
+    return tuple(int(part) for part in match.groups()) >= PYMSSQL_APPLIES_ENCRYPTION
+
+
+@dataclass(frozen=True)
+class EncryptionPosture:
+    """The transport encryption a SQL Server connection was opened with.
+
+    Duck-types the two members `nlqueries health` reads from a connector's
+    ``tls`` -- :attr:`is_fully_verified` and :meth:`summary` -- so SQL Server
+    gets a transport line the way PostgreSQL does.
+
+    Never fully verified. pymssql's ``encryption`` argument decides whether the
+    channel is encrypted; whether the server's certificate is checked is FreeTDS
+    configuration (``ca file`` in ``freetds.conf``), which this connector does
+    not set and cannot read back. Under ``require`` it connected to a server
+    presenting a self-signed certificate. Reporting it as verified would be a
+    claim nothing here has checked.
+    """
+
+    encryption: str
+    #: False when the installed pymssql predates :data:`PYMSSQL_APPLIES_ENCRYPTION`
+    #: and so ignores the setting.
+    applied: bool = True
+    driver_version: str = ""
+
+    @property
+    def concerns(self) -> tuple[str, ...]:
+        if not self.applied:
+            return (
+                f"pymssql {self.driver_version or '(unknown version)'} ignores the "
+                f"encryption setting, so the session is unencrypted unless the server "
+                f"forces encryption; install pymssql 2.4.3 or later",
+            )
+        if self.encryption == "off":
+            return ("encryption is 'off', so the session is not encrypted",)
+        if self.encryption == "request":
+            return (
+                "encryption is 'request', which leaves the session unencrypted unless "
+                "the server forces encryption; set 'require' to encrypt it",
+            )
+        return (
+            "encryption is 'require'; the server's certificate is verified only if "
+            "FreeTDS is configured with a CA file",
+        )
+
+    @property
+    def is_fully_verified(self) -> bool:
+        return False
+
+    def summary(self) -> str:
+        """A single line for logs and the health report."""
+        return "; ".join(self.concerns)
+
+
+def resolve_encryption(credentials: dict[str, Any]) -> str:
+    """The ``encryption`` level for *credentials*, or :data:`DEFAULT_ENCRYPTION`.
+
+    An unknown value is refused rather than passed on: pymssql would refuse it
+    too, but only at connect time and naming its own vocabulary, which includes
+    a ``default`` this connector does not offer.
+    """
+    raw = credentials.get("encryption")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_ENCRYPTION
+    # YAML reads a bare `off` as the boolean False.
+    if raw is False:
+        return "off"
+    value = str(raw).strip().lower()
+    if value not in ENCRYPTION_LEVELS:
+        raise ValueError(
+            f"MSSQLConnector: encryption must be one of {', '.join(ENCRYPTION_LEVELS)}, "
+            f"not {raw!r}."
+        )
+    return value
+
 
 class MSSQLConnector(DatabaseConnector):
     """Connector for SQL Server and Azure SQL.
@@ -69,6 +176,12 @@ class MSSQLConnector(DatabaseConnector):
 
     def __init__(self) -> None:
         self._engine: Engine | None = None
+        self._tls: EncryptionPosture | None = None
+
+    @property
+    def tls(self) -> EncryptionPosture | None:
+        """The encryption this connector opened with, or None before ``connect``."""
+        return self._tls
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -78,18 +191,32 @@ class MSSQLConnector(DatabaseConnector):
         """Build a SQLAlchemy engine from ``credentials``.
 
         Required keys: ``host``, ``database``, ``user``, ``password``.
-        ``port`` defaults to ``1433``.
+        ``port`` defaults to ``1433``. ``encryption`` is one of
+        :data:`ENCRYPTION_LEVELS` and defaults to :data:`DEFAULT_ENCRYPTION`.
 
         Raises :class:`ImportError` when ``pymssql`` is not installed.
         """
         try:
-            import pymssql  # noqa: PLC0415, F401
+            import pymssql  # noqa: PLC0415
         except ImportError as exc:
             raise ImportError(
                 "The 'pymssql' package is required for SQL Server connections.\n"
                 "Install it with:  pip install 'nlqueries-core[mssql]'"
             ) from exc
 
+        encryption = resolve_encryption(credentials)
+        driver_version = str(getattr(pymssql, "__version__", ""))
+        applied = _pymssql_applies_encryption(driver_version)
+        if encryption == "require" and not applied:
+            # Refused rather than opened: this release accepts the argument and
+            # connects unencrypted, so the connection would not be what the
+            # entry asks for, and health would have to report the opposite.
+            raise RuntimeError(
+                f"MSSQLConnector: encryption is 'require', but pymssql "
+                f"{driver_version or '(unknown version)'} ignores that setting and "
+                f"would connect unencrypted. Install pymssql 2.4.3 or later: "
+                f"pip install 'nlqueries-core[mssql]'"
+            )
         url = URL.create(
             drivername="mssql+pymssql",
             username=credentials.get("user"),
@@ -103,9 +230,14 @@ class MSSQLConnector(DatabaseConnector):
         # CONNECTOR_STATEMENT_TIMEOUT_SECONDS default so a runaway query can't hang
         # indefinitely; 0 disables it. (Per-call execute_query timeout_seconds is
         # not separately honored on this driver.)
-        connect_args: dict[str, Any] = {}
+        # Passed on every connection, including the default. Left to FreeTDS,
+        # the level depended on whichever freetds.conf the driver happened to
+        # find, so the same entry could connect in plaintext on one host and
+        # encrypted on another, and nothing here could say which.
+        connect_args: dict[str, Any] = {"encryption": encryption}
         if config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS > 0:
             connect_args["timeout"] = max(1, int(config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS))
+        self._tls = EncryptionPosture(encryption, applied, driver_version)
         self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     def _require_engine(self) -> Engine:
@@ -328,6 +460,13 @@ class MSSQLConnector(DatabaseConnector):
         Requires ``VIEW SERVER STATE`` (SQL Server) or ``VIEW DATABASE STATE``
         (Azure SQL).  Raises :class:`QueryHistoryUnavailable` if the DMV is
         inaccessible.
+
+        Limited to plans compiled in the connected database. The DMV is
+        server-wide, so without the filter a login with ``VIEW SERVER STATE``
+        mined every database on the instance into this connector's knowledge
+        base. The database is read from the plan's ``dbid`` attribute rather
+        than ``dm_exec_sql_text.dbid``, which is NULL for ad hoc and prepared
+        statements -- the bulk of what an application sends.
         """
         engine = self._require_engine()
         with engine.connect() as conn:
@@ -351,13 +490,23 @@ class MSSQLConnector(DatabaseConnector):
                             qs.last_execution_time
                         FROM sys.dm_exec_query_stats qs
                         CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt
+                        CROSS APPLY (
+                            SELECT CONVERT(int, pa.value) AS dbid
+                            FROM sys.dm_exec_plan_attributes(qs.plan_handle) pa
+                            WHERE pa.attribute = 'dbid'
+                        ) plan_db
                         WHERE qs.last_execution_time >= DATEADD(day, :neg_days, GETDATE())
+                          AND plan_db.dbid = DB_ID()
                           AND qt.text NOT LIKE '%sys.dm_exec%'
                         ORDER BY qs.execution_count DESC
                         """
                     ),
                     {"neg_days": -days},
                 )
+                # Read here, while the connection is still checked out. Read
+                # after the `with`, the connection had gone back to the pool
+                # and the result came back empty on a real server, every time.
+                records = list(rows.mappings())
             except Exception as exc:  # noqa: BLE001
                 raise QueryHistoryUnavailable(
                     "Could not read sys.dm_exec_query_stats "
@@ -376,7 +525,7 @@ class MSSQLConnector(DatabaseConnector):
                     str(row["last_execution_time"]) if row["last_execution_time"] else None
                 ),
             )
-            for row in rows.mappings()
+            for row in records
             if (row["query"] or "").strip()
         ]
 

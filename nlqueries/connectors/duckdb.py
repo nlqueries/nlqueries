@@ -19,7 +19,10 @@ always returns an empty list.
 
 from __future__ import annotations
 
+import atexit
 import logging
+import shutil
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -43,8 +46,9 @@ logger = logging.getLogger(__name__)
 # DuckDB internal schemas that contain no user data.
 _SYSTEM_SCHEMAS = frozenset({"information_schema", "pg_catalog"})
 
-#: Configuration applied to every DuckDB connection. It cannot be overridden
-#: by credentials or by any later statement.
+#: Configuration applied to every DuckDB connection, together with
+#: :data:`_SANDBOX_STATEMENTS`. It cannot be overridden by credentials or by any
+#: later statement.
 #:
 #: DuckDB exposes file access through table functions -- ``read_csv_auto``,
 #: ``read_text``, ``read_blob``, ``glob`` -- so a file read is syntactically an
@@ -62,12 +66,70 @@ _SYSTEM_SCHEMAS = frozenset({"information_schema", "pg_catalog"})
 # Typed as duckdb's own `config` parameter rather than dict[str, str]:
 # dict is invariant, so the narrower annotation does not fit the call.
 _SANDBOX: dict[str, str | bool | int | float | list[str]] = {
-    "enable_external_access": "false",
     "autoinstall_known_extensions": "false",
     "autoload_known_extensions": "false",
-    # Applied last. Prevents a subsequent SET from re-enabling any of the above.
-    "lock_configuration": "true",
 }
+
+#: Run on every connection straight after it opens, before anything else can
+#: use it, and in this order. They were connect-time configuration too, but
+#: DuckDB 1.5.5 refuses ``temp_directory`` in the same configuration as
+#: ``enable_external_access = false`` ("Modifying the temp_directory has been
+#: disabled by configuration"), so the private spill directory is configured
+#: first and external access is switched off after it. The lock comes last and
+#: stops any later ``SET`` from changing either, or the settings above.
+_SANDBOX_STATEMENTS = (
+    "SET enable_external_access = false",
+    "SET lock_configuration = true",
+)
+
+
+def _already_sandboxed(conn: Any) -> bool:
+    """Whether *conn*'s database instance is locked with external access off.
+
+    DuckDB's Python client shares one database instance per file within a
+    process, so a second connector on a file another connector already opened
+    gets the same instance -- already locked, which makes its own sandbox
+    ``SET`` statements fail. That instance is exactly as sandboxed as this
+    connector would have made it, and is accepted; any other state is not.
+    """
+    try:
+        row = conn.execute(
+            "SELECT current_setting('enable_external_access'), "
+            "current_setting('lock_configuration')"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - an unreadable state is not a sandboxed one
+        return False
+    if row is None:
+        return False
+    external_access, locked = row
+    return str(external_access).lower() == "false" and str(locked).lower() == "true"
+
+
+_temp_dir_lock = threading.Lock()
+_temp_dir: str | None = None
+
+
+def _private_temp_directory() -> str:
+    """A directory only this process's user can enter, created once per process.
+
+    DuckDB spills to ``temp_directory`` when a sort, join or aggregate does not
+    fit in memory. Left at its default, that is ``<database>.tmp`` beside the
+    database file -- a database opened read-only from a shared or read-only
+    location then either cannot spill at all or writes intermediate results,
+    which are customer data, wherever the database happens to live -- and
+    ``.tmp`` in the working directory for ``:memory:``. Disabling it instead
+    turns every query larger than memory into an out-of-memory error.
+
+    ``mkdtemp`` creates the directory with mode 0700, so other local users
+    cannot read what is spilled into it. Shared by every connector in the
+    process, and removed when the process exits.
+    """
+    global _temp_dir
+    with _temp_dir_lock:
+        if _temp_dir is None:
+            _temp_dir = tempfile.mkdtemp(prefix="nlqueries-duckdb-")
+            atexit.register(shutil.rmtree, _temp_dir, ignore_errors=True)
+        return _temp_dir
 
 
 class DuckDBConnector(DatabaseConnector):
@@ -124,14 +186,26 @@ class DuckDBConnector(DatabaseConnector):
                 f"for a transient database."
             )
 
-        self._conn = duckdb.connect(
+        conn = duckdb.connect(
             database=self._database,
             # A database on disk holds customer data and is opened for
             # reading only. DuckDB rejects read-only mode for an in-memory
             # database, which is private to this process and discarded on exit.
             read_only=not in_memory,
-            config=_SANDBOX,
+            config={**_SANDBOX, "temp_directory": _private_temp_directory()},
         )
+        try:
+            for statement in _SANDBOX_STATEMENTS:
+                conn.execute(statement)
+        except Exception:
+            # A second connector on the same file shares the first one's
+            # locked instance, so its SETs are refused; that instance is
+            # accepted only if the sandbox holds. Anything else is never
+            # handed out half-sandboxed.
+            if not _already_sandboxed(conn):
+                conn.close()
+                raise
+        self._conn = conn
 
     def _require_conn(self) -> Any:
         if self._conn is None:
