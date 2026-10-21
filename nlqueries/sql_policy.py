@@ -233,28 +233,38 @@ def _bracket_depth(sql: str) -> int:
     return best
 
 
-def _string_table_names(tree: exp.Expression, sql: str, dialect: str) -> list[str]:
-    """Table names in *tree* that were written as string literals.
+def _string_table_names(tree: exp.Expression, sql: str, dialect: str) -> list[str] | None:
+    """Table names in *tree* that were written as string literals, or None.
 
     DuckDB reads ``FROM 'orders.csv'`` as a scan of that file, and sqlglot
     parses the string into a quoted identifier indistinguishable from
     ``FROM "orders.csv"`` -- a real table name. What tells them apart is the
     token the identifier came from, so the statement is tokenized and any table
     name starting where a string token starts is reported.
+
+    The start position is parser metadata sqlglot does not document; it is
+    present on the versions this was measured against (30.9 and later), and
+    the declared floor is older. None means the question cannot be answered:
+    the statement has string tokens and table names, but no table name carries
+    a start position, or the statement could not be tokenized. The caller
+    refuses it rather than assume none of the strings is a table name.
     """
     try:
         tokens = sqlglot.Dialect.get_or_raise(dialect).tokenize(sql)
     except (SqlglotError, ValueError):
-        return []
+        return None
     string_starts = {token.start for token in tokens if token.token_type == TokenType.STRING}
     if not string_starts:
         return []
-    found: list[str] = []
-    for table in tree.find_all(exp.Table):
-        for part in table.parts:
-            if isinstance(part, exp.Identifier) and part.meta.get("start") in string_starts:
-                found.append(part.name)
-    return found
+    parts = [
+        part
+        for table in tree.find_all(exp.Table)
+        for part in table.parts
+        if isinstance(part, exp.Identifier)
+    ]
+    if parts and not any("start" in part.meta for part in parts):
+        return None
+    return [part.name for part in parts if part.meta.get("start") in string_starts]
 
 
 def evaluate(sql: str, dialect: str) -> PolicyDecision:
@@ -364,7 +374,12 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         reasons.append(f"reads files ({', '.join(file_readers)})")
 
     string_tables = _string_table_names(tree, sql, _sqlglot_dialect(dialect))
-    if string_tables:
+    if string_tables is None:
+        reasons.append(
+            "could not tell whether a table name is a string, which would read it as "
+            "a file: the parser recorded no token positions"
+        )
+    elif string_tables:
         reasons.append(
             "uses a string as a table name, which reads it as a file: "
             + ", ".join(repr(name) for name in string_tables)

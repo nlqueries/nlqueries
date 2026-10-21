@@ -83,6 +83,28 @@ _SANDBOX_STATEMENTS = (
 )
 
 
+def _already_sandboxed(conn: Any) -> bool:
+    """Whether *conn*'s database instance is locked with external access off.
+
+    DuckDB's Python client shares one database instance per file within a
+    process, so a second connector on a file another connector already opened
+    gets the same instance -- already locked, which makes its own sandbox
+    ``SET`` statements fail. That instance is exactly as sandboxed as this
+    connector would have made it, and is accepted; any other state is not.
+    """
+    try:
+        row = conn.execute(
+            "SELECT current_setting('enable_external_access'), "
+            "current_setting('lock_configuration')"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - an unreadable state is not a sandboxed one
+        return False
+    if row is None:
+        return False
+    external_access, locked = row
+    return str(external_access).lower() == "false" and str(locked).lower() == "true"
+
+
 _temp_dir_lock = threading.Lock()
 _temp_dir: str | None = None
 
@@ -176,9 +198,13 @@ class DuckDBConnector(DatabaseConnector):
             for statement in _SANDBOX_STATEMENTS:
                 conn.execute(statement)
         except Exception:
-            # Never handed out half-sandboxed.
-            conn.close()
-            raise
+            # A second connector on the same file shares the first one's
+            # locked instance, so its SETs are refused; that instance is
+            # accepted only if the sandbox holds. Anything else is never
+            # handed out half-sandboxed.
+            if not _already_sandboxed(conn):
+                conn.close()
+                raise
         self._conn = conn
 
     def _require_conn(self) -> Any:

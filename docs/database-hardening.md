@@ -465,7 +465,9 @@ any connector, the policy refuses the file-reading functions sqlglot models
 (`read_csv`, `read_parquet`, and Snowflake's `DIRECTORY` and `TO_FILE`) and a
 string literal used as a table name (`FROM 'orders.csv'`, which DuckDB reads as
 a file). The functions sqlglot does not model, `read_csv_auto` and `glob` among
-them, were already refused as unrecognised.
+them, were already refused as unrecognised. If the installed sqlglot records no
+token positions, the policy cannot tell a string table name from a quoted one,
+and refuses any statement with both a string and a table name.
 
 ---
 

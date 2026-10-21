@@ -217,8 +217,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   every dialect; `read_csv` was previously allowed because sqlglot recognises
   it. So is a string literal used as a table name, such as DuckDB's
   `FROM 'orders.csv'`, told apart from a quoted identifier (`FROM "orders"`) by
-  the token it was parsed from. Cached answers signed under policy version 2
-  no longer verify and are regenerated.
+  the token it was parsed from. If the installed sqlglot records no token
+  positions on table names, a statement with both a string and a table name is
+  refused, since the rule cannot tell them apart. Cached answers signed under
+  policy version 2 no longer verify and are regenerated.
 - **Query history is limited to the connector's own database or dataset.** SQL
   Server history keeps only plans compiled in the connected database (the
   plan's `dbid` attribute, which unlike `dm_exec_sql_text.dbid` is set for ad
@@ -239,7 +241,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **DuckDB spills to a private directory.** The connector sets `temp_directory`
   to a directory it creates once per process under the system temporary
   directory, with mode `0700`, removed when the process exits. DuckDB's default
-  is `<database>.tmp` beside the database file.
+  is `<database>.tmp` beside the database file. External access is now switched
+  off and the configuration locked by statement right after connecting; a
+  second connector on a file already open in the process shares that locked
+  instance and is accepted once the sandbox is confirmed to hold.
 - **Snowflake catalog queries quote the database name and bind their values.**
   The configured database is written as a quoted identifier, upper-cased first
   when it is a plain unquoted name so it still names the database Snowflake

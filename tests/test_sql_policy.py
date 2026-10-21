@@ -394,3 +394,58 @@ class TestFileReading:
 
     def test_the_policy_version_records_the_change(self) -> None:
         assert POLICY_VERSION == "3"
+
+
+class TestStringTableRuleFailsClosed:
+    """The rule reads each table name's start position, which is sqlglot parser
+    metadata. On a sqlglot that does not record it, the rule must refuse a
+    statement it cannot judge rather than allow it."""
+
+    @staticmethod
+    def _without_positions(monkeypatch: pytest.MonkeyPatch) -> None:
+        import sqlglot
+        from nlqueries import sql_policy
+        from sqlglot import exp
+
+        real_parse = sqlglot.parse
+
+        def parse(sql: str, *args: object, **kwargs: object) -> list:
+            trees = real_parse(sql, *args, **kwargs)
+            for tree in trees:
+                if tree is not None:
+                    for identifier in tree.find_all(exp.Identifier):
+                        identifier.meta.clear()
+            return trees
+
+        monkeypatch.setattr(sql_policy.sqlglot, "parse", parse)
+
+    def test_a_string_table_name_is_still_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._without_positions(monkeypatch)
+
+        decision = evaluate("SELECT * FROM 'x.csv'", "duckdb")
+
+        assert not decision.allowed
+        assert any("no token positions" in reason for reason in decision.reasons)
+
+    def test_a_string_value_beside_a_table_is_refused_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without positions it cannot tell `'x.csv'` the value from `'x.csv'`
+        the table, so both are refused."""
+        self._without_positions(monkeypatch)
+
+        decision = evaluate("SELECT * FROM orders WHERE name = 'x.csv'", "duckdb")
+
+        assert not decision.allowed
+
+    @pytest.mark.parametrize(
+        "sql", ["SELECT * FROM orders", "SELECT 'x.csv' AS f", 'SELECT * FROM "x.csv"']
+    )
+    def test_statements_with_nothing_to_judge_are_unaffected(
+        self, monkeypatch: pytest.MonkeyPatch, sql: str
+    ) -> None:
+        """No string token, or no table name: there is nothing the positions
+        were needed for."""
+        self._without_positions(monkeypatch)
+
+        assert evaluate(sql, "duckdb").allowed
