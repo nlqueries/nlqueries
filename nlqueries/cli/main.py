@@ -3883,8 +3883,10 @@ def embed_server_start(port: int | None, foreground: bool) -> None:
         _daemon.serve(port=port)
         return
 
+    # `-P` keeps the working directory off `sys.path`, so the daemon imports the
+    # installed package and nothing that happens to sit where it was started.
     subprocess.Popen(
-        [sys.executable, "-m", "nlqueries.embeddings.embed_server", "--port", str(port)],
+        [sys.executable, "-P", "-m", "nlqueries.embeddings.embed_server", "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
