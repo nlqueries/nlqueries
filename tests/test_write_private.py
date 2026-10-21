@@ -193,7 +193,8 @@ def _shop_db(tmp_path: Path) -> Path:
 def _reflect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(sqlalchemy_connector_module, "inspect", _quoting_inspect)
     connector = granted(SQLAlchemyConnector())
-    connector.connect({"url": f"sqlite:///{_shop_db(tmp_path)}"})
+    # `connect` refuses a SQLite URL; reflection is the same code for any engine.
+    connector._engine = sqlalchemy.create_engine(f"sqlite:///{_shop_db(tmp_path)}")  # noqa: SLF001
     try:
         return connector.extract_schema()
     finally:

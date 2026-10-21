@@ -318,3 +318,79 @@ class TestTheDecisionIsBound:
 
         assert not decision.allowed
         assert len(decision.sql_digest) == 64
+
+
+class TestFileReading:
+    """DuckDB reads files through ordinary-looking SELECTs. The connector's
+    sandbox refuses them at run time; the policy refuses them before that, on
+    every engine, so a statement that reads a file is never one it vouches for.
+
+    The unmodelled functions (`read_json`, `read_text`, `glob`) were already
+    refused as unrecognised. These are the ones sqlglot models, which that rule
+    never saw: `read_csv` parses to `exp.ReadCSV` and was allowed."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM read_csv('/etc/passwd')",
+            "SELECT * FROM read_parquet('s3://bucket/data.parquet')",
+            "SELECT * FROM read_parquet(['a.parquet', 'b.parquet'])",
+            "SELECT n FROM orders WHERE id IN (SELECT id FROM read_csv('ids.csv'))",
+        ],
+    )
+    def test_file_reading_functions_are_refused_under_duckdb(self, sql: str) -> None:
+        decision = evaluate(sql, "duckdb")
+
+        assert not decision.allowed
+        assert any(reason.startswith("reads files") for reason in decision.reasons)
+
+    def test_read_csv_is_refused_whatever_the_dialect(self) -> None:
+        """sqlglot models it under Postgres too, so it passed as a known
+        function there."""
+        decision = evaluate("SELECT * FROM read_csv('x.csv')", "postgres")
+
+        assert not decision.allowed
+        assert "reads files (ReadCSV)" in decision.reasons
+
+    def test_snowflake_stage_readers_are_refused(self) -> None:
+        decision = evaluate("SELECT * FROM DIRECTORY(@my_stage)", "snowflake")
+
+        assert not decision.allowed
+        assert any(reason.startswith("reads files") for reason in decision.reasons)
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM 'x.csv'",
+            "SELECT * FROM 'x.csv' AS t",
+            "SELECT * FROM main.'x.csv'",
+            "SELECT * FROM orders JOIN 'customers.parquet' c ON c.id = orders.customer_id",
+            "WITH a AS (SELECT * FROM 'y.json') SELECT * FROM a",
+        ],
+    )
+    def test_a_string_used_as_a_table_name_is_refused(self, sql: str) -> None:
+        """`FROM 'x.csv'` is a file scan in DuckDB, and sqlglot parses the
+        string into a quoted identifier that looks like `FROM "x.csv"`."""
+        decision = evaluate(sql, "duckdb")
+
+        assert not decision.allowed
+        assert any("string as a table name" in reason for reason in decision.reasons)
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            'SELECT * FROM "x.csv"',
+            'SELECT * FROM main."orders"',
+            "SELECT * FROM orders WHERE name = 'x.csv'",
+            "SELECT 'x.csv' AS f FROM orders",
+        ],
+    )
+    def test_quoted_identifiers_and_ordinary_strings_are_allowed(self, sql: str) -> None:
+        """The control: a quoted identifier names a table, and a string
+        anywhere other than a table name is a value."""
+        decision = evaluate(sql, "duckdb")
+
+        assert decision.allowed, decision.summary()
+
+    def test_the_policy_version_records_the_change(self) -> None:
+        assert POLICY_VERSION == "3"

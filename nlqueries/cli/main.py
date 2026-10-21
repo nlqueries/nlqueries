@@ -2907,35 +2907,15 @@ def query(
             sql=result.sql,
         )
 
-    # Execute the generated SQL against the registered connector.
+    # The orchestrator executes the SQL when execution was asked for, under the
+    # policy minted above, and this only reports what it returned. A fallback
+    # here used to run the statement again whenever that was None -- which is
+    # also the orchestrator declining to run it -- on a connector opened
+    # directly, around `open_connector_for_agent` and whatever is wrapped
+    # around it for a request.
     sql_result: QueryResult | None = result.sql_result
-    # `sql_result is None` alone used to be the whole condition, and it means
-    # three different things: nothing ran, the validator refused it, or it ran
-    # and returned nothing. Taking it as "not run yet" is how SQL the validator
-    # had already rejected reached the database (2026-07-02 review, finding 3).
     if not result.sql_is_valid and result.sql:
         err_console.print("[yellow]⚠ Not executed:[/yellow] the generated SQL failed validation.")
-    if (
-        execute_sql
-        and result.sql_is_valid
-        and result.sql
-        and result.agent_type == "sql"
-        and sql_result is None
-    ):
-        try:
-            cfg = _require_connector(agent_id)
-            connector_cls = connector_class_for(str(cfg.get("db_type") or "").lower(), cfg)
-            if connector_cls is None:
-                err_console.print(
-                    f"[yellow]⚠ No connector registered for db_type "
-                    f"'{cfg.get('db_type')}' — skipping execution.[/yellow]"
-                )
-            else:
-                connector = connector_cls()
-                connector.connect(credentials_for(agent_id, cfg))
-                sql_result = connector.execute_query(result.sql)
-        except Exception as exc:  # noqa: BLE001
-            err_console.print(f"[bold red]✗ SQL execution failed:[/bold red] {exc}")
 
     # Deterministic SQL-to-English paraphrase (ACE-1.1). Identifiers are humanized
     # here (no KB vocab in the core CLI); the enterprise service supplies business

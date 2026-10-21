@@ -187,27 +187,33 @@ def test_the_transaction_is_made_read_only_before_the_query(dialect: str) -> Non
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "mariadb"])
-def test_mysql_is_left_to_the_rollback_and_not_sent_a_statement_that_errors(
-    dialect: str,
-) -> None:
-    """Deliberately absent, and asserted so nobody adds it back untested.
+def test_mysql_opens_a_read_only_transaction_before_the_query(dialect: str) -> None:
+    """`START TRANSACTION READ ONLY` is the first statement, then the rollback.
 
-    MySQL's form is `SET SESSION TRANSACTION READ ONLY`, which configures
-    *subsequent* transactions and is refused with error 1568 inside an open one.
-    SQLAlchemy emits BEGIN on the first execute, so by the time a connector can
-    send anything the transaction is already open: issuing it would turn every
-    MySQL query into an error, on top of a rollback that already prevents the
-    write. `START TRANSACTION READ ONLY` is the right statement and is not
-    something a caller can issue while SQLAlchemy owns the transaction.
+    SQLAlchemy's MySQL dialects send no `BEGIN` of their own -- the server opens
+    a transaction implicitly on the first statement -- so this statement is what
+    opens it, read-only. Inside it the server refuses a write to any table,
+    including the MyISAM and MEMORY tables the rollback alone could not undo.
+    The session-scoped `SET SESSION TRANSACTION READ ONLY` is not used: it
+    would outlive the query on a pooled connection.
+
+    Measured against MySQL 8.0.46, MySQL 8.4.11 and MariaDB 10.11.14; see
+    `tests/integration/test_mysql_integration.py`.
     """
     connector, conn = _generic(dialect)
 
-    connector.execute_query("SELECT 1")
+    connector.execute_query("SELECT 1", timeout_seconds=5)
 
-    assert not any("READ ONLY" in statement for statement in conn.statements), (
-        f"{dialect}: a read-only statement was sent that MySQL refuses inside a transaction"
-    )
-    assert conn.rollbacks == 1, f"{dialect}: the rollback is the whole guard here"
+    # The timeout comes after: `START TRANSACTION` commits implicitly, and the
+    # session-scoped `SET SESSION max_execution_time` is the value the query
+    # must run under, so it is sent inside the transaction it bounds.
+    assert conn.statements == [
+        "START TRANSACTION READ ONLY",
+        "SET SESSION max_execution_time = 5000",
+        "SELECT 1",
+    ], dialect
+    assert conn.commits == 0, dialect
+    assert conn.rollbacks == 1, f"{dialect}: the rollback ends the read-only transaction"
 
 
 def test_mssql_is_not_sent_a_read_only_statement() -> None:

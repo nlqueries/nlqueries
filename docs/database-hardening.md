@@ -186,12 +186,13 @@ yourself with `SHOW search_path;` and the first query in step 6.
 This section is about the `postgres` connector, the only per-vendor connector
 that reads `ssl_mode` and `ssl_ca_cert` (with `ssl_client_cert` and
 `ssl_client_key`); the generic connector applies the same settings to libpq
-PostgreSQL URLs, [below](#the-generic-connector). The others take no TLS
-settings: `redshift` always connects with `ssl=True` and offers no mode or CA,
-and `mssql` and `connect mysql` set no TLS options, so their sessions are
-encrypted only if the server or the driver insists. `nlqueries health` prints a
-transport line only for `postgres` connectors and for `sqlalchemy` connectors
-that settle a mode (see below).
+PostgreSQL URLs, [below](#the-generic-connector). The others take no
+certificate settings: `redshift` always connects with `ssl=True` and offers no
+mode or CA; `mssql` passes pymssql an `encryption` level, which encrypts the
+session only when it is `require` ([SQL Server](#sql-server)); and `connect mysql`
+sets no TLS options, so its sessions are encrypted only if the server insists.
+`nlqueries health` prints a transport line for `postgres` and `mssql`
+connectors and for `sqlalchemy` connectors that settle a mode (see below).
 
 With no `ssl_mode` set, the `postgres` connector uses `require` and so refuses a
 server that offers no TLS. An explicit `ssl_mode` is honoured as given,
@@ -250,6 +251,38 @@ and `nlqueries health` will report what that leaves unverified:
 A certificate whose subject does not name the host you connect to will be
 refused under `verify-full`. Connecting by IP address to a certificate issued
 for a hostname is the usual cause.
+
+### SQL Server
+
+The `mssql` connector passes pymssql's `encryption` argument on every
+connection, from the `encryption` key in the connector's entry. Measured
+against SQL Server 2022, which offers TLS without forcing it, reading
+`sys.dm_exec_connections.encrypt_option` for the session:
+
+| `encryption` | pymssql 2.4.3 to 2.4.5 | pymssql 2.3.0 to 2.4.2 |
+|---|---|---|
+| `require` | encrypted | **not encrypted**: the setting is ignored |
+| `request` (default) | not encrypted | not encrypted |
+| `off` | not encrypted | not encrypted |
+
+So `request` changes nothing for an existing deployment, and only `require`
+encrypts the session; it refuses a server that does not offer TLS. Any other
+value is refused when the connector opens. The `mssql` extra now requires
+pymssql 2.4.3. With an older pymssql installed, the connector refuses
+`require`, since it would connect unencrypted, and `nlqueries health` reports
+that the setting is not applied. Whether the server's certificate is verified
+is FreeTDS configuration (a `ca file`), which the connector does not set and
+cannot read back; under `require` it accepted a self-signed certificate. So
+`nlqueries health` reports every level as a warning:
+
+```
+[WARN] Database (sql) transport: encryption is 'require'; the server's certificate
+       is verified only if FreeTDS is configured with a CA file …
+```
+
+Set `require` once the server is known to offer TLS, or have the server force
+encryption. `connect` writes no `encryption` key, so add it to the entry by hand
+as for the `ssl_*` keys above.
 
 ### The generic connector
 
@@ -414,9 +447,25 @@ Two consequences to note before upgrading:
   otherwise create an empty database, so a misconfiguration would present as
   success.
 
+**Spills go to a private directory.** A query too large for memory spills to
+`temp_directory`. DuckDB's default puts it beside the database file
+(`<database>.tmp`), so intermediate results, which are customer data, were
+written wherever the database lived, or could not be written at all when that
+location was read-only. The connector sets `temp_directory` at connect time to a
+directory it creates once per process under the system temporary directory, with
+mode `0700`, and removes it when the process exits. It is set before the
+configuration is locked, so a query cannot move it.
+
 Running DuckDB in an environment with nothing else to read — a container with
 only the database file mounted, no host secrets and no egress — remains
 worthwhile. The sandbox above is defence in depth and does not replace it.
+
+**The SQL policy refuses file reads too.** Before a generated statement reaches
+any connector, the policy refuses the file-reading functions sqlglot models
+(`read_csv`, `read_parquet`, and Snowflake's `DIRECTORY` and `TO_FILE`) and a
+string literal used as a table name (`FROM 'orders.csv'`, which DuckDB reads as
+a file). The functions sqlglot does not model, `read_csv_auto` and `glob` among
+them, were already refused as unrecognised.
 
 ---
 
@@ -441,7 +490,7 @@ statement, and anything it did outside the transaction stands.
 | `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
 | `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `cursor.execute(timeout=…)` | no — asserted against a fake driver |
 | `bigquery` | **none** | `job_timeout_ms` | no |
-| `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it and SQLite runs it outside the transaction, so a `CREATE` or `DROP` stands | best-effort per dialect | no — asserted against a fake driver |
+| `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift` and `START TRANSACTION READ ONLY` where it is `mysql` or `mariadb`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it, so a `CREATE` or `DROP` stands | best-effort per dialect | MySQL and MariaDB measured by hand (MySQL 8.0 and 8.4, MariaDB 10.11); otherwise asserted against a fake driver |
 
 `nlqueries health` reports this per connector, so the row that applies to a
 deployment does not have to be looked up here.
@@ -452,7 +501,7 @@ are not defence in depth — they are the whole defence.
 
 Three entries deserve particular attention.
 
-**Snowflake queries on one connector run one at a time.** A Snowflake
+**Snowflake and Redshift queries on one connector run one at a time.** A Snowflake
 transaction belongs to the session rather than the cursor, and the connector
 holds a single connection for its lifetime while connector instances are cached
 and callers arrive on threads. Two overlapping queries would otherwise share one
@@ -461,6 +510,12 @@ running under autocommit with nothing left to undo. The `BEGIN` … `ROLLBACK`
 span is therefore serialised per connector. A shared session cannot offer both
 concurrency and a per-query transaction, and a guard that stops holding under
 load is worth less than the throughput it would buy.
+
+Redshift is the same: its connector also holds one connection, and a second
+query's `SET TRANSACTION READ ONLY` sent inside the first one's transaction is
+refused, while the first one's rollback would end a transaction the second was
+still reading in. Its `SET TRANSACTION READ ONLY` … rollback span is serialised
+per connector in the same way.
 
 The wait is bounded, so serialising cannot turn one stuck query into a stuck
 connector: a caller waits for the statement timeout plus a margin, or five
@@ -476,21 +531,36 @@ else.
 **BigQuery has nothing to undo with.** A single query job has no transaction. The
 connector pins the job to standard SQL with no session and logs a statement type
 other than `SELECT` at warning, but the job has already run by the time the type
-is readable — an audit signal, not a control.
+is readable — an audit signal, not a control. Setting `BIGQUERY_MAX_BYTES_BILLED`
+puts a cost cap on every job that answers a question: BigQuery fails a job that
+would bill more before running it ([configuration.md](configuration.md)).
 
-**MySQL and MariaDB get the rollback and nothing more.** Their read-only form is
-`SET SESSION TRANSACTION READ ONLY`, which configures *subsequent* transactions
-and is refused with error 1568 inside an open one; SQLAlchemy opens one on the
-first statement, so by the time the connector could send it the transaction
-exists. `START TRANSACTION READ ONLY` is the statement that would work and is not
-available to a caller while SQLAlchemy owns the transaction.
+**MySQL and MariaDB open a read-only transaction.** SQLAlchemy's MySQL dialects
+send no `BEGIN` of their own; the server opens a transaction implicitly on the
+first statement. So the connector's first statement is
+`START TRANSACTION READ ONLY`, and the rollback after the query ends it. Inside
+it the server refuses a write to any table with error 1792, MyISAM and MEMORY
+tables included, which the rollback alone could not undo. The session-scoped
+`SET SESSION TRANSACTION READ ONLY` is not used, because it would outlive the
+query on a pooled connection. The statement timeout is set after
+`START TRANSACTION`, which commits implicitly, so it is in force for the query.
+Measured by hand with PyMySQL against MySQL 8.0.46, MySQL 8.4.11 and MariaDB
+10.11.14, before and after, with the same results on all three:
 
-**Nor does it reach a non-transactional storage engine.** An `INSERT` into a
-MyISAM or MEMORY table on MySQL or MariaDB survives the `ROLLBACK` outright --
-those engines have no transaction to undo, and the server reports warning 1196
-rather than an error, so nothing in the connector can even notice. If the schema
-NLQueries reads contains such tables, the grant is the only control over writes
-to them.
+| | before | after |
+|---|---|---|
+| `INSERT` into an InnoDB table | rolled back | refused (1792) |
+| `INSERT` into a MyISAM table | **kept** | refused (1792) |
+| `SELECT 1; SELECT 2` with `client_flag=65536` in the URL | both ran | refused |
+| `LOAD DATA LOCAL INFILE` with `local_infile=1` in the URL | file uploaded | refused by the client |
+| `CREATE TABLE` | **kept** | **kept** (implicit commit) |
+| a query over its statement timeout | cancelled | cancelled |
+| a plain `INSERT` on the same pooled connection afterwards | committed | committed |
+
+`tests/integration/test_mysql_integration.py` repeats this against a server you
+name with `NLQ_TEST_MYSQL_URL`; it is skipped otherwise. The URL hardening behind
+the two middle rows is described in
+[connectors.md](connectors.md#mysql-and-mariadb-what-the-generic-connector-changes-in-the-url).
 
 **Oracle's gap looks closable.** It has a transaction-scoped
 `SET TRANSACTION READ ONLY` that must be the first statement of the transaction
@@ -502,11 +572,10 @@ with an instance should try it and move Oracle out of the column below.
 
 **And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit
 implicitly around DDL, so a `CREATE` or `DROP` sent through this connector is
-permanent whatever the transaction does — the same limit Snowflake has, for the
-same reason, and it applies to any engine behind the generic SQLAlchemy
-connector that commits implicitly. SQLite is a third variant: pysqlite begins a
-transaction before DML but not before DDL, so a `CREATE TABLE` there runs
-outside the transaction entirely. On all of these the grant is the only thing
+permanent whatever the transaction does — on MySQL and MariaDB the implicit
+commit ends the read-only transaction before the DDL runs. It is the same limit
+Snowflake has, for the same reason, and it applies to any engine behind the
+generic SQLAlchemy connector that commits implicitly. On all of these the grant is the only thing
 standing between a generated statement and a schema change, which is why the
 role in this document is the boundary and the rollback is not.
 
@@ -520,7 +589,11 @@ restricts what a statement may do, not what the login may reach.
 **The generic `sqlalchemy` connector reaches any engine SQLAlchemy supports**,
 so no single statement about its behaviour holds beyond the rollback, which does.
 It adds `SET TRANSACTION READ ONLY` when the URL turns out to be `postgresql` or
-`redshift`, and nothing further for a dialect it does not recognise.
+`redshift`, `START TRANSACTION READ ONLY` for `mysql` or `mariadb`, and nothing
+further for a dialect it does not recognise. It refuses `sqlite://` and
+`duckdb://` URLs outright: the dedicated connectors open those files read-only
+and sandboxed, and through this one the same file opened read-write, with
+`ATTACH` and DuckDB's file functions available to a query.
 
 "Verified in this repository" means the mechanism is exercised by a test against
 a real engine. Snowflake, BigQuery, Redshift, SQL Server and MySQL require

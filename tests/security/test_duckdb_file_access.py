@@ -185,3 +185,47 @@ def test_no_credential_reopens_external_access(tmp_path: Path) -> None:
     result = connector.execute_query(f"SELECT * FROM read_csv_auto('{canary.as_posix()}')")
 
     assert result.error is not None, "a credential key reopened external access"
+
+
+def _temp_directory(connector: DuckDBConnector) -> str:
+    result = connector.execute_query("SELECT current_setting('temp_directory')")
+    assert result.error is None, result.error
+    return str(result.rows[0][0])
+
+
+def test_spills_go_to_a_private_per_process_directory(duckdb_lab, tmp_path: Path) -> None:
+    """Not beside the database, where its default puts them, and not disabled.
+
+    Spilled intermediate results are customer data. Left at the default they are
+    written to `<database>.tmp` wherever the database lives; disabled, any query
+    larger than memory fails instead.
+    """
+    import os
+    import stat
+
+    connector, _canary = duckdb_lab
+
+    spill = Path(_temp_directory(connector))
+
+    assert spill.is_dir()
+    assert tmp_path not in spill.parents, "spills are written beside the database"
+    assert stat.S_IMODE(spill.stat().st_mode) == 0o700, "other local users can read spills"
+    assert spill.stat().st_uid == os.getuid()
+
+
+def test_every_connector_in_the_process_shares_it(duckdb_lab) -> None:
+    connector, _canary = duckdb_lab
+    other = granted(DuckDBConnector())
+    other.connect({"database": ":memory:"})
+
+    assert _temp_directory(other) == _temp_directory(connector)
+
+
+def test_a_query_cannot_move_it(duckdb_lab, tmp_path: Path) -> None:
+    connector, _canary = duckdb_lab
+    before = _temp_directory(connector)
+
+    result = connector.execute_query(f"SET temp_directory = '{tmp_path.as_posix()}'")
+
+    assert result.error is not None, "a query re-pointed the spill directory"
+    assert _temp_directory(connector) == before

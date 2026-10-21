@@ -17,6 +17,7 @@ hand against Redshift Serverless on 2026-08-27:
 from __future__ import annotations
 
 import importlib
+import threading
 from typing import Any
 
 import pytest
@@ -156,6 +157,124 @@ def test_each_query_re_establishes_the_guards(connector) -> None:
 
     assert conn.statements.count("SET TRANSACTION READ ONLY") == 3
     assert conn.rollbacks == 3
+
+
+class _ThreadRecordingConnection:
+    """Records which thread sent each statement and each rollback, in order.
+
+    After `SET TRANSACTION READ ONLY` the sender waits, so an unserialised second
+    query has every chance to send its own statements inside the first one's
+    transaction -- which is what a real connection shared by two threads allows.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
+        self.both_started = threading.Event()
+
+    def _record(self, statement: str) -> None:
+        with self._lock:
+            self.events.append((threading.current_thread().name, statement))
+
+    def cursor(self) -> Any:
+        connection = self
+
+        class _Cur(_Cursor):
+            def execute(self, sql: str) -> None:
+                connection._record(sql)
+                if sql == "SET TRANSACTION READ ONLY":
+                    connection.both_started.wait(timeout=0.5)
+
+            def __iter__(self) -> Any:
+                return iter(())
+
+        return _Cur([])
+
+    def rollback(self) -> None:
+        self._record("ROLLBACK")
+
+
+def test_two_threads_on_one_connector_are_serialised() -> None:
+    """A transaction belongs to the connection, and this connector holds one.
+
+    `loader.py` caches connector instances and callers arrive through
+    `asyncio.to_thread`, so two `execute_query` calls can overlap on one
+    connection. Unserialised, the second `SET TRANSACTION READ ONLY` lands inside
+    the first query's transaction -- where Redshift refuses it, because it must
+    be the first statement -- or the first query's rollback ends the transaction
+    the second is reading in.
+
+    Asserted on the recorded order rather than on timing: every statement
+    between a `SET TRANSACTION READ ONLY` and its rollback must come from the
+    thread that sent it.
+    """
+    c = granted(RedshiftConnector())
+    conn = _ThreadRecordingConnection()
+    c._conn = conn
+
+    results: list[Any] = []
+    threads = [
+        threading.Thread(
+            target=lambda sql: results.append(c.execute_query(sql)),
+            args=(f"SELECT {name}",),
+            name=name,
+        )
+        for name in ("A", "B")
+    ]
+    for t in threads:
+        t.start()
+    conn.both_started.set()
+    for t in threads:
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in threads), "a query did not finish"
+
+    owner: str | None = None
+    for who, statement in conn.events:
+        if statement == "SET TRANSACTION READ ONLY":
+            assert owner is None, f"{who} opened a transaction inside {owner}'s: {conn.events}"
+            owner = who
+        elif statement == "ROLLBACK":
+            assert owner == who, f"{who} rolled back {owner}'s transaction: {conn.events}"
+            owner = None
+        else:
+            assert owner == who, f"{who} ran {statement!r} inside {owner}'s: {conn.events}"
+    assert [s for _, s in conn.events].count("SET TRANSACTION READ ONLY") == 2
+    assert all(r.error is None for r in results), [r.error for r in results]
+
+
+def test_a_held_lock_fails_the_query_instead_of_blocking_forever(connector, monkeypatch) -> None:
+    """The waiter is bounded even when nothing bounds the holder.
+
+    With `CONNECTOR_STATEMENT_TIMEOUT_SECONDS = 0` a query may run unbounded, and
+    every later query on the connector would queue behind it on a pool thread.
+    """
+    c, conn = connector
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("nlqueries.connectors.redshift._LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS", 0.05)
+
+    c._txn_lock.acquire()  # stand in for a query still running
+    try:
+        result = c.execute_query("SELECT 1")
+    finally:
+        c._txn_lock.release()
+
+    assert result.error is not None and "busy" in result.error
+    assert conn.statements == [], "the query ran without holding the lock"
+
+
+def test_the_lock_is_released_after_a_failed_query(connector) -> None:
+    c, conn = connector
+
+    def boom(_sql: str) -> None:
+        raise RuntimeError("query failed")
+
+    cur = _Cursor(conn.statements)
+    cur.execute = boom  # type: ignore[method-assign]
+    conn.cursor = lambda: cur  # type: ignore[method-assign]
+
+    assert c.execute_query("SELECT 1").error is not None
+    assert c._txn_lock.acquire(timeout=0.5), "the lock was kept after the query failed"
+    c._txn_lock.release()
 
 
 class TestTheSocketBudget:

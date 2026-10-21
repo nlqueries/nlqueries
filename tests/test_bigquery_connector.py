@@ -768,3 +768,111 @@ def test_extract_query_history_says_why_when_the_view_is_not_accessible():
     assert "JOBS_BY_PROJECT" in str(err.value)
     assert "Access Denied" in str(err.value)
     assert "bigquery.jobs.listAll" in str(err.value)
+
+
+def _history_params(params) -> dict:
+    return {p.name: p.value for p in params}
+
+
+def test_history_is_limited_to_jobs_that_read_the_configured_dataset():
+    """JOBS_BY_PROJECT lists every job in the project. A connector scoped to one
+    dataset learned queries written against all the others."""
+    connector, _ = _connector_with_mock_client()
+
+    with patch.object(BigQueryConnector, "_query", return_value=[]) as mock_query:
+        connector.extract_query_history(days=30)
+
+    sql_used = mock_query.call_args[0][1]
+    assert "UNNEST(referenced_tables)" in sql_used
+    assert "ref.dataset_id = @history_dataset" in sql_used
+    assert "ref.project_id = @history_project" in sql_used
+    # Bound, never written into the text.
+    assert "analytics" not in sql_used
+    assert _history_params(mock_query.call_args.kwargs["params"]) == {
+        "history_project": "acme-prod",
+        "history_dataset": "analytics",
+    }
+
+
+def test_a_dataset_in_another_project_is_matched_on_that_project():
+    connector, _ = _connector_with_mock_client()
+    connector._dataset_id = "shared-data.sales"
+
+    with patch.object(BigQueryConnector, "_query", return_value=[]) as mock_query:
+        connector.extract_query_history(days=30)
+
+    assert _history_params(mock_query.call_args.kwargs["params"]) == {
+        "history_project": "shared-data",
+        "history_dataset": "sales",
+    }
+
+
+def test_without_a_dataset_history_covers_the_project():
+    """No dataset_id means the connector covers every dataset, and so does its
+    history -- the behaviour before the filter existed."""
+    connector, _ = _connector_with_mock_client()
+    connector._dataset_id = None
+
+    with patch.object(BigQueryConnector, "_query", return_value=[]) as mock_query:
+        connector.extract_query_history(days=30)
+
+    assert "referenced_tables" not in mock_query.call_args[0][1]
+    assert not mock_query.call_args.kwargs["params"]
+
+
+def test_query_binds_parameters_on_the_job():
+    from google.cloud import bigquery
+
+    client = MagicMock()
+    client.query.return_value.result.return_value = []
+    params = [bigquery.ScalarQueryParameter("x", "STRING", "analytics")]
+
+    BigQueryConnector._query(client, "SELECT @x", params=params)
+
+    job_config = client.query.call_args.kwargs["job_config"]
+    assert job_config.query_parameters == params
+
+
+# ---------------------------------------------------------------------------
+# BIGQUERY_MAX_BYTES_BILLED
+# ---------------------------------------------------------------------------
+
+
+def test_the_job_carries_the_bytes_billed_cap_when_set(monkeypatch):
+    monkeypatch.setattr(config, "BIGQUERY_MAX_BYTES_BILLED", 10 * 1024**3)
+    connector, client = _mock_client_for_timeout()
+
+    connector.execute_query("SELECT 1")
+
+    job_config = client.query.call_args.kwargs["job_config"]
+    assert int(job_config.maximum_bytes_billed) == 10 * 1024**3
+
+
+def test_no_cap_when_unset(monkeypatch):
+    monkeypatch.setattr(config, "BIGQUERY_MAX_BYTES_BILLED", None)
+    connector, client = _mock_client_for_timeout()
+
+    connector.execute_query("SELECT 1")
+
+    assert client.query.call_args.kwargs["job_config"].maximum_bytes_billed is None
+
+
+class TestTheBytesBilledSetting:
+    """Read from the environment. A cap whose absence means "no cap" must not
+    quietly disappear on a typo, so a bad value is an error."""
+
+    @pytest.mark.parametrize(("raw", "expected"), [(None, None), ("", None), ("1000", 1000)])
+    def test_parsing(self, monkeypatch, raw, expected):
+        if raw is None:
+            monkeypatch.delenv("BIGQUERY_MAX_BYTES_BILLED", raising=False)
+        else:
+            monkeypatch.setenv("BIGQUERY_MAX_BYTES_BILLED", raw)
+
+        assert config._optional_positive_int("BIGQUERY_MAX_BYTES_BILLED") == expected
+
+    @pytest.mark.parametrize("raw", ["10GB", "0", "-5", "1.5"])
+    def test_a_bad_value_is_refused(self, monkeypatch, raw):
+        monkeypatch.setenv("BIGQUERY_MAX_BYTES_BILLED", raw)
+
+        with pytest.raises(ValueError, match="BIGQUERY_MAX_BYTES_BILLED"):
+            config._optional_positive_int("BIGQUERY_MAX_BYTES_BILLED")

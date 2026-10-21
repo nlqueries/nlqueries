@@ -354,3 +354,55 @@ class TestPlanIsNoneForBigqueryDialect:
         )
 
         assert result.warnings == []
+
+
+# ---------------------------------------------------------------------------
+# The statement is checked before EXPLAIN ANALYZE runs it
+# ---------------------------------------------------------------------------
+
+
+class TestThePolicyIsCheckedBeforeExplain:
+    """`EXPLAIN ANALYZE` executes the statement it wraps, and the wrapper is not
+    a query the policy would pass, so the statement inside is checked on its own
+    first. Nothing in `analyze_query` knows where the SQL came from."""
+
+    def test_a_refused_statement_is_never_explained(self) -> None:
+        connector = _make_connector(_make_explain_result(_seq_scan_plan()))
+
+        result = analyze_query(
+            sql="WITH gone AS (DELETE FROM orders RETURNING *) SELECT count(*) FROM gone",
+            dialect="postgres",
+            execution_time_ms=3000,
+            connector=connector,
+        )
+
+        connector.execute_query.assert_not_called()
+        assert result.plan is None
+        assert result.warnings == []
+
+    def test_a_second_statement_is_never_explained(self) -> None:
+        connector = _make_connector(_make_explain_result(_seq_scan_plan()))
+
+        analyze_query(
+            sql="SELECT 1; DROP TABLE orders",
+            dialect="postgresql",
+            execution_time_ms=3000,
+            connector=connector,
+        )
+
+        connector.execute_query.assert_not_called()
+
+    def test_an_allowed_statement_is_still_explained(self) -> None:
+        connector = _make_connector(_make_explain_result(_seq_scan_plan()))
+
+        result = analyze_query(
+            sql="SELECT * FROM orders WHERE status = 'active'",
+            dialect="postgres",
+            execution_time_ms=3000,
+            connector=connector,
+        )
+
+        connector.execute_query.assert_called_once_with(
+            "EXPLAIN (ANALYZE, FORMAT JSON) SELECT * FROM orders WHERE status = 'active'"
+        )
+        assert result.plan is not None

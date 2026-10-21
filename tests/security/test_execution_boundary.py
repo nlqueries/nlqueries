@@ -161,26 +161,25 @@ def test_the_cli_will_not_run_sql_the_validator_rejected() -> None:
     )
 
 
-def test_the_cli_does_reach_the_connector_when_the_sql_is_valid() -> None:
-    """The control for the test above, which asserts a negative.
+def test_the_cli_does_not_execute_sql_itself_even_when_it_is_valid() -> None:
+    """The orchestrator executes; the command only reports what it returned.
 
-    "Nothing was executed" is also what a harness that never reached a connector
-    at all produces — a substituted class the CLI does not resolve, a stubbed
-    helper that makes it return early — and the assertion cannot tell the two
-    apart. Verified: with the connector registered under a db-type the CLI does
-    not ask for, the refusal test still passes, proving it alone measures
-    nothing about resolution.
+    The command used to run the statement a second time whenever the result
+    came back with no rows object, on a connector it opened directly -- around
+    `open_connector_for_agent` and whatever is wrapped around it for a request.
+    `sql_result is None` is also the orchestrator declining to run a statement,
+    so that fallback could run what the orchestrator had held back.
 
-    So the same harness is run with the statement accepted, and the connector
-    must see it. This is also what holds the CLI's resolution honest: it reaches
-    a class substituted in ``CONNECTOR_REGISTRY``, through the seam rather than
-    by reading the registry itself.
+    This asserts a negative through the same harness that, before the fallback
+    was removed, did reach the connector and recorded the statement -- this test
+    failed then with `[_SQL]`, which is what shows the harness is not passing
+    for want of reaching a connector.
     """
     executed = _statements_the_cli_executed(_SQL, sql_is_valid=True)
 
-    assert executed == [_SQL], (
-        "the CLI did not execute SQL the validator accepted, so the refusal test "
-        "beside this one is passing without reaching a connector"
+    assert executed == [], (
+        "the CLI executed SQL itself; execution belongs to the orchestrator, "
+        "behind open_connector_for_agent"
     )
 
 

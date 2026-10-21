@@ -93,7 +93,8 @@ def test_the_libpq_drivers_are_recognised(engine_args, url: str) -> None:
     [
         "mysql+pymysql://user:pw@db.internal/shop",  # different parameter names
         "postgresql+pg8000://user:pw@db.internal/shop",  # PostgreSQL, but ssl_context
-        "sqlite:////data/db.sqlite",  # no network at all
+        # A sqlite URL is refused before TLS is considered; see
+        # test_sqlalchemy_connector.py::test_sqlite_and_duckdb_urls_are_refused.
     ],
 )
 def test_a_setting_that_cannot_be_applied_is_refused_not_ignored(engine_args, url: str) -> None:
@@ -106,9 +107,10 @@ def test_a_setting_that_cannot_be_applied_is_refused_not_ignored(engine_args, ur
 
 def test_those_drivers_still_work_without_tls_settings(engine_args) -> None:
     """The refusal is scoped to settings that were actually configured. A MySQL
-    or SQLite URL with no TLS keys is untouched, as it was before."""
+    URL with no TLS keys gets no TLS arguments; `local_infile` is the MySQL
+    hardening in test_sqlalchemy_connector.py, not TLS."""
     SQLAlchemyConnector().connect({"url": "mysql+pymysql://user:pw@db.internal/shop"})
-    assert engine_args["connect_args"] == {}
+    assert engine_args["connect_args"] == {"local_infile": 0}
 
 
 def test_a_root_certificate_alone_selects_verify_full(engine_args) -> None:

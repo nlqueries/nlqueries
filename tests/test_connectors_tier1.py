@@ -356,7 +356,12 @@ class TestDuckDBConnector:
         sandbox goes on regardless of which database it is."""
         mock_duckdb = MagicMock()
         with patch.dict(sys.modules, {"duckdb": mock_duckdb}):
-            from nlqueries.connectors.duckdb import _SANDBOX, DuckDBConnector
+            from nlqueries.connectors.duckdb import (
+                _SANDBOX,
+                _SANDBOX_STATEMENTS,
+                DuckDBConnector,
+                _private_temp_directory,
+            )
 
             connector = granted(DuckDBConnector())
             connector.connect({})
@@ -366,8 +371,10 @@ class TestDuckDBConnector:
                 # it is private to this process and gone when it exits, so
                 # there is nothing in it to protect.
                 read_only=False,
-                config=_SANDBOX,
+                config={**_SANDBOX, "temp_directory": _private_temp_directory()},
             )
+            executed = [c.args[0] for c in mock_duckdb.connect.return_value.execute.call_args_list]
+            assert executed == list(_SANDBOX_STATEMENTS)
             assert connector._database == ":memory:"
 
     def test_test_connection_true(self) -> None:

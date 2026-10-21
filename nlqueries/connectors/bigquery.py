@@ -325,8 +325,30 @@ class BigQueryConnector(DatabaseConnector):
         accessible — e.g. the caller's IAM role lacks
         ``bigquery.jobs.listAll``/``bigquery.resourceViewer`` at the project
         level required to read project-wide job history.
+
+        With a ``dataset_id`` configured, only jobs that read a table in that
+        dataset are returned. The view lists every job in the project, so
+        without the filter a connector scoped to one dataset learned queries
+        written against all the others. With no ``dataset_id`` the connector
+        covers the whole project, and so does its history.
         """
         client = self._require_client()
+
+        dataset_filter = ""
+        params: list[Any] = []
+        scope = self._history_scope()
+        if scope is not None:
+            project, dataset = scope
+            dataset_filter = """
+                  AND EXISTS (
+                      SELECT 1 FROM UNNEST(referenced_tables) AS ref
+                      WHERE ref.project_id = @history_project
+                        AND ref.dataset_id = @history_dataset
+                  )"""
+            params = [
+                bigquery.ScalarQueryParameter("history_project", "STRING", project),
+                bigquery.ScalarQueryParameter("history_dataset", "STRING", dataset),
+            ]
 
         try:
             rows = self._query(
@@ -343,11 +365,12 @@ class BigQueryConnector(DatabaseConnector):
                   AND statement_type = 'SELECT'
                   AND state = 'DONE'
                   AND error_result IS NULL
-                  AND query IS NOT NULL
+                  AND query IS NOT NULL{dataset_filter}
                 GROUP BY query
                 ORDER BY job_count DESC
-                LIMIT {limit}
+                LIMIT {int(limit)}
                 """,
+                params=params,
             )
         except Exception as exc:
             raise QueryHistoryUnavailable(
@@ -371,10 +394,30 @@ class BigQueryConnector(DatabaseConnector):
             for row in rows
         ]
 
+    def _history_scope(self) -> tuple[str, str] | None:
+        """``(project, dataset)`` that query history is limited to, or None.
+
+        A ``dataset_id`` may be written ``project.dataset`` to name a dataset in
+        another project, as ``client.dataset`` and ``get_dataset`` accept; a
+        bare one belongs to the connector's own project.
+        """
+        if not self._dataset_id:
+            return None
+        project, _, dataset = str(self._dataset_id).rpartition(".")
+        return (project or str(self._project_id or "")), dataset
+
     @staticmethod
-    def _query(client: Any, sql: str) -> list[dict[str, Any]]:
-        """Run ``sql`` as a query job and return rows as ``{column_name: value}`` dicts."""
-        result = client.query(sql).result()
+    def _query(client: Any, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+        """Run ``sql`` as a query job and return rows as ``{column_name: value}`` dicts.
+
+        *params* are bound as named query parameters rather than written into
+        the text.
+        """
+        if params:
+            job = client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params))
+        else:
+            job = client.query(sql)
+        result = job.result()
         return [dict(row.items()) for row in result]
 
     # ------------------------------------------------------------------
@@ -434,6 +477,11 @@ class BigQueryConnector(DatabaseConnector):
             # we say we support. Behaviour is identical either way.
             if effective_timeout is not None and effective_timeout > 0:
                 job_config.job_timeout_ms = int(effective_timeout * 1000)
+            # A cost ceiling, enforced by BigQuery before the job runs: a job
+            # that would bill more fails without scanning anything. Unset
+            # means no cap, as before the setting existed.
+            if config.BIGQUERY_MAX_BYTES_BILLED is not None:
+                job_config.maximum_bytes_billed = config.BIGQUERY_MAX_BYTES_BILLED
             query_job = client.query(sql, job_config=job_config)
             result = query_job.result()
             elapsed_ms = (time.perf_counter() - start) * 1000
