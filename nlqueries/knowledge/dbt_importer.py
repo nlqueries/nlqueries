@@ -101,10 +101,21 @@ def _model_table_name(node: dict[str, Any]) -> str:
     return str(node.get("name") or "").strip()
 
 
-def _description(raw: Any) -> str:
-    """A dbt description, stripped and cut to :data:`MAX_DESCRIPTION_CHARS`."""
+#: Appended to a description that was cut, inside the cap, so the model and a
+#: reader of the knowledge base can tell a cut description from a whole one.
+_CUT_MARKER = "..."
+
+
+def _description(raw: Any) -> tuple[str, bool]:
+    """A dbt description, stripped and cut to :data:`MAX_DESCRIPTION_CHARS`.
+
+    Paired with whether it was cut. A cut description ends with
+    :data:`_CUT_MARKER`, counted within the cap.
+    """
     text = str(raw or "").strip()
-    return text[:MAX_DESCRIPTION_CHARS].rstrip()
+    if len(text) <= MAX_DESCRIPTION_CHARS:
+        return text, False
+    return text[: MAX_DESCRIPTION_CHARS - len(_CUT_MARKER)].rstrip() + _CUT_MARKER, True
 
 
 def parse_dbt_models(manifest: dict[str, Any] | Path | str) -> list[DbtTableDoc]:
@@ -123,15 +134,26 @@ def parse_dbt_models(manifest: dict[str, Any] | Path | str) -> list[DbtTableDoc]
         table = _model_table_name(node)
         if not table:
             continue
-        description = _description(node.get("description"))
+        description, cut = _description(node.get("description"))
         columns: dict[str, str] = {}
         for col_name, col in (node.get("columns") or {}).items():
             if isinstance(col, dict):
-                desc = _description(col.get("description"))
+                desc, col_cut = _description(col.get("description"))
+                cut = cut or col_cut
                 if desc:
                     columns[str(col_name)] = desc
+        schema = str(node.get("schema") or "").strip()
+        if cut:
+            # Once per model, not per column: a model documented at length
+            # usually is so throughout, and one line names it.
+            logger.warning(
+                "dbt model %s has descriptions longer than %d characters; they are "
+                "cut and end with %r.",
+                f"{schema}.{table}" if schema else table,
+                MAX_DESCRIPTION_CHARS,
+                _CUT_MARKER,
+            )
         if description or columns:
-            schema = str(node.get("schema") or "").strip()
             models.append(
                 DbtTableDoc(description=description, columns=columns, name=table, schema=schema)
             )

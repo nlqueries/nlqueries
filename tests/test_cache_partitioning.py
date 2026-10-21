@@ -32,9 +32,9 @@ import pytest
 from nlqueries.cache.envelope import CacheBinding, sign, verify
 from nlqueries.cache.semantic_cache import (
     SemanticCache,
+    _answer_point_id,
     _context_of,
     _mask_entities,
-    _normalize_question,
     _payload_matches,
     _point_id_for_question,
 )
@@ -113,7 +113,7 @@ def _tier0_client(context: dict[str, str] | None) -> MagicMock:
     client = _client()
     point = MagicMock()
     point.payload = _entry(context)
-    point.id = _point_id_for_question(_normalize_question(QUESTION))
+    point.id = _answer_point_id(QUESTION)
     client.retrieve.return_value = [point]
     return client
 
@@ -844,7 +844,7 @@ def test_the_mismatch_warning_fires_once_and_omits_the_question(
     victim = "how many refunds were issued"
     point = MagicMock()
     point.payload = _entry(None)  # signed for QUESTION, not for `victim`
-    point.id = _point_id_for_question(_normalize_question(victim))
+    point.id = _answer_point_id(victim)
     _MISMATCHED_POINTS_LOGGED.discard(point.id)
 
     client = _client()
@@ -882,7 +882,7 @@ def test_tier0_refuses_an_entry_stored_under_another_question() -> None:
     stolen = _entry(None)  # genuinely signed, for QUESTION rather than `victim`
     point = MagicMock()
     point.payload = stolen
-    point.id = _point_id_for_question(_normalize_question(victim))
+    point.id = _answer_point_id(victim)
 
     client = _client()
     client.retrieve.return_value = [point]

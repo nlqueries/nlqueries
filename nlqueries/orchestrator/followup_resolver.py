@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from nlqueries.llm import OutputBudgetExhausted, get_llm_client, output_budget
@@ -51,6 +52,13 @@ _FOLLOWUP_SIGNALS: tuple[str, ...] = (
     "how about",
 )
 
+#: The signals as whole words. Matched as substrings, "it" was found in "with",
+#: "profit" and "items", so ordinary questions asked mid-conversation went to
+#: the resolver and came back rephrased.
+_FOLLOWUP_SIGNAL_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(signal) for signal in _FOLLOWUP_SIGNALS) + r")\b"
+)
+
 _SYSTEM_PROMPT = """\
 You are a follow-up question resolver for a natural-language query engine.
 
@@ -71,8 +79,7 @@ Respond with ONLY a single JSON object on one line — no other text:
 
 
 def _has_followup_signal(question: str) -> bool:
-    q_lower = question.lower()
-    return any(signal in q_lower for signal in _FOLLOWUP_SIGNALS)
+    return _FOLLOWUP_SIGNAL_RE.search(question.lower()) is not None
 
 
 def _format_history_for_prompt(history: list[ConversationTurn], max_turns: int = 3) -> str:

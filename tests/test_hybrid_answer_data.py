@@ -61,8 +61,9 @@ def _table(**overrides: Any) -> dict[str, Any]:
 
 
 def test_the_executed_rows_are_what_the_answer_carries() -> None:
-    result = _extract_sql_query_result(_chunk(sql_table=_table()))
+    result, executed = _extract_sql_query_result(_chunk(sql_table=_table()))
     assert result is not None
+    assert executed is True
     assert result.columns == ["region", "revenue"]
     assert result.rows == [["EMEA", 120], ["APAC", 80]]
     assert result.row_count == 2
@@ -73,10 +74,11 @@ def test_the_executed_rows_are_what_the_answer_carries() -> None:
 
 def test_truncation_survives_into_the_hybrid_answer() -> None:
     """The flags that could not previously exist on this path at all."""
-    result = _extract_sql_query_result(
+    result, executed = _extract_sql_query_result(
         _chunk(sql_table=_table(row_count=99_999, truncated=True, truncation_reason="row_budget"))
     )
     assert result is not None
+    assert executed is True
     assert result.truncated is True
     assert result.truncation_reason == "row_budget"
     assert result.row_count == 99_999, "the true total, not the number of rows carried"
@@ -84,8 +86,9 @@ def test_truncation_survives_into_the_hybrid_answer() -> None:
 
 def test_a_complete_result_is_not_reported_as_truncated() -> None:
     """Canary for the above: the flags must track the frame, not default to set."""
-    result = _extract_sql_query_result(_chunk(sql_table=_table()))
+    result, executed = _extract_sql_query_result(_chunk(sql_table=_table()))
     assert result is not None
+    assert executed is True
     assert result.truncated is False
     assert result.truncation_reason is None
 
@@ -93,8 +96,9 @@ def test_a_complete_result_is_not_reported_as_truncated() -> None:
 def test_the_statement_is_still_returned_when_nothing_executed() -> None:
     """Generate-only, or an execution the policy refused: `sql_table` is empty
     and the synthesis prompt is better with the statement than with nothing."""
-    result = _extract_sql_query_result(_chunk(execution_mode="generate_only"))
+    result, executed = _extract_sql_query_result(_chunk(execution_mode="generate_only"))
     assert result is not None
+    assert executed is False
     assert result.columns == ["sql_query"]
     assert result.rows == [["SELECT region, revenue FROM sales"]]
     assert result.error is None
@@ -103,28 +107,33 @@ def test_the_statement_is_still_returned_when_nothing_executed() -> None:
 def test_an_execution_failure_is_not_reported_as_nothing_having_run() -> None:
     """`sql_table` is `{"error": ...}` with no columns when the connector raised.
     Falling back to the statement-only table is right; losing the error is not."""
-    result = _extract_sql_query_result(
+    result, executed = _extract_sql_query_result(
         _chunk(sql_table={"error": 'relation "sales" does not exist'})
     )
     assert result is not None
+    assert executed is False
     assert result.columns == ["sql_query"]
     assert result.error == 'relation "sales" does not exist'
 
 
 def test_a_validation_failure_still_reports_its_reason() -> None:
-    result = _extract_sql_query_result(
+    result, executed = _extract_sql_query_result(
         _chunk(is_valid=False, validation_error="statement is not a SELECT")
     )
     assert result is not None
+    assert executed is False
     assert result.error == "statement is not a SELECT"
 
 
 def test_a_chunk_that_is_not_sql_or_not_json_yields_nothing() -> None:
-    assert _extract_sql_query_result([]) is None
-    assert _extract_sql_query_result(["{not json"]) is None
-    assert _extract_sql_query_result([json.dumps({"type": "answer", "text": "hi"})]) is None
-    assert _extract_sql_query_result([json.dumps({"type": "sql", "sql": ""})]) is None
-    assert _extract_sql_query_result([json.dumps(["not", "a", "mapping"])]) is None
+    assert _extract_sql_query_result([]) == (None, False)
+    assert _extract_sql_query_result(["{not json"]) == (None, False)
+    assert _extract_sql_query_result([json.dumps({"type": "answer", "text": "hi"})]) == (
+        None,
+        False,
+    )
+    assert _extract_sql_query_result([json.dumps({"type": "sql", "sql": ""})]) == (None, False)
+    assert _extract_sql_query_result([json.dumps(["not", "a", "mapping"])]) == (None, False)
 
 
 def test_the_whole_chain_stays_bounded_and_keeps_the_reason() -> None:
@@ -148,7 +157,7 @@ def test_the_whole_chain_stays_bounded_and_keeps_the_reason() -> None:
         error=None,
     )
     emitted = sql_table_chunk(answer)  # what the SQL sub-agent puts on the wire
-    carried = _extract_sql_query_result([json.dumps(_chunk_payload(emitted))])
+    carried, _ = _extract_sql_query_result([json.dumps(_chunk_payload(emitted))])
     assert carried is not None
 
     final = sql_table_chunk(carried, cap=False)  # what the hybrid branch emits
@@ -217,7 +226,7 @@ def _drive_hybrid(sql_tokens: list[str]) -> tuple[MagicMock, list[str]]:
         # produces carries the table the live path would put on it. A mock that
         # returns nothing here makes every assertion about `sql_table` an
         # assertion about the mock.
-        sql_table=_extract_sql_query_result(sql_tokens),
+        sql_table=_extract_sql_query_result(sql_tokens)[0],
         document_answer="excerpts",
         citations=[],
         merged_answer="EMEA billed 120 and APAC 80.",

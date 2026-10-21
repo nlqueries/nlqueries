@@ -568,6 +568,26 @@ def test_dbt_descriptions_are_capped() -> None:
     assert len(doc.columns["id"]) == MAX_DESCRIPTION_CHARS
 
 
+def test_a_cut_dbt_description_is_marked_and_logged_once_per_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manifest = _manifest(("analytics", "orders", "x" * 5000), ("analytics", "users", "Users."))
+    manifest["nodes"]["model.p.analytics_orders"]["columns"]["id"]["description"] = "y" * 5000
+    with caplog.at_level("WARNING", logger="nlqueries.knowledge.dbt_importer"):
+        docs = parse_dbt_docs(manifest)
+    assert docs["orders"].description.endswith("...")
+    assert docs["orders"].columns["id"].endswith("...")
+    assert len(docs["orders"].description) == MAX_DESCRIPTION_CHARS
+    # Whole descriptions, including one exactly at the cap, are left as they are.
+    assert docs["users"].description == "Users."
+    assert parse_dbt_docs(_manifest(("a", "t", "z" * MAX_DESCRIPTION_CHARS)))["t"].description == (
+        "z" * MAX_DESCRIPTION_CHARS
+    )
+    cut = [r for r in caplog.records if "longer than" in r.getMessage()]
+    assert len(cut) == 1
+    assert "analytics.orders" in cut[0].getMessage()
+
+
 def test_dbt_models_are_matched_by_schema_and_name() -> None:
     models = parse_dbt_models(
         _manifest(("analytics", "orders", "Analytics orders."), ("staging", "orders", "Raw."))
@@ -957,6 +977,52 @@ def test_two_distinct_cut_rules_are_each_logged(caplog: pytest.LogCaptureFixture
         _build_business_context_section(kb)
         _build_business_context_section(kb)
     assert len([r for r in caplog.records if "is cut to" in r.getMessage()]) == 2
+
+
+def test_a_cut_glossary_definition_is_logged_once_per_entry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from nlqueries.orchestrator import prompt_assembly
+
+    prompt_assembly._CUT_RULES_LOGGED.clear()
+    long_definition = "Revenue net of refunds and credits. " * 40  # about 1,400 characters
+    kb = {
+        "business_context": {
+            "glossary": [
+                {"term": "net revenue", "definition": long_definition},
+                {"term": "gross revenue", "definition": "x " * 600},
+                {"term": "order", "definition": "A purchase."},
+            ]
+        }
+    }
+    with caplog.at_level("WARNING", logger="nlqueries.orchestrator.prompt_assembly"):
+        _build_business_context_section(kb)
+        _build_business_context_section(kb)
+    cut = [r for r in caplog.records if "glossary definition" in r.getMessage()]
+    assert len(cut) == 2
+    assert "is cut to 1000" in cut[0].getMessage()
+    assert "Revenue net of refunds and credits." in cut[0].getMessage()
+
+
+def test_a_rule_and_a_definition_with_the_same_text_are_each_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from nlqueries.orchestrator import prompt_assembly
+
+    prompt_assembly._CUT_RULES_LOGGED.clear()
+    text = "Refunds count in the month issued. " * 40
+    kb = {
+        "business_context": {
+            "glossary": [{"term": "refund", "definition": text}],
+            "rules": [text],
+        }
+    }
+    with caplog.at_level("WARNING", logger="nlqueries.orchestrator.prompt_assembly"):
+        _build_business_context_section(kb)
+    messages = [r.getMessage() for r in caplog.records if "is cut to" in r.getMessage()]
+    assert len(messages) == 2
+    assert any("glossary definition" in m for m in messages)
+    assert any("business rule" in m for m in messages)
 
 
 def test_a_document_answer_schedules_no_cache_write() -> None:

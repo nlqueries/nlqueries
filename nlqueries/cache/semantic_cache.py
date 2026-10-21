@@ -636,6 +636,24 @@ def _point_id_for_question(question: str, context: dict[str, str] | None = None)
     return int(digest[:16], 16)
 
 
+#: Bumped whenever `_normalize_question` changes what it produces, and folded
+#: into every answer entry's point id by `_answer_point_id`. Without it a change
+#: to the normalisation leaves entries written under the old one on ids that a
+#: different question now hashes to: "total > 100" was stored at the id of
+#: "total 100" before operators were kept, and asking "total 100" after the
+#: upgrade landed on it. The question check refused the entry, but logged it as
+#: a collection written to directly, which it was not. With the version in the
+#: hashed string the old and new ids are drawn from disjoint inputs -- a
+#: normalised question never contains a newline -- so they cannot coincide.
+_NORMALIZATION_VERSION = 2
+
+
+def _answer_point_id(question: str, context: dict[str, str] | None = None) -> int:
+    """The Tier 0 point id for *question*: its normalised text, versioned."""
+    normalized = _normalize_question(question)
+    return _point_id_for_question(f"normalization-v{_NORMALIZATION_VERSION}\n{normalized}", context)
+
+
 #: Payload key holding a digest of the entry's cache context. Written by `put()`
 #: so `get()` can push the context into the Qdrant query instead of filtering
 #: client-side. Reserved, so it is never mistaken for caller context itself --
@@ -1155,7 +1173,7 @@ class SemanticCache:
         # tiers are independent, and `"1,2"` has to leave 1 and 2 working.
         if 0 in enabled:
             normalized = _normalize_question(question)
-            tier0_id = _point_id_for_question(normalized, payload_filter)
+            tier0_id = _answer_point_id(question, payload_filter)
             with contextlib.suppress(Exception):
                 tier0_hits = client.retrieve(
                     collection_name=self._collection,
@@ -1388,8 +1406,7 @@ class SemanticCache:
         _known_collections.add(self._collection)
 
         # Answer entry (Tier 0 exact-match + Tier 1 cosine)
-        normalized = _normalize_question(question)
-        answer_id = _point_id_for_question(normalized, payload_extra)
+        answer_id = _answer_point_id(question, payload_extra)
         answer_vector = embed_text(question)
 
         if self._binding is None:

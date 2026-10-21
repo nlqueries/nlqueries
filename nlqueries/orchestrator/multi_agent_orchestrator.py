@@ -141,8 +141,11 @@ def _executed_table(chunk: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
+def _extract_sql_query_result(tokens: list[str]) -> tuple[QueryResult | None, bool]:
     """Return the SQL sub-agent's executed result, or the statement if none ran.
+
+    Paired with whether a query ran, so a caller that needs to tell the two
+    apart does not have to re-read the chunk to find out.
 
     This used to read only the ``sql`` key and build a one-column, one-row table
     from the statement text, discarding the rows the sub-agent had already
@@ -160,7 +163,7 @@ def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
     """
     chunk = _final_sql_chunk(tokens)
     if chunk is None:
-        return None
+        return None, False
 
     table = _executed_table(chunk)
     if table is not None:
@@ -172,7 +175,7 @@ def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
             error=table.get("error"),
             truncated=bool(table.get("truncated")),
             truncation_reason=table.get("truncation_reason"),
-        )
+        ), True
 
     # The raw value, not `_executed_table`'s: that returns None precisely when
     # the table carries an error and no columns, which is the case this reads.
@@ -189,6 +192,30 @@ def _extract_sql_query_result(tokens: list[str]) -> QueryResult | None:
         row_count=1,
         execution_time_ms=0.0,
         error=error,
+    ), False
+
+
+#: Agent and error types already reported as a failed cache lookup.
+_CACHE_LOOKUP_FAILURES_LOGGED: set[str] = set()
+
+
+def _report_cache_lookup_failure(agent_id: str, exc: BaseException) -> None:
+    """Log a failed cache lookup at WARNING the first time, DEBUG after that.
+
+    Once per agent and error type, like the search-failure warning in
+    `semantic_cache`, because the condition persists: an unreachable cache fails
+    the same way on every question, and a warning per question buries the logs
+    without saying anything the first one did not.
+    """
+    key = f"{agent_id}:{type(exc).__name__}"
+    if key in _CACHE_LOOKUP_FAILURES_LOGGED:
+        _log.debug("Semantic cache lookup failed; treating it as a miss: %s", exc)
+        return
+    _CACHE_LOOKUP_FAILURES_LOGGED.add(key)
+    _log.warning(
+        "Semantic cache lookup failed; treating it as a miss. Further failures of "
+        "this kind for this agent are logged at DEBUG: %s",
+        exc,
     )
 
 
@@ -356,7 +383,9 @@ def _merge_hybrid(
     sql_tokens: list[str],
     citations: list[Citation] | None,
 ) -> HybridQueryResult:
-    sql_query_result = _extract_sql_query_result(sql_tokens) if sql_tokens else None
+    # Whether a query ran: when not, the result is the statement-only fallback,
+    # and its one cell is the generated statement rather than data.
+    sql_query_result, executed = _extract_sql_query_result(sql_tokens)
 
     doc_retrieval: DocumentRetrievalResult | None = None
     if citations:
@@ -366,10 +395,6 @@ def _merge_hybrid(
             collection=f"doc_{agent_id}_chunks",
         )
 
-    # Whether a query ran: when not, the result is the statement-only fallback,
-    # and its one cell is the generated statement rather than data.
-    final_chunk = _final_sql_chunk(sql_tokens) if sql_tokens else None
-    executed = final_chunk is not None and _executed_table(final_chunk) is not None
     return merge_results(
         question,
         sql_result=sql_query_result,
@@ -610,9 +635,11 @@ class MultiAgentOrchestrator:
         # Bound to this agent, connector, dialect, schema and policy version, so a
         # forged or stale entry does not verify and is treated as a miss.
         _cache = SemanticCache(agent_id, binding=binding_for_agent(agent_id, dialect))
-        # Use caller-supplied cache_key when provided (e.g. run_query passes
-        # the original pre-resolution question so repeated identical queries
-        # always hit the same cache entry regardless of LLM rewrite variance).
+        # Use caller-supplied cache_key when provided. run_query passes the
+        # resolved question, the same text it hands in as *question*, so the key
+        # and the question agree. The remaining reason to override is a caller
+        # that resolves follow-ups out of band and wants the entry keyed on that
+        # resolution rather than on the text it passes here.
         _cache_lookup_key = cache_key if cache_key is not None else effective_question
 
         def _embed_and_lookup() -> tuple[list[float] | None, CacheEntry | None]:
@@ -630,7 +657,7 @@ class MultiAgentOrchestrator:
             try:
                 cached = _cache.get(_cache_lookup_key, vector=vector, payload_filter=cache_context)
             except Exception as exc:  # noqa: BLE001
-                _log.warning("Semantic cache lookup failed; treating it as a miss: %s", exc)
+                _report_cache_lookup_failure(agent_id, exc)
                 cached = None
             return vector, cached
 

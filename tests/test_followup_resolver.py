@@ -67,6 +67,31 @@ def test_no_signal_skips_llm() -> None:
     assert result.reasoning == "No follow-up references detected."
 
 
+@pytest.mark.parametrize("question", ["profit with tax", "List the items by region"])
+def test_a_signal_inside_another_word_is_not_a_followup(question: str) -> None:
+    """A signal inside "profit", "with" or "items" does not send the question on."""
+    history = _make_history([("user", "Show me orders"), ("assistant", "Here are the orders.")])
+
+    with patch("nlqueries.orchestrator.followup_resolver.get_llm_client") as mock_get_llm:
+        result = resolve_followup(question, history)
+
+    mock_get_llm.assert_not_called()
+    assert result.is_followup is False
+    assert result.resolved == question
+
+
+@pytest.mark.parametrize("question", ["what about it", "Show me those by month"])
+def test_a_whole_word_signal_is_still_a_followup(question: str) -> None:
+    history = _make_history([("user", "Show me orders"), ("assistant", "Here are the orders.")])
+    llm = _mock_llm({"resolved": "What about orders?", "reasoning": "Resolved."})
+
+    with patch("nlqueries.orchestrator.followup_resolver.get_llm_client", return_value=llm):
+        result = resolve_followup(question, history)
+
+    llm.complete.assert_called_once()
+    assert result.is_followup is True
+
+
 # ---------------------------------------------------------------------------
 # test_pronoun_resolved_with_history
 # ---------------------------------------------------------------------------

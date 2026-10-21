@@ -176,8 +176,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `\n## Business Rules` stays on its table's line instead of opening a
   section. Business rules and glossary definitions are collapsed the same way
   but capped at 1,000 characters, since a rule cut mid-sentence can change its
-  meaning; a rule cut at that cap is logged once per process as a warning
-  naming its start, so the operator can shorten or split it. Sample values are single-quoted with embedded quotes doubled
+  meaning; a rule or glossary definition cut at that cap is logged once per
+  process as a warning naming its start, so the operator can shorten or split it. Sample values are single-quoted with embedded quotes doubled
   (`'O''Brien'`); a sample over 80 characters is left out of the list rather
   than cut, and a complete `values:` list that loses one is shown as
   `samples:`, since it is no longer complete. The SQL prompt's preamble
@@ -223,7 +223,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   it and no other table took that model by schema. Both comparisons ignore
   letter case, so Snowflake's `ORDERS` matches dbt's `orders`, and column
   descriptions are matched the same way (`ORDER_ID` takes `order_id`'s).
-  dbt model and column descriptions are cut to 2,000 characters on import.
+  dbt model and column descriptions are cut to 2,000 characters wherever dbt
+  docs are read (`parse_dbt_docs` and `parse_dbt_models`), so the cap applies
+  to `import-dbt` and to docs passed to `generate_knowledge_base` alike. A cut
+  description ends with `...`, within the 2,000, and each model with a cut
+  description is logged once at WARNING.
 - **Knowledge bases, query capsules and `connectors.yaml` are written privately
   and atomically.** `export-kb` (including the fallback for a connector type
   with no registered class), `import-dbt`, `process-history` and `connect`
@@ -617,12 +621,26 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the text typed, so "and last month?" in one conversation is not answered
   with another conversation's entry. A stored `hit_count` that is not an
   integer is read as 0 instead of raising, and an exception from the cache
-  lookup in `MultiAgentOrchestrator.handle_question` is logged and treated as
-  a miss, so the question is answered instead of failing. **Upgrading:**
-  existing Tier 0 entries whose question contains one of those characters are
-  now keyed differently, so each is a one-time Tier 0 miss and is stored under
-  its new key the next time it is answered. Tiers 1 and 2 are keyed by
-  embedding and are unaffected.
+  lookup in `MultiAgentOrchestrator.handle_question` is treated as a miss, so
+  the question is answered instead of failing. The first such failure for an
+  agent and kind of error is logged at WARNING and later ones at DEBUG, since
+  an unreachable cache fails the same way on every question. **Upgrading:**
+  the Tier 0 point id now includes a version of the normalisation, so an entry
+  stored under the old normalisation is never looked up for a question that
+  now normalises to the same text it used to; each existing Tier 0 entry is a
+  one-time Tier 0 miss and is stored under its new id the next time it is
+  answered. Tiers 1 and 2 are keyed by embedding and are unaffected.
+- **Follow-up detection matches whole words.** The signals that send a
+  question to the follow-up resolver ("it", "that", "filter", "what about"
+  and the rest) were matched inside other words, so "profit with tax" asked
+  mid-conversation read as a follow-up (the "it" in "profit" and "with") and
+  came back rephrased. They now match only as whole words.
+- **The `export-kb` fallback writes sample values `yaml.safe_dump` cannot
+  represent.** A sample value whose type is a subclass of `str`, `int` or
+  `float` (a driver's own string or float type) was kept as it was and made
+  the write fail with a traceback. Every value that is not exactly a `str`,
+  `int`, `float`, `bool` or `None` is now written as its `str()`, as
+  `Decimal` and `UUID` values already were.
 - **A knowledge base built over SQLAlchemy reflection now loads.** The
   generic `sqlalchemy` connector and the `export-kb` fallback took table,
   column, schema and key names from SQLAlchemy's inspector as `quoted_name`, a
