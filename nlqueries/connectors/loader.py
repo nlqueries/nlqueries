@@ -179,11 +179,46 @@ def _listed(connectors: dict[str, Any]) -> str:
     return shown
 
 
+class ConnectorsFileError(ValueError):
+    """The connectors file is not UTF-8, or not valid YAML.
+
+    The message is the byte offset at which decoding failed, or the line number
+    and the parser's description of the problem. PyYAML's own message quotes
+    the offending line, and the codec's names the byte it could not read; in
+    this file that text is as likely as any to hold a password or a URL.
+    A ``ValueError`` so that a writer's existing refusal covers it too.
+    """
+
+    def __init__(self, problem: str) -> None:
+        self.problem = problem
+        super().__init__(f"Failed to read connectors file: {problem}")
+
+
+def yaml_problem(exc: yaml.YAMLError) -> str:
+    """Where a YAML document stopped parsing and why, without quoting it."""
+    if isinstance(exc, yaml.MarkedYAMLError):
+        mark = exc.problem_mark or exc.context_mark
+        problem = exc.problem or exc.context or "it is not valid YAML"
+        return f"line {mark.line + 1}: {problem}" if mark is not None else problem
+    return "it is not valid YAML"
+
+
 def _read_connectors_root() -> Any:
     """The connectors file parsed, with no shape policy applied."""
     if not config.CONNECTORS_FILE.exists():
         return None
-    return yaml.safe_load(config.CONNECTORS_FILE.read_text())
+    try:
+        # UTF-8 whatever the locale: a cp1252 default would read a non-ASCII
+        # password as different characters, and every reader goes through here.
+        return yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        # The offset only: the codec's message names the byte it could not read.
+        raise ConnectorsFileError(
+            f"it is not UTF-8 (the first invalid byte is at offset {exc.start})"
+        ) from None
+    except yaml.YAMLError as exc:
+        # `from None`: the original carries the quoted line in its message.
+        raise ConnectorsFileError(yaml_problem(exc)) from None
 
 
 def _normalised(root: dict[Any, Any]) -> dict[str, Any]:

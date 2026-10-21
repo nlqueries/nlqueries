@@ -284,6 +284,31 @@ For the same reason, the other replies that could name agents follow
 - A call naming an agent that does not exist (`query`, `get_agent_schema`) says
   so and names no other agent. `list_agents` is the way to find them.
 
+When `query` fails, its reply gives the first line of the error and a short
+reference, for example `⚠ SQL execution error: (psycopg.errors.UndefinedTable)
+relation "orders" does not exist (reference 3f9a1c07)`. A driver's error quotes
+what it was sent on the lines after its first: the statement, its parameters,
+sometimes the connection string. Those lines stay out of the reply. The
+`nlqueries.mcp_server.server` logger records the failure with the same
+reference (`[ref 3f9a1c07]`). For an error the database returned, the
+`WARNING` record carries the same first line, and the full error is logged at
+`DEBUG` under that reference only, since a log is often read more widely than
+the connectors file. A failure anywhere else in the query is logged at
+`ERROR`, with the traceback.
+
+A hybrid answer follows the same rule. When its query fails, the SQL part
+says `this query failed:` with the first line of the error only, both in the
+answer returned when the documents found nothing and in the SQL data the model
+is given to write a combined answer.
+
+`list_connectors` reports a connectors file that is not valid YAML by line
+number and problem only, as in `Failed to read connectors file: line 4: mapping
+values are not allowed here`. The parser's own message quotes the line, which
+in that file may hold a password. The file is read as UTF-8 whatever the
+server's locale. One that is not UTF-8, say saved as cp1252, is reported by
+byte offset only, as in `Failed to read connectors file: it is not UTF-8 (the
+first invalid byte is at offset 45)`.
+
 ## Enterprise
 
 nlqueries-enterprise supplies its own authorizer over its tenant tables and

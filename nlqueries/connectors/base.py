@@ -268,6 +268,20 @@ def short_cause(exc: BaseException) -> str:
     return text[:300]
 
 
+def short_error_text(error: str) -> str:
+    """*error* cut down as :func:`short_cause` cuts down an exception.
+
+    For :attr:`QueryResult.error`, which the connectors set to ``str(exc)``, so
+    there is no exception left to pass to ``short_cause``. Its rule applies all
+    the same: the first line names the failure, and the lines after it are
+    where drivers quote what they were sent -- the statement, its parameters, a
+    connection string. ``QueryResult.error`` itself stays whole; this is for
+    the text a person or a model is shown.
+    """
+    first = next((line for line in error.splitlines() if line.strip()), "")
+    return first[:300] or "the database reported an error"
+
+
 class DatabaseConnector(ABC):
     """Abstract base class for all database connectors.
 
