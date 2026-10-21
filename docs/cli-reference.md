@@ -13,7 +13,7 @@ Anywhere a connector ID (`<type>:<host>:<database>` by default — see [connect]
 
 ## connect
 
-Register a database connection. Connection metadata (host, port, database, user) is written to `~/.nlqueries/connectors.yaml` (mode `0600`).
+Register a database connection. Connection metadata (host, port, database, user) is written to `~/.nlqueries/connectors.yaml` (mode `0600`). The file is replaced as a whole on each change: a symlink at that path is replaced by a regular file, not written through.
 
 `connect` tests the connection, then prints the connector ID it registered. By default the ID is `<type>:<host>:<database>`; DuckDB and SQLite use `<type>:<path>` (`<type>::memory:` for an in-memory database), and the generic connector `sqlalchemy:<driver>:<host>:<database>`, leaving out any part the URL does not have (`sqlalchemy:<driver>:db` if it has neither). `--connector-id NAME` registers it under a name of your choosing instead.
 
@@ -162,6 +162,8 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 
 Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS_BY_PROJECT`). MySQL has no history source yet. Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
 
+The capsules are saved to `~/.nlqueries/capsules/<connector-id>.json`, readable by your account only and replaced as a whole, the same way `export-kb` writes the KB.
+
 A fresh or lightly-used database will produce few or zero capsules until it has real query history to learn from — run some representative business queries first, and consider `--min-executions 1` on a dev database.
 
 ---
@@ -175,6 +177,8 @@ nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3] [-
 ```
 
 Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` replaced with `_`).
+
+The KB holds the schema and sample values, so it is written readable by your account only (mode `0600` on Linux and macOS). It is written to a temporary file in the same directory and renamed over the target, so an interrupted run leaves the previous KB in place, and a symlink at the output path is replaced rather than followed. A directory the output needs is created readable by your account only; one that already exists keeps its permissions.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -193,6 +197,8 @@ Merge a dbt project's model and column documentation into a knowledge base. If y
 ```bash
 nlqueries import-dbt <artifacts> --kb kb.yaml [--output merged.yaml]
 ```
+
+The merged KB is written the way `export-kb` writes one: readable by your account only, and replaced as a whole.
 
 `<artifacts>` is a dbt target directory (containing `manifest.json`, and `semantic_manifest.json` if the project uses the Semantic Layer) or a `manifest.json` file directly.
 

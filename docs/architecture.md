@@ -79,7 +79,7 @@ nlqueries/
 ├── sql_policy_report.py  Reports what sql_policy would refuse, without refusing it
 ├── execution.py          Execution permission carried from the entry point to the connector
 ├── kb_eval.py            KB eval harness behind `nlqueries eval`
-├── state_files.py        File permissions for what NLQueries writes under the state directory
+├── state_files.py        File permissions, and private atomic writes, for what NLQueries writes as state
 ├── telemetry.py          OpenTelemetry integration
 └── config.py             Environment-variable configuration
 ```
