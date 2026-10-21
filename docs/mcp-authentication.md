@@ -301,7 +301,10 @@ is given to write a combined answer.
 `list_connectors` reports a connectors file that is not valid YAML by line
 number and problem only, as in `Failed to read connectors file: line 4: mapping
 values are not allowed here`. The parser's own message quotes the line, which
-in that file may hold a password.
+in that file may hold a password. The file is read as UTF-8 whatever the
+server's locale. One that is not UTF-8, say saved as cp1252, is reported by
+byte offset only, as in `Failed to read connectors file: it is not UTF-8 (the
+first invalid byte is at offset 45)`.
 
 ## Enterprise
 

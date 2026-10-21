@@ -464,7 +464,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `Database` check and still runs its other checks, so `health --json` still
   prints a report. The loader raises `ConnectorsFileError`, a `ValueError`,
   for it, and `list_connectors` now reads the file through the loader rather
-  than parsing it itself.
+  than parsing it itself. The loader reads the file as UTF-8 whatever the
+  locale, so a non-ASCII password is read as written on a cp1252 Windows
+  machine too, and a file that is not UTF-8 is reported as `Failed to read
+  connectors file: it is not UTF-8 (the first invalid byte is at offset N)`,
+  without the byte itself.
 - **Promoted feedback reaches the prompt.** `promote-feedback`, and `export-kb`
   which runs it, write confirmed (question, SQL) pairs to
   `agent_<id>_verified` with the connector ID made safe for a collection name

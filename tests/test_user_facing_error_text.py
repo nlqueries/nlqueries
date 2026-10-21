@@ -325,3 +325,64 @@ def test_the_combined_answer_prompt_carries_no_driver_text(columns: list[str]) -
     # The result keeps the raw text; only what the model is shown is cut down.
     assert merged.sql_table is not None and merged.sql_table.error == DRIVER_ERROR
 
+
+# --- The connectors file is read as UTF-8 --------------------------------------
+
+UTF8_PASSWORD = "pässwörd-ß"
+
+
+@pytest.fixture
+def cp1252_locale():  # type: ignore[no-untyped-def]
+    """`read_text()` with no encoding behaves as on a cp1252 Windows locale.
+
+    The container's own locale is UTF-8, where a missing encoding goes unnoticed.
+    """
+    real = Path.read_text
+
+    def read_text(self: Path, encoding: str | None = None, *args: object, **kwargs: object) -> str:
+        return real(self, encoding or "cp1252", *args, **kwargs)  # type: ignore[arg-type]
+
+    with patch.object(Path, "read_text", read_text):
+        yield
+
+
+def test_a_non_ascii_password_is_read_as_written(tmp_path: Path, cp1252_locale: None) -> None:
+    from nlqueries.connectors.loader import _load_connectors
+
+    f = tmp_path / "connectors.yaml"
+    f.write_bytes(f"db:\n  db_type: postgres\n  password: {UTF8_PASSWORD}\n".encode())
+    with patch("nlqueries.connectors.loader.config.CONNECTORS_FILE", f):
+        assert _load_connectors()["db"]["password"] == UTF8_PASSWORD
+
+
+@pytest.fixture
+def cp1252_file(tmp_path: Path) -> Path:
+    f = tmp_path / "connectors.yaml"
+    f.write_bytes("db:\n  db_type: postgres\n  password: hunter2-pässwörd\n".encode("cp1252"))
+    return f
+
+
+# 45 bytes precede the cp1252 "ä": "db:\n  db_type: postgres\n  password: hunter2-p".
+NOT_UTF8 = (
+    "Failed to read connectors file: it is not UTF-8 (the first invalid byte is at offset 45)"
+)
+
+
+def test_the_mcp_listing_says_a_cp1252_file_is_not_utf8(cp1252_file: Path) -> None:
+    from nlqueries.mcp_server.server import list_connectors
+
+    with patch("nlqueries.mcp_server.server.config.CONNECTORS_FILE", cp1252_file):
+        out = list_connectors()
+
+    assert out == NOT_UTF8
+    assert "0xe4" not in out and SECRET not in out
+
+
+def test_the_cli_says_a_cp1252_file_is_not_utf8(cp1252_file: Path) -> None:
+    with patch("nlqueries.connectors.loader.config.CONNECTORS_FILE", cp1252_file):
+        result = CliRunner().invoke(cli, ["connectors"])
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert NOT_UTF8 in result.output
+    assert "0xe4" not in result.output and SECRET not in result.output

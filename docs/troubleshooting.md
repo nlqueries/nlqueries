@@ -151,3 +151,5 @@ Error: Failed to read connectors file: line 4: mapping values are not allowed he
 **Risk:** None. Nothing is written, and the message gives the line number and the problem but not the line itself, which may hold a password.
 
 **Action:** Open the file at the line named and fix it. Quote any value that contains `: ` or starts with a special character (`'a: b'`).
+
+The file is read as UTF-8 whatever the system locale. If it was saved in another encoding (cp1252 is common on Windows) and holds a non-ASCII character, the message is `Failed to read connectors file: it is not UTF-8 (the first invalid byte is at offset N)` instead. Save the file as UTF-8.
