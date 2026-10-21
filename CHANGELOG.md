@@ -175,8 +175,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the built-in client and every caller that embeds a whole collection through
   it, a wide schema's long table texts included, are unaffected. A single
   text over the character or body limit is sent on its own and is the only
-  request refused. If any part fails, the whole batch falls back as one
-  request's failure did before. `GET /healthz` is unchanged.
+  request refused. If any part fails, or comes back with a different number
+  of vectors than texts sent, the whole batch falls back as one request's
+  failure did before, so no vector is paired with the wrong text.
+  `GET /healthz` is unchanged.
 - **`embed-server start` keeps the working directory off the daemon's import
   path.** The background daemon is now started as
   `python -P -m nlqueries.embeddings.embed_server`, so it imports the

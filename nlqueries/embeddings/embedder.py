@@ -323,9 +323,16 @@ def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
         _require_daemon_model_agreement()
         vectors: list[list[float]] = []
         for part in _daemon_parts(texts):
-            vectors.extend(
-                cast(list[list[float]], _daemon_post("/embed-batch", {"texts": part}, "vectors"))
-            )
+            got = _daemon_post("/embed-batch", {"texts": part}, "vectors")
+            # One vector per text, or every vector after this part would sit
+            # against the wrong text: callers index vectors and texts together.
+            # The daemon never answers otherwise; something else on the port may.
+            if not isinstance(got, list) or len(got) != len(part):
+                count = len(got) if isinstance(got, list) else type(got).__name__
+                raise EmbeddingServiceUnavailable(
+                    FAILING, f"daemon returned {count} vectors for {len(part)} texts"
+                )
+            vectors.extend(cast(list[list[float]], got))
         return vectors
     except EmbeddingServiceUnavailable as exc:
         _fall_back_or_raise(exc)

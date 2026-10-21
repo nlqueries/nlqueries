@@ -223,6 +223,61 @@ class TestEmbedBatch:
 
         assert list(_daemon_parts(["a", oversized, "b"])) == [["a"], [oversized], ["b"]]
 
+    @pytest.mark.parametrize("off_by", [-1, 1])
+    def test_a_part_answered_with_the_wrong_vector_count_falls_back(self, off_by: int) -> None:
+        """Short (or long) by one on the second part: returning the list would put
+        every later vector against the wrong text."""
+        texts = [f"text {i}" for i in range(600)]
+        replies = [
+            [[0.0] * _VECTOR_SIZE] * 512,
+            [[0.0] * _VECTOR_SIZE] * (88 + off_by),
+        ]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(600), dtype=np.float32)
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=replies),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        mock_model.encode.assert_called_once_with(texts, batch_size=64, normalize_embeddings=True)
+        assert len(result) == 600
+
+    @pytest.mark.parametrize(
+        ("reply", "said"),
+        [
+            ([[0.0] * _VECTOR_SIZE] * 87, "87 vectors for 88 texts"),
+            ({str(i): [0.0] for i in range(88)}, "dict vectors"),
+        ],
+    )
+    def test_a_wrong_vector_count_raises_when_the_daemon_is_required(
+        self, reply: object, said: str
+    ) -> None:
+        from nlqueries.embeddings.embedder import (
+            FAILING,
+            EmbeddingServiceUnavailable,
+            embed_batch,
+        )
+
+        replies = [[[0.0] * _VECTOR_SIZE] * 512, reply]
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=replies),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", True),
+            pytest.raises(EmbeddingServiceUnavailable) as raised,
+        ):
+            embed_batch([f"text {i}" for i in range(600)])
+
+        assert raised.value.reason == FAILING
+        assert said in str(raised.value)
+        get_model.assert_not_called()
+
     def test_a_failed_part_falls_back_for_the_whole_batch(self) -> None:
         from nlqueries.embeddings.embedder import ABSENT, EmbeddingServiceUnavailable
 
