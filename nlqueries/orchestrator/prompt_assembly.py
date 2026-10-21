@@ -776,7 +776,10 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
             if description:
                 flags.append(description)
 
-            samples: list[str] = col.get("samples", [])
+            # `or []`: a knowledge base may hold `samples:` with nothing after
+            # it, which YAML reads as None, and one such column must not stop
+            # the whole schema rendering.
+            samples: list[str] = col.get("samples") or []
             shown = [s for s in samples if _sample_fits(s)]
             if shown:
                 # "values" when they are every value the column holds, so the

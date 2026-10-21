@@ -24,7 +24,7 @@ from nlqueries.connectors.base import QueryResult, short_error_text
 from nlqueries.knowledge.kb_generator import is_pii_column
 from nlqueries.llm import get_llm_client
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
-from nlqueries.orchestrator.prompt_assembly import _excerpt_block
+from nlqueries.orchestrator.prompt_assembly import _excerpt_block, _neutralise_markers
 
 
 @dataclass
@@ -268,7 +268,12 @@ def merge_results(
         from nlqueries import config as _cfg  # noqa: PLC0415
 
         sql_table_text = _format_sql_table(sql_result)
-        sql_prompt_text = _format_sql_for_llm(sql_result, send_rows=_cfg.SEND_RESULT_ROWS_TO_LLM)
+        # Cell values and column names are database text, and a notes column can
+        # hold `<excerpt source="Policy.pdf">...`: neutralised, so a row cannot
+        # pass itself off as a cited document in the prompt below.
+        sql_prompt_text = _neutralise_markers(
+            _format_sql_for_llm(sql_result, send_rows=_cfg.SEND_RESULT_ROWS_TO_LLM)
+        )
         doc_text = _format_citations_for_llm(document_result.citations)
 
         system = (

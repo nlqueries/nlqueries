@@ -195,7 +195,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   The source label, which the model cites, is put on one line (capped at 300
   characters like a description) with its markers neutralised, and only `"`
   is escaped (as `&quot;`), so `Director's Report.pdf` and
-  `Profit & Loss.xlsx` are cited as written. A hybrid answer's
+  `Profit & Loss.xlsx` are cited as written. The SQL data in the hybrid
+  prompt, cell values and column names included, has its markers neutralised
+  the same way, so a database row cannot pass itself off as a cited document. A hybrid answer's
   document-only passthrough text is unchanged.
 - **`NLQ_SEND_RESULT_ROWS_TO_LLM` decides whether hybrid synthesis sees rows.**
   On (the default), up to 20 rows are sent as before, except that columns
