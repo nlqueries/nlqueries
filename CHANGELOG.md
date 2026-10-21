@@ -450,7 +450,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   line of the error and a short reference id, and logs the full error with
   that reference (`[ref …]`) on the server. The lines a driver adds after the
   first, where it quotes the statement, its parameters or a connection
-  string, no longer reach the client. `QueryResult.error` itself is
+  string, no longer reach the client. The same holds for a hybrid answer: when
+  its query fails, the failure note in the SQL table (which is the whole
+  answer when the documents found nothing, and the SQL part of the prompt for
+  a combined answer) carries the first line only. Both use the new
+  `connectors.base.short_error_text`. `QueryResult.error` itself is
   unchanged. A `connectors.yaml` that is not valid YAML is now reported by
   line number and problem, as `Failed to read connectors file: line 4:
   mapping values are not allowed here`, without the line the parser quoted,

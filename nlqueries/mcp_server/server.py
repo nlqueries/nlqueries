@@ -214,19 +214,6 @@ def _reference() -> str:
     return secrets.token_hex(4)
 
 
-def _database_error_summary(error: str) -> str:
-    """*error* cut down as :func:`short_cause` cuts down an exception.
-
-    The connectors hand the orchestrator ``str(exc)``, and that string is what
-    reaches this tool, so there is no exception left to pass to ``short_cause``.
-    Its rule applies all the same: the first line names the failure, and the
-    lines after it are where drivers quote what they were sent -- the statement,
-    its parameters, a connection string.
-    """
-    first = next((line for line in error.splitlines() if line.strip()), "")
-    return first[:300] or "the database reported an error"
-
-
 #: How long the MCP `query` tool waits for an answer.
 _QUERY_BUDGET_SECONDS = 45
 #: The database's own limit on the statement, at or just under the tool's wait
@@ -265,7 +252,7 @@ async def query(
         (for SQL/hybrid agents), and source citations (for document/hybrid agents).
         Includes per-query latency and agent-type metadata.
     """
-    from nlqueries.connectors.base import short_cause  # noqa: PLC0415
+    from nlqueries.connectors.base import short_cause, short_error_text  # noqa: PLC0415
     from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
@@ -332,7 +319,7 @@ async def query(
             reference,
             result.sql_result.error,
         )
-        summary = _database_error_summary(result.sql_result.error)
+        summary = short_error_text(result.sql_result.error)
         parts.append(f"\n\n⚠ SQL execution error: {summary} (reference {reference})")
 
     if result.sql_result and not result.sql_result.error and result.sql_result.rows:

@@ -208,3 +208,120 @@ def test_the_mcp_listing_reads_the_file_through_the_loader(tmp_path: Path) -> No
         out = list_connectors()
 
     assert out == "Failed to read connectors file: line 9: a problem the loader found"
+
+
+# --- A hybrid answer built from a failed query ---------------------------------
+
+
+def _sql_frame_that_failed() -> list[str]:
+    """The SQL sub-agent's tokens when the connector raised on execution."""
+    import json
+
+    payload = {
+        "type": "sql",
+        "sql": "SELECT region, revenue FROM sales",
+        "is_valid": True,
+        "execution_mode": "execute",
+        "validation_error": None,
+        "dialect": "postgres",
+        "attempt_count": 1,
+        "sql_table": {"error": DRIVER_ERROR},
+    }
+    return ["Answering.", json.dumps(payload)]
+
+
+@pytest.mark.anyio
+async def test_a_hybrid_answer_from_a_failed_query_is_shown_without_the_driver_text() -> None:
+    """The document side finds nothing, so the SQL-only passthrough is the answer.
+
+    That passthrough is the formatted table, and the table's failure note is the
+    first thing in the MCP reply. Driven through the real orchestrator and
+    merger; only the sub-agents, the classifier and the cache are stubbed.
+    """
+    import json
+
+    from nlqueries.mcp_server.server import query
+    from nlqueries.orchestrator import sync_runner
+    from nlqueries.orchestrator.intent_classifier import (
+        IntentClassificationResult,
+        IntentType,
+    )
+    from nlqueries.orchestrator.multi_agent_orchestrator import drain_background_tasks
+
+    def _agent(tokens: list[str]) -> MagicMock:
+        async def _gen(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            for t in tokens:
+                yield t
+
+        agent = MagicMock()
+        agent.handle_question = _gen
+        return agent
+
+    doc_tokens = ["Nothing found.", json.dumps({"type": "citations", "citations": []})]
+    cache = MagicMock()
+    cache.get.return_value = None
+    real_run_query = sync_runner.run_query
+
+    async def _hybrid_run_query(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        return await real_run_query(*args, available_types=("sql", "document", "hybrid"), **kwargs)
+
+    m = "nlqueries.orchestrator.multi_agent_orchestrator"
+    with (
+        patch(f"{m}.SemanticCache", return_value=cache),
+        patch(
+            f"{m}.aclassify_intent",
+            return_value=IntentClassificationResult(
+                intent=IntentType.hybrid, confidence=0.95, reasoning="Mock."
+            ),
+        ),
+        patch(f"{m}.Orchestrator", return_value=_agent(_sql_frame_that_failed())),
+        patch(f"{m}.DocumentOrchestrator", return_value=_agent(doc_tokens)),
+        patch("nlqueries.orchestrator.sync_runner.run_query", _hybrid_run_query),
+    ):
+        out = await query("Revenue by region and the policy on it?", "sales")
+        await drain_background_tasks()
+
+    assert "hybrid agent" in out, out  # the route this test is about was taken
+    assert "this query failed: (psycopg.OperationalError) could not run the statement" in out
+    assert "password=" not in out and SECRET not in out and HOST not in out
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(["sql_query"], id="statement-table"),  # the note after the table
+        pytest.param([], id="no-columns"),  # the "(no data; ...)" form
+    ],
+)
+def test_the_combined_answer_prompt_carries_no_driver_text(columns: list[str]) -> None:
+    from nlqueries.connectors.base import QueryResult
+    from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
+    from nlqueries.orchestrator.result_merger import merge_results
+
+    failed = QueryResult(
+        columns=columns,
+        rows=[["SELECT region FROM sales"]] if columns else [],
+        row_count=1 if columns else 0,
+        execution_time_ms=0.0,
+        error=DRIVER_ERROR,
+    )
+    citation = Citation(
+        chunk_id="c1",
+        source_name="policy.pdf",
+        page_number=1,
+        chunk_index=0,
+        excerpt="Revenue is reported quarterly.",
+        relevance_score=0.9,
+    )
+    documents = DocumentRetrievalResult(chunks=[], citations=[citation], collection="doc_x")
+    llm = MagicMock()
+    llm.complete.return_value = "Combined."
+    with patch("nlqueries.orchestrator.result_merger.get_llm_client", return_value=llm):
+        merged = merge_results("Revenue?", sql_result=failed, document_result=documents)
+
+    (_system, user), _ = llm.complete.call_args
+    assert "this query failed: (psycopg.OperationalError) could not run the statement" in user
+    assert "password=" not in user and SECRET not in user and HOST not in user
+    # The result keeps the raw text; only what the model is shown is cut down.
+    assert merged.sql_table is not None and merged.sql_table.error == DRIVER_ERROR
+

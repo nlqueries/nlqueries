@@ -293,6 +293,11 @@ error is logged by `nlqueries.mcp_server.server` with the same reference
 (`[ref 3f9a1c07]`), at `WARNING` for an error the database returned and at
 `ERROR`, with the traceback, for a failure anywhere else in the query.
 
+A hybrid answer follows the same rule. When its query fails, the SQL part
+says `this query failed:` with the first line of the error only, both in the
+answer returned when the documents found nothing and in the SQL data the model
+is given to write a combined answer.
+
 `list_connectors` reports a connectors file that is not valid YAML by line
 number and problem only, as in `Failed to read connectors file: line 4: mapping
 values are not allowed here`. The parser's own message quotes the line, which
