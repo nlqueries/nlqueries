@@ -32,6 +32,7 @@ import sqlglot.expressions as exp
 
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.processing.query_clusterer import QueryCluster
+from nlqueries.processing.query_filter import STRING_FORMS as _STRING_FORMS
 
 # ---------------------------------------------------------------------------
 # Compiled regexes for date / timestamp pattern matching
@@ -98,9 +99,9 @@ def _get_column_from_parent(node: exp.Expression) -> str | None:
     if isinstance(parent, (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE, exp.Like, exp.ILike)):
         this = parent.args.get("this")
         expression = parent.args.get("expression")
-        if isinstance(this, exp.Column) and isinstance(expression, exp.Literal):
+        if isinstance(this, exp.Column) and isinstance(expression, (exp.Literal, *_STRING_FORMS)):
             return this.name.lower() if this.name else None
-        if isinstance(expression, exp.Column) and isinstance(this, exp.Literal):
+        if isinstance(expression, exp.Column) and isinstance(this, (exp.Literal, *_STRING_FORMS)):
             return expression.name.lower() if expression.name else None
 
     # BETWEEN: both bounds map to the same column
@@ -118,8 +119,9 @@ def _get_column_from_parent(node: exp.Expression) -> str | None:
     return None
 
 
-def _infer_literal_type(literal: exp.Literal, schema_type: str | None) -> str:
-    """Map a sqlglot ``Literal`` node to a SQL type name.
+def _infer_literal_type(literal: exp.Expression, schema_type: str | None) -> str:
+    """Map a sqlglot ``Literal`` node, or one of :data:`_STRING_FORMS`, to a SQL
+    type name.
 
     Priority:
     1. Non-string (number): ``INT`` or ``DECIMAL`` based on whether the
@@ -129,7 +131,7 @@ def _infer_literal_type(literal: exp.Literal, schema_type: str | None) -> str:
     4. Schema column type (from ``SchemaSpec``), if available.
     5. Default: ``VARCHAR``.
     """
-    if not literal.is_string:
+    if isinstance(literal, exp.Literal) and not literal.is_string:
         return "DECIMAL" if "." in str(literal.this) else "INT"
 
     val = str(literal.this)
@@ -150,8 +152,10 @@ def _parameterize_sql(
 ) -> tuple[str, list[Placeholder]]:
     """Replace every literal in *sql* with a typed placeholder string.
 
-    Returns ``(template_sql, placeholders)``.  On parse failure returns
-    the original SQL with an empty placeholder list.
+    Returns ``(template_sql, placeholders)``.  The template carries no
+    comments, since a comment can quote anything.  A statement that cannot be
+    parsed is dropped: the result is ``("", [])``, never the original text,
+    whose literals would otherwise reach the capsule unreplaced.
 
     Args:
         skip_string_literals: When ``True``, VARCHAR string literals are left
@@ -163,7 +167,7 @@ def _parameterize_sql(
     try:
         ast = sqlglot.parse_one(sql)
     except Exception:  # noqa: BLE001
-        return sql, []
+        return "", []
 
     placeholders: list[Placeholder] = []
     used_names: dict[str, int] = {}
@@ -171,7 +175,7 @@ def _parameterize_sql(
 
     def _replace(node: exp.Expression) -> exp.Expression:
         nonlocal counter
-        if not isinstance(node, exp.Literal):
+        if not isinstance(node, (exp.Literal, *_STRING_FORMS)):
             return node
 
         col_name = _get_column_from_parent(node)
@@ -208,9 +212,9 @@ def _parameterize_sql(
 
     try:
         transformed = ast.transform(_replace)
-        template_sql = transformed.sql(pretty=False)
+        template_sql = transformed.sql(pretty=False, comments=False)
     except Exception:  # noqa: BLE001
-        return sql, []
+        return "", []
 
     return template_sql, placeholders
 
@@ -265,7 +269,7 @@ def _make_auto_description(tables: list[str], template_sql: str) -> str:
 def parameterize_cluster(
     cluster: QueryCluster,
     schema: SchemaSpec | None = None,
-) -> QueryCapsule:
+) -> QueryCapsule | None:
     """Convert a single *cluster* into a ``QueryCapsule`` template.
 
     Args:
@@ -274,12 +278,15 @@ def parameterize_cluster(
                  plain string comparisons via column-type lookup.
 
     Returns:
-        A ``QueryCapsule`` with ``intent`` left empty (filled by LLM annotator).
+        A ``QueryCapsule`` with ``intent`` left empty (filled by LLM annotator),
+        or ``None`` when the representative SQL cannot be parsed.
     """
     schema_type_map = _build_schema_type_map(schema)
     sql = cluster.representative_sql
 
     template_sql, placeholders = _parameterize_sql(sql, schema_type_map)
+    if not template_sql:
+        return None
     tables = _extract_tables(sql)
     columns = _extract_columns(sql)
     auto_description = _make_auto_description(tables, template_sql)
@@ -306,6 +313,8 @@ def parameterize_clusters(
         schema:   Optional ``SchemaSpec`` for column-type inference.
 
     Returns:
-        One ``QueryCapsule`` per cluster, in the same order.
+        One ``QueryCapsule`` per cluster, in the same order, leaving out a
+        cluster whose SQL cannot be parsed.
     """
-    return [parameterize_cluster(c, schema) for c in clusters]
+    capsules = (parameterize_cluster(c, schema) for c in clusters)
+    return [c for c in capsules if c is not None]
