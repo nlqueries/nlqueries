@@ -1390,5 +1390,7 @@ def assemble_document_prompt(
         context_lines.append(_excerpt_block(label, chunk.text))
         context_lines.append("")
 
-    user_prompt = f"{question}\n\n" + "\n".join(context_lines)
+    # On a follow-up the question is the resolver's rewrite of earlier turns,
+    # which can quote excerpts, so it could carry a block marker of its own.
+    user_prompt = f"{_neutralise_markers(question)}\n\n" + "\n".join(context_lines)
     return system_prompt, user_prompt

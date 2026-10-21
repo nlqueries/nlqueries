@@ -316,7 +316,9 @@ def merge_results(
             "giving a figure."
         )
         user = (
-            f"Question: {question}\n\n"
+            # Neutralised for the same reason as the SQL side: on a follow-up
+            # the question is rewritten from turns that can quote excerpts.
+            f"Question: {_neutralise_markers(question)}\n\n"
             f"SQL Data:\n{sql_prompt_text}\n\n"
             f"Document Context:\n{doc_text}\n\n"
             "Provide a unified answer that combines insights from both the SQL data "
