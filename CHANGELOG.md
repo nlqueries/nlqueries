@@ -170,14 +170,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **More column names count as personal data.** `is_pii_column`, the rule
   behind `export-kb`'s refusal to sample a column and literal grounding's
   refusal to look one up, now also matches `pwd`, `credential`, `api_key`,
-  `access_key`, `private_key`, `otp`, `iban`, `account_number` /
-  `account_no`, `national_id`, `passport`, `tax_id`, `first_name`,
-  `last_name`, `full_name`, `given_name`, `family_name`, `session`, `cookie`
-  and `auth` anywhere in the name, `pin` as a whole word (`card_pin`, not
-  `shipping`), and names ending `_key`, `_token`, `_hash` or `_secret`. Bare
-  `key`, `name` and `account` are not matched, so `keyword`, `product_name`
-  and `account_type` keep their values. `auth` matches inside `author` too,
-  so an `author` column is no longer sampled or grounded. The `export-kb`
+  `access_key`, `private_key`, `iban`, `account_number`, `national_id`,
+  `passport`, `tax_id`, `first_name`, `last_name`, `full_name`,
+  `given_name`, `family_name`, `session` and `cookie` anywhere in the name,
+  plus `auth` anywhere except where it goes on to `or` (`oauth_code`,
+  `region_auth`, not `author`, `authority` or `co_author`), `otp` at the
+  start of a word (`user_otp`, not `footprint`), `account_no` when no letter
+  follows (not `account_notes`), `pin` as a whole word (`card_pin`, not
+  `shipping`), and names ending `_token`, `_hash` or `_secret`. Bare `key`,
+  `name` and `account`, and a `_key` suffix, are not matched, so `keyword`,
+  `product_name`, `account_type` and warehouse join keys such as
+  `customer_key` and `date_key` keep their values. The `export-kb`
   path for a connector with no registered connector class, which writes
   whole `sample_rows`, now leaves these columns out of each row as well; it
   used to copy every column.

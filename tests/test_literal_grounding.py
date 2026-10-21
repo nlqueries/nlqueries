@@ -544,7 +544,6 @@ def _people(tmp_path: Path, column: str) -> tuple[_Source, dict[str, Any]]:
         "session_id",
         "auth_code",
         "card_pin",
-        "customer_key",
     ],
 )
 def test_a_column_named_as_personal_data_is_never_looked_up(tmp_path: Path, column: str) -> None:
@@ -559,7 +558,7 @@ def test_a_column_named_as_personal_data_is_never_looked_up(tmp_path: Path, colu
     assert src.opened == [] and src.statements == []
 
 
-@pytest.mark.parametrize("column", ["contact", "product_name"])
+@pytest.mark.parametrize("column", ["contact", "product_name", "author", "customer_key"])
 def test_the_same_column_under_an_ordinary_name_is_grounded(tmp_path: Path, column: str) -> None:
     src, kb = _people(tmp_path, column)
 

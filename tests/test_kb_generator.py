@@ -727,6 +727,7 @@ def test_contact_details_are_pii() -> None:
         "access_key",
         "private_key",
         "otp_code",
+        "user_otp",
         "iban",
         "account_number",
         "account_no",
@@ -741,9 +742,10 @@ def test_contact_details_are_pii() -> None:
         "session_id",
         "cookie",
         "auth_code",
+        "oauth_code",
+        "region_auth",
         "pin",
         "card_pin",
-        "signing_key",
     ],
 )
 def test_more_credentials_identifiers_and_names_are_pii(name: str) -> None:
@@ -752,10 +754,29 @@ def test_more_credentials_identifiers_and_names_are_pii(name: str) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["order_total", "status", "keyword", "product_name", "account_type", "shipping", "spinner"],
+    [
+        "order_total",
+        "status",
+        "keyword",
+        "product_name",
+        "account_type",
+        "shipping",
+        "spinner",
+        "author",
+        "authority",
+        "authorized_by",
+        "co_author",
+        "footprint",
+        "account_notes",
+        "customer_key",
+        "date_key",
+        "product_key",
+    ],
 )
-def test_names_that_only_contain_key_name_account_or_pin_are_not_pii(name: str) -> None:
-    # `pin` counts only as a whole word; bare `key`, `name` and `account` not at all.
+def test_ordinary_names_that_contain_a_sensitive_word_are_not_pii(name: str) -> None:
+    # `pin` counts only as a whole word, `otp` only at the start of one, `auth`
+    # not when it goes on to `or`, `account_no` not before another letter; bare
+    # `key`, `name` and `account`, and a `_key` suffix, not at all.
     assert is_pii_column(name) is False, name
 
 
