@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All settings are read from environment variables, or a `.env` file in the working directory or the nearest parent directory that has one (copy `.env.example` to `.env` to start). A variable already set in the environment wins over the same one in `.env`.
+All settings are read from environment variables, or a `.env` file in the working directory (copy `.env.example` to `.env` to start). Only `./.env` is read: a `.env` in a parent directory is not. A variable already set in the environment wins over the same one in `.env`.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
