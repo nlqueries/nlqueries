@@ -176,7 +176,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `\n## Business Rules` stays on its table's line instead of opening a
   section. Business rules and glossary definitions are collapsed the same way
   but capped at 1,000 characters, since a rule cut mid-sentence can change its
-  meaning. Sample values are single-quoted with embedded quotes doubled
+  meaning; a rule cut at that cap is logged once per process as a warning
+  naming its start, so the operator can shorten or split it. Sample values are single-quoted with embedded quotes doubled
   (`'O''Brien'`); a sample over 80 characters is left out of the list rather
   than cut, and a complete `values:` list that loses one is shown as
   `samples:`, since it is no longer complete. The SQL prompt's preamble
@@ -203,8 +204,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   On (the default), up to 20 rows are sent as before, except that columns
   whose names mark them as personal data are now always left out and named as
   withheld; when that is every column, the prompt still gets the row count and
-  any failure. Off, the synthesis prompt gets the column names and the row
-  count only. The result table returned to the reader is the same either way. See
+  the fact of any failure. Off, the synthesis prompt gets the column names and
+  the row count only. While values are withheld (off, or every column
+  withheld), a failure is stated without the database's error text, which can
+  quote a value. When no query ran, the generated statement is sent whatever
+  the setting says, since it is not data. The synthesis prompt also tells the
+  model to state no figure it has not been shown and, where values are
+  withheld, to refer the reader to the result table. The result table returned
+  to the reader is the same either way. See
   "What leaves this machine" in `docs/configuration.md`.
 - **Document and hybrid answers are not written to the semantic cache.** A
   cached document answer, or a hybrid answer synthesised from the same

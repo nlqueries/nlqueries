@@ -366,7 +366,16 @@ def _merge_hybrid(
             collection=f"doc_{agent_id}_chunks",
         )
 
-    return merge_results(question, sql_result=sql_query_result, document_result=doc_retrieval)
+    # Whether a query ran: when not, the result is the statement-only fallback,
+    # and its one cell is the generated statement rather than data.
+    final_chunk = _final_sql_chunk(sql_tokens) if sql_tokens else None
+    executed = final_chunk is not None and _executed_table(final_chunk) is not None
+    return merge_results(
+        question,
+        sql_result=sql_query_result,
+        document_result=doc_retrieval,
+        sql_executed=executed,
+    )
 
 
 def _is_executable_select(sql: str, dialect: str) -> bool:
@@ -737,9 +746,11 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            _schedule_cache_write(
-                _cache, _cache_lookup_key, effective_question, "document", seen, cache_context
-            )
+            # Document answers are not cached, and no write is scheduled: the
+            # answer restates excerpts as they read now, and a replay would
+            # outlive an edit to the document for the whole TTL.
+            # `SemanticCache.put` refuses them for the same reason (see
+            # `_write_refusal`).
             return
 
         hybrid_result: HybridQueryResult | None = None

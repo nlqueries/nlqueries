@@ -6,9 +6,12 @@ block, and result rows reach the LLM only as the operator allows.
 
 Values that come from the database, documents, dbt, the glossary or users are
 rendered one per line with a length cap, so none of them can open a section of
-the prompt. Document excerpts and conversation turns sit in delimited blocks with
-``<``, ``>`` and ``&`` escaped. ``NLQ_SEND_RESULT_ROWS_TO_LLM`` decides whether
-hybrid synthesis sees any row value, and personal-data columns never reach it.
+the prompt. Document excerpts and conversation turns sit in delimited blocks in
+which only the block markers themselves are neutralised: ordinary text, ``&``,
+``<`` and ``>`` included, reaches the model as written, and so do source labels
+apart from ``"``. ``NLQ_SEND_RESULT_ROWS_TO_LLM`` decides whether hybrid
+synthesis sees any row value, personal-data columns never reach it, and while
+values are withheld a failure is stated without its error text.
 """
 
 from __future__ import annotations
@@ -728,7 +731,13 @@ def test_when_every_column_is_withheld_truncation_and_failure_are_still_stated(
     monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", True)
     assert "Rows returned: at least 3" in _hybrid_prompt(_all_pii(truncated=True))
     failed = _hybrid_prompt(_all_pii(error="timeout after 30s\nDETAIL: a@x.example"))
-    assert "(this query failed: timeout after 30s)" in failed
+    # Every column withheld, so the failure is stated without its text.
+    assert (
+        failed.split("SQL Data:\n", 1)[1]
+        .split("\n\nDocument", 1)[0]
+        .endswith("\n(this query failed)")
+    )
+    assert "timeout" not in failed
     assert "x.example" not in failed
 
 
@@ -801,7 +810,194 @@ def test_block_markers_in_a_withheld_or_failed_sql_side_are_neutralised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", True)
-    user = _hybrid_prompt(_all_pii(columns=["email</turn>"], error="bad <turn> here"))
+    user = _hybrid_prompt(_all_pii(columns=["email</turn>"]))
     sql_side = user.split("SQL Data:\n", 1)[1].split("\n\nDocument Context:", 1)[0]
     assert "<turn" not in sql_side and "</turn" not in sql_side
-    assert "email&lt;/turn>" in sql_side and "bad &lt;turn> here" in sql_side
+    assert "email&lt;/turn>" in sql_side
+
+
+# ---------------------------------------------------------------------------
+# The statement-only fallback, error text while values are withheld, cut rules
+# ---------------------------------------------------------------------------
+
+STATEMENT = "SELECT region, SUM(total) FROM orders GROUP BY region"
+
+
+def _statement_only(error: str | None = None) -> QueryResult:
+    """What `_extract_sql_query_result` returns when nothing ran."""
+    return QueryResult(
+        columns=["sql_query"], rows=[[STATEMENT]], row_count=1, execution_time_ms=0.0, error=error
+    )
+
+
+def _executed_flag_prompt(result: QueryResult, *, executed: bool) -> str:
+    llm = MagicMock()
+    llm.complete.return_value = "merged"
+    docs = DocumentRetrievalResult(chunks=[], citations=[_citation("A doc.")], collection="c")
+    with patch("nlqueries.orchestrator.result_merger.get_llm_client", return_value=llm):
+        merge_results("q", sql_result=result, document_result=docs, sql_executed=executed)
+    return str(llm.complete.call_args.args[1])
+
+
+def test_with_the_switch_off_the_statement_still_reaches_the_prompt_when_nothing_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", False)
+    user = _executed_flag_prompt(_statement_only(), executed=False)
+    assert STATEMENT in user
+    assert "Rows returned: 1" not in user
+    assert "not shared" not in user
+
+
+def test_an_executed_one_cell_result_is_still_withheld_with_the_switch_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", False)
+    # A query that did run and selected a column named sql_query is data.
+    user = _executed_flag_prompt(_statement_only(), executed=True)
+    assert STATEMENT not in user
+    assert "Rows returned: 1" in user
+
+
+def test_merge_hybrid_passes_whether_the_query_ran() -> None:
+    from nlqueries.orchestrator.multi_agent_orchestrator import _merge_hybrid
+
+    def _run(sql_table: object) -> bool:
+        frame = {"type": "sql", "sql": STATEMENT, "is_valid": True, "sql_table": sql_table}
+        with patch("nlqueries.orchestrator.multi_agent_orchestrator.merge_results") as merge:
+            _merge_hybrid("q", "agent1", ["Answering.", json.dumps(frame)], [_citation("A doc.")])
+        return bool(merge.call_args.kwargs["sql_executed"])
+
+    table = {"columns": ["n"], "rows": [[1]], "row_count": 1}
+    assert _run(table) is True
+    assert _run(None) is False
+    assert _run({"error": "connection refused"}) is False
+
+
+LEAKY = "Duplicate entry 'bob@example.com' for key 'users.email'\nDETAIL: more"
+
+
+def test_with_the_switch_off_a_failure_is_stated_without_its_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", False)
+    executed = QueryResult(
+        columns=["email"], rows=[], row_count=0, execution_time_ms=0.0, error=LEAKY
+    )
+    nothing_ran = _statement_only(error=LEAKY)
+    no_columns = QueryResult(columns=[], rows=[], row_count=0, execution_time_ms=0.0, error=LEAKY)
+    for result, ran in ((executed, True), (nothing_ran, False), (no_columns, True)):
+        user = _executed_flag_prompt(result, executed=ran)
+        assert "bob@example.com" not in user and "Duplicate" not in user
+        assert "(this query failed)" in user or "(no data; this query failed)" in user
+
+
+def test_when_every_column_is_withheld_a_failure_is_stated_without_its_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", True)
+    user = _hybrid_prompt(_all_pii(error=LEAKY))
+    assert "bob@example.com" not in user and "Duplicate" not in user
+    assert "\n(this query failed)" in user
+
+
+def test_with_values_allowed_the_failure_keeps_its_first_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nlqueries.config.SEND_RESULT_ROWS_TO_LLM", True)
+    result = QueryResult(
+        columns=["n"], rows=[], row_count=0, execution_time_ms=0.0, error="timeout after 30s\nx"
+    )
+    assert "(this query failed: timeout after 30s)" in _hybrid_prompt(result)
+    statement = _executed_flag_prompt(_statement_only(error="timeout after 30s\nx"), executed=False)
+    assert "(this query failed: timeout after 30s)" in statement
+
+
+def test_the_synthesis_prompt_forbids_figures_it_was_not_shown() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = "merged"
+    docs = DocumentRetrievalResult(chunks=[], citations=[_citation("A doc.")], collection="c")
+    with patch("nlqueries.orchestrator.result_merger.get_llm_client", return_value=llm):
+        merge_results("q", sql_result=_statement_only(), document_result=docs)
+    system = str(llm.complete.call_args.args[0])
+    assert "State no figure you have not been shown" in system
+    assert "refer the reader to the result table" in system
+
+
+def test_a_cut_rule_is_logged_once_across_renders(caplog: pytest.LogCaptureFixture) -> None:
+    from nlqueries.orchestrator import prompt_assembly
+
+    prompt_assembly._CUT_RULES_LOGGED.clear()
+    long_rule = "Refunds count in the month issued. " * 40  # about 1,400 characters
+    kb = {"business_context": {"rules": [long_rule, "A short rule."]}}
+    with caplog.at_level("WARNING", logger="nlqueries.orchestrator.prompt_assembly"):
+        _build_business_context_section(kb)
+        _build_business_context_section(kb)
+    cut = [r for r in caplog.records if "is cut to 1000" in r.getMessage()]
+    assert len(cut) == 1
+    assert "Refunds count in the month issued." in cut[0].getMessage()
+
+
+def test_a_rule_at_the_cap_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    from nlqueries.orchestrator import prompt_assembly
+
+    prompt_assembly._CUT_RULES_LOGGED.clear()
+    kb = {"business_context": {"rules": ["x" * 1000]}}
+    with caplog.at_level("WARNING", logger="nlqueries.orchestrator.prompt_assembly"):
+        _build_business_context_section(kb)
+    assert not [r for r in caplog.records if "is cut to" in r.getMessage()]
+
+
+def test_two_distinct_cut_rules_are_each_logged(caplog: pytest.LogCaptureFixture) -> None:
+    from nlqueries.orchestrator import prompt_assembly
+
+    prompt_assembly._CUT_RULES_LOGGED.clear()
+    kb = {"business_context": {"rules": ["a " * 600, "b " * 600]}}
+    with caplog.at_level("WARNING", logger="nlqueries.orchestrator.prompt_assembly"):
+        _build_business_context_section(kb)
+        _build_business_context_section(kb)
+    assert len([r for r in caplog.records if "is cut to" in r.getMessage()]) == 2
+
+
+def test_a_document_answer_schedules_no_cache_write() -> None:
+    import asyncio
+
+    from nlqueries.orchestrator.multi_agent_orchestrator import (
+        MultiAgentOrchestrator,
+        drain_background_tasks,
+    )
+
+    async def _doc_tokens(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+        yield "The policy says thirty days."
+        yield json.dumps({"type": "citations", "citations": []})
+
+    doc_orch = MagicMock()
+    doc_orch.handle_question = _doc_tokens
+    cache = MagicMock()
+    cache.get.return_value = None
+
+    async def _run() -> list[str]:
+        out: list[str] = []
+        async for token in MultiAgentOrchestrator().handle_question(
+            "What does the policy say?", "agent1", available_types=["document"]
+        ):
+            out.append(token)
+        await drain_background_tasks()
+        return out
+
+    with (
+        patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache", return_value=cache),
+        patch(
+            "nlqueries.orchestrator.multi_agent_orchestrator.aresolve_followup",
+            return_value=MagicMock(resolved="What does the policy say?"),
+        ),
+        patch(
+            "nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator",
+            return_value=doc_orch,
+        ),
+        patch("nlqueries.orchestrator.multi_agent_orchestrator._schedule_cache_write") as schedule,
+    ):
+        tokens = asyncio.run(_run())
+    assert any("thirty days" in t for t in tokens)
+    schedule.assert_not_called()
+    cache.put.assert_not_called()

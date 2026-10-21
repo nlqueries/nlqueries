@@ -33,6 +33,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,12 @@ from nlqueries.orchestrator.provenance import record_capsule, record_prompt_sect
 
 if TYPE_CHECKING:
     from nlqueries.orchestrator.document_retrieval import DocumentRetrievalResult
+
+logger = logging.getLogger(__name__)
+
+#: Rules already reported as cut at :data:`_MAX_RULE_CHARS`, so each is logged
+#: once per process rather than once per question.
+_CUT_RULES_LOGGED: set[str] = set()
 
 # ---------------------------------------------------------------------------
 # SQL format instructions shared by static_system and the single-call path
@@ -967,10 +974,31 @@ def _build_business_context_section(
     if rules:
         lines.append("### Business Rules")
         for rule in rules:
+            _log_if_cut(rule)
             lines.append(f"- {_one_line(rule, _MAX_RULE_CHARS)}")
             record_prompt_section(f"rule:{str(rule)[:60]}")  # provenance (SYL-1.1)
         lines.append("")
     return "\n".join(lines)
+
+
+def _log_if_cut(rule: Any) -> None:
+    """Warn, once per distinct rule, when *rule* is longer than the prompt shows.
+
+    A rule cut mid-sentence can say something other than what it says whole,
+    and the model is told to apply rules exactly, so the operator needs to know
+    which rule the model saw cut.
+    """
+    text = " ".join(str(rule if rule is not None else "").split())
+    if len(text) <= _MAX_RULE_CHARS or text in _CUT_RULES_LOGGED:
+        return
+    _CUT_RULES_LOGGED.add(text)
+    logger.warning(
+        "A business rule of %d characters is cut to %d in the prompt; the model "
+        "sees it cut. Shorten or split it: %r",
+        len(text),
+        _MAX_RULE_CHARS,
+        text[:80],
+    )
 
 
 def _term_in_question(term: str, question_lower: str) -> bool:
