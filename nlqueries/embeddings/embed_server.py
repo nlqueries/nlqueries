@@ -616,14 +616,26 @@ class _EmbedHandler(BaseHTTPRequestHandler):
                 texts = body["texts"]
                 if not isinstance(texts, list) or not all(isinstance(x, str) for x in texts):
                     raise TypeError("'texts' must be a list of strings")
-            # Checked before the gate, so an oversized request never holds an
-            # encode slot.
-            if len(texts) > MAX_BATCH_TEXTS:
-                self._fail(413, f"more than {MAX_BATCH_TEXTS} texts in one request")
-                return
-            if sum(len(t) for t in texts) > MAX_BATCH_CHARS:
-                self._fail(413, f"more than {MAX_BATCH_CHARS} characters in one request")
-                return
+        except KeyError as exc:
+            self._fail(400, f"missing field: {exc.args[0]}")
+            return
+        except TypeError as exc:
+            self._fail(400, str(exc))
+            return
+
+        # Checked before the gate, so an oversized request never holds an
+        # encode slot. Outside the `try` below: a client that has gone by the
+        # time its 413 is written raises from the write, and that is
+        # `handle_error`'s routine case, not a failed embedding to log and
+        # answer again with a 500.
+        if len(texts) > MAX_BATCH_TEXTS:
+            self._fail(413, f"more than {MAX_BATCH_TEXTS} texts in one request")
+            return
+        if sum(len(t) for t in texts) > MAX_BATCH_CHARS:
+            self._fail(413, f"more than {MAX_BATCH_CHARS} characters in one request")
+            return
+
+        try:
             if self.path == "/embed":
                 result: dict[str, Any] = {"vector": self._encode(texts)[0]}
             else:

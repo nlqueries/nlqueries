@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import threading
 import time
 from collections.abc import Iterator
@@ -300,3 +301,39 @@ def test_a_whole_collection_reaches_a_real_daemon_through_embed_batch(
 
     assert sorted(batches) == [88, 512]
     assert vectors == [[float(len(t))] for t in texts]
+
+
+def test_a_client_gone_before_its_413_is_not_logged_as_a_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 413 write fails, as it does when the client has disconnected. That is
+    `handle_error`'s routine INFO line, not "Embedding request failed" and a
+    second reply attempted with a 500."""
+
+    class _GoneHandler(es._EmbedHandler):
+        statuses: list[int] = []
+
+        def _fail(self, status: int, reason: str) -> None:
+            self.statuses.append(status)
+            if status == 413:
+                raise ConnectionResetError("client went away")
+            super()._fail(status, reason)
+
+    srv = es._ThreadingEmbedServer(("127.0.0.1", 0), _GoneHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    caplog.set_level(logging.INFO, logger=es.logger.name)
+    try:
+        with pytest.raises(http.client.HTTPException):
+            _post(int(srv.server_address[1]), "/embed-batch", json.dumps({"texts": ["a"] * 513}))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(
+            "left before its reply" in r.getMessage() for r in caplog.records
+        ):
+            time.sleep(0.02)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert _GoneHandler.statuses == [413]
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+    assert any("left before its reply" in r.getMessage() for r in caplog.records)
