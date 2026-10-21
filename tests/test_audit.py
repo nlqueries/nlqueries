@@ -14,6 +14,7 @@ import json
 import logging
 import sqlite3
 import stat
+import sys
 import threading
 from typing import Any
 
@@ -33,6 +34,7 @@ from nlqueries.auth.principal import (
 )
 from nlqueries.connectors import loader
 from nlqueries.connectors.base import PermittedConnector
+from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
 from nlqueries.connectors.sqlite import SQLiteConnector
 from nlqueries.execution import ExecutionNotPermitted, ExecutionPolicy
 from nlqueries.sql_policy import POLICY_VERSION
@@ -40,6 +42,11 @@ from nlqueries.sql_policy import POLICY_VERSION
 #: Appears in every statement below, and must appear in no record.
 _SECRET = "needle-7f3a"
 _SQL = f"SELECT '{_SECRET}' AS marker"
+
+#: Whether the permission bits are enforced. On Windows ``chmod`` sets only the
+#: read-only flag and the mode reads 0o666, so the mode checks run elsewhere;
+#: the line and append checks run everywhere.
+_POSIX = sys.platform != "win32"
 
 ALICE = Principal(subject="alice@example.com", source=Source.OIDC)
 
@@ -236,6 +243,18 @@ class TestExecutionEvents:
         assert event["agent_id"] == "sqlite:app"
         assert event["connector_type"] == "sqlite"
 
+    def test_a_sqlalchemy_connector_reports_its_backend_dialect(self, tmp_path) -> None:
+        """Its type is `sqlalchemy` whatever it reaches; the backend names the grammar."""
+        database = tmp_path / "app.db"
+        sqlite3.connect(database).close()
+        connector = SQLAlchemyConnector()
+        assert audit.connector_identity(connector) == ("sqlalchemy", None)
+
+        connector.connect({"url": f"sqlite:///{database}"})
+
+        assert connector.dialect_name == "sqlite"
+        assert audit.connector_identity(connector) == ("sqlalchemy", "sqlite")
+
     def test_a_failure_to_record_does_not_fail_the_query(self, caplog, monkeypatch) -> None:
         def broken(*_args: Any) -> dict[str, Any]:
             raise RuntimeError("recording broke")
@@ -282,7 +301,8 @@ class TestTheFileSink:
         )
         connector.execute_query(_SQL)
 
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        if _POSIX:
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
         lines = path.read_text().splitlines()
         assert [json.loads(line)["event"] for line in lines] == [
             "query_execution",
@@ -299,7 +319,8 @@ class TestTheFileSink:
 
         _permitted().execute_query(_SQL)
 
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        if _POSIX:
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
         lines = path.read_text().splitlines()
         assert lines[0] == '{"earlier":true}'
         assert json.loads(lines[1])["event"] == "query_execution"
@@ -448,3 +469,22 @@ class TestEntryPoints:
         assert context.surface is audit.Surface.CLI
         assert context.principal == "operator"
         assert context.source == "local"
+
+    def test_a_user_that_cannot_be_named_does_not_stop_the_cli(self, tmp_path, monkeypatch) -> None:
+        """`getuser` raises ModuleNotFoundError on 3.11 and 3.12 when there is
+        no `pwd` module and no user variable to fall back on."""
+        from nlqueries.cli.main import cli
+
+        def no_user() -> str:
+            raise ModuleNotFoundError("No module named 'pwd'")
+
+        monkeypatch.setattr(config, "CONNECTORS_FILE", tmp_path / "connectors.yaml")
+        monkeypatch.setattr("getpass.getuser", no_user)
+
+        result = CliRunner().invoke(cli, ["connectors"])
+
+        assert result.exit_code == 0, result.output
+        context = audit.current()
+        assert context.surface is audit.Surface.CLI
+        assert context.principal is None
+        assert context.source is None

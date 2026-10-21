@@ -298,7 +298,8 @@ def connector_identity(connector: DatabaseConnector) -> tuple[str, str | None]:
     connector's ancestry, so a subclass (an enterprise variant, say) reports
     the type it extends. A connector that is not registered reports its class
     name. The dialect is sqlglot's name for it; the generic SQLAlchemy
-    connector's comes from its engine, since its type names no grammar. None
+    connector's comes from its backend (``dialect_name``), since its type names
+    no grammar. None
     when it cannot be told.
     """
     from nlqueries.connectors import CONNECTOR_REGISTRY  # noqa: PLC0415
@@ -309,10 +310,11 @@ def connector_identity(connector: DatabaseConnector) -> tuple[str, str | None]:
         (names[cls] for cls in type(connector).__mro__ if cls in names),
         type(connector).__name__,
     )
-    if connector_type == "sqlalchemy":
-        engine = getattr(connector, "_engine", None)
-        backend = getattr(getattr(engine, "dialect", None), "name", None)
-        return connector_type, _sqlglot_dialect(backend) if isinstance(backend, str) else None
+    from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector  # noqa: PLC0415
+
+    if isinstance(connector, SQLAlchemyConnector):
+        backend = connector.dialect_name
+        return connector_type, _sqlglot_dialect(backend) if backend else None
     if connector_type not in CONNECTOR_REGISTRY:
         return connector_type, None
     return connector_type, _sqlglot_dialect(connector_type)

@@ -660,10 +660,13 @@ def cli() -> None:
     from nlqueries.audit import Surface, bind_process  # noqa: PLC0415
     from nlqueries.auth.principal import local_principal  # noqa: PLC0415
 
-    # One invocation is one request, made by whoever runs it.
+    # One invocation is one request, made by whoever runs it. Any failure to
+    # name them leaves the principal unknown: attribution must never stop a
+    # command starting. `getuser` raises more than OSError -- on 3.11 and 3.12,
+    # with no user variables set and no `pwd` module, ModuleNotFoundError.
     try:
         principal = local_principal(getpass.getuser())
-    except (KeyError, OSError, ValueError):
+    except Exception:  # noqa: BLE001
         principal = None
     bind_process(Surface.CLI, principal)
 

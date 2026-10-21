@@ -267,6 +267,19 @@ class SQLAlchemyConnector(DatabaseConnector):
         """
         return self._tls
 
+    @property
+    def dialect_name(self) -> str | None:
+        """The backend SQLAlchemy reports for this connection, or None.
+
+        The engine's ``dialect.name`` (``postgresql``, ``mysql``, ``mssql``):
+        this connector's ``db_type`` is ``sqlalchemy`` whatever it reaches, so
+        the backend is the only thing that says which grammar it speaks.
+        ``None`` until ``connect`` has run.
+        """
+        if self._engine is None:
+            return None
+        return str(self._engine.dialect.name)
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
