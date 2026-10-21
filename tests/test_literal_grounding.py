@@ -532,7 +532,19 @@ def _people(tmp_path: Path, column: str) -> tuple[_Source, dict[str, Any]]:
 
 
 @pytest.mark.parametrize(
-    "column", ["email", "contact_phone", "home_address", "api_token", "password_hash"]
+    "column",
+    [
+        "email",
+        "contact_phone",
+        "home_address",
+        "api_token",
+        "password_hash",
+        "first_name",
+        "full_name",
+        "session_id",
+        "auth_code",
+        "card_pin",
+    ],
 )
 def test_a_column_named_as_personal_data_is_never_looked_up(tmp_path: Path, column: str) -> None:
     """The refusal export-kb makes: a lookup would copy other people's values
@@ -546,12 +558,13 @@ def test_a_column_named_as_personal_data_is_never_looked_up(tmp_path: Path, colu
     assert src.opened == [] and src.statements == []
 
 
-def test_the_same_column_under_an_ordinary_name_is_grounded(tmp_path: Path) -> None:
-    src, kb = _people(tmp_path, "contact")
+@pytest.mark.parametrize("column", ["contact", "product_name", "author", "customer_key"])
+def test_the_same_column_under_an_ordinary_name_is_grounded(tmp_path: Path, column: str) -> None:
+    src, kb = _people(tmp_path, column)
 
-    result = _ground("SELECT id FROM people WHERE contact = 'John.Doe@acme.com'", src, kb)
+    result = _ground(f"SELECT id FROM people WHERE {column} = 'John.Doe@acme.com'", src, kb)
 
-    assert result.sql == "SELECT id FROM people WHERE contact = 'john.doe@acme.com'"
+    assert result.sql == f"SELECT id FROM people WHERE {column} = 'john.doe@acme.com'"
 
 
 # --- Stored value lists and large tables ---------------------------------------------

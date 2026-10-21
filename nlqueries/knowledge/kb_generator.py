@@ -18,9 +18,28 @@ logger = logging.getLogger(__name__)
 
 # Column names that strongly indicate PII — sample values are never included.
 # No word boundaries: underscore-delimited names like `user_email` must match.
+# The exceptions are anchored where a plain substring would catch ordinary
+# names: `pin` must stand alone between non-alphanumerics (`card_pin`, not
+# `shipping`), `otp` must start a word (`user_otp`, not `footprint`), and so
+# must `totp` / `hotp` with no letter after (`totp_code`, not `hotpot`),
+# `auth` must not go on to `or` (`oauth_token`, not `author` or `authority`)
+# unless it spells `authorization` / `authorisation`, and `account_no` must
+# not go on to another letter (not `account_notes`). Bare `key`, `name` and
+# `account`, and a `_key` suffix, are left out on purpose: they would catch
+# `keyword`, `product_name`, `account_type` and warehouse join keys such as
+# `customer_key` and `date_key`. Keys that hold a secret are named one by one
+# instead (`api_key`, `signing_key`, `license_key`, ...); `secret_key` is
+# already caught by `secret`.
 _PII_COLUMN_RE = re.compile(
-    r"password|passwd|secret|token|hash|salt|ssn|"
-    r"credit.?card|card.?num|cvv|dob|birth|email|phone|address",
+    r"password|passwd|pwd|secret|token|hash|salt|ssn|credential|"
+    r"api.?key|access.?key|private.?key|signing.?key|encryption.?key|ssh.?key|"
+    r"master.?key|licen[cs]e.?key|(?<![a-z0-9])otp|(?<![a-z0-9])[th]otp(?![a-z])|"
+    r"credit.?card|card.?num|cvv|iban|account.?(?:num|no(?![a-z]))|"
+    r"national.?id|passport|tax.?id|"
+    r"dob|birth|email|phone|address|"
+    r"(?:first|last|full|given|family).?name|"
+    r"session|cookie|auth(?!or)|authori[sz]ation|"
+    r"(?<![a-z0-9])pin(?![a-z0-9])",
     re.IGNORECASE,
 )
 
@@ -28,8 +47,11 @@ _PII_COLUMN_RE = re.compile(
 def is_pii_column(name: str) -> bool:
     """Whether a column's *values* are too sensitive to copy out of the database.
 
-    Name-based and deliberately broad: passwords, tokens, national identifiers,
-    card numbers, dates of birth, email, phone, address. A regex over column
+    Name-based and deliberately broad: passwords, credentials, API, access,
+    private, signing, encryption, SSH, master and licence keys, tokens,
+    one-time codes and PINs, national identifiers, passport and tax numbers,
+    card, bank and account numbers, dates of birth, email, phone, address,
+    people's names, sessions, cookies and authentication data. A regex over column
     names is a blunt instrument and the right one here, because the alternative
     is inspecting values — which means reading the thing being protected.
 
