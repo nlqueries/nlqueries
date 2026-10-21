@@ -43,7 +43,8 @@ Requests
 A POST must carry ``Content-Type: application/json`` (else 415) and a ``Host``
 of ``127.0.0.1``, ``localhost`` or ``[::1]``, with any port (else 421). One
 request carries at most ``MAX_BATCH_TEXTS`` texts and ``MAX_BATCH_CHARS``
-characters in all (else 413); ``embedder.embed_batch`` splits larger batches.
+characters in all (else 413), in a body of at most ``MAX_BODY_BYTES`` (else
+400); ``embedder.embed_batch`` splits larger batches to fit all three.
 
 Run via:  python -m nlqueries.embeddings.embed_server [--port N]
 Managed:  nlqueries embed-server start / stop / status
@@ -89,6 +90,9 @@ MAX_BATCH_TEXTS = 512
 #: cost grows with the text, so a count alone does not bound the work a single
 #: request can ask for.
 MAX_BATCH_CHARS = 2_000_000
+#: The largest request body read, in bytes; a longer declared body is refused
+#: without being read. The client sizes its parts to fit.
+MAX_BODY_BYTES = 10 * 1024 * 1024
 #: The names a request's ``Host`` may give, with any port. The daemon listens on
 #: loopback only, so a client on this host addresses it by one of these; a
 #: request naming anything else was not meant for this daemon.
@@ -509,7 +513,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
         )
 
     #: Requests larger than this are refused without being read.
-    MAX_BODY_BYTES = 10 * 1024 * 1024
+    MAX_BODY_BYTES = MAX_BODY_BYTES
 
     #: Applied to the connection socket. A client that declares a body and does
     #: not send it would otherwise hold a worker thread until it disconnects,

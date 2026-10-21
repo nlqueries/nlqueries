@@ -212,6 +212,17 @@ class TestEmbedBatch:
         assert list(_daemon_parts(["a", "b", oversized, "c"])) == [["a", "b"], [oversized], ["c"]]
         assert list(_daemon_parts([oversized])) == [[oversized]]
 
+    def test_a_single_text_over_the_body_limit_goes_alone(self) -> None:
+        """Under MAX_BATCH_CHARS, but its six-byte control characters make it a
+        body over MAX_BODY_BYTES on its own."""
+        from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BODY_BYTES
+        from nlqueries.embeddings.embedder import _daemon_parts
+
+        oversized = "\x01" * 1_800_000
+        assert len(oversized) < MAX_BATCH_CHARS and len(oversized) * 6 > MAX_BODY_BYTES
+
+        assert list(_daemon_parts(["a", oversized, "b"])) == [["a"], [oversized], ["b"]]
+
     def test_a_failed_part_falls_back_for_the_whole_batch(self) -> None:
         from nlqueries.embeddings.embedder import ABSENT, EmbeddingServiceUnavailable
 

@@ -337,3 +337,82 @@ def test_a_client_gone_before_its_413_is_not_logged_as_a_failure(
     assert _GoneHandler.statuses == [413]
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
     assert any("left before its reply" in r.getMessage() for r in caplog.records)
+
+
+# --- Request size as sent, and encoder faults -----------------------------------
+
+
+def _embed_through_a_daemon(
+    monkeypatch: pytest.MonkeyPatch, texts: list[str]
+) -> tuple[list[list[float]], list[int]]:
+    """`embed_batch` against a running daemon. Returns the vectors and the size
+    of every request body sent; any refusal raises rather than falling back."""
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    sizes: list[int] = []
+    real_urlopen = embedder.urllib.request.urlopen
+
+    def urlopen(request: Any, *args: Any, **kwargs: Any) -> Any:
+        if getattr(request, "data", None) is not None:
+            sizes.append(len(request.data))
+        return real_urlopen(request, *args, **kwargs)
+
+    srv = es.build_server(
+        0, encoder=lambda ts: [[float(len(t))] for t in ts], model_name=embedder._MODEL_NAME
+    )
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{srv.server_address[1]}")
+        monkeypatch.setattr(embedder, "_daemon_model_checked", False)
+        monkeypatch.setattr(embedder.urllib.request, "urlopen", urlopen)
+        monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", True)
+        monkeypatch.setattr(embedder, "_get_model", lambda: pytest.fail("loaded a model"))
+        vectors = embedder.embed_batch(texts)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    return vectors, sizes
+
+
+@pytest.mark.parametrize(
+    ("char", "per_text"),
+    [("漢", 500_000), ("😀", 250_000)],
+    ids=["cjk", "emoji"],
+)
+def test_non_english_text_is_sent_in_bodies_the_daemon_reads(
+    monkeypatch: pytest.MonkeyPatch, char: str, per_text: int
+) -> None:
+    """Within MAX_BATCH_CHARS, but over MAX_BODY_BYTES once escaped to \\uXXXX
+    (12 MB of CJK, 12 MB of emoji). Sent as UTF-8 it fits, in one request:
+    split into several, it would still fit, at twice the requests."""
+    texts = [char * per_text for _ in range(4)]
+    assert sum(map(len, texts)) <= es.MAX_BATCH_CHARS
+    assert len(json.dumps({"texts": texts}).encode()) > es.MAX_BODY_BYTES
+
+    vectors, sizes = _embed_through_a_daemon(monkeypatch, texts)
+
+    assert vectors == [[float(per_text)]] * 4
+    assert len(sizes) == 1
+    assert sizes[0] <= es.MAX_BODY_BYTES
+
+
+def test_control_characters_are_split_into_bodies_the_daemon_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """\\x01 serialises to six bytes even unescaped, so 2,000,000 of them are
+    12 MB however they are sent: the split has to measure bytes."""
+    texts = ["\x01" * 500_000 for _ in range(4)]
+    assert sum(map(len, texts)) <= es.MAX_BATCH_CHARS
+    assert len(json.dumps({"texts": texts}, ensure_ascii=False).encode()) > es.MAX_BODY_BYTES
+
+    vectors, sizes = _embed_through_a_daemon(monkeypatch, texts)
+
+    assert vectors == [[500_000.0]] * 4
+    assert len(sizes) > 1
+    assert all(size <= es.MAX_BODY_BYTES for size in sizes)
+
+
+def test_the_handler_reads_the_module_body_limit() -> None:
+    assert es._EmbedHandler.MAX_BODY_BYTES is es.MAX_BODY_BYTES
+

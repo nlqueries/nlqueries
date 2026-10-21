@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, cast
 
 from nlqueries import config
-from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BATCH_TEXTS
+from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BATCH_TEXTS, MAX_BODY_BYTES
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -89,6 +89,17 @@ class EmbeddingServiceUnavailable(RuntimeError):
         )
 
 
+def _daemon_body(value: Any) -> bytes:
+    """*value* as the daemon receives it: JSON, UTF-8, no padding.
+
+    ``ensure_ascii=False`` keeps non-English text at its UTF-8 size; escaped,
+    every non-ASCII character took six bytes, or twelve outside the BMP.
+    `_daemon_parts` measures with this too, so the size it budgets is the size
+    sent.
+    """
+    return _json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
 def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:
     """POST to the daemon, translating transport failures into a reason.
 
@@ -99,7 +110,7 @@ def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:
     return _daemon_send(
         urllib.request.Request(
             f"{_DAEMON_BASE}{path}",
-            data=_json.dumps(payload).encode(),
+            data=_daemon_body(payload),
             headers={"Content-Type": "application/json"},
         ),
         key,
@@ -265,23 +276,39 @@ def _try_daemon_single(text: str) -> list[float] | None:
         return None
 
 
+#: The bytes of an ``/embed-batch`` body around its texts: ``{"texts":[]}``.
+_BATCH_ENVELOPE_BYTES = len(_daemon_body({"texts": []}))
+
+
 def _daemon_parts(texts: list[str]) -> Iterator[list[str]]:
-    """Split *texts*, in order, into parts within both of the daemon's limits.
+    """Split *texts*, in order, into parts within all of the daemon's limits.
 
     A part grows until the next text would take it past ``MAX_BATCH_TEXTS``
-    texts or ``MAX_BATCH_CHARS`` characters. Splitting by count alone left a
-    batch of long texts -- table descriptions for a wide schema -- to be refused
-    whole. A single text over the character limit goes alone: the daemon refuses
-    it, but that refusal is the text's, not one this split caused.
+    texts, ``MAX_BATCH_CHARS`` characters, or a body of ``MAX_BODY_BYTES``.
+    Splitting by count alone left a batch of long texts -- table descriptions
+    for a wide schema -- to be refused whole. Bytes are measured as sent,
+    because characters do not bound them: a control character such as
+    ``\x01`` still serialises to six. A single text over either limit goes
+    alone: the daemon refuses it, but that refusal is the text's, not one this
+    split caused.
     """
     part: list[str] = []
     chars = 0
+    body = _BATCH_ENVELOPE_BYTES
     for text in texts:
-        if part and (len(part) == MAX_BATCH_TEXTS or chars + len(text) > MAX_BATCH_CHARS):
+        # The text as sent, quotes included, and a separating comma. The first
+        # text needs none, so a part comes out a byte under its budget at worst.
+        size = len(_daemon_body(text)) + 1
+        if part and (
+            len(part) == MAX_BATCH_TEXTS
+            or chars + len(text) > MAX_BATCH_CHARS
+            or body + size > MAX_BODY_BYTES
+        ):
             yield part
-            part, chars = [], 0
+            part, chars, body = [], 0, _BATCH_ENVELOPE_BYTES
         part.append(text)
         chars += len(text)
+        body += size
     if part:
         yield part
 
