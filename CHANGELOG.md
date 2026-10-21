@@ -214,6 +214,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   it and no other table took that model by schema. Both comparisons ignore
   letter case, so Snowflake's `ORDERS` matches dbt's `orders`.
   dbt model and column descriptions are cut to 2,000 characters on import.
+- **Knowledge bases, query capsules and `connectors.yaml` are written privately
+  and atomically.** `export-kb` (including the fallback for a connector type
+  with no registered class), `import-dbt`, `process-history` and `connect`
+  now write through `nlqueries.state_files.write_private`: the content goes to
+  a temporary file created at mode `0600` in the same directory, is flushed to
+  disk, and is renamed over the target. The file is never readable by other
+  accounts, not even between the write and a `chmod`, and an interrupted run
+  leaves the previous file in place instead of a truncated one. A symlink at
+  the target is replaced by the new file rather than written through. A
+  directory the write needs is created at `0700`; an existing one, such as the
+  directory of an `--output` path, keeps its permissions. On Windows the mode
+  bits are not enforced, as before.
+- **Knowledge-base YAML is written with `yaml.safe_dump`.** Every reader loads
+  it with `safe_load`, and the writer now accepts only what that reader can
+  load: a value that would have been written as a Python object tag is refused
+  when the file is written.
 - **`nlqueries/core:latest` moves only on a final release.** A tag of the form
   `vX.Y.Z` pushes the image as `X.Y.Z` and `latest`; a pre-release tag such as
   `v1.0.0-rc1` pushes `1.0.0-rc1` alone, so `docker pull nlqueries/core` no
@@ -582,6 +598,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A knowledge base built over SQLAlchemy reflection now loads.** The
+  generic `sqlalchemy` connector and the `export-kb` fallback took table,
+  column, schema and key names from SQLAlchemy's inspector as `quoted_name`, a
+  `str` subclass that the PostgreSQL, Oracle and Snowflake dialects (among
+  others) return. `yaml.dump` wrote each one as a
+  `!!python/object/apply:sqlalchemy.sql.elements.quoted_name` tag, which
+  `safe_load` refuses. They are now plain `str` where they leave the
+  inspector, as the SQLite connector already did.
 - **Errors no longer pass on what a driver or the connectors file quoted.**
   When the MCP `query` tool reports a failed query, it now shows the first
   line of the error and a short reference id. The server logs the same first

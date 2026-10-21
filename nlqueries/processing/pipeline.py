@@ -32,6 +32,7 @@ from nlqueries.connectors.base import DatabaseConnector, SchemaSpec
 from nlqueries.processing.parameterizer import Placeholder, QueryCapsule, parameterize_clusters
 from nlqueries.processing.query_clusterer import cluster_queries
 from nlqueries.processing.query_filter import filter_and_deduplicate
+from nlqueries.state_files import write_private
 
 
 def process_query_history(
@@ -114,12 +115,10 @@ def save_capsules(capsules: list[QueryCapsule], connector_id: str) -> Path:
     Returns:
         Absolute ``Path`` of the written file.
     """
-    CAPSULES_DIR.mkdir(parents=True, exist_ok=True)
     safe_id = re.sub(r"[^\w.-]", "_", connector_id)
     out_path = CAPSULES_DIR / f"{safe_id}.json"
     data = [dataclasses.asdict(c) for c in capsules]
-    out_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    return out_path
+    return write_private(out_path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def load_capsules(connector_id: str) -> list[QueryCapsule]:

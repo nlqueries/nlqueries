@@ -41,7 +41,7 @@ from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
 from nlqueries.connectors import connector_class_for
 from nlqueries.connectors.base import table_sample_sql
 from nlqueries.connectors.loader import credentials_for
-from nlqueries.state_files import private_dir, restrict
+from nlqueries.state_files import private_dir, restrict, write_private
 
 console = Console()
 err_console = Console(stderr=True)
@@ -124,7 +124,6 @@ def _load_connectors() -> dict[str, Any]:
 def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     from nlqueries.connectors.loader import load_connectors_for_update  # noqa: PLC0415
 
-    CONNECTORS_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Not `_load_connectors`. This is a read-modify-write, and that reader
     # answers "nothing is configured" for a file it could not parse -- which
     # here would merge one entry into nothing and write it over whatever the
@@ -135,10 +134,7 @@ def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     connectors[connector_id] = config
-    CONNECTORS_FILE.write_text(
-        yaml.dump(connectors, default_flow_style=False, sort_keys=False), encoding="utf-8"
-    )
-    CONNECTORS_FILE.chmod(0o600)
+    write_private(CONNECTORS_FILE, yaml.dump(connectors, default_flow_style=False, sort_keys=False))
 
 
 _KEYRING_SERVICE = "nlqueries"
@@ -2203,7 +2199,9 @@ def export_kb(
         engine = create_engine(_get_full_url(connector_id, cfg))
         inspector = sa_inspect(engine)
 
-        table_names = inspector.get_table_names()
+        # Plain `str` throughout: the inspector returns identifiers as
+        # `quoted_name`, which `yaml.safe_dump` refuses.
+        table_names = [str(name) for name in inspector.get_table_names()]
         kb_fallback: dict[str, Any] = {
             "meta": {
                 "connector_id": connector_id,
@@ -2224,7 +2222,7 @@ def export_kb(
 
                 col_defs = [
                     {
-                        "name": c["name"],
+                        "name": str(c["name"]),
                         "type": str(c["type"]),
                         "nullable": c.get("nullable", True),
                         "primary_key": c["name"] in pk_cols,
@@ -2235,17 +2233,19 @@ def export_kb(
 
                 fkey_defs = [
                     {
-                        "columns": fk["constrained_columns"],
-                        "references_table": fk["referred_table"],
-                        "references_columns": fk["referred_columns"],
+                        "columns": [str(col) for col in fk["constrained_columns"]],
+                        "references_table": str(fk["referred_table"]),
+                        "references_columns": [str(col) for col in fk["referred_columns"]],
                     }
                     for fk in fkeys
                 ]
 
                 index_defs = [
                     {
-                        "name": idx["name"],
-                        "columns": idx["column_names"],
+                        "name": None if idx["name"] is None else str(idx["name"]),
+                        "columns": [
+                            None if col is None else str(col) for col in idx["column_names"]
+                        ],
                         "unique": idx.get("unique", False),
                     }
                     for idx in indexes
@@ -2285,9 +2285,10 @@ def export_kb(
         sys.exit(1)
 
     # Write YAML
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as fh:
-        yaml.dump(kb_fallback, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    write_private(
+        out_path,
+        yaml.safe_dump(kb_fallback, default_flow_style=False, allow_unicode=True, sort_keys=False),
+    )
 
     table_count = len(kb_fallback["tables"])
     column_count = sum(len(t["columns"]) for t in kb_fallback["tables"].values())
@@ -2377,7 +2378,7 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
             col["description_source"] = "dbt"
 
     out_file = Path(output) if output else kb_file
-    out_file.write_text(yaml.safe_dump(kb, sort_keys=False), encoding="utf-8")
+    write_private(out_file, yaml.safe_dump(kb, sort_keys=False))
 
     click.echo(
         f"Merged dbt docs for {matched} of {len(tables)} tables into {out_file}.\n"

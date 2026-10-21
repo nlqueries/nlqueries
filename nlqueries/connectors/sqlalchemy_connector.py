@@ -334,7 +334,11 @@ class SQLAlchemyConnector(DatabaseConnector):
         """
         engine = self._require_engine()
         inspector = inspect(engine)
-        default_schema = inspector.default_schema_name or ""
+        # Several dialects (PostgreSQL, Oracle, Snowflake) return identifiers as
+        # `quoted_name`, a `str` subclass. They are made plain `str` here, as
+        # the SQLite connector does, so that nothing downstream -- above all
+        # `yaml.safe_dump` of the knowledge base -- meets a type it refuses.
+        default_schema = str(inspector.default_schema_name or "")
         tables: list[TableSpec] = []
         seen = 0
         keyless: set[str] = set()
@@ -392,7 +396,7 @@ class SQLAlchemyConnector(DatabaseConnector):
             try:
                 columns = [
                     ColumnSpec(
-                        name=col["name"],
+                        name=str(col["name"]),
                         type=str(col.get("type")),
                         nullable=bool(col.get("nullable", True)),
                         is_primary_key=col["name"] in pk_cols,
@@ -404,7 +408,7 @@ class SQLAlchemyConnector(DatabaseConnector):
                 ]
                 tables.append(
                     TableSpec(
-                        name=table_name,
+                        name=str(table_name),
                         schema=default_schema,
                         row_count=None,
                         columns=columns,
