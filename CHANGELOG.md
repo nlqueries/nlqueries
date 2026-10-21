@@ -183,6 +183,38 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   healthcheck is a Python TCP connect. The Dockerfile now installs no system
   packages over the base image. A script that ran `curl` inside the container
   needs another HTTP client, such as `python -c "import urllib.request ..."`.
+- **`.env` is read from the working directory only.** `nlqueries` loads
+  `./.env` when that file exists and no longer searches parent directories
+  for one, so a `.env` belonging to an enclosing directory no longer sets this
+  project's variables. Variables already set in the environment still win. If
+  you relied on a `.env` higher up, copy it, or the lines you need, into the
+  directory you run `nlqueries` from.
+- **The embedding daemon checks a request's headers and size.** A POST to
+  `/embed` or `/embed-batch` is refused with 415 unless its `Content-Type` is
+  `application/json`, with 421 unless its `Host` is `127.0.0.1`, `localhost`
+  or `[::1]` (any port), and with 413 when it carries more than 512 texts or
+  more than 2,000,000 characters in all; a body over 10 MiB is refused with
+  400, as before. An error raised by the encoder is now logged and answered
+  with 500; a `KeyError` or `TypeError` from it used to be answered as a 400
+  and not logged. The client now sends its JSON as UTF-8 rather than
+  escaping non-ASCII characters, so non-English text costs its UTF-8 size
+  instead of six bytes a character. `embed_batch` splits a batch into
+  requests within all three limits, measuring each text's size as sent, so
+  the built-in client and every caller that embeds a whole collection through
+  it, a wide schema's long table texts included, are unaffected. A single
+  text over the character or body limit is sent on its own and is the only
+  request refused. If any part fails, or comes back with a different number
+  of vectors than texts sent, the whole batch falls back as one request's
+  failure did before, so no vector is paired with the wrong text. A text
+  that cannot be encoded as UTF-8, such as one holding a lone surrogate, is
+  never sent: it falls back the same way, or raises under
+  `EMBED_SERVER_REQUIRED`. `GET /healthz` is unchanged.
+- **`embed-server start` keeps the working directory off the daemon's import
+  path.** The background daemon is now started as
+  `python -P -m nlqueries.embeddings.embed_server`, so it imports the
+  installed package rather than any module of the same name in the directory
+  `start` was run from. `--foreground` runs in the CLI's own process, as
+  before.
 - **Query capsules carry no comments and no literal in any string form.**
   `process-history` already replaced plain `'...'` and number literals with
   typed placeholders. The parameterizer now also replaces `N'...'`, `X'...'`,

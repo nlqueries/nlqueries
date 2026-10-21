@@ -149,6 +149,159 @@ class TestEmbedBatch:
 
         assert result == []
 
+    def test_a_600_text_batch_is_sent_to_the_daemon_as_two_requests(self) -> None:
+        """The daemon refuses more than 512 texts in one request."""
+        texts = [f"text {i}" for i in range(600)]
+        sent: list[list[str]] = []
+
+        def daemon_post(path: str, payload: dict[str, list[str]], key: str) -> list[list[float]]:
+            assert (path, key) == ("/embed-batch", "vectors")
+            sent.append(payload["texts"])
+            return [[float(len(sent))] * _VECTOR_SIZE for _ in payload["texts"]]
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=daemon_post),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        assert [len(part) for part in sent] == [512, 88]
+        assert sent[0] + sent[1] == texts
+        assert len(result) == 600
+        assert result[511][0] == 1.0 and result[512][0] == 2.0
+        get_model.assert_not_called()
+
+    def test_a_batch_over_the_character_limit_is_split_into_parts_that_fit(self) -> None:
+        """Fewer than 512 texts, more than MAX_BATCH_CHARS in all: the wide-schema
+        case, which the daemon would refuse whole."""
+        from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BATCH_TEXTS
+
+        texts = [chr(ord("a") + i) * 600_000 for i in range(5)]
+        assert len(texts) < MAX_BATCH_TEXTS and sum(map(len, texts)) > MAX_BATCH_CHARS
+        sent: list[list[str]] = []
+
+        def daemon_post(path: str, payload: dict[str, list[str]], key: str) -> list[list[float]]:
+            sent.append(payload["texts"])
+            return [[0.0] * _VECTOR_SIZE for _ in payload["texts"]]
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=daemon_post),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        assert len(sent) > 1
+        assert all(sum(map(len, part)) <= MAX_BATCH_CHARS for part in sent)
+        assert all(len(part) <= MAX_BATCH_TEXTS for part in sent)
+        assert [t for part in sent for t in part] == texts
+        assert len(result) == len(texts)
+        get_model.assert_not_called()
+
+    def test_a_single_text_over_the_character_limit_goes_alone(self) -> None:
+        from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS
+        from nlqueries.embeddings.embedder import _daemon_parts
+
+        oversized = "x" * (MAX_BATCH_CHARS + 1)
+
+        assert list(_daemon_parts(["a", "b", oversized, "c"])) == [["a", "b"], [oversized], ["c"]]
+        assert list(_daemon_parts([oversized])) == [[oversized]]
+
+    def test_a_single_text_over_the_body_limit_goes_alone(self) -> None:
+        """Under MAX_BATCH_CHARS, but its six-byte control characters make it a
+        body over MAX_BODY_BYTES on its own."""
+        from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BODY_BYTES
+        from nlqueries.embeddings.embedder import _daemon_parts
+
+        oversized = "\x01" * 1_800_000
+        assert len(oversized) < MAX_BATCH_CHARS and len(oversized) * 6 > MAX_BODY_BYTES
+
+        assert list(_daemon_parts(["a", oversized, "b"])) == [["a"], [oversized], ["b"]]
+
+    @pytest.mark.parametrize("off_by", [-1, 1])
+    def test_a_part_answered_with_the_wrong_vector_count_falls_back(self, off_by: int) -> None:
+        """Short (or long) by one on the second part: returning the list would put
+        every later vector against the wrong text."""
+        texts = [f"text {i}" for i in range(600)]
+        replies = [
+            [[0.0] * _VECTOR_SIZE] * 512,
+            [[0.0] * _VECTOR_SIZE] * (88 + off_by),
+        ]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(600), dtype=np.float32)
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=replies),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        mock_model.encode.assert_called_once_with(texts, batch_size=64, normalize_embeddings=True)
+        assert len(result) == 600
+
+    @pytest.mark.parametrize(
+        ("reply", "said"),
+        [
+            ([[0.0] * _VECTOR_SIZE] * 87, "87 vectors for 88 texts"),
+            ({str(i): [0.0] for i in range(88)}, "dict vectors"),
+        ],
+    )
+    def test_a_wrong_vector_count_raises_when_the_daemon_is_required(
+        self, reply: object, said: str
+    ) -> None:
+        from nlqueries.embeddings.embedder import (
+            FAILING,
+            EmbeddingServiceUnavailable,
+            embed_batch,
+        )
+
+        replies = [[[0.0] * _VECTOR_SIZE] * 512, reply]
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=replies),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", True),
+            pytest.raises(EmbeddingServiceUnavailable) as raised,
+        ):
+            embed_batch([f"text {i}" for i in range(600)])
+
+        assert raised.value.reason == FAILING
+        assert said in str(raised.value)
+        get_model.assert_not_called()
+
+    def test_a_failed_part_falls_back_for_the_whole_batch(self) -> None:
+        from nlqueries.embeddings.embedder import ABSENT, EmbeddingServiceUnavailable
+
+        texts = [f"text {i}" for i in range(600)]
+        replies = [
+            [[0.0] * _VECTOR_SIZE] * 512,
+            EmbeddingServiceUnavailable(ABSENT, "gone"),
+        ]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(600), dtype=np.float32)
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=replies),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        assert len(result) == 600
+        mock_model.encode.assert_called_once_with(texts, batch_size=64, normalize_embeddings=True)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — lazy singleton (model NOT loaded at import time)
@@ -488,3 +641,80 @@ def test_integration_upsert_and_search() -> None:
             QdrantClient(url=url).delete_collection(collection)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# A text UTF-8 cannot encode
+# ---------------------------------------------------------------------------
+
+
+class TestLoneSurrogate:
+    """A lone surrogate, as ``json.loads`` or a non-UTF-8 ``sys.argv`` yields,
+    cannot be sent to the daemon as UTF-8. It falls back like any other daemon
+    failure rather than raising past `embed_text` and `embed_batch`."""
+
+    _TEXT = "orders by region \ud800"
+
+    @staticmethod
+    def _no_daemon_contact() -> Any:
+        return patch(
+            "nlqueries.embeddings.embedder.urllib.request.urlopen",
+            side_effect=AssertionError("the request was sent"),
+        )
+
+    def test_embed_text_falls_back_to_the_local_model(self) -> None:
+        from nlqueries.embeddings.embedder import embed_text
+
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(1)[0], dtype=np.float32)
+        embed_text.cache_clear()
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            self._no_daemon_contact(),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            result = embed_text(self._TEXT)
+
+        mock_model.encode.assert_called_once_with(self._TEXT, normalize_embeddings=True)
+        assert len(result) == _VECTOR_SIZE
+
+    def test_embed_batch_falls_back_to_the_local_model(self) -> None:
+        from nlqueries.embeddings.embedder import embed_batch
+
+        texts = ["fine", self._TEXT, "also fine"]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(3), dtype=np.float32)
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            self._no_daemon_contact(),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            result = embed_batch(texts)
+
+        mock_model.encode.assert_called_once_with(texts, batch_size=64, normalize_embeddings=True)
+        assert len(result) == 3
+
+    @pytest.mark.parametrize("call", ["embed_text", "embed_batch"])
+    def test_it_raises_when_the_daemon_is_required(self, call: str) -> None:
+        from nlqueries.embeddings import embedder
+        from nlqueries.embeddings.embedder import FAILING, EmbeddingServiceUnavailable
+
+        embedder.embed_text.cache_clear()
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            self._no_daemon_contact(),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", True),
+            pytest.raises(EmbeddingServiceUnavailable) as raised,
+        ):
+            if call == "embed_text":
+                embedder.embed_text(self._TEXT)
+            else:
+                embedder.embed_batch(["fine", self._TEXT])
+
+        assert raised.value.reason == FAILING
+        assert "text is not valid Unicode" in str(raised.value)
+        assert isinstance(raised.value.__cause__, UnicodeEncodeError)
+        get_model.assert_not_called()

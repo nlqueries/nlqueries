@@ -372,6 +372,19 @@ def test_start_listens_on_the_port_clients_use(
     assert "EMBED_SERVER_PORT" not in out.getvalue()
 
 
+def test_start_keeps_the_working_directory_off_the_daemons_path(
+    pid_file: Path, out: io.StringIO
+) -> None:
+    """`-P`: a module in the directory `start` runs from is not importable by the daemon."""
+    popen = MagicMock()
+    with patch("subprocess.Popen", popen):
+        result = _run("start")
+
+    assert result.exit_code == 0, out.getvalue()
+    argv = popen.call_args.args[0]
+    assert argv[:4] == [sys.executable, "-P", "-m", "nlqueries.embeddings.embed_server"]
+
+
 def test_start_on_another_port_says_clients_will_not_find_it(
     pid_file: Path, out: io.StringIO, monkeypatch: pytest.MonkeyPatch
 ) -> None:

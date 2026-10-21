@@ -71,7 +71,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export QDRANT_URL=http://localhost:6333   # if you have Qdrant running
 ```
 
-Or put the same lines (without `export`) in a `.env` file in the directory you run `nlqueries` from, or in any parent directory. A variable already set in your environment takes precedence over the file.
+Or put the same lines (without `export`) in a `.env` file in the directory you run `nlqueries` from. A `.env` in a parent directory is not read. A variable already set in your environment takes precedence over the file.
 
 Verify the install:
 
