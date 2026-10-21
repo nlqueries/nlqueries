@@ -80,6 +80,28 @@ advisory fails the job, and a release with it, until the lock is regenerated
 job audits the resolved `.[dev,docs]` environment, which includes the `docs`
 extra the lock leaves out.
 
+## SBOMs
+
+Each release publishes a CycloneDX software bill of materials for both of its
+artefacts.
+
+- **The image.** `release.yml` builds it with BuildKit's `sbom: true`, so every
+  platform in the pushed manifest carries an SBOM attestation listing the
+  packages in that image, the lock's closure and the base image's own included.
+  Read it with:
+
+  ```
+  docker buildx imagetools inspect nlqueries/core:<version> --format '{{ json .SBOM }}'
+  ```
+
+- **The wheel.** The `build` job installs the wheel into an empty virtualenv and
+  describes that environment with `cyclonedx-py`. The result,
+  `nlqueries_core-<version>-py3-none-any.whl.cdx.json`, is attached to the
+  GitHub release beside the wheel and sdist. It is not uploaded to PyPI. Because
+  the wheel declares `>=` floors rather than the lock, this SBOM records what
+  `pip install nlqueries-core` resolved to when the release was built; a later
+  install can resolve newer versions.
+
 ## pip-tools version
 
 `scripts/lock-deps.sh` pins pip-tools itself. Version 8 changes the default for

@@ -6,6 +6,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **SBOMs for each release.** The Docker image is built with BuildKit's
+  `sbom: true`, so each platform in a pushed `nlqueries/core` manifest carries
+  a CycloneDX SBOM attestation (`docker buildx imagetools inspect
+  nlqueries/core:<version> --format '{{ json .SBOM }}'`). The wheel gets one
+  too: `release.yml` installs it into an empty virtualenv, describes that
+  environment with `cyclonedx-py`, and attaches
+  `nlqueries_core-<version>-py3-none-any.whl.cdx.json` to the GitHub release.
+  It is not uploaded to PyPI. See "SBOMs" in `docs/dependency-locking.md`.
 - **`QueryResult.executed_sql`: the statement the database actually ran.**
   `None`, the default, means the statement passed to `execute_query` ran
   unchanged, and no connector in core sets it, because none rewrites. A
@@ -155,6 +163,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **`nlqueries/core:latest` moves only on a final release.** A tag of the form
+  `vX.Y.Z` pushes the image as `X.Y.Z` and `latest`; a pre-release tag such as
+  `v1.0.0-rc1` pushes `1.0.0-rc1` alone, so `docker pull nlqueries/core` no
+  longer lands on a release candidate.
+- **`docker-compose.yml` pins the image by version.** It now uses
+  `nlqueries/core:0.3.0` instead of `:latest`, so `docker compose up` starts the
+  release the file was written for and a later pull does not move it. Each
+  final release bumps the tag; to run another release, change the `image:`
+  line.
+- **The image no longer contains `curl`.** Nothing in it used `curl`: the
+  healthcheck is a Python TCP connect. The Dockerfile now installs no system
+  packages over the base image. A script that ran `curl` inside the container
+  needs another HTTP client, such as `python -c "import urllib.request ..."`.
 - **A release waits on the full CI, and CI audits the shipped lock.**
   `release.yml` used to run its own copy of lint, type-check and tests before
   publishing. It now calls `ci.yml` as a reusable workflow, so building and

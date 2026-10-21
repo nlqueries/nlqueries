@@ -19,6 +19,12 @@ name: Release — PyPI Publish
 # skipped, so a dry run requests no environment, no OIDC token and no
 # secret. Use it to exercise a change to this file, or a bump of the actions
 # it pins, before a real tag does.
+#
+# Only a final version tag (vX.Y.Z, nothing after it) moves
+# nlqueries/core:latest. A pre-release tag such as v1.0.0-rc1 pushes its own
+# image tag and nothing else. docker-compose.yml pins the image by version, not
+# :latest, so cutting a final release includes bumping that pin, and the tag
+# shown in README.md and docs/getting-started.md, to the new version.
 
 on:
   push:
@@ -66,11 +72,38 @@ jobs:
         run: python -m build
         working-directory: ${{ github.workspace }}
 
+      # A CycloneDX SBOM of the wheel as `pip install` resolves it today: the
+      # wheel is installed into an empty virtualenv and that environment is
+      # described, so the SBOM lists the dependency versions a user installing
+      # this release would have received. The generator runs from the runner's
+      # own Python, so it is not one of the components. Written outside dist/
+      # because the PyPI upload takes every file in dist/.
+      - name: Generate the wheel's SBOM (CycloneDX)
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/pip" install --no-cache-dir dist/*.whl
+          pip install "cyclonedx-bom==7.5.0"
+          wheel="$(basename dist/*.whl)"
+          mkdir -p sbom
+          cyclonedx-py environment \
+            --pyproject pyproject.toml \
+            --mc-type library \
+            --of JSON \
+            -o "sbom/${wheel}.cdx.json" \
+            "$RUNNER_TEMP/wheel-env/bin/python"
+
       - name: Store distribution packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: python-package-distributions
           path: dist/
+          retention-days: 7
+
+      - name: Store the wheel's SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-sbom
+          path: sbom/
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -117,9 +150,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+      # `latest` follows final versions only: v1.2.3 pushes 1.2.3 and latest,
+      # v1.2.3-rc1 pushes 1.2.3-rc1 alone, so a plain `docker pull` never
+      # lands on a pre-release.
+      - name: Choose image tags
+        id: tags
+        shell: bash
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          tags="nlqueries/core:${version}"
+          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tags="${tags},nlqueries/core:latest"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -139,9 +182,12 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            nlqueries/core:latest
-            nlqueries/core:${{ steps.version.outputs.version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          # A BuildKit SBOM attestation per platform, pushed with the image.
+          # Read it with:
+          #   docker buildx imagetools inspect nlqueries/core:<version> \
+          #     --format '{{ json .SBOM }}'
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -169,8 +215,14 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Download the wheel's SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wheel-sbom
+          path: sbom/
+
       - name: List the packages a release would upload
-        run: ls -l dist/
+        run: ls -l dist/ sbom/
 
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -185,6 +237,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           tags: nlqueries/core:dry-run
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -210,6 +263,12 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Download the wheel's SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wheel-sbom
+          path: sbom/
+
       - name: Extract tag name
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
@@ -219,7 +278,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
-            dist/* \
+            dist/* sbom/* \
             --title "nlqueries-core ${{ steps.tag.outputs.tag }}" \
             --generate-notes \
             --verify-tag
