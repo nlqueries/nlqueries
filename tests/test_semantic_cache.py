@@ -19,6 +19,7 @@ from nlqueries.cache.semantic_cache import (
     SIMILARITY_THRESHOLD,
     CacheEntry,
     SemanticCache,
+    _answer_point_id,
     _bind_entities,
     _mask_entities,
     _normalize_question,
@@ -276,7 +277,7 @@ class TestPutDeterministicPointId:
     def test_put_calls_upsert_with_correct_point_id(self) -> None:
         """put() derives the point ID from SHA-256(normalized question) and passes it to upsert."""
         question = "Total revenue last month?"
-        expected_id = _point_id_for_question(_normalize_question(question))
+        expected_id = _answer_point_id(question)
 
         result = _FakeResult(
             resolved_question=question,
@@ -843,7 +844,7 @@ class TestTier0ExactMatch:
     def _make_retrieve_client(self, payload: dict[str, Any]) -> MagicMock:
         """Build a mock client whose retrieve() returns one record."""
         record = MagicMock()
-        record.id = _point_id_for_question(_normalize_question("How many orders?"))
+        record.id = _answer_point_id("How many orders?")
         record.payload = payload
         coll = MagicMock()
         coll.name = "cache_agent1"
@@ -873,9 +874,9 @@ class TestTier0ExactMatch:
 
     def test_tier0_uses_normalized_question_id(self) -> None:
         """Different capitalizations of the same question share the same Tier 0 ID."""
-        id1 = _point_id_for_question(_normalize_question("How many orders?"))
-        id2 = _point_id_for_question(_normalize_question("HOW MANY ORDERS"))
-        id3 = _point_id_for_question(_normalize_question("how many orders"))
+        id1 = _answer_point_id("How many orders?")
+        id2 = _answer_point_id("HOW MANY ORDERS")
+        id3 = _answer_point_id("how many orders")
         assert id1 == id2 == id3
 
     def test_tier0_miss_falls_through_to_tier1(self) -> None:
@@ -1440,9 +1441,7 @@ class TestTier0KeysKeepOperatorsAndNumbers:
     def test_questions_that_differ_in_an_operator_or_number_get_different_ids(
         self, first: str, second: str
     ) -> None:
-        assert _point_id_for_question(_normalize_question(first)) != _point_id_for_question(
-            _normalize_question(second)
-        )
+        assert _answer_point_id(first) != _answer_point_id(second)
 
     def test_other_punctuation_is_still_stripped(self) -> None:
         assert _normalize_question("How many orders, in total?") == "how many orders in total"
@@ -1451,7 +1450,7 @@ class TestTier0KeysKeepOperatorsAndNumbers:
         """The answer stored for `> 100` is not returned for `< 100` by Tier 0."""
         stored = "Orders with total > 100"
         record = MagicMock()
-        record.id = _point_id_for_question(_normalize_question(stored))
+        record.id = _answer_point_id(stored)
         record.payload = _fresh_payload(question=stored, resolved=stored)
         coll = MagicMock()
         coll.name = "cache_agent1"
@@ -1468,6 +1467,52 @@ class TestTier0KeysKeepOperatorsAndNumbers:
             cache = SemanticCache("agent1", binding=TEST_BINDING)
             assert cache.get("Orders with total > 100") is not None
             assert cache.get("Orders with total < 100") is None
+
+    def test_an_entry_written_before_operators_were_kept_is_not_landed_on(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An upgrade does not route a question onto an older normalisation's id.
+
+        Before operators were kept, "total > 100" normalised to "total 100" and
+        was stored at that text's unversioned id. Asking "total 100" now must not
+        retrieve it: not as a hit, and not as a mismatch logged as a collection
+        written to directly.
+        """
+        import hashlib
+
+        from nlqueries.cache.semantic_cache import _MISMATCHED_POINTS_LOGGED
+
+        asked = "Orders with total 100"
+        old_style_id = int(
+            hashlib.sha256(b"orders with total 100").hexdigest()[:16],
+            16,
+        )
+        assert _answer_point_id(asked) != old_style_id
+
+        stored = "Orders with total > 100"
+        record = MagicMock()
+        record.id = old_style_id
+        record.payload = _fresh_payload(question=stored, resolved=stored)
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        client.retrieve.side_effect = lambda **kw: [record] if kw["ids"] == [record.id] else []
+        client.query_points.return_value = _make_query_response([])
+        _MISMATCHED_POINTS_LOGGED.discard(old_style_id)
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.config.CACHE_ANSWER_TIERS", "0"),
+            caplog.at_level("WARNING", logger="nlqueries.cache.semantic_cache"),
+        ):
+            cache = SemanticCache("agent1", binding=TEST_BINDING)
+            assert cache.get(asked) is None
+
+        asked_ids = [call.kwargs["ids"] for call in client.retrieve.call_args_list]
+        assert asked_ids and [old_style_id] not in asked_ids
+        assert "holds a different question" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

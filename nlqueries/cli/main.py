@@ -2272,11 +2272,14 @@ def export_kb(
                         rows = conn.execute(stmt)
                         col_names = list(rows.keys())
                         samples = [dict(zip(col_names, row, strict=False)) for row in rows]
+                        # Exact types, not isinstance: `yaml.safe_dump` refuses a
+                        # subclass of str, int or float (a driver's own string
+                        # or float type), so one must become a plain `str` too.
                         samples = [
                             {
                                 k: (
                                     str(v)
-                                    if not isinstance(v, (str, int, float, bool, type(None)))
+                                    if type(v) not in (str, int, float, bool, type(None))
                                     else v
                                 )
                                 for k, v in row.items()
