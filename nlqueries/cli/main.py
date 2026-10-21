@@ -2337,7 +2337,7 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
     """
     import yaml
 
-    from nlqueries.knowledge.dbt_importer import load_dbt_artifacts
+    from nlqueries.knowledge.dbt_importer import load_dbt_artifacts, load_dbt_models, match_dbt_docs
 
     docs, metrics = load_dbt_artifacts(artifacts)
     if not docs and not metrics:
@@ -2352,10 +2352,9 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
 
     tables = (kb.get("schema") or {}).get("tables") or []
     matched = 0
-    for table in tables:
+    for table, doc in zip(tables, match_dbt_docs(load_dbt_models(artifacts), tables), strict=True):
         if not isinstance(table, dict):
             continue
-        doc = docs.get(str(table.get("name") or ""))
         if doc is None:
             continue
         matched += 1

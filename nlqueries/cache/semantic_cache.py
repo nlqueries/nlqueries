@@ -872,7 +872,7 @@ def _enabled_tiers() -> frozenset[int]:
 def _write_refusal(question: str, result: _PutResult) -> str | None:
     """Why *question*/*result* must not be cached, or ``None`` to store it.
 
-    Three cheap write-side checks. None of them is a boundary -- an attacker who
+    Cheap write-side checks. None of them is a boundary -- an attacker who
     can query the agent can still poison it with a short, plausible question, and
     the fix for that is that the blast radius is other users of the same agent,
     who are already authorised to see its answers. These refuse the shapes that
@@ -891,6 +891,11 @@ def _write_refusal(question: str, result: _PutResult) -> str | None:
     stored with its SQL and re-executed against a customer's database on every
     subsequent hit.
     """
+    if result.agent_type == "document":
+        # A document answer restates excerpts as they read when it was written.
+        # Replayed from the cache, it outlives an edited or removed document for
+        # the whole TTL, and nothing on a hit could tell the reader so.
+        return "document answers are not cached"
     answer = (result.answer or "").strip()
     if not answer:
         return "the answer was empty"
