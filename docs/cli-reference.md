@@ -162,7 +162,7 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 
 Supported history sources: PostgreSQL (`pg_stat_statements`, must be enabled — see [connectors.md](connectors.md#postgresql--enabling-query-history-capture)), Snowflake (`QUERY_HISTORY`), BigQuery (`INFORMATION_SCHEMA.JOBS_BY_PROJECT`). MySQL has no history source yet. Redshift, SQL Server, and DuckDB have their own caveats — see [connectors.md](connectors.md).
 
-The capsules are saved to `~/.nlqueries/capsules/<connector-id>.json`, readable by your account only and replaced as a whole, the same way `export-kb` writes the KB.
+The capsules are saved to `~/.nlqueries/capsules/<connector-id>.json`, with every character of the connector id other than a letter, digit, `_`, `.` or `-` replaced by `_` to make it a safe file name (`postgres:localhost:mydb` is saved as `postgres_localhost_mydb.json`), readable by your account only and replaced as a whole, the same way `export-kb` writes the KB.
 
 A fresh or lightly-used database will produce few or zero capsules until it has real query history to learn from — run some representative business queries first, and consider `--min-executions 1` on a dev database.
 
@@ -207,7 +207,7 @@ The merged KB is written the way `export-kb` writes one: readable by your accoun
 | `--kb` | *(required)* | KB YAML to merge dbt docs into (created if missing) |
 | `--output` / `-o` | the `--kb` path (in place) | Where to write the merged KB |
 
-Descriptions merge with source precedence **manual edit > dbt doc > database schema > LLM-generated**, recorded per field in `description_source`. A human edit is never overwritten, and a later re-import updates only dbt-sourced fields. Semantic-layer metrics are listed in the output (they map to Beacons in the enterprise Nexus UI), not written to the KB.
+Descriptions merge with source precedence **manual edit > dbt doc > database schema > LLM-generated**, recorded per field in `description_source`. A human edit is never overwritten, and a later re-import updates only dbt-sourced fields. A model or column description longer than 2,000 characters is cut to that length, ending with `...`, and each model with a cut description is named once in a warning. Semantic-layer metrics are listed in the output (they map to Beacons in the enterprise Nexus UI), not written to the KB.
 
 ---
 

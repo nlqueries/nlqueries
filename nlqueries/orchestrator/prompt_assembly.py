@@ -46,8 +46,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Rules already reported as cut at :data:`_MAX_RULE_CHARS`, so each is logged
-#: once per process rather than once per question.
+#: Rules and glossary definitions already reported as cut at
+#: :data:`_MAX_RULE_CHARS`, so each is logged once per process rather than once
+#: per question.
 _CUT_RULES_LOGGED: set[str] = set()
 
 # ---------------------------------------------------------------------------
@@ -943,8 +944,10 @@ def _render_glossary_line(
         label = f"{term} (a kind of {parent})" if parent else term
         if term:
             record_prompt_section(f"{provenance_prefix}:{term}")  # provenance (SYL-1.1)
+        _log_if_cut(entry.get("definition", ""), kind="glossary definition")
         definition = _one_line(entry.get("definition", ""), _MAX_RULE_CHARS)
         return f"- {_one_line(label)}: {definition}"
+    _log_if_cut(entry, kind="glossary definition")
     return f"- {_one_line(entry, _MAX_RULE_CHARS)}"
 
 
@@ -981,20 +984,22 @@ def _build_business_context_section(
     return "\n".join(lines)
 
 
-def _log_if_cut(rule: Any) -> None:
-    """Warn, once per distinct rule, when *rule* is longer than the prompt shows.
+def _log_if_cut(rule: Any, *, kind: str = "business rule") -> None:
+    """Warn, once per distinct entry, when *rule* is longer than the prompt shows.
 
-    A rule cut mid-sentence can say something other than what it says whole,
-    and the model is told to apply rules exactly, so the operator needs to know
-    which rule the model saw cut.
+    A rule or definition cut mid-sentence can say something other than what it
+    says whole, and the model is told to apply both exactly as written, so the
+    operator needs to know which one the model saw cut.
     """
     text = " ".join(str(rule if rule is not None else "").split())
-    if len(text) <= _MAX_RULE_CHARS or text in _CUT_RULES_LOGGED:
+    key = f"{kind}:{text}"
+    if len(text) <= _MAX_RULE_CHARS or key in _CUT_RULES_LOGGED:
         return
-    _CUT_RULES_LOGGED.add(text)
+    _CUT_RULES_LOGGED.add(key)
     logger.warning(
-        "A business rule of %d characters is cut to %d in the prompt; the model "
-        "sees it cut. Shorten or split it: %r",
+        "A %s of %d characters is cut to %d in the prompt; the model sees it "
+        "cut. Shorten or split it: %r",
+        kind,
         len(text),
         _MAX_RULE_CHARS,
         text[:80],

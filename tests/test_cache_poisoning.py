@@ -27,10 +27,9 @@ import pytest
 from nlqueries.cache.envelope import CacheBinding, sign
 from nlqueries.cache.semantic_cache import (
     SemanticCache,
+    _answer_point_id,
     _enabled_tiers,
     _looks_like_an_error,
-    _normalize_question,
-    _point_id_for_question,
     _write_refusal,
 )
 
@@ -332,7 +331,7 @@ def test_with_tiers_one_and_two_an_exact_repeat_is_a_miss(
     client = _mock_client()
     point = MagicMock()
     point.payload = _signed_answer(question)
-    point.id = _point_id_for_question(_normalize_question(question))
+    point.id = _answer_point_id(question)
     client.retrieve.return_value = [point]
     # The same entry also reachable as a Tier 1 neighbour, so the two halves
     # below distinguish "tier 0 skipped" from "the read path stopped".
@@ -404,7 +403,7 @@ def test_with_tier_zero_only_the_same_question_is_still_a_hit(
     client = _mock_client()
     point = MagicMock()
     point.payload = _signed_answer(question)
-    point.id = _point_id_for_question(_normalize_question(question))
+    point.id = _answer_point_id(question)
     client.retrieve.return_value = [point]
 
     with (
