@@ -430,7 +430,7 @@ Not restarted automatically on reboot — add the `start` command to your shell 
 
 `start` runs the daemon as `python -P -m nlqueries.embeddings.embed_server`, so the directory you start it from is not on its import path and it imports the installed package.
 
-The daemon answers a POST only when it carries `Content-Type: application/json` (otherwise 415) and a `Host` of `127.0.0.1`, `localhost` or `[::1]`, with any port (otherwise 421). One request may carry at most 512 texts and 2,000,000 characters in all (otherwise 413). The built-in client sends both headers and splits a larger batch into requests within both limits, so this matters only to a caller of your own. A single text longer than 2,000,000 characters is sent on its own and refused.
+The daemon answers a POST only when it carries `Content-Type: application/json` (otherwise 415) and a `Host` of `127.0.0.1`, `localhost` or `[::1]`, with any port (otherwise 421). One request may carry at most 512 texts and 2,000,000 characters in all (otherwise 413), in a body of at most 10 MiB (otherwise 400). The built-in client sends both headers, sends its JSON as UTF-8, and splits a larger batch into requests within all three limits, so this matters only to a caller of your own. A single text over the character or body limit is sent on its own and refused. An error in the encoder is logged and answered with 500.
 
 ---
 

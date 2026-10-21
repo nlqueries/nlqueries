@@ -644,13 +644,9 @@ class _EmbedHandler(BaseHTTPRequestHandler):
                 result: dict[str, Any] = {"vector": self._encode(texts)[0]}
             else:
                 result = {"vectors": self._encode(texts)}
-        except KeyError as exc:
-            self._fail(400, f"missing field: {exc.args[0]}")
-            return
-        except TypeError as exc:
-            self._fail(400, str(exc))
-            return
         except Exception:
+            # Every exception here is the encoder's, the body having been
+            # validated above, so it is a server fault: logged, and a 500.
             logger.exception("Embedding request failed")
             self._fail(500, "embedding failed")
             return

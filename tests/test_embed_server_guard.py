@@ -416,3 +416,25 @@ def test_control_characters_are_split_into_bodies_the_daemon_reads(
 def test_the_handler_reads_the_module_body_limit() -> None:
     assert es._EmbedHandler.MAX_BODY_BYTES is es.MAX_BODY_BYTES
 
+
+def test_an_encoder_fault_is_a_logged_500(caplog: pytest.LogCaptureFixture) -> None:
+    """A KeyError from the encoder (the ONNX path's ``inputs["attention_mask"]``,
+    say) is the server's fault, not a missing field in the request."""
+
+    def encode(texts: list[str]) -> list[list[float]]:
+        raise KeyError("attention_mask")
+
+    srv = es.build_server(0, encoder=encode)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    caplog.set_level(logging.INFO, logger=es.logger.name)
+    try:
+        response = _post(int(srv.server_address[1]), "/embed-batch", json.dumps({"texts": ["a"]}))
+        status, body = response.status, json.loads(response.read())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert (status, body) == (500, {"error": "embedding failed"})
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r.getMessage() for r in errors] == ["Embedding request failed"]
+    assert errors[0].exc_info is not None
