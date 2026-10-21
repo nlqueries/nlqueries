@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.kb_generator import (
@@ -714,6 +715,48 @@ def test_contact_details_are_pii() -> None:
     # Which is why pagila's `customer.email` and `address.phone` are covered.
     for name in ("email", "customer_email", "phone", "phone_number", "address", "address2"):
         assert is_pii_column(name) is True, name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pwd",
+        "db_credential",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+        "otp_code",
+        "iban",
+        "account_number",
+        "account_no",
+        "national_id",
+        "passport_number",
+        "tax_id",
+        "first_name",
+        "lastname",
+        "full_name",
+        "given_name",
+        "family_name",
+        "session_id",
+        "cookie",
+        "auth_code",
+        "pin",
+        "card_pin",
+        "signing_key",
+    ],
+)
+def test_more_credentials_identifiers_and_names_are_pii(name: str) -> None:
+    assert is_pii_column(name) is True, name
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["order_total", "status", "keyword", "product_name", "account_type", "shipping", "spinner"],
+)
+def test_names_that_only_contain_key_name_account_or_pin_are_not_pii(name: str) -> None:
+    # `pin` counts only as a whole word; bare `key`, `name` and `account` not at all.
+    assert is_pii_column(name) is False, name
 
 
 def test_it_is_case_insensitive() -> None:

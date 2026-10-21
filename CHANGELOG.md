@@ -155,6 +155,32 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **Query capsules carry no comments and no literal in any string form.**
+  `process-history` already replaced plain `'...'` and number literals with
+  typed placeholders. The parameterizer now also replaces `N'...'`, `X'...'`,
+  `B'...'`, byte, raw and `U&'...'` strings, typed like a plain string
+  (`DATE`, `TIMESTAMP`, the schema's type, else `VARCHAR`), and writes
+  templates without comments. A representative statement that cannot be
+  parsed is dropped instead of being kept as its raw text, so
+  `parameterize_cluster` now returns `None` for it and `parameterize_clusters`
+  leaves it out. In the query filter, normalization drops comments too, so
+  statements that differ only in a comment are counted as one query, and the
+  fingerprint treats every string form as a literal, so `N'...'` values no
+  longer split a cluster.
+- **More column names count as personal data.** `is_pii_column`, the rule
+  behind `export-kb`'s refusal to sample a column and literal grounding's
+  refusal to look one up, now also matches `pwd`, `credential`, `api_key`,
+  `access_key`, `private_key`, `otp`, `iban`, `account_number` /
+  `account_no`, `national_id`, `passport`, `tax_id`, `first_name`,
+  `last_name`, `full_name`, `given_name`, `family_name`, `session`, `cookie`
+  and `auth` anywhere in the name, `pin` as a whole word (`card_pin`, not
+  `shipping`), and names ending `_key`, `_token`, `_hash` or `_secret`. Bare
+  `key`, `name` and `account` are not matched, so `keyword`, `product_name`
+  and `account_type` keep their values. `auth` matches inside `author` too,
+  so an `author` column is no longer sampled or grounded. The `export-kb`
+  path for a connector with no registered connector class, which writes
+  whole `sample_rows`, now leaves these columns out of each row as well; it
+  used to copy every column.
 - **A release waits on the full CI, and CI audits the shipped lock.**
   `release.yml` used to run its own copy of lint, type-check and tests before
   publishing. It now calls `ci.yml` as a reusable workflow, so building and

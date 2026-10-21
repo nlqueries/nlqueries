@@ -790,8 +790,8 @@ class TestBindEntities:
         # Template uses unquoted INT placeholders (as the updated parameterizer generates).
         # A whole statement, not a fragment: binding parses the template now, so
         # `WHERE ...` alone is no longer bindable. Stored templates are always whole
-        # statements -- `put()` gets them from `_parameterize_sql`, which returns the
-        # SQL unchanged with no placeholders when it cannot parse it.
+        # statements -- `put()` gets them from `_parameterize_sql`, which returns an
+        # empty template with no placeholders when it cannot parse it.
         template = (
             "SELECT tb.id FROM titles tb JOIN ratings tr ON tr.id = tb.id"
             " WHERE tb.start_year = [start_year:INT]"

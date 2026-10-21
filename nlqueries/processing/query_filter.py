@@ -13,8 +13,9 @@ Filter rules (a query is discarded if any of the following are true):
   - It is a duplicate of another record after normalization
 
 Normalization: parse + re-serialize via sqlglot for canonical whitespace and
-keyword casing. PostgreSQL positional parameters ($1, $2, …) are substituted
-with 0 before parsing so pg_stat_statements output is handled correctly.
+keyword casing, without comments. PostgreSQL positional parameters ($1, $2, …)
+are substituted with 0 before parsing so pg_stat_statements output is handled
+correctly.
 
 Fingerprinting: replace all literals (strings → '?', numbers → 0) to produce
 a structural signature that groups queries differing only in literal values.
@@ -66,6 +67,19 @@ _SYSTEM_PREFIXES = (
     "close ",
     "fetch ",
     "discard ",
+)
+
+#: String literals sqlglot does not parse into ``exp.Literal``: ``N'...'``,
+#: ``X'...'``, ``B'...'``, byte strings, raw strings and ``U&'...'``. Their
+#: values are literals like any other, for the fingerprint here and for the
+#: placeholders the parameterizer puts in their place.
+STRING_FORMS: tuple[type[exp.Expression], ...] = (
+    exp.National,
+    exp.HexString,
+    exp.BitString,
+    exp.ByteString,
+    exp.RawString,
+    exp.UnicodeString,
 )
 
 _MIN_TOKENS = 3
@@ -141,10 +155,14 @@ def _token_count(sql: str) -> int:
 def _normalize(sql: str) -> str | None:
     """Parse and re-serialize *sql* via sqlglot for a canonical representation.
 
+    Comments are dropped: they are not part of the query, so two statements
+    that differ only in a comment are the same query, and a comment can quote
+    anything.
+
     Returns None if the SQL cannot be parsed (the query will be discarded).
     """
     try:
-        return sqlglot.parse_one(_pg_params_to_literals(sql)).sql(pretty=False)
+        return sqlglot.parse_one(_pg_params_to_literals(sql)).sql(pretty=False, comments=False)
     except Exception:  # noqa: BLE001
         return None
 
@@ -152,7 +170,7 @@ def _normalize(sql: str) -> str | None:
 def _make_fingerprint(normalized_sql: str) -> str:
     """Strip all literals from *normalized_sql* to produce a structural fingerprint.
 
-    Strings   → '?'
+    Strings   → '?' (every form in :data:`STRING_FORMS` too)
     Numbers   → 0
 
     Queries that differ only in their literal values will share the same
@@ -162,6 +180,8 @@ def _make_fingerprint(normalized_sql: str) -> str:
     def _strip(node: exp.Expression) -> exp.Expression:
         if isinstance(node, exp.Literal):
             return exp.Literal.string("?") if node.is_string else exp.Literal.number(0)
+        if isinstance(node, STRING_FORMS):
+            return exp.Literal.string("?")
         return node
 
     try:

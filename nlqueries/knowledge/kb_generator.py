@@ -18,9 +18,20 @@ logger = logging.getLogger(__name__)
 
 # Column names that strongly indicate PII — sample values are never included.
 # No word boundaries: underscore-delimited names like `user_email` must match.
+# The exceptions are `pin`, which must stand alone between non-alphanumerics
+# (`pin`, `card_pin`, not `shipping`), and the `_key` / `_token` / `_hash` /
+# `_secret` suffixes. Bare `key`, `name` and `account` are left out on purpose:
+# they would catch `keyword`, `product_name` and `account_type`.
 _PII_COLUMN_RE = re.compile(
-    r"password|passwd|secret|token|hash|salt|ssn|"
-    r"credit.?card|card.?num|cvv|dob|birth|email|phone|address",
+    r"password|passwd|pwd|secret|token|hash|salt|ssn|credential|"
+    r"api.?key|access.?key|private.?key|otp|"
+    r"credit.?card|card.?num|cvv|iban|account.?(?:num|no)|"
+    r"national.?id|passport|tax.?id|"
+    r"dob|birth|email|phone|address|"
+    r"(?:first|last|full|given|family).?name|"
+    r"session|cookie|auth|"
+    r"(?<![a-z0-9])pin(?![a-z0-9])|"
+    r"_(?:key|token|hash|secret)$",
     re.IGNORECASE,
 )
 
@@ -28,8 +39,10 @@ _PII_COLUMN_RE = re.compile(
 def is_pii_column(name: str) -> bool:
     """Whether a column's *values* are too sensitive to copy out of the database.
 
-    Name-based and deliberately broad: passwords, tokens, national identifiers,
-    card numbers, dates of birth, email, phone, address. A regex over column
+    Name-based and deliberately broad: passwords, credentials, keys, tokens,
+    one-time codes and PINs, national identifiers, passport and tax numbers,
+    card, bank and account numbers, dates of birth, email, phone, address,
+    people's names, sessions, cookies and authentication data. A regex over column
     names is a blunt instrument and the right one here, because the alternative
     is inspecting values — which means reading the thing being protected.
 
