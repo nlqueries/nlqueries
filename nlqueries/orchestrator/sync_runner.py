@@ -273,7 +273,11 @@ async def run_query(
             available_types=list(available_types),
             dialect=dialect,
             history=None,  # already resolved above; avoids double LLM call
-            cache_key=question,  # original question — consistent key regardless of LLM rewrite
+            # The resolved question, not the raw one. A follow-up such as "and last
+            # month?" means something different in every conversation, so keyed on
+            # its raw text one conversation's answer was served to the next. When
+            # the question is not a follow-up the two are the same text.
+            cache_key=resolved_question,
             timeout_seconds=timeout_seconds,
             extra_dynamic_context=extra_dynamic_context,
             execution=execution,

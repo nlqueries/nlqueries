@@ -315,3 +315,58 @@ class TestTruncationSurvivesTheChunk:
         result = self._run(older)
         assert result.sql_result is not None
         assert result.sql_result.truncated is False
+
+
+class TestFollowupCacheKey:
+    """A follow-up is looked up and stored under what it means, not what was typed."""
+
+    def test_followup_is_cached_under_its_resolved_question(self) -> None:
+        from datetime import UTC, datetime
+
+        from nlqueries.orchestrator.conversation import ConversationTurn
+        from nlqueries.orchestrator.multi_agent_orchestrator import drain_background_tasks
+
+        raw = "And last month?"
+        meant = "How many orders were placed last month?"
+        followup = ResolvedQuestion(
+            original=raw, resolved=meant, is_followup=True, reasoning="Resolved the period."
+        )
+        sql_orch = MagicMock()
+        sql_orch.handle_question = _async_gen_factory(["42 orders. ", _SQL_FINAL_CHUNK])
+        cache = MagicMock()
+        cache.get.return_value = None
+
+        async def _drive() -> AgentQueryResult:
+            result = await run_query(
+                raw,
+                "agent1",
+                history=[
+                    ConversationTurn(
+                        role="user",
+                        content="How many orders this month?",
+                        agent_type=None,
+                        sql=None,
+                        timestamp=datetime.now(UTC),
+                    )
+                ],
+            )
+            await drain_background_tasks()
+            return result
+
+        with (
+            patch("nlqueries.orchestrator.sync_runner.resolve_followup", return_value=followup),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache",
+                return_value=cache,
+            ),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                return_value=sql_orch,
+            ),
+        ):
+            result = asyncio.run(_drive())
+
+        assert result.resolved_question == meant
+        assert cache.get.call_args.args[0] == meant
+        cache.put.assert_called_once()
+        assert cache.put.call_args.args[0] == meant
