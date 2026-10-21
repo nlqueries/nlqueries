@@ -488,3 +488,70 @@ def test_limit_placeholder_uses_no_quotes_in_template() -> None:
     assert placeholders[0].type == "INT"
     assert "[param_1:INT]" in template
     assert "'[param_1:INT]'" not in template
+
+
+# ---------------------------------------------------------------------------
+# Every string-literal form, comments, and statements that do not parse
+# ---------------------------------------------------------------------------
+
+
+def test_national_string_literal_is_replaced() -> None:
+    capsule = parameterize_cluster(_cluster("SELECT * FROM users WHERE name = N'Jane Doe'"))
+    assert capsule is not None
+    assert capsule.template_sql == "SELECT * FROM users WHERE name = '[name:VARCHAR]'"
+    assert "N'" not in capsule.template_sql
+    assert "Jane" not in capsule.template_sql
+
+
+@pytest.mark.parametrize(
+    ("dialect", "literal"),
+    [
+        ("tsql", "N'Jane Doe'"),
+        ("postgres", "X'CAFE'"),
+        ("postgres", "B'1011'"),
+        ("postgres", "E'Jane Doe'"),
+        ("postgres", "U&'Jane Doe'"),
+        ("bigquery", "b'Jane Doe'"),
+        ("bigquery", "r'Jane Doe'"),
+    ],
+)
+def test_every_string_literal_form_is_replaced(
+    monkeypatch: pytest.MonkeyPatch, dialect: str, literal: str
+) -> None:
+    # The default dialect parses only N'...' of these; a capsule built from
+    # another dialect's AST must still come out with every value replaced.
+    import functools
+
+    import sqlglot
+
+    monkeypatch.setattr(sqlglot, "parse_one", functools.partial(sqlglot.parse_one, read=dialect))
+    capsule = parameterize_cluster(_cluster(f"SELECT * FROM t WHERE c = {literal}"))
+    assert capsule is not None
+    assert capsule.template_sql == "SELECT * FROM t WHERE c = '[c:VARCHAR]'"
+    assert capsule.placeholders == [Placeholder(name="c", type="VARCHAR")]
+
+
+def test_template_carries_no_comments() -> None:
+    sql = (
+        "/* run for jane.doe@example.com */ SELECT id FROM orders"
+        " WHERE status = 'open' -- account 4111"
+    )
+    capsule = parameterize_cluster(_cluster(sql))
+    assert capsule is not None
+    assert capsule.template_sql == "SELECT id FROM orders WHERE status = '[status:VARCHAR]'"
+
+
+def test_a_statement_that_does_not_parse_is_dropped() -> None:
+    from nlqueries.processing.parameterizer import _parameterize_sql
+
+    sql = "SELECT * FROM users WHERE name = 'Jane Doe' AND ("
+    assert _parameterize_sql(sql, {}) == ("", [])
+    assert parameterize_cluster(_cluster(sql)) is None
+
+
+def test_parameterize_clusters_leaves_out_a_cluster_that_does_not_parse() -> None:
+    good = "SELECT * FROM orders WHERE id = 1"
+    capsules = parameterize_clusters(
+        [_cluster("SELECT * FROM users WHERE name = 'Jane Doe' AND ("), _cluster(good)]
+    )
+    assert [c.template_sql for c in capsules] == ["SELECT * FROM orders WHERE id = [id:INT]"]
