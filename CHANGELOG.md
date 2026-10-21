@@ -447,8 +447,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 - **Errors no longer pass on what a driver or the connectors file quoted.**
   When the MCP `query` tool reports a failed query, it now shows the first
-  line of the error and a short reference id, and logs the full error with
-  that reference (`[ref …]`) on the server. The lines a driver adds after the
+  line of the error and a short reference id. The server logs the same first
+  line at WARNING with that reference (`[ref …]`), and the full error at DEBUG
+  under the same reference only, so a log shipped elsewhere does not carry a
+  DSN or password. The lines a driver adds after the
   first, where it quotes the statement, its parameters or a connection
   string, no longer reach the client. The same holds for a hybrid answer: when
   its query fails, the failure note in the SQL table (which is the whole

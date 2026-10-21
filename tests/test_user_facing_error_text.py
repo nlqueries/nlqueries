@@ -46,11 +46,19 @@ def _result_with_error(error: str) -> MagicMock:
 
 
 def _referenced_in_log(out: str, caplog: pytest.LogCaptureFixture) -> None:
-    """*out* names a reference, and the log entry with it holds the full text."""
+    """*out* names a reference; the WARNING with it holds the first line only,
+    and the full text is under the same reference at DEBUG."""
     match = REFERENCE.search(out)
     assert match, out
-    logged = [r.getMessage() for r in caplog.records if match.group(1) in r.getMessage()]
-    assert logged and SECRET in logged[0] and HOST in logged[0]
+    for record in caplog.records:
+        if record.levelno >= logging.WARNING:
+            text = record.getMessage()
+            assert "password=" not in text and SECRET not in text and HOST not in text, text
+    with_ref = [r for r in caplog.records if match.group(1) in r.getMessage()]
+    warning = [r for r in with_ref if r.levelno == logging.WARNING]
+    assert len(warning) == 1 and "could not run the statement" in warning[0].getMessage()
+    debug = [r.getMessage() for r in with_ref if r.levelno == logging.DEBUG]
+    assert len(debug) == 1 and SECRET in debug[0] and HOST in debug[0]
 
 
 # --- The MCP query tool --------------------------------------------------------
@@ -69,7 +77,7 @@ async def test_a_database_error_is_shown_without_what_the_driver_quoted(
             new_callable=AsyncMock,
             return_value=result,
         ),
-        caplog.at_level(logging.WARNING, logger="nlqueries.mcp_server.server"),
+        caplog.at_level(logging.DEBUG, logger="nlqueries.mcp_server.server"),
     ):
         out = await query("How many orders?", "sales")
 

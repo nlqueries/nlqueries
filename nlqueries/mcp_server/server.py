@@ -310,16 +310,19 @@ async def query(
             parts.append(f"\n\n**In plain English**\n{described.text}{hint}")
 
     if result.sql_result and result.sql_result.error:
-        # The full text goes to the log only; `sql_result.error` itself stays
-        # raw, as the correction loop needs it.
+        # `sql_result.error` itself stays raw, as the correction loop needs it.
+        # The full text is logged at DEBUG only: a log usually reaches a wider
+        # audience than connectors.yaml, and the lines after the first are
+        # where a driver quotes the DSN. The reference ties the two together.
         reference = _reference()
-        _log.warning(
-            "SQL execution error for agent %r [ref %s]: %s",
+        summary = short_error_text(result.sql_result.error)
+        _log.warning("SQL execution error for agent %r [ref %s]: %s", agent_id, reference, summary)
+        _log.debug(
+            "SQL execution error for agent %r [ref %s], in full: %s",
             agent_id,
             reference,
             result.sql_result.error,
         )
-        summary = short_error_text(result.sql_result.error)
         parts.append(f"\n\n⚠ SQL execution error: {summary} (reference {reference})")
 
     if result.sql_result and not result.sql_result.error and result.sql_result.rows:

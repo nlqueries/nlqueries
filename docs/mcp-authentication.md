@@ -288,10 +288,13 @@ When `query` fails, its reply gives the first line of the error and a short
 reference, for example `⚠ SQL execution error: (psycopg.errors.UndefinedTable)
 relation "orders" does not exist (reference 3f9a1c07)`. A driver's error quotes
 what it was sent on the lines after its first: the statement, its parameters,
-sometimes the connection string. Those lines stay out of the reply. The full
-error is logged by `nlqueries.mcp_server.server` with the same reference
-(`[ref 3f9a1c07]`), at `WARNING` for an error the database returned and at
-`ERROR`, with the traceback, for a failure anywhere else in the query.
+sometimes the connection string. Those lines stay out of the reply. The
+`nlqueries.mcp_server.server` logger records the failure with the same
+reference (`[ref 3f9a1c07]`). For an error the database returned, the
+`WARNING` record carries the same first line, and the full error is logged at
+`DEBUG` under that reference only, since a log is often read more widely than
+the connectors file. A failure anywhere else in the query is logged at
+`ERROR`, with the traceback.
 
 A hybrid answer follows the same rule. When its query fails, the SQL part
 says `this query failed:` with the first line of the error only, both in the
