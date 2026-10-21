@@ -33,6 +33,7 @@ events gets a request id of its own.
 from __future__ import annotations
 
 import contextlib
+import errno
 import functools
 import inspect
 import json
@@ -292,7 +293,7 @@ def _execution_fields(
     else:
         outcome = "ok"
 
-    return {
+    fields: dict[str, Any] = {
         "at": datetime.now(UTC).isoformat(),
         "principal": context.principal,
         "source": context.source,
@@ -311,6 +312,14 @@ def _execution_fields(
         # a database error's text often does.
         "error_class": type(error).__name__ if error is not None else None,
     }
+    # A wrapper that rewrote the statement (a row filter's predicate, say)
+    # reports the text it sent. The record says that something else ran and
+    # which bytes, still without the text.
+    executed = result.executed_sql if result is not None else None
+    if executed is not None and executed != sql:
+        fields["executed_sql_sha256"] = digest_of(executed)
+        fields["executed_sql_bytes"] = len(executed.encode("utf-8", errors="surrogatepass"))
+    return fields
 
 
 def connector_identity(connector: DatabaseConnector) -> tuple[str, str | None]:
@@ -369,12 +378,15 @@ def _write(line: str) -> None:
     One ``write`` per line, on a descriptor opened with ``O_APPEND``, so lines
     from concurrent writers do not interleave. ``O_BINARY`` where the platform
     has it, so each line ends with exactly ``\\n`` on Windows too.
+    ``O_NONBLOCK`` too, so a FIFO at the path with nobody reading it fails the
+    open at once (``ENXIO``) rather than blocking every query on the lock.
 
     The file has to be one this process can vouch for, or nothing is written:
 
     - a symbolic link at the path is not followed (``O_NOFOLLOW`` where the
       platform has it), so the open fails rather than appending to wherever
       the link points;
+    - anything but a regular file (a FIFO, a device) is refused;
     - a file owned by another user is refused, where ``os.getuid`` exists;
     - a file still readable or writable by group or others after narrowing is
       refused, on POSIX.
@@ -393,6 +405,7 @@ def _write(line: str) -> None:
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
     )
     with _write_lock:
         try:
@@ -406,12 +419,12 @@ def _write(line: str) -> None:
             finally:
                 os.close(fd)
         except OSError as exc:
-            _report(
-                path,
-                f"could not be written ({exc.strerror or type(exc).__name__}; a symbolic "
-                "link at that path is not followed)",
-                exc_info=True,
-            )
+            reason = exc.strerror or type(exc).__name__
+            if exc.errno in _SYMLINK_ERRNOS:
+                # What O_NOFOLLOW reports for a link at the path: ELOOP on Linux
+                # and macOS, EMLINK on FreeBSD.
+                reason += "; a symbolic link at that path is not followed"
+            _report(path, f"could not be written ({reason})", exc_info=True)
             return
         if refusal is not None:
             _report(path, f"was refused: {refusal}")
@@ -439,14 +452,20 @@ def _refusal(fd: int) -> str | None:
     refuses it only if that did not take.
     """
     info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        return "it is not a regular file"
     getuid = getattr(os, "getuid", None)
     if getuid is not None and info.st_uid != getuid():
         return f"it is owned by uid {info.st_uid}, not by this process's uid {getuid()}"
     if not _POSIX_MODES:  # pragma: no cover - Windows, where the bits are not enforced
         return None
     if info.st_mode & _SHARED:
-        with contextlib.suppress(OSError):
-            os.fchmod(fd, _FILE_MODE)
+        # Through getattr: `os.fchmod` is not declared on Windows before 3.13,
+        # and this has to type-check there too.
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            with contextlib.suppress(OSError):
+                fchmod(fd, _FILE_MODE)
         info = os.fstat(fd)
         if info.st_mode & _SHARED:
             return (
@@ -457,3 +476,6 @@ def _refusal(fd: int) -> str | None:
 
 
 _SHARED = stat.S_IRWXG | stat.S_IRWXO
+
+#: The errors ``O_NOFOLLOW`` gives for a symbolic link at the path.
+_SYMLINK_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK})

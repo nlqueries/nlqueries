@@ -14,14 +14,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `library`), principal when known, agent, connector type and dialect, a
   SHA-256 digest and the byte length of the statement, the SQL policy's
   version and decision, and the outcome, row count, truncation, duration and
-  exception class. It never carries the question, the SQL text, the rows or a
+  exception class, plus the digest and length of the statement that actually
+  ran when a connector wrapper rewrote it. It never carries the question, the SQL text, the rows or a
   credential. Authorization decisions now carry the request id and surface as
   well, so a tool call's decision and the statements it ran share an id, and
   both kinds of event put their JSON (sorted keys, one line, control
   characters escaped) in the log message as well as in `extra`. Set
   `NLQ_AUDIT_LOG` to a path to have each event appended to it as one JSON
   line; the file is created at mode `0600`. A symbolic link at that path is
-  not followed, and a file owned by another user, or one group or others can
+  not followed, anything but a regular file is refused without blocking, and
+  a file owned by another user, or one group or others can
   still reach after narrowing to `0600`, gets no events and one warning on
   `nlqueries.audit.sink`. See "Audit events" in
   `docs/configuration.md`. `SQLAlchemyConnector.dialect_name` is new: the

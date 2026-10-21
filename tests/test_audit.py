@@ -9,9 +9,11 @@ place the record is written.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import stat
 import sys
@@ -256,6 +258,49 @@ class TestExecutionEvents:
         assert connector.dialect_name == "sqlite"
         assert audit.connector_identity(connector) == ("sqlalchemy", "sqlite")
 
+    def test_a_rewritten_statement_records_what_ran(self, caplog) -> None:
+        """A wrapper that changed the statement reports the text it sent; the
+        record gets that text's digest and length, never the text."""
+        ran = f"SELECT '{_SECRET}' AS marker WHERE 1 = 1"
+
+        class Rewriting(SQLiteConnector):
+            def _execute_query(self, sql, timeout_seconds=None, max_rows=None):
+                result = super()._execute_query(ran, timeout_seconds, max_rows)
+                result.executed_sql = ran
+                return result
+
+        inner = Rewriting()
+        inner.connect({"database": ":memory:"})
+        connector = PermittedConnector(inner, ExecutionPolicy.execute_read_only())
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            connector.execute_query(_SQL)
+
+        (event,) = _events(caplog, "query_execution")
+        assert event["sql_sha256"] == hashlib.sha256(_SQL.encode()).hexdigest()
+        assert event["executed_sql_sha256"] == hashlib.sha256(ran.encode()).hexdigest()
+        assert event["executed_sql_bytes"] == len(ran.encode())
+        assert _SECRET not in caplog.text
+
+    def test_a_statement_that_ran_as_asked_has_no_executed_fields(self, caplog) -> None:
+        class Echoing(SQLiteConnector):
+            def _execute_query(self, sql, timeout_seconds=None, max_rows=None):
+                result = super()._execute_query(sql, timeout_seconds, max_rows)
+                result.executed_sql = sql
+                return result
+
+        inner = Echoing()
+        inner.connect({"database": ":memory:"})
+        connector = PermittedConnector(inner, ExecutionPolicy.execute_read_only())
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            connector.execute_query(_SQL)
+            _permitted().execute_query(_SQL)
+
+        for event in _events(caplog, "query_execution"):
+            assert "executed_sql_sha256" not in event
+            assert "executed_sql_bytes" not in event
+
     def test_a_failure_to_record_does_not_fail_the_query(self, caplog, monkeypatch) -> None:
         def broken(*_args: Any) -> dict[str, Any]:
             raise RuntimeError("recording broke")
@@ -364,6 +409,26 @@ class TestTheFileSink:
             "query_execution",
         ]
 
+    def test_a_full_disk_is_reported_without_the_symlink_clause(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        path = tmp_path / "audit.jsonl"
+        monkeypatch.setattr(config, "AUDIT_LOG", str(path))
+        connector = _permitted()
+
+        def full(_fd: int, _data: bytes) -> int:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        with caplog.at_level(logging.WARNING, logger="nlqueries.audit.sink"):
+            monkeypatch.setattr(audit.os, "write", full)
+            connector.execute_query(_SQL)
+            monkeypatch.undo()
+
+        (warned,) = [r for r in caplog.records if r.name == "nlqueries.audit.sink"]
+        message = warned.getMessage()
+        assert f"could not be written ({os.strerror(errno.ENOSPC)})" in message
+        assert "symbolic" not in message
+
     def test_an_existing_file_is_appended_to_and_narrowed(self, tmp_path, monkeypatch) -> None:
         path = tmp_path / "audit.jsonl"
         path.write_text('{"earlier":true}\n')
@@ -418,6 +483,54 @@ class TestTheFileSinkRefusesFilesItCannotVouchFor:
         assert "not followed" in warned.getMessage()
         # Still logged, though not to the file.
         assert len(_events(caplog, "query_execution")) == 2
+
+    def test_a_fifo_nobody_reads_fails_at_once(self, tmp_path, monkeypatch, caplog) -> None:
+        """Opened without O_NONBLOCK, a FIFO with no reader blocks the open
+        forever, and every later query waits on the sink's lock behind it."""
+        fifo = tmp_path / "audit.fifo"
+        os.mkfifo(fifo)
+        monkeypatch.setattr(config, "AUDIT_LOG", str(fifo))
+        connector = _permitted()
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            worker = threading.Thread(target=connector.execute_query, args=(_SQL,), daemon=True)
+            worker.start()
+            worker.join(timeout=5)
+            blocked = worker.is_alive()
+            if blocked:
+                # Unblock it and stop here, so a failure does not hang the
+                # session: any further write would block the same way.
+                reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+                worker.join(timeout=5)
+                os.close(reader)
+                pytest.fail("the write blocked on a FIFO with no reader")
+            connector.execute_query(_SQL)
+
+        (warned,) = self._refused(caplog)
+        assert "could not be written" in warned.getMessage()
+        assert "symbolic" not in warned.getMessage()
+        assert len(_events(caplog, "query_execution")) == 2
+
+    def test_a_fifo_somebody_reads_gets_nothing(self, tmp_path, monkeypatch, caplog) -> None:
+        fifo = tmp_path / "audit.fifo"
+        os.mkfifo(fifo)
+        reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            monkeypatch.setattr(config, "AUDIT_LOG", str(fifo))
+
+            with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+                _permitted().execute_query(_SQL)
+
+            try:
+                received = os.read(reader, 4096)
+            except BlockingIOError:
+                received = b""
+        finally:
+            os.close(reader)
+
+        assert received == b""
+        (warned,) = self._refused(caplog)
+        assert "not a regular file" in warned.getMessage()
 
     def test_a_file_that_cannot_be_narrowed_gets_no_events(
         self, tmp_path, monkeypatch, caplog
