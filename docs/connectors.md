@@ -10,11 +10,13 @@ Give NLQueries a login that cannot write and cannot read more than you would put
 in an answer. What the connectors do on their side differs by engine. TLS: the
 `postgres` connector requires it unless its entry sets a weaker `ssl_mode`, the
 generic connector applies `ssl_mode`/`ssl_ca_cert` only to libpq PostgreSQL URLs,
-`redshift` always connects with `ssl=True`, and `mssql` and `connect mysql` set no
-TLS options at all ([Transport security](database-hardening.md#transport-security)).
+`redshift` always connects with `ssl=True`, `mssql` encrypts only when its
+`encryption` setting is `require` (the default, `request`, leaves the session unencrypted unless the server forces encryption, [below](#sql-server--azure-sql)),
+and `connect mysql` sets no TLS options at all ([Transport security](database-hardening.md#transport-security)).
 Read-only: PostgreSQL and Redshift are asked for a read-only transaction (directly
-or through the generic connector), and SQLite and DuckDB files are opened
-read-only; every other engine gets at most a transaction that is never committed
+or through the generic connector), as are MySQL and MariaDB through the generic
+connector, and SQLite and DuckDB files are opened read-only; every other engine
+gets at most a transaction that is never committed
 ([What each connector enforces](database-hardening.md#what-each-connector-enforces)).
 None of this limits *what* the role can read, and none of it is a substitute for a
 least-privilege grant.
@@ -22,12 +24,11 @@ least-privilege grant.
 How much the connector can enforce differs by engine, and the gap worth knowing
 is **DDL**. A rolled-back transaction undoes an `INSERT` on a transactional
 table; it does not undo a `CREATE` or `DROP` on an engine that commits
-implicitly around DDL. (Nor does it undo an `INSERT` into a **MyISAM or MEMORY**
-table on MySQL or MariaDB — those engines have no transaction to roll back, and
-the server reports only warning 1196.) That
-is **Snowflake**, and also **MySQL, MariaDB and Oracle** behind the generic
-SQLAlchemy connector; **SQLite** is a third variant, running DDL outside the
-transaction altogether. **BigQuery** has no transaction to roll back at all, so a
+implicitly around DDL. That is **Snowflake**, and also **MySQL, MariaDB and
+Oracle** behind the generic SQLAlchemy connector: on MySQL and MariaDB the
+read-only transaction refuses every write to a table, MyISAM and MEMORY tables
+included, but a DDL statement commits implicitly, which ends that transaction,
+and then runs. **BigQuery** has no transaction to roll back at all, so a
 non-`SELECT` statement type is logged after the job has run rather than
 prevented. On all of these the grant is doing work the connector cannot, which is
 why the role matters more than the transaction does.
@@ -41,14 +42,14 @@ why the role matters more than the transaction does.
 | PostgreSQL | included | `pg_stat_statements` extension: `SELECT`/`WITH` statements recorded for this database, most-called first (see below for the privilege needed to see other roles' statements) |
 | MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone. It sets no TLS; see below |
 | Snowflake | `pip install "nlqueries-core[snowflake]"` | `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` (requires `IMPORTED PRIVILEGES` on the `SNOWFLAKE` database); if that cannot be read, the `INFORMATION_SCHEMA.QUERY_HISTORY()` table function, which covers the last 7 days only. If neither can be read, `process-history` stops with an error |
-| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (requires `bigquery.jobs.listAll`, for example through `roles/bigquery.resourceViewer`), completed `SELECT` jobs only, read from one region: see below |
+| BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (requires `bigquery.jobs.listAll`, for example through `roles/bigquery.resourceViewer`), completed `SELECT` jobs only, read from one region, and only jobs that read a table in the `--dataset-id` dataset when one is set: see below |
 | Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`; provisioned clusters only, see below) |
-| SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`) |
+| SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`), limited to plans compiled in the connected database |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
 | SQLite | included (stdlib `sqlite3`) | None — file-based, no persisted history |
 | Generic SQLAlchemy | included (SQLAlchemy is a base dependency); install the URL's own driver | None — no portable source across dialects |
 
-The generic `sqlalchemy` type reaches anything with a SQLAlchemy dialect installed — MariaDB, Oracle, and the engines above if you would rather supply a URL than the discrete flags. It is configured by `--url` rather than the per-field flags, and introspects schema through SQLAlchemy's dialect-agnostic inspector rather than engine-specific catalog SQL. That reflection is narrower than the dedicated connectors': it reads the tables (not views) of the connection's default schema only, keeps column comments as descriptions, and leaves row counts and table descriptions empty. `--password` and `--password-env` still apply, and are the better habit — a password inside the URL is a command-line argument and lands in shell history. See [cli-reference.md](cli-reference.md#connect).
+The generic `sqlalchemy` type reaches anything with a SQLAlchemy dialect installed — MariaDB, Oracle, and the engines above if you would rather supply a URL than the discrete flags, except SQLite and DuckDB: a `sqlite://` or `duckdb://` URL is refused with a pointer to the dedicated connector, which opens the file read-only and sandboxed where this one would not. It is configured by `--url` rather than the per-field flags, and introspects schema through SQLAlchemy's dialect-agnostic inspector rather than engine-specific catalog SQL. That reflection is narrower than the dedicated connectors': it reads the tables (not views) of the connection's default schema only, keeps column comments as descriptions, and leaves row counts and table descriptions empty. `--password` and `--password-env` still apply, and are the better habit — a password inside the URL is a command-line argument and lands in shell history. See [cli-reference.md](cli-reference.md#connect).
 
 See [cli-reference.md](cli-reference.md#connect) for `connect` examples per type.
 
@@ -61,6 +62,10 @@ nlqueries connect sqlalchemy --url "mysql+pymysql://alice@db.internal:3306/shop?
 ```
 
 Configuring the server to require TLS (`require_secure_transport=ON`) refuses an unencrypted session whichever way the client connects.
+
+### MySQL and MariaDB: what the generic connector changes in the URL
+
+Whichever way a MySQL or MariaDB URL arrives, the generic connector opens it with `LOAD DATA LOCAL INFILE` disabled (`local_infile=0`, or `allow_local_infile=False` for `mysql+mysqlconnector`) and drops any `local_infile` or `allow_local_infile` parameter from the URL: with it on, the server can ask the client to upload any file it can read. It also clears the multi-statements bit (`65536`) from a `client_flag` or `client_flags` parameter, so the server will not run a second `;`-separated statement; a flag value that is not an integer is refused. Every other parameter, `init_command` included, is passed on as written. Each query runs in a transaction opened with `START TRANSACTION READ ONLY` and rolled back afterwards.
 
 ### PostgreSQL — enabling query history capture
 
@@ -91,6 +96,12 @@ Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't reco
 ### BigQuery: query history region
 
 `JOBS_BY_PROJECT` is a regional view, and the connector reads one region of it: the location of the `--dataset-id` dataset when one is given and its location can be read, otherwise `region-us`. Jobs that ran in another location are not in that view, so for a project whose data is outside the US multi-region, register the connector with `--dataset-id`.
+
+With `--dataset-id` set, `process-history` also keeps only the jobs whose `referenced_tables` include a table in that dataset, so queries against the project's other datasets do not reach the knowledge base. A `dataset_id` written `project.dataset` is matched in that project. Without one, the connector covers the whole project and so does its history.
+
+### BigQuery: cost cap
+
+Set `BIGQUERY_MAX_BYTES_BILLED` to a number of bytes and every query job that answers a question carries it as `maximum_bytes_billed`: BigQuery fails a job that would bill more before running it, and the answer reports that error. Unset, which is the default, there is no cap. Schema and history reads are not capped. See [configuration.md](configuration.md).
 
 ### BigQuery: authentication
 
@@ -165,17 +176,30 @@ to do before it answers the first connection after an idle period.
 
 ### SQL Server / Azure SQL
 
-Use `alice@my-server` as `--user` for Azure SQL with SQL authentication — the same connector covers on-premises SQL Server and Azure SQL since the T-SQL dialect is identical. If the account lacks `VIEW SERVER STATE`/`VIEW DATABASE STATE`, `process-history` stops with an error that names the missing permission; grant it, or build the knowledge base from the schema alone with `export-kb`.
+Use `alice@my-server` as `--user` for Azure SQL with SQL authentication — the same connector covers on-premises SQL Server and Azure SQL since the T-SQL dialect is identical. If the account lacks `VIEW SERVER STATE`/`VIEW DATABASE STATE`, `process-history` stops with an error that names the missing permission; grant it, or build the knowledge base from the schema alone with `export-kb`. History is limited to plans compiled in the connected database, read from each plan's `dbid` attribute, so a login with `VIEW SERVER STATE` does not mine the server's other databases.
+
+**Encryption.** The connector passes pymssql's `encryption` setting on every connection, from the connector's `connectors.yaml` entry: `require`, `request` (the default) or `off`; any other value is refused when the connector opens. Measured against SQL Server 2022, which offers TLS without forcing it, only `require` encrypted the session; `request` and `off` left it unencrypted, as the connector did before it passed the setting. Set `require` once the server is known to offer TLS; it refuses a server that does not. pymssql applies the setting from 2.4.3, which the `mssql` extra now requires: an older pymssql accepts it and connects unencrypted, so with one installed the connector refuses `require` and `nlqueries health` says the setting is not applied. There is no `connect` flag for it, and running `connect` again for the same connector rewrites its entry, so add the key back afterwards:
+
+```yaml
+mssql:sql.internal:shop:
+  db_type: mssql
+  # ... the other keys `connect` wrote ...
+  encryption: require
+```
+
+Whether the server's certificate is checked is FreeTDS configuration (a `ca file` in `freetds.conf`), which the connector does not set; under `require` it connected to a server presenting a self-signed certificate. `nlqueries health` prints the level as a transport line, always as a warning for that reason.
 
 ### DuckDB
 
 No query history across connections — `process-history` always returns an empty list; the KB comes from schema introspection only. Primary keys are detected via `duckdb_constraints()`; foreign keys are skipped (rarely declared in DuckDB analytics workloads).
 
+A query too large for memory spills to `temp_directory`, which the connector sets to a directory it creates for the process under the system temporary directory, readable only by the user running NLQueries and removed when the process exits; DuckDB's own default is `<database>.tmp` beside the database file.
+
 ### SQLite
 
 Built on the standard-library `sqlite3` driver, so no extra install is needed. The `database` credential is a file path (`/data/app.db`) or `:memory:` for a transient in-process database — there is no host, port, or credentials. No query history (`process-history` returns an empty list); the KB is built from schema introspection via `PRAGMA table_info` (columns + primary keys) and `PRAGMA foreign_key_list` (foreign keys). SQLite has no server-side statement timeout, so a runaway query is bounded best-effort by a watchdog that interrupts it.
 
-> Already have a SQLite URL? The generic `sqlalchemy` connector also reaches SQLite (`--url "sqlite:///path.db"`); the dedicated `sqlite` type just gives you the simpler file-path form.
+> Have a SQLite URL? Register the file with the `sqlite` type instead; the generic `sqlalchemy` connector refuses `sqlite://` URLs, because it would open the file read-write.
 
 ---
 

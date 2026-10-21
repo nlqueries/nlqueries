@@ -14,8 +14,7 @@ there is none.
 
 Two of the recorded mechanisms stop short of covering DDL, and say so: DDL is
 not transactional on Snowflake, and behind the generic SQLAlchemy connector
-MySQL, MariaDB and Oracle commit implicitly around it while SQLite runs it
-outside the transaction.
+MySQL, MariaDB and Oracle commit implicitly around it.
 
 ``verified_here`` distinguishes a mechanism exercised against a real engine by
 this repository's tests from one asserted against a fake driver or only
@@ -201,23 +200,20 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
     "sqlalchemy": DialectCapabilities(
         dialect="sqlalchemy",
         read_only_mechanism=(
-            "never committed, rolled back either way; plus SET TRANSACTION READ ONLY on "
-            "postgresql and redshift"
+            "never committed, rolled back either way; plus a read-only transaction on "
+            "postgresql, redshift, mysql and mariadb"
         ),
         not_covered=(
-            "DDL, since MySQL, MariaDB and Oracle commit implicitly around it and SQLite "
-            "runs it outside the transaction; nor MySQL's non-transactional storage "
-            "engines, where an INSERT into a MyISAM or MEMORY table survives with only "
-            "warning 1196"
+            "DDL, since MySQL, MariaDB and Oracle commit implicitly around it, which on "
+            "MySQL and MariaDB also ends the read-only transaction"
         ),
         statement_timeout_mechanism="a best-effort per-dialect SET, where the dialect is known",
         verified_here=False,
         operator_requirement=(
             "This connector reaches any engine SQLAlchemy supports, so the rollback is the "
-            "only thing that holds everywhere. MySQL and MariaDB get no read-only transaction: "
-            "their form configures subsequent transactions and is refused inside an open one, "
-            "and SQLAlchemy has already opened one by the time the connector can send "
-            "anything. The restriction must come from the privileges granted to the login."
+            "only thing that holds everywhere. PostgreSQL, Redshift, MySQL and MariaDB also "
+            "get a read-only transaction; other engines get the rollback alone. The "
+            "restriction must come from the privileges granted to the login."
         ),
     ),
 }

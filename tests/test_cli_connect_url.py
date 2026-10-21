@@ -106,8 +106,15 @@ def test_a_failed_connection_prints_the_databases_reason(
     assert "returned False" not in result.output
 
 
-def test_connects_to_a_real_sqlite_url(tmp_path: Path, connectors_file: Path) -> None:
-    """No stub: the whole path, against a database that actually exists."""
+def test_a_real_sqlite_url_is_sent_to_the_sqlite_connector(
+    tmp_path: Path, connectors_file: Path
+) -> None:
+    """No stub: the whole path, against a database that actually exists.
+
+    The generic connector refuses a SQLite URL, because the dedicated `sqlite`
+    connector opens the file read-only and this one would not; the command says
+    which connector to use and registers nothing.
+    """
     db = tmp_path / "shop.db"
     sqlite3.connect(db).close()
 
@@ -115,10 +122,11 @@ def test_connects_to_a_real_sqlite_url(tmp_path: Path, connectors_file: Path) ->
         cli, ["connect", "sqlalchemy", "--url", f"sqlite:///{db.as_posix()}", "--alias", "gen"]
     )
 
-    assert result.exit_code == 0, result.output
-    written = connectors_file.read_text(encoding="utf-8")
-    assert "db_type: sqlalchemy" in written
-    assert "alias: gen" in written
+    assert result.exit_code != 0, result.output
+    assert "'sqlite' connector" in result.output
+    assert not connectors_file.exists() or "alias: gen" not in connectors_file.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_url_credential_reaches_the_connector(

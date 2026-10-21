@@ -6,6 +6,28 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`BIGQUERY_MAX_BYTES_BILLED`: a cost cap for BigQuery answers.** Set to a
+  number of bytes, it is carried on every query job that answers a question as
+  `maximum_bytes_billed`, so BigQuery fails a job that would bill more before
+  running it and the answer reports the error. Unset, the default, means no
+  cap, as before. A value that is not a whole number greater than zero stops
+  the process at startup with an error naming the variable, rather than
+  leaving the cap off. Schema and query-history reads are not capped. See
+  [docs/connectors.md](docs/connectors.md#bigquery-cost-cap).
+- **SQL Server encryption setting.** The `mssql` connector passes pymssql's
+  `encryption` argument on every connection, from a new `encryption` key in
+  the connector's entry: `require`, `request` or `off`, defaulting to
+  `request`. Any other value is refused when the connector opens. Measured
+  against SQL Server 2022, which offers TLS without forcing it, only `require`
+  encrypts the session; `request` and `off` leave it unencrypted, as before.
+  pymssql applies the setting only from 2.4.3, so the `mssql` extra now
+  requires `pymssql>=2.4.3`; with an older pymssql installed the connector
+  refuses `require`, which that release would ignore. `nlqueries health`
+  prints the level as a transport line for `mssql` connectors, always as a
+  warning, since certificate verification is FreeTDS configuration the
+  connector does not set (under `require` it accepted a self-signed
+  certificate), and says when the installed pymssql ignores the setting. See
+  [docs/database-hardening.md](docs/database-hardening.md#sql-server).
 - **SBOMs for each release.** The Docker image is built with a BuildKit SBOM
   attestation, so each platform in a pushed `nlqueries/core` manifest carries
   an SPDX SBOM (`docker buildx imagetools inspect nlqueries/core:<version>
@@ -170,6 +192,77 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The generic `sqlalchemy` connector refuses SQLite and DuckDB URLs.** A
+  `sqlite://` or `duckdb://` URL is refused when the connector opens, with a
+  message naming the dedicated `sqlite` or `duckdb` connector, which opens the
+  file read-only and sandboxed. Through the generic connector the same file
+  was opened read-write, with `ATTACH` and DuckDB's file functions available
+  to a query. A connector registered that way must be registered again with
+  its dedicated type.
+- **MySQL and MariaDB run each query in a read-only transaction, and their
+  URLs lose two settings.** Through the generic connector, each query now
+  starts with `START TRANSACTION READ ONLY`, so the server refuses a write to
+  any table, MyISAM and MEMORY tables included, where the rollback alone left
+  such a write standing. DDL still commits implicitly. `LOAD DATA LOCAL
+  INFILE` is disabled (`local_infile=0`, or `allow_local_infile=False` for
+  `mysql+mysqlconnector`) and any URL parameter enabling it is dropped; the
+  multi-statements bit is cleared from a `client_flag` or `client_flags`
+  parameter, and a non-integer flag is refused. `init_command` and the other
+  parameters are unchanged. Measured against MySQL 8.0 and 8.4 and MariaDB
+  10.11; see
+  [docs/database-hardening.md](docs/database-hardening.md#what-each-connector-enforces).
+- **The SQL policy refuses file reads, and its version is now 3.** The
+  file-reading functions sqlglot models (`read_csv`, `read_parquet`, and
+  Snowflake's `DIRECTORY` and `TO_FILE`) are refused wherever they appear, on
+  every dialect; `read_csv` was previously allowed because sqlglot recognises
+  it. So is a string literal used as a table name, such as DuckDB's
+  `FROM 'orders.csv'`, told apart from a quoted identifier (`FROM "orders"`) by
+  the token it was parsed from. If the installed sqlglot records no token
+  positions on table names, a statement with both a string and a table name is
+  refused, since the rule cannot tell them apart. Cached answers signed under
+  policy version 2 no longer verify and are regenerated.
+- **Query history is limited to the connector's own database or dataset.** SQL
+  Server history keeps only plans compiled in the connected database (the
+  plan's `dbid` attribute, which unlike `dm_exec_sql_text.dbid` is set for ad
+  hoc statements), so a login with `VIEW SERVER STATE` no longer mines the
+  server's other databases. SQL Server history also comes back at all now: its
+  rows were read after the connection had been returned to the pool, and
+  against a real server the result was always empty. BigQuery history, when the connector has a
+  `dataset_id`, keeps only jobs whose `referenced_tables` include a table in
+  that dataset; the dataset and project are bound as query parameters.
+- **Redshift queries on one connector run one at a time.** The connector holds
+  one connection, and two overlapping queries could send a second
+  `SET TRANSACTION READ ONLY` inside the first one's transaction, where
+  Redshift refuses it, or have the first one's rollback end the second's
+  transaction. The read-only, statement and rollback sequence is now held
+  under a lock, with the same bounded wait as Snowflake's: the statement
+  timeout plus 30 seconds, or five minutes with no statement timeout, after
+  which the query fails with an error saying the connector was busy.
+- **DuckDB spills to a private directory.** The connector sets `temp_directory`
+  to a directory it creates once per process under the system temporary
+  directory, with mode `0700`, removed when the process exits. DuckDB's default
+  is `<database>.tmp` beside the database file. External access is now switched
+  off and the configuration locked by statement right after connecting; a
+  second connector on a file already open in the process shares that locked
+  instance and is accepted once the sandbox is confirmed to hold.
+- **Snowflake catalog queries quote the database name and bind their values.**
+  The configured database is written as a quoted identifier, upper-cased first
+  when it is a plain unquoted name so it still names the database Snowflake
+  opened (`analytics` becomes `"ANALYTICS"`, a name given in double quotes is
+  kept exactly), and the schema names and the database name in the
+  `POLICY_REFERENCES` lookup are bound rather than interpolated. A database
+  configured in lower case now matches its `POLICY_REFERENCES` rows, which it
+  did not before.
+- **`analyze_query` checks the statement with the SQL policy before running
+  `EXPLAIN ANALYZE` on it.** `EXPLAIN ANALYZE` executes the statement it wraps;
+  a statement the policy refuses is no longer explained, and the analysis
+  comes back with no plan.
+- **`nlqueries query` no longer executes SQL itself.** The orchestrator already
+  executes the generated SQL when execution is asked for. The command had a
+  fallback that ran the statement again on a connector it opened directly
+  whenever the orchestrator returned no result, which included the
+  orchestrator declining to run it. When the orchestrator returns no rows, the
+  command now shows none.
 - **Reference data renders on one line in prompts.** Table and column
   descriptions, glossary terms and capsule intents have their whitespace
   collapsed and are capped at 300 characters, so a description holding

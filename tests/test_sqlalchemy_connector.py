@@ -4,6 +4,10 @@ tests.test_sqlalchemy_connector
 The generic URL-driven SQLAlchemyConnector, exercised against a file-backed
 SQLite database (built in — no optional driver needed), so its dialect-agnostic
 reflection and execution paths are covered end to end.
+
+`connect` refuses a SQLite URL -- SQLite has a dedicated connector -- so the
+engine is built here and handed to the connector directly. Everything after
+`connect` is the same code whichever engine the URL named.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from nlqueries.connectors.sqlalchemy_connector import (
     SQLAlchemyConnector,
     _apply_statement_timeout,
 )
+from sqlalchemy import create_engine
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import DatabaseError
 
@@ -29,7 +34,7 @@ from tests.conftest import granted
 def _connect(tmp_path: Path) -> SQLAlchemyConnector:
     db = tmp_path / "t.db"
     c = granted(SQLAlchemyConnector())
-    c.connect({"url": f"sqlite:///{db}"})
+    c._engine = create_engine(f"sqlite:///{db}")  # noqa: SLF001
     return c
 
 
@@ -447,3 +452,111 @@ def test_execute_query_returns_rows_and_surfaces_errors(tmp_path: Path) -> None:
 
 def test_query_history_is_empty(tmp_path: Path) -> None:
     assert _connect(tmp_path).extract_query_history() == []
+
+
+# ---------------------------------------------------------------------------
+# URLs this connector refuses or changes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "dedicated"),
+    [
+        ("sqlite:///data/app.db", "sqlite"),
+        ("sqlite://", "sqlite"),
+        ("sqlite+pysqlite:///data/app.db", "sqlite"),
+        ("duckdb:///data/warehouse.duckdb", "duckdb"),
+    ],
+)
+def test_sqlite_and_duckdb_urls_are_refused(url: str, dedicated: str) -> None:
+    """Each has a connector of its own that opens the file read-only and, for
+    DuckDB, with file access switched off. Here the same URL opened the file
+    read-write with `ATTACH` and DuckDB's file-reading functions available."""
+    connector = SQLAlchemyConnector()
+
+    with (
+        patch.object(sqlalchemy_connector_module, "create_engine") as create,
+        pytest.raises(ValueError, match=f"dedicated '{dedicated}' connector"),
+    ):
+        connector.connect({"url": url})
+
+    create.assert_not_called()
+
+
+def _engine_args(url: str) -> tuple[Any, dict[str, Any]]:
+    """The URL and connect args `connect` builds its engine from."""
+    with patch.object(sqlalchemy_connector_module, "create_engine") as create:
+        SQLAlchemyConnector().connect({"url": url})
+    return create.call_args.args[0], create.call_args.kwargs["connect_args"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "mysql+pymysql://u:p@db/shop",
+        "mysql://u:p@db/shop",
+        "mariadb+pymysql://u:p@db/shop",
+        "mysql+pymysql://u:p@db/shop?local_infile=1",
+    ],
+)
+def test_mysql_urls_get_local_infile_off(url: str) -> None:
+    """`LOAD DATA LOCAL INFILE` has the client upload a file the server names.
+
+    Set in the connect args, which SQLAlchemy lets win over the URL, and taken
+    out of the URL too so the URL does not say otherwise."""
+    engine_url, connect_args = _engine_args(url)
+
+    assert connect_args["local_infile"] == 0
+    assert "local_infile" not in engine_url.query
+
+
+def test_mysql_connector_python_gets_its_own_spelling() -> None:
+    engine_url, connect_args = _engine_args(
+        "mysql+mysqlconnector://u:p@db/shop?allow_local_infile=true"
+    )
+
+    assert connect_args == {"allow_local_infile": False}
+    assert "allow_local_infile" not in engine_url.query
+
+
+@pytest.mark.parametrize(
+    ("param", "given", "kept"),
+    [
+        # CLIENT_MULTI_STATEMENTS alone.
+        ("client_flag", 65536, 0),
+        # With CLIENT_FOUND_ROWS (2) and CLIENT_MULTI_RESULTS (131072): only the
+        # multi-statements bit goes.
+        ("client_flag", 65536 | 2 | 131072, 2 | 131072),
+        ("client_flags", 65536 | 2, 2),
+        # Nothing to strip.
+        ("client_flag", 2, 2),
+    ],
+)
+def test_the_multi_statements_flag_is_stripped(param: str, given: int, kept: int) -> None:
+    engine_url, _ = _engine_args(f"mysql+pymysql://u:p@db/shop?{param}={given}")
+
+    assert engine_url.query[param] == str(kept)
+
+
+def test_init_command_is_left_alone() -> None:
+    engine_url, _ = _engine_args(
+        "mysql+pymysql://u:p@db/shop?init_command=SET+time_zone%3D%27%2B00%3A00%27"
+    )
+
+    assert engine_url.query["init_command"] == "SET time_zone='+00:00'"
+
+
+def test_a_malformed_client_flag_is_refused() -> None:
+    with (
+        patch.object(sqlalchemy_connector_module, "create_engine") as create,
+        pytest.raises(ValueError, match="client_flag must be an integer"),
+    ):
+        SQLAlchemyConnector().connect({"url": "mysql+pymysql://u:p@db/shop?client_flag=lots"})
+    create.assert_not_called()
+
+
+def test_other_backends_are_not_given_mysql_settings() -> None:
+    engine_url, connect_args = _engine_args("postgresql+psycopg2://u:p@db/shop")
+
+    assert "local_infile" not in connect_args
+    assert engine_url == "postgresql+psycopg2://u:p@db/shop", "the URL was rebuilt"

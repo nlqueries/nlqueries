@@ -17,6 +17,7 @@ found existing data on the machine.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,8 @@ duckdb = pytest.importorskip("duckdb", reason="the duckdb package is not install
 from nlqueries.connectors.duckdb import DuckDBConnector  # noqa: E402
 
 pytestmark = pytest.mark.security
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 
 _CANARY = "sec16-canary-contents"
 
@@ -185,3 +188,82 @@ def test_no_credential_reopens_external_access(tmp_path: Path) -> None:
     result = connector.execute_query(f"SELECT * FROM read_csv_auto('{canary.as_posix()}')")
 
     assert result.error is not None, "a credential key reopened external access"
+
+
+def _temp_directory(connector: DuckDBConnector) -> str:
+    result = connector.execute_query("SELECT current_setting('temp_directory')")
+    assert result.error is None, result.error
+    return str(result.rows[0][0])
+
+
+def test_spills_go_to_a_per_process_directory(duckdb_lab, tmp_path: Path) -> None:
+    """Not beside the database, where its default puts them, and not disabled.
+
+    Spilled intermediate results are customer data. Left at the default they are
+    written to `<database>.tmp` wherever the database lives; disabled, any query
+    larger than memory fails instead.
+    """
+    connector, _canary = duckdb_lab
+
+    spill = Path(_temp_directory(connector))
+
+    assert spill.is_dir()
+    assert tmp_path not in spill.parents, "spills are written beside the database"
+
+
+@posix_only
+def test_the_spill_directory_is_private_to_this_user(duckdb_lab) -> None:
+    """Mode 0700 and owned by the process's user, so other local users cannot
+    read what is spilled. POSIX permission bits and `os.getuid` do not exist on
+    Windows."""
+    import os
+    import stat
+
+    connector, _canary = duckdb_lab
+
+    spill = Path(_temp_directory(connector))
+
+    assert stat.S_IMODE(spill.stat().st_mode) == 0o700, "other local users can read spills"
+    assert spill.stat().st_uid == os.getuid()
+
+
+def test_every_connector_in_the_process_shares_it(duckdb_lab) -> None:
+    connector, _canary = duckdb_lab
+    other = granted(DuckDBConnector())
+    other.connect({"database": ":memory:"})
+
+    assert _temp_directory(other) == _temp_directory(connector)
+
+
+def test_a_query_cannot_move_it(duckdb_lab, tmp_path: Path) -> None:
+    connector, _canary = duckdb_lab
+    before = _temp_directory(connector)
+
+    result = connector.execute_query(f"SET temp_directory = '{tmp_path.as_posix()}'")
+
+    assert result.error is not None, "a query re-pointed the spill directory"
+    assert _temp_directory(connector) == before
+
+
+def test_two_connectors_on_one_file_both_connect_and_stay_sandboxed(
+    duckdb_lab, tmp_path: Path
+) -> None:
+    """DuckDB shares one instance per file within a process, so the second
+    connector gets the first one's instance, already locked, and its own
+    sandbox statements are refused. It must still open -- two entries over
+    one warehouse, or a cached connector rebuilt while an old one is in use --
+    and the sandbox must hold for it as for the first."""
+    first, canary = duckdb_lab
+    second = granted(DuckDBConnector())
+    second.connect({"database": str(tmp_path / "lab.duckdb")})
+
+    for connector in (first, second):
+        result = connector.execute_query("SELECT count(*) FROM orders")
+        assert result.error is None, result.error
+        assert result.rows == [[1]]
+
+    read = second.execute_query(f"SELECT * FROM read_csv_auto('{canary.as_posix()}')")
+    assert read.error is not None, "the second connector can read files"
+    assert _CANARY not in str(read.rows)
+    reopen = second.execute_query("SET enable_external_access = true")
+    assert reopen.error is not None, "the second connector can reopen external access"

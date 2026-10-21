@@ -91,11 +91,16 @@ def test_postgresql_is_the_postgres_connector() -> None:
 
 def test_a_mysql_typed_entry_connects_and_answers(tmp_path) -> None:
     """What the loader does with a stored `mysql` entry, against SQLite through
-    the same generic connector (no MySQL server in the test environment)."""
+    the same generic connector (no MySQL server in the test environment).
+
+    `connect` refuses a SQLite URL, so the engine is handed over directly; the
+    class resolved and the execution path are what this checks."""
+    from sqlalchemy import create_engine
+
     cls = connector_class_for("mysql", {"db_type": "mysql"})
     assert cls is not None
     connector = cls()
-    connector.connect({"url": f"sqlite:///{tmp_path / 'shop.db'}"})
+    connector._engine = create_engine(f"sqlite:///{tmp_path / 'shop.db'}")  # noqa: SLF001
     connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
 
     result = connector.execute_query("SELECT 1 AS one")
