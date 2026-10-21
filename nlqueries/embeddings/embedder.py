@@ -25,10 +25,11 @@ import logging
 import socket
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, cast
 
 from nlqueries import config
-from nlqueries.embeddings.embed_server import MAX_BATCH_TEXTS
+from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BATCH_TEXTS
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -264,17 +265,37 @@ def _try_daemon_single(text: str) -> list[float] | None:
         return None
 
 
+def _daemon_parts(texts: list[str]) -> Iterator[list[str]]:
+    """Split *texts*, in order, into parts within both of the daemon's limits.
+
+    A part grows until the next text would take it past ``MAX_BATCH_TEXTS``
+    texts or ``MAX_BATCH_CHARS`` characters. Splitting by count alone left a
+    batch of long texts -- table descriptions for a wide schema -- to be refused
+    whole. A single text over the character limit goes alone: the daemon refuses
+    it, but that refusal is the text's, not one this split caused.
+    """
+    part: list[str] = []
+    chars = 0
+    for text in texts:
+        if part and (len(part) == MAX_BATCH_TEXTS or chars + len(text) > MAX_BATCH_CHARS):
+            yield part
+            part, chars = [], 0
+        part.append(text)
+        chars += len(text)
+    if part:
+        yield part
+
+
 def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
     """Return batch vectors from the daemon, or None to fall back.
 
-    Sent in requests of at most ``MAX_BATCH_TEXTS`` texts, the most the daemon
-    accepts in one. Any request failing falls back for the whole batch.
+    Sent in parts the daemon accepts, see `_daemon_parts`. Any request failing
+    falls back for the whole batch.
     """
     try:
         _require_daemon_model_agreement()
         vectors: list[list[float]] = []
-        for start in range(0, len(texts), MAX_BATCH_TEXTS):
-            part = texts[start : start + MAX_BATCH_TEXTS]
+        for part in _daemon_parts(texts):
             vectors.extend(
                 cast(list[list[float]], _daemon_post("/embed-batch", {"texts": part}, "vectors"))
             )

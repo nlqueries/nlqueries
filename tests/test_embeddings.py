@@ -174,6 +174,44 @@ class TestEmbedBatch:
         assert result[511][0] == 1.0 and result[512][0] == 2.0
         get_model.assert_not_called()
 
+    def test_a_batch_over_the_character_limit_is_split_into_parts_that_fit(self) -> None:
+        """Fewer than 512 texts, more than MAX_BATCH_CHARS in all: the wide-schema
+        case, which the daemon would refuse whole."""
+        from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BATCH_TEXTS
+
+        texts = [chr(ord("a") + i) * 600_000 for i in range(5)]
+        assert len(texts) < MAX_BATCH_TEXTS and sum(map(len, texts)) > MAX_BATCH_CHARS
+        sent: list[list[str]] = []
+
+        def daemon_post(path: str, payload: dict[str, list[str]], key: str) -> list[list[float]]:
+            sent.append(payload["texts"])
+            return [[0.0] * _VECTOR_SIZE for _ in payload["texts"]]
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=daemon_post),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        assert len(sent) > 1
+        assert all(sum(map(len, part)) <= MAX_BATCH_CHARS for part in sent)
+        assert all(len(part) <= MAX_BATCH_TEXTS for part in sent)
+        assert [t for part in sent for t in part] == texts
+        assert len(result) == len(texts)
+        get_model.assert_not_called()
+
+    def test_a_single_text_over_the_character_limit_goes_alone(self) -> None:
+        from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS
+        from nlqueries.embeddings.embedder import _daemon_parts
+
+        oversized = "x" * (MAX_BATCH_CHARS + 1)
+
+        assert list(_daemon_parts(["a", "b", oversized, "c"])) == [["a", "b"], [oversized], ["c"]]
+        assert list(_daemon_parts([oversized])) == [[oversized]]
+
     def test_a_failed_part_falls_back_for_the_whole_batch(self) -> None:
         from nlqueries.embeddings.embedder import ABSENT, EmbeddingServiceUnavailable
 

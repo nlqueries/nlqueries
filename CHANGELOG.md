@@ -165,11 +165,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `/embed` or `/embed-batch` is refused with 415 unless its `Content-Type` is
   `application/json`, with 421 unless its `Host` is `127.0.0.1`, `localhost`
   or `[::1]` (any port), and with 413 when it carries more than 512 texts or
-  more than 2,000,000 characters in all. `embed_batch` now sends at most 512
-  texts per request, splitting a larger batch, so the built-in client and
-  every caller that embeds a whole collection through it are unaffected; if
-  any part fails, the whole batch falls back as one request's failure did
-  before. `GET /healthz` is unchanged.
+  more than 2,000,000 characters in all. `embed_batch` now splits a batch into
+  requests within both limits, so the built-in client and every caller that
+  embeds a whole collection through it, a wide schema's long table texts
+  included, are unaffected. A single text over the character limit is sent on
+  its own and is the only request refused. If any part fails, the whole batch
+  falls back as one request's failure did before. `GET /healthz` is
+  unchanged.
 - **`embed-server start` keeps the working directory off the daemon's import
   path.** The background daemon is now started as
   `python -P -m nlqueries.embeddings.embed_server`, so it imports the
