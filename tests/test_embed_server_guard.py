@@ -47,7 +47,7 @@ def _post(port: int, path: str, body: Any = None, headers: dict[str, str] | None
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     if headers is not None and body is None:
         conn.putrequest("POST", path)
-        for key, value in headers.items():
+        for key, value in {"Content-Type": "application/json", **headers}.items():
             conn.putheader(key, value)
         conn.endheaders()
         conn.send(b"{}")
@@ -135,3 +135,168 @@ def test_a_declared_but_unsent_body_releases_the_thread(server: int) -> None:
 
     # The server still serves other clients.
     assert _post(server, "/embed", json.dumps({"text": "hi"})).status == 200
+
+
+# --- Who may POST, and how much -------------------------------------------------
+
+
+def _post_as(port: int, host: str | None, content_type: str | None, body: Any) -> Any:
+    """POST *body* with exactly the given ``Host`` and ``Content-Type``; None
+    leaves the header out."""
+    raw = json.dumps(body).encode()
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.putrequest("POST", "/embed-batch", skip_host=True)
+    if host is not None:
+        conn.putheader("Host", host)
+    if content_type is not None:
+        conn.putheader("Content-Type", content_type)
+    conn.putheader("Content-Length", str(len(raw)))
+    conn.endheaders()
+    conn.send(raw)
+    return conn.getresponse()
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "127.0.0.1:8765",
+        "localhost",
+        "localhost:1",
+        "LOCALHOST:8765",
+        "[::1]",
+        "[::1]:8765",
+    ],
+)
+def test_a_loopback_host_with_any_port_is_answered(server: int, host: str) -> None:
+    response = _post_as(server, host, "application/json", {"texts": ["a"]})
+
+    assert response.status == 200
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        None,
+        "",
+        "example.com",
+        "example.com:8765",
+        "127.0.0.1.example.com",
+        "localhost.example.com:8765",
+        "127.0.0.2:8765",
+        "0.0.0.0:8765",
+        "[::1",
+        "[::2]:8765",
+        "localhost:port",
+        "localhost:8765:1",
+    ],
+)
+def test_any_other_host_is_refused_with_421(server: int, host: str | None) -> None:
+    response = _post_as(server, host, "application/json", {"texts": ["a"]})
+
+    assert response.status == 421
+    assert "Host" in json.loads(response.read())["error"]
+
+
+@pytest.mark.parametrize("content_type", ["application/json", "application/JSON; charset=utf-8"])
+def test_a_json_content_type_is_answered(server: int, content_type: str) -> None:
+    response = _post_as(server, f"127.0.0.1:{server}", content_type, {"texts": ["a"]})
+
+    assert response.status == 200
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        None,
+        "text/plain",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+        "application/jsonx",
+    ],
+)
+def test_any_other_content_type_is_refused_with_415(server: int, content_type: str | None) -> None:
+    response = _post_as(server, f"127.0.0.1:{server}", content_type, {"texts": ["a"]})
+
+    assert response.status == 415
+    assert "Content-Type" in json.loads(response.read())["error"]
+
+
+def test_a_batch_at_the_text_limit_is_answered(server: int) -> None:
+    response = _post(server, "/embed-batch", json.dumps({"texts": ["a"] * es.MAX_BATCH_TEXTS}))
+
+    assert response.status == 200
+    assert len(json.loads(response.read())["vectors"]) == es.MAX_BATCH_TEXTS
+
+
+def test_a_513_text_batch_is_refused_with_413(server: int) -> None:
+    assert es.MAX_BATCH_TEXTS == 512
+    response = _post(server, "/embed-batch", json.dumps({"texts": ["a"] * 513}))
+
+    assert response.status == 413
+    assert "512 texts" in json.loads(response.read())["error"]
+
+
+def test_a_batch_over_the_character_limit_is_refused_with_413(server: int) -> None:
+    texts = ["x" * 1_000_000, "x" * 1_000_000, "x"]
+    response = _post(server, "/embed-batch", json.dumps({"texts": texts}))
+
+    assert response.status == 413
+    assert "characters" in json.loads(response.read())["error"]
+
+
+def test_a_batch_at_the_character_limit_is_answered(server: int) -> None:
+    texts = ["x" * 1_000_000, "x" * 1_000_000]
+    response = _post(server, "/embed-batch", json.dumps({"texts": texts}))
+
+    assert response.status == 200
+
+
+def test_a_single_text_over_the_character_limit_is_refused_with_413(server: int) -> None:
+    response = _post(server, "/embed", json.dumps({"text": "x" * (es.MAX_BATCH_CHARS + 1)}))
+
+    assert response.status == 413
+
+
+def test_the_client_sends_what_the_daemon_accepts(
+    server: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real client against the real handler: its Host and Content-Type pass."""
+    from nlqueries.embeddings import embedder
+
+    monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{server}")
+
+    assert embedder._daemon_post("/embed-batch", {"texts": ["a", "b"]}, "vectors") == [
+        [0.1] * 4,
+        [0.1] * 4,
+    ]
+
+
+def test_a_whole_collection_reaches_a_real_daemon_through_embed_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What `qdrant_store` does with a collection of 600: every text is embedded
+    by the daemon, in requests it accepts, and nothing loads a model in-process."""
+    from nlqueries.embeddings import embedder
+
+    batches: list[int] = []
+
+    def encode(texts: list[str]) -> list[list[float]]:
+        batches.append(len(texts))
+        return [[float(len(t))] for t in texts]
+
+    srv = es.build_server(0, encoder=encode, model_name=embedder._MODEL_NAME)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{srv.server_address[1]}")
+        monkeypatch.setattr(embedder, "_daemon_model_checked", False)
+        monkeypatch.setattr(embedder, "_get_model", lambda: pytest.fail("loaded a model"))
+        texts = ["x" * (i % 7) for i in range(600)]
+
+        vectors = embedder.embed_batch(texts)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert sorted(batches) == [88, 512]
+    assert vectors == [[float(len(t))] for t in texts]

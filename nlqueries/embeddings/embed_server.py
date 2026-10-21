@@ -38,6 +38,13 @@ them, but a fixed pool is right there too.
 answered outside the bound — a health check that queues behind the work it
 reports on stops being useful exactly when it matters.
 
+Requests
+--------
+A POST must carry ``Content-Type: application/json`` (else 415) and a ``Host``
+of ``127.0.0.1``, ``localhost`` or ``[::1]``, with any port (else 421). One
+request carries at most ``MAX_BATCH_TEXTS`` texts and ``MAX_BATCH_CHARS``
+characters in all (else 413); ``embedder.embed_batch`` splits larger batches.
+
 Run via:  python -m nlqueries.embeddings.embed_server [--port N]
 Managed:  nlqueries embed-server start / stop / status
 """
@@ -75,6 +82,17 @@ _ENCODE_WAIT_SECONDS = 300.0
 #: with `[Errno 30]` and every natural-language query with it -- and nothing
 #: could be configured to move it.
 _PID_FILE = config.STATE_DIR / "embed-server.pid"
+#: The most texts one request may carry. The client splits larger batches into
+#: requests of this size, so a refusal means a caller that is not the client.
+MAX_BATCH_TEXTS = 512
+#: The most characters one request may carry, across all its texts. Encoding
+#: cost grows with the text, so a count alone does not bound the work a single
+#: request can ask for.
+MAX_BATCH_CHARS = 2_000_000
+#: The names a request's ``Host`` may give, with any port. The daemon listens on
+#: loopback only, so a client on this host addresses it by one of these; a
+#: request naming anything else was not meant for this daemon.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +425,34 @@ class _Gate:
 # ---------------------------------------------------------------------------
 
 
+def _is_loopback_host(value: str | None) -> bool:
+    """Whether a ``Host`` header names this host's loopback interface.
+
+    ``127.0.0.1``, ``localhost`` or ``[::1]``, alone or with a numeric port.
+    A missing header is not one of them.
+    """
+    if not value:
+        return False
+    host = value.strip().lower()
+    if host.startswith("["):
+        end = host.find("]") + 1
+        name, port = host[:end], host[end:]
+    else:
+        name, colon, digits = host.partition(":")
+        port = colon + digits
+    if port and not (port[0] == ":" and port[1:].isascii() and port[1:].isdigit()):
+        return False
+    return name in _LOOPBACK_HOSTS
+
+
+def _is_json_content_type(value: str | None) -> bool:
+    """Whether a ``Content-Type`` header is ``application/json``, parameters
+    such as ``charset`` allowed."""
+    if not value:
+        return False
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
 class _EmbedHandler(BaseHTTPRequestHandler):
     # Set by serve() before the server starts; accepts a list[str] of texts.
     encoder: Callable[[list[str]], list[list[float]]] | None = None
@@ -535,6 +581,16 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             self._drain()
             self._fail(404, "no such endpoint")
             return
+        # Both before the body is read: neither depends on it, and a request
+        # refused here costs no parse and no encode.
+        if not _is_loopback_host(self.headers.get("Host")):
+            self._drain()
+            self._fail(421, "Host must be 127.0.0.1, localhost or [::1]")
+            return
+        if not _is_json_content_type(self.headers.get("Content-Type")):
+            self._drain()
+            self._fail(415, "Content-Type must be application/json")
+            return
 
         try:
             body = self._read_body()
@@ -555,11 +611,22 @@ class _EmbedHandler(BaseHTTPRequestHandler):
                 text = body["text"]
                 if not isinstance(text, str):
                     raise TypeError("'text' must be a string")
-                result: dict[str, Any] = {"vector": self._encode([text])[0]}
+                texts = [text]
             else:
                 texts = body["texts"]
                 if not isinstance(texts, list) or not all(isinstance(x, str) for x in texts):
                     raise TypeError("'texts' must be a list of strings")
+            # Checked before the gate, so an oversized request never holds an
+            # encode slot.
+            if len(texts) > MAX_BATCH_TEXTS:
+                self._fail(413, f"more than {MAX_BATCH_TEXTS} texts in one request")
+                return
+            if sum(len(t) for t in texts) > MAX_BATCH_CHARS:
+                self._fail(413, f"more than {MAX_BATCH_CHARS} characters in one request")
+                return
+            if self.path == "/embed":
+                result: dict[str, Any] = {"vector": self._encode(texts)[0]}
+            else:
                 result = {"vectors": self._encode(texts)}
         except KeyError as exc:
             self._fail(400, f"missing field: {exc.args[0]}")

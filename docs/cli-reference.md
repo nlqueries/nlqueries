@@ -428,6 +428,10 @@ nlqueries embed-server stop
 
 Not restarted automatically on reboot — add the `start` command to your shell profile or a startup task if you want it always on. To change the port, set `EMBED_SERVER_PORT`: it is the port the daemon listens on and the port clients, `status` and `health` look for it on. `start --port` and `status --port` override it for that command only; `start` warns when its port differs from `EMBED_SERVER_PORT`, because clients would not find the daemon there.
 
+`start` runs the daemon as `python -P -m nlqueries.embeddings.embed_server`, so the directory you start it from is not on its import path and it imports the installed package.
+
+The daemon answers a POST only when it carries `Content-Type: application/json` (otherwise 415) and a `Host` of `127.0.0.1`, `localhost` or `[::1]`, with any port (otherwise 421). One request may carry at most 512 texts and 2,000,000 characters in all (otherwise 413). The built-in client sends both headers and splits a larger batch into requests of 512 texts, so this matters only to a caller of your own.
+
 ---
 
 ## mcp-server

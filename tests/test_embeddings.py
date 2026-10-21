@@ -149,6 +149,55 @@ class TestEmbedBatch:
 
         assert result == []
 
+    def test_a_600_text_batch_is_sent_to_the_daemon_as_two_requests(self) -> None:
+        """The daemon refuses more than 512 texts in one request."""
+        texts = [f"text {i}" for i in range(600)]
+        sent: list[list[str]] = []
+
+        def daemon_post(path: str, payload: dict[str, list[str]], key: str) -> list[list[float]]:
+            assert (path, key) == ("/embed-batch", "vectors")
+            sent.append(payload["texts"])
+            return [[float(len(sent))] * _VECTOR_SIZE for _ in payload["texts"]]
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=daemon_post),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        assert [len(part) for part in sent] == [512, 88]
+        assert sent[0] + sent[1] == texts
+        assert len(result) == 600
+        assert result[511][0] == 1.0 and result[512][0] == 2.0
+        get_model.assert_not_called()
+
+    def test_a_failed_part_falls_back_for_the_whole_batch(self) -> None:
+        from nlqueries.embeddings.embedder import ABSENT, EmbeddingServiceUnavailable
+
+        texts = [f"text {i}" for i in range(600)]
+        replies = [
+            [[0.0] * _VECTOR_SIZE] * 512,
+            EmbeddingServiceUnavailable(ABSENT, "gone"),
+        ]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(600), dtype=np.float32)
+
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            patch("nlqueries.embeddings.embedder._daemon_post", side_effect=replies),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            from nlqueries.embeddings.embedder import embed_batch
+
+            result = embed_batch(texts)
+
+        assert len(result) == 600
+        mock_model.encode.assert_called_once_with(texts, batch_size=64, normalize_embeddings=True)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — lazy singleton (model NOT loaded at import time)

@@ -28,6 +28,7 @@ import urllib.request
 from typing import TYPE_CHECKING, Any, cast
 
 from nlqueries import config
+from nlqueries.embeddings.embed_server import MAX_BATCH_TEXTS
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -264,10 +265,20 @@ def _try_daemon_single(text: str) -> list[float] | None:
 
 
 def _try_daemon_batch(texts: list[str]) -> list[list[float]] | None:
-    """Return batch vectors from the daemon, or None to fall back."""
+    """Return batch vectors from the daemon, or None to fall back.
+
+    Sent in requests of at most ``MAX_BATCH_TEXTS`` texts, the most the daemon
+    accepts in one. Any request failing falls back for the whole batch.
+    """
     try:
         _require_daemon_model_agreement()
-        return cast(list[list[float]], _daemon_post("/embed-batch", {"texts": texts}, "vectors"))
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), MAX_BATCH_TEXTS):
+            part = texts[start : start + MAX_BATCH_TEXTS]
+            vectors.extend(
+                cast(list[list[float]], _daemon_post("/embed-batch", {"texts": part}, "vectors"))
+            )
+        return vectors
     except EmbeddingServiceUnavailable as exc:
         _fall_back_or_raise(exc)
         return None
