@@ -1034,6 +1034,13 @@ Authorisation decisions and query executions (see :mod:`nlqueries.audit`) are
 logged to the ``nlqueries.audit`` logger whether or not this is set. This is for
 a deployment that wants them in a file of their own without configuring
 logging: the file is opened append-only for each event and created readable and
-writable by its owner only (0600). A file that cannot be written is reported
-once on ``nlqueries.audit.sink`` and does not fail the query.
+writable by its owner only (0600).
+
+Nothing is written to a file this process cannot vouch for. A symbolic link at
+the path is not followed, where the platform supports that. A file owned by
+another user is refused, where user ids exist. On POSIX, an existing file that
+group or others can reach is narrowed to 0600, and refused if that fails.
+A file that is refused or cannot be written is reported once, with the reason,
+on ``nlqueries.audit.sink``; the events still go to the ``nlqueries.audit``
+logger, and the query is not failed.
 """

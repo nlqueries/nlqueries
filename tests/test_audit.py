@@ -57,6 +57,7 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(config, "AUDIT_LOG", "")
     monkeypatch.setattr(audit, "_process_context", None)
     monkeypatch.setattr(audit, "_reported", set())
+    monkeypatch.setattr(audit, "_failures_reported", set())
 
 
 def _permitted(agent_id: str | None = "sales", policy: ExecutionPolicy | None = None):
@@ -268,6 +269,40 @@ class TestExecutionEvents:
         assert result.rows == [[_SECRET]]
         assert any("could not be recorded" in r.getMessage() for r in caplog.records)
 
+    def test_a_repeated_failure_to_record_warns_once(self, caplog, monkeypatch) -> None:
+        """A fault every query hits is one traceback at WARNING, then DEBUG."""
+
+        def broken(*_args: Any) -> dict[str, Any]:
+            raise RuntimeError("recording broke")
+
+        monkeypatch.setattr(audit, "_execution_fields", broken)
+        connector = _permitted()
+
+        with caplog.at_level(logging.DEBUG, logger="nlqueries.audit"):
+            connector.execute_query(_SQL)
+            connector.execute_query(_SQL)
+
+        said = [r for r in caplog.records if "could not be recorded" in r.getMessage()]
+        assert [r.levelno for r in said] == [logging.WARNING, logging.DEBUG]
+        assert all(r.exc_info for r in said)
+
+    def test_a_different_cause_gets_its_own_warning(self, caplog, monkeypatch) -> None:
+        def broken(*_args: Any) -> dict[str, Any]:
+            raise RuntimeError("recording broke")
+
+        def broken_elsewhere(*_args: Any) -> dict[str, Any]:
+            raise KeyError("a field")
+
+        connector = _permitted()
+        with caplog.at_level(logging.DEBUG, logger="nlqueries.audit"):
+            monkeypatch.setattr(audit, "_execution_fields", broken)
+            connector.execute_query(_SQL)
+            monkeypatch.setattr(audit, "_execution_fields", broken_elsewhere)
+            connector.execute_query(_SQL)
+
+        said = [r for r in caplog.records if "could not be recorded" in r.getMessage()]
+        assert [r.levelno for r in said] == [logging.WARNING, logging.WARNING]
+
     def test_nothing_is_evaluated_when_nobody_is_listening(self, monkeypatch) -> None:
         calls: list[str] = []
         import nlqueries.sql_policy as sql_policy
@@ -311,6 +346,24 @@ class TestTheFileSink:
         ]
         assert _SECRET not in path.read_text()
 
+    def test_each_line_ends_with_exactly_a_line_feed(self, tmp_path, monkeypatch) -> None:
+        """Read as bytes: a text-mode descriptor on Windows would write CRLF."""
+        path = tmp_path / "audit.jsonl"
+        monkeypatch.setattr(config, "AUDIT_LOG", str(path))
+        connector = _permitted()
+
+        connector.execute_query(_SQL)
+        connector.execute_query(_SQL)
+
+        data = path.read_bytes()
+        assert b"\r" not in data
+        assert data.endswith(b"}\n")
+        assert data.count(b"\n") == 2
+        assert [json.loads(line)["event"] for line in data.split(b"\n")[:-1]] == [
+            "query_execution",
+            "query_execution",
+        ]
+
     def test_an_existing_file_is_appended_to_and_narrowed(self, tmp_path, monkeypatch) -> None:
         path = tmp_path / "audit.jsonl"
         path.write_text('{"earlier":true}\n')
@@ -339,6 +392,73 @@ class TestTheFileSink:
         assert first.rows == second.rows == [[_SECRET]]
         warned = [r for r in caplog.records if "could not be written" in r.getMessage()]
         assert len(warned) == 1
+
+
+@pytest.mark.skipif(not _POSIX, reason="POSIX symlinks, owners and permission bits")
+class TestTheFileSinkRefusesFilesItCannotVouchFor:
+    def _refused(self, caplog) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == "nlqueries.audit.sink"]
+
+    def test_a_symlink_at_the_path_is_not_followed(self, tmp_path, monkeypatch, caplog) -> None:
+        target = tmp_path / "elsewhere.txt"
+        target.write_text("keep\n")
+        target.chmod(0o600)
+        link = tmp_path / "audit.jsonl"
+        link.symlink_to(target)
+        monkeypatch.setattr(config, "AUDIT_LOG", str(link))
+        connector = _permitted()
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            connector.execute_query(_SQL)
+            connector.execute_query(_SQL)
+
+        assert target.read_text() == "keep\n"
+        assert link.is_symlink()
+        (warned,) = self._refused(caplog)
+        assert "not followed" in warned.getMessage()
+        # Still logged, though not to the file.
+        assert len(_events(caplog, "query_execution")) == 2
+
+    def test_a_file_that_cannot_be_narrowed_gets_no_events(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        path = tmp_path / "audit.jsonl"
+        path.write_text("")
+        path.chmod(0o644)
+        monkeypatch.setattr(config, "AUDIT_LOG", str(path))
+
+        def refuse(_fd: int, _mode: int) -> None:
+            raise PermissionError("not permitted")
+
+        monkeypatch.setattr(audit.os, "fchmod", refuse)
+        connector = _permitted()
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            connector.execute_query(_SQL)
+            connector.execute_query(_SQL)
+
+        assert path.read_text() == ""
+        (warned,) = self._refused(caplog)
+        assert "was refused" in warned.getMessage()
+        assert "0o644" in warned.getMessage()
+        assert len(_events(caplog, "query_execution")) == 2
+
+    def test_a_file_owned_by_someone_else_gets_no_events(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        path = tmp_path / "audit.jsonl"
+        path.write_text("")
+        path.chmod(0o600)
+        monkeypatch.setattr(config, "AUDIT_LOG", str(path))
+        owner = path.stat().st_uid
+        monkeypatch.setattr(audit.os, "getuid", lambda: owner + 1)
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            _permitted().execute_query(_SQL)
+
+        assert path.read_text() == ""
+        (warned,) = self._refused(caplog)
+        assert f"owned by uid {owner}" in warned.getMessage()
 
 
 class TestLineBreaksCannotForgeEvents:

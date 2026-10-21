@@ -41,6 +41,7 @@ import os
 import stat
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
@@ -229,7 +230,10 @@ def record_execution(
     the *result* the call returned or the *error* it raised.
 
     Never raises. Recording is not allowed to turn a query that ran into one
-    that failed; a failure here is logged on ``nlqueries.audit.sink``.
+    that failed; a failure here is logged on ``nlqueries.audit.sink``, with
+    its traceback at WARNING the first time a cause is seen and at DEBUG after
+    that. A cause is the exception's type and the line that raised it, so a
+    fault hit by every query is one warning rather than one per query.
     """
     duration_ms = round((time.monotonic() - started) * 1000, 3)
     try:
@@ -242,8 +246,26 @@ def record_execution(
             "query executed",
             _execution_fields(connector, sql, agent_id, duration_ms, result, error),
         )
-    except Exception:  # noqa: BLE001 - see the docstring
-        _sink_log.warning("A query execution could not be recorded.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        cause = _cause_of(exc)
+        level = logging.DEBUG if cause in _failures_reported else logging.WARNING
+        _failures_reported.add(cause)
+        _sink_log.log(level, "A query execution could not be recorded.", exc_info=True)
+
+
+#: Causes of a failure to record an execution that have been warned about.
+_failures_reported: set[tuple[str, str, int]] = set()
+
+
+def _cause_of(exc: BaseException) -> tuple[str, str, int]:
+    """*exc*'s type and the file and line it was raised at."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = frames[-1] if frames else None
+    return (
+        type(exc).__qualname__,
+        where.filename if where else "",
+        (where.lineno or 0) if where else 0,
+    )
 
 
 def _execution_fields(
@@ -326,8 +348,13 @@ _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
 
 _write_lock = threading.Lock()
 
-#: Paths a failure has already been reported for, so a full disk is one
-#: warning rather than one per query.
+#: Whether the permission bits mean anything here. On Windows ``fstat`` reads
+#: 0o666 for any writable file and ``fchmod`` sets only the read-only flag, so
+#: the mode is neither narrowed nor checked there.
+_POSIX_MODES = os.name == "posix"
+
+#: Paths a failure or refusal has already been reported for, so a full disk is
+#: one warning rather than one per query.
 _reported: set[str] = set()
 
 
@@ -340,41 +367,93 @@ def _write(line: str) -> None:
     database, and means a rotated file is picked up without a restart.
 
     One ``write`` per line, on a descriptor opened with ``O_APPEND``, so lines
-    from concurrent writers do not interleave.
+    from concurrent writers do not interleave. ``O_BINARY`` where the platform
+    has it, so each line ends with exactly ``\\n`` on Windows too.
+
+    The file has to be one this process can vouch for, or nothing is written:
+
+    - a symbolic link at the path is not followed (``O_NOFOLLOW`` where the
+      platform has it), so the open fails rather than appending to wherever
+      the link points;
+    - a file owned by another user is refused, where ``os.getuid`` exists;
+    - a file still readable or writable by group or others after narrowing is
+      refused, on POSIX.
+
+    A refusal is reported once per path, with the reason, like a failed write.
+    Either way the event has already gone to the ``nlqueries.audit`` logger.
     """
     path = config.AUDIT_LOG
     if not path:
         return
     data = (line + "\n").encode("ascii")
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_APPEND
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     with _write_lock:
         try:
             fd = os.open(path, flags, _FILE_MODE)
             try:
-                _narrow(fd)
-                written = 0
-                while written < len(data):
-                    written += os.write(fd, data[written:])
+                refusal = _refusal(fd)
+                if refusal is None:
+                    written = 0
+                    while written < len(data):
+                        written += os.write(fd, data[written:])
             finally:
                 os.close(fd)
-        except OSError:
-            if path not in _reported:
-                _reported.add(path)
-                _sink_log.warning(
-                    "The audit log %s could not be written; events are still logged "
-                    "to nlqueries.audit.",
-                    path,
-                    exc_info=True,
-                )
+        except OSError as exc:
+            _report(
+                path,
+                f"could not be written ({exc.strerror or type(exc).__name__}; a symbolic "
+                "link at that path is not followed)",
+                exc_info=True,
+            )
+            return
+        if refusal is not None:
+            _report(path, f"was refused: {refusal}")
             return
         _reported.discard(path)
 
 
-def _narrow(fd: int) -> None:
-    """Restrict the open file to its owner, if it is readable by anyone else."""
-    fchmod = getattr(os, "fchmod", None)
-    if fchmod is None:  # pragma: no cover - Windows, where the bits are not enforced
+def _report(path: str, problem: str, *, exc_info: bool = False) -> None:
+    """Warn that *path* got no event, once until a write to it succeeds."""
+    if path in _reported:
         return
-    if os.fstat(fd).st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+    _reported.add(path)
+    _sink_log.warning(
+        "The audit log %s %s. Events are still logged to nlqueries.audit.",
+        path,
+        problem,
+        exc_info=exc_info,
+    )
+
+
+def _refusal(fd: int) -> str | None:
+    """Why the open file must not be written to, or None if it may.
+
+    Narrows a file readable or writable by anyone else to 0600 first, and
+    refuses it only if that did not take.
+    """
+    info = os.fstat(fd)
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and info.st_uid != getuid():
+        return f"it is owned by uid {info.st_uid}, not by this process's uid {getuid()}"
+    if not _POSIX_MODES:  # pragma: no cover - Windows, where the bits are not enforced
+        return None
+    if info.st_mode & _SHARED:
         with contextlib.suppress(OSError):
-            fchmod(fd, _FILE_MODE)
+            os.fchmod(fd, _FILE_MODE)
+        info = os.fstat(fd)
+        if info.st_mode & _SHARED:
+            return (
+                f"its mode is {stat.S_IMODE(info.st_mode):#o}, which group or others "
+                "can reach, and it could not be narrowed to 0o600"
+            )
+    return None
+
+
+_SHARED = stat.S_IRWXG | stat.S_IRWXO
