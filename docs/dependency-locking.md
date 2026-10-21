@@ -82,11 +82,10 @@ extra the lock leaves out.
 
 ## SBOMs
 
-Each release publishes a CycloneDX software bill of materials for both of its
-artefacts.
+Each release publishes a software bill of materials for both of its artefacts.
 
-- **The image.** `release.yml` builds it with BuildKit's `sbom: true`, so every
-  platform in the pushed manifest carries an SBOM attestation listing the
+- **The image.** `release.yml` builds it with a BuildKit SBOM attestation, so
+  every platform in the pushed manifest carries an SPDX SBOM listing the
   packages in that image, the lock's closure and the base image's own included.
   Read it with:
 
@@ -94,9 +93,15 @@ artefacts.
   docker buildx imagetools inspect nlqueries/core:<version> --format '{{ json .SBOM }}'
   ```
 
-- **The wheel.** The `wheel-sbom` job installs the wheel into a virtualenv
-  created without pip, so the environment holds only the wheel and its
-  dependencies, and describes it with `cyclonedx-py`. The result,
+  The scanner BuildKit runs to produce it, `docker/buildkit-syft-scanner`, is
+  pinned by digest in `release.yml` (`sbom: generator=...@sha256:...`), like the
+  base image, so the same commit produces the same SBOM. Update it the same
+  deliberate way, with `docker buildx imagetools inspect
+  docker/buildkit-syft-scanner:stable-1`.
+
+- **The wheel.** A CycloneDX SBOM. The `wheel-sbom` job installs the wheel into
+  a virtualenv created without pip, so the environment holds only the wheel and
+  its dependencies, and describes it with `cyclonedx-py`. The result,
   `nlqueries_core-<version>-py3-none-any.whl.cdx.json`, is attached to the
   GitHub release beside the wheel and sdist. It is not uploaded to PyPI.
 

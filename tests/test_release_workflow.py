@@ -162,7 +162,25 @@ def test_the_published_image_takes_its_tags_from_that_step() -> None:
 def test_every_image_build_attaches_an_sbom(job: str) -> None:
     """The dry run builds with the same setting, so it exercises it first."""
     assert set(_image_builds()) == {"publish-docker", "release-dry-run"}
-    assert _image_builds()[job]["with"].get("sbom") is True
+    sbom = _image_builds()[job]["with"].get("sbom")
+    assert sbom == _image_builds()["publish-docker"]["with"]["sbom"]
+    assert str(sbom).startswith("generator=docker/buildkit-syft-scanner:")
+
+
+def test_the_sbom_generator_is_pinned_by_digest() -> None:
+    """`sbom: true` runs BuildKit's default scanner, resolved by a mutable tag
+    at build time: the one build input that would not be pinned while the base
+    image, the actions and the lock are. Every `sbom:` in the workflow names
+    its generator by digest."""
+    lines = [
+        line.strip()
+        for line in RELEASE.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("sbom:")
+    ]
+    assert lines
+    for line in lines:
+        assert line.startswith("sbom: generator="), line
+        assert "@sha256:" in line, line
 
 
 def test_the_wheel_sbom_is_built_outside_dist() -> None:
@@ -210,13 +228,11 @@ def test_the_sbom_environment_holds_only_the_wheel_and_its_dependencies() -> Non
 
 def test_the_dry_run_exports_the_image_so_its_sbom_is_built() -> None:
     """With no exporter BuildKit has nothing to attach an attestation to, so
-    the dry run writes the image as an OCI tarball and shows its size."""
+    the dry run exports the image as an OCI tarball, to /dev/null: both
+    platforms' layers would otherwise land on the runner's disk."""
     build = _image_builds()["release-dry-run"]["with"]
     assert build["push"] is False
-    assert build["outputs"] == "type=oci,dest=${{ runner.temp }}/image.tar"
-    steps = _steps("release-dry-run")
-    after = steps[steps.index(_image_builds()["release-dry-run"]) + 1 :]
-    assert any('ls -l "$RUNNER_TEMP/image.tar"' in str(s.get("run", "")) for s in after)
+    assert build["outputs"] == "type=oci,dest=/dev/null"
 
 
 def test_the_github_release_attaches_the_wheel_sbom() -> None:

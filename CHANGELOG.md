@@ -6,18 +6,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
-- **SBOMs for each release.** The Docker image is built with BuildKit's
-  `sbom: true`, so each platform in a pushed `nlqueries/core` manifest carries
-  a CycloneDX SBOM attestation (`docker buildx imagetools inspect
-  nlqueries/core:<version> --format '{{ json .SBOM }}'`). The wheel gets one
-  too: a separate `wheel-sbom` job installs it into a virtualenv created
+- **SBOMs for each release.** The Docker image is built with a BuildKit SBOM
+  attestation, so each platform in a pushed `nlqueries/core` manifest carries
+  an SPDX SBOM (`docker buildx imagetools inspect nlqueries/core:<version>
+  --format '{{ json .SBOM }}'`). The scanner that produces it,
+  `docker/buildkit-syft-scanner`, is pinned by digest. The wheel gets a
+  CycloneDX SBOM: a separate `wheel-sbom` job installs it into a virtualenv created
   without pip, describes that environment with `cyclonedx-py`, and the GitHub
   release attaches `nlqueries_core-<version>-py3-none-any.whl.cdx.json`. It is
   not uploaded to PyPI. It records the resolution on linux/amd64 with CPython
   3.11 at release time; other platforms and Pythons resolve differently. PyPI
   publishing does not wait on the SBOM job, so a failure there holds back only
   the GitHub release, which can be re-run. The manual dry run exports its
-  image as an OCI tarball, so it builds the image's SBOM attestations too. See
+  image as an OCI tarball to `/dev/null`, so it builds the image's SBOM
+  attestations too without writing the image to the runner's disk. See
   "SBOMs" in `docs/dependency-locking.md`.
 - **`QueryResult.executed_sql`: the statement the database actually ran.**
   `None`, the default, means the statement passed to `execute_query` ran
