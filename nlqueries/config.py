@@ -1039,7 +1039,8 @@ writable by its owner only (0600).
 Nothing is written to a file this process cannot vouch for. A symbolic link at
 the path is not followed, where the platform supports that. Anything but a
 regular file is refused: a FIFO nobody is reading fails at once rather than
-blocking, and one somebody is reading gets nothing. A file owned by
+blocking, and one somebody is reading gets nothing. So is a file with more than
+one hard link, which a hard link planted at the path would create. A file owned by
 another user is refused, where user ids exist. On POSIX, an existing file that
 group or others can reach is narrowed to 0600, and refused if that fails.
 A file that is refused or cannot be written is reported once, with the reason,

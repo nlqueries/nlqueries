@@ -532,6 +532,30 @@ class TestTheFileSinkRefusesFilesItCannotVouchFor:
         (warned,) = self._refused(caplog)
         assert "not a regular file" in warned.getMessage()
 
+    def test_a_file_with_a_second_hard_link_gets_no_events(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """A hard link planted at the path passes O_NOFOLLOW and the owner and
+        mode checks; the link count is what gives it away."""
+        target = tmp_path / "owned.txt"
+        target.write_text("keep\n")
+        target.chmod(0o644)
+        path = tmp_path / "audit.jsonl"
+        os.link(target, path)
+        monkeypatch.setattr(config, "AUDIT_LOG", str(path))
+        connector = _permitted()
+
+        with caplog.at_level(logging.INFO, logger="nlqueries.audit"):
+            connector.execute_query(_SQL)
+            connector.execute_query(_SQL)
+
+        assert target.read_text() == "keep\n"
+        # Not narrowed either: the refusal comes before any chmod.
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        (warned,) = self._refused(caplog)
+        assert "2 hard links" in warned.getMessage()
+        assert len(_events(caplog, "query_execution")) == 2
+
     def test_a_file_that_cannot_be_narrowed_gets_no_events(
         self, tmp_path, monkeypatch, caplog
     ) -> None:

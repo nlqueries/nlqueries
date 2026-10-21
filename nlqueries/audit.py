@@ -387,6 +387,8 @@ def _write(line: str) -> None:
       platform has it), so the open fails rather than appending to wherever
       the link points;
     - anything but a regular file (a FIFO, a device) is refused;
+    - a file with more than one hard link is refused, since a link planted at
+      the path would point the sink at whatever file it names;
     - a file owned by another user is refused, where ``os.getuid`` exists;
     - a file still readable or writable by group or others after narrowing is
       refused, on POSIX.
@@ -454,6 +456,12 @@ def _refusal(fd: int) -> str | None:
     info = os.fstat(fd)
     if not stat.S_ISREG(info.st_mode):
         return "it is not a regular file"
+    if info.st_nlink != 1:
+        # A hard link at the path passes every other check: O_NOFOLLOW stops
+        # only symbolic links, and the target can be any file this process
+        # owns. A log this process created has exactly one link. Checked
+        # before narrowing, so a linked file's mode is left alone too.
+        return f"it has {info.st_nlink} hard links, not 1"
     getuid = getattr(os, "getuid", None)
     if getuid is not None and info.st_uid != getuid():
         return f"it is owned by uid {info.st_uid}, not by this process's uid {getuid()}"

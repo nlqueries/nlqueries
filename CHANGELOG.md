@@ -22,10 +22,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   characters escaped) in the log message as well as in `extra`. Set
   `NLQ_AUDIT_LOG` to a path to have each event appended to it as one JSON
   line; the file is created at mode `0600`. A symbolic link at that path is
-  not followed, anything but a regular file is refused without blocking, and
-  a file owned by another user, or one group or others can
-  still reach after narrowing to `0600`, gets no events and one warning on
-  `nlqueries.audit.sink`. See "Audit events" in
+  not followed, and anything but a regular file is refused without blocking.
+  A file with more than one hard link, a file owned by another user, or one
+  group or others can still reach after narrowing to `0600` gets no events
+  and one warning on `nlqueries.audit.sink`. See "Audit events" in
   `docs/configuration.md`. `SQLAlchemyConnector.dialect_name` is new: the
   backend SQLAlchemy reports for the connection (`postgresql`, `mysql`, ...),
   or `None` before `connect`; the event's dialect for that connector comes
