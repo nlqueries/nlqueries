@@ -58,14 +58,24 @@ _ROLE_PREAMBLE = (
 )
 
 #: Longest rendering of a single reference value: a table or column
-#: description, a business rule, a glossary entry or a capsule intent. These
-#: come from the database, documents, dbt, the glossary or users, and each is
-#: rendered on one line so that none of them can open a section of its own.
+#: description, a glossary term or a capsule intent. These come from the
+#: database, documents, dbt, the glossary or users, and each is rendered on one
+#: line so that none of them can open a section of its own.
 _MAX_REFERENCE_CHARS = 300
 
-#: Longest rendering of one sample value. A sample shows the spelling and shape
-#: of what a column holds; past this it is a document, not a sample.
+#: Longest rendering of a business rule or a glossary definition. Still one
+#: line, but a longer cap: a rule cut mid-sentence can say something other
+#: than what it says whole ("exclude refunds unless ..."), and the model is
+#: told to apply rules and definitions exactly as written.
+_MAX_RULE_CHARS = 1000
+
+#: Longest sample value shown. A longer one is left out of the list, not cut:
+#: a cut value inside quotes reads as a value the column holds, and a filter on
+#: it matches nothing.
 _MAX_SAMPLE_CHARS = 80
+
+#: The opening of a block marker the prompt itself uses, in any letter case.
+_BLOCK_MARKER = re.compile(r"<(?=/?(?:excerpt|turn))", re.IGNORECASE)
 
 
 def _one_line(value: Any, limit: int = _MAX_REFERENCE_CHARS) -> str:
@@ -81,6 +91,16 @@ def _one_line(value: Any, limit: int = _MAX_REFERENCE_CHARS) -> str:
     return text
 
 
+def _sample_text(value: Any) -> str:
+    """A sample value on one line, whitespace collapsed and nothing cut."""
+    return " ".join(str(value if value is not None else "").split())
+
+
+def _sample_fits(value: Any) -> bool:
+    """Whether a sample is short enough to show (see :data:`_MAX_SAMPLE_CHARS`)."""
+    return len(_sample_text(value)) <= _MAX_SAMPLE_CHARS
+
+
 def _quote_sample(value: Any) -> str:
     """One sample value, single-quoted on one line, with embedded quotes doubled.
 
@@ -88,17 +108,32 @@ def _quote_sample(value: Any) -> str:
     is the literal the model would write, and a quote in the value cannot close
     the string early and leave the rest of the value outside the brackets.
     """
-    return "'" + _one_line(value, _MAX_SAMPLE_CHARS).replace("'", "''") + "'"
+    return "'" + _sample_text(value).replace("'", "''") + "'"
+
+
+def _neutralise_markers(text: str) -> str:
+    """*text* with every ``<excerpt``, ``</excerpt``, ``<turn`` and ``</turn``
+    (any letter case) written as ``&lt;...``, and nothing else changed.
+
+    Only the prompt's own block markers are touched. Escaping every ``<``, ``>``
+    and ``&`` would also stop a body closing its block, but nothing decodes the
+    entities again: "R&D" reached the model as ``R&amp;D``, and the model
+    copied it into answers and into rewritten questions, where a filter on
+    ``'Smith &amp; Sons'`` matches nothing.
+    """
+    return _BLOCK_MARKER.sub("&lt;", text)
 
 
 def _excerpt_block(label: str, text: str) -> str:
     """A document excerpt as a delimited block carrying its source label.
 
-    ``<``, ``>`` and ``&`` are escaped inside, and the label is escaped as an
-    attribute, so text in a document cannot close the block or open another.
+    Block markers inside the excerpt are neutralised (see
+    :func:`_neutralise_markers`) and the label is escaped as an attribute, so
+    text in a document cannot close the block or open another; the rest of the
+    text, ``&``, ``<`` and ``>`` included, reaches the model as written.
     """
     source = html.escape(label, quote=True)
-    return f'<excerpt source="{source}">\n{html.escape(text, quote=False)}\n</excerpt>'
+    return f'<excerpt source="{source}">\n{_neutralise_markers(text)}\n</excerpt>'
 
 
 #: What the answer looks like: which columns, in what order, and the idioms a
@@ -736,14 +771,19 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
                 flags.append(description)
 
             samples: list[str] = col.get("samples", [])
-            if samples:
+            shown = [s for s in samples if _sample_fits(s)]
+            if shown:
                 # "values" when they are every value the column holds, so the
                 # model can rely on the spelling; "samples" when they are a few.
-                if col.get("values_complete"):
-                    value_str = ", ".join(_quote_sample(s) for s in samples)
+                # A complete list that lost an over-long value is no longer
+                # complete, so it is shown as samples.
+                if col.get("values_complete") and len(shown) == len(samples):
+                    value_str = ", ".join(_quote_sample(s) for s in shown)
                     flags.append(f"values: [{value_str}]")
                 else:
-                    sample_str = ", ".join(_quote_sample(s) for s in samples[:5])
+                    if not col.get("values_complete"):
+                        shown = shown[:5]
+                    sample_str = ", ".join(_quote_sample(s) for s in shown)
                     flags.append(f"samples: [{sample_str}]")
 
             inner = f"{col_name}:{col_type}"
@@ -887,8 +927,9 @@ def _render_glossary_line(
         label = f"{term} (a kind of {parent})" if parent else term
         if term:
             record_prompt_section(f"{provenance_prefix}:{term}")  # provenance (SYL-1.1)
-        return f"- {_one_line(label)}: {_one_line(entry.get('definition', ''))}"
-    return f"- {_one_line(entry)}"
+        definition = _one_line(entry.get("definition", ""), _MAX_RULE_CHARS)
+        return f"- {_one_line(label)}: {definition}"
+    return f"- {_one_line(entry, _MAX_RULE_CHARS)}"
 
 
 def _build_business_context_section(
@@ -917,7 +958,7 @@ def _build_business_context_section(
     if rules:
         lines.append("### Business Rules")
         for rule in rules:
-            lines.append(f"- {_one_line(rule)}")
+            lines.append(f"- {_one_line(rule, _MAX_RULE_CHARS)}")
             record_prompt_section(f"rule:{str(rule)[:60]}")  # provenance (SYL-1.1)
         lines.append("")
     return "\n".join(lines)

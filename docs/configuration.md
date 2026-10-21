@@ -207,14 +207,14 @@ Every LLM call sends text to the provider set by `LLM_PROVIDER`. What it carries
 | Data | Sent | Notes |
 |---|---|---|
 | The question | On every question | With the last few conversation turns when the question reads as a follow-up |
-| Schema | On every SQL question | Table and column names, types, keys, and descriptions, each description on one line and capped at 300 characters |
-| Sample values | On every SQL question | Up to five stored values per column (all of them where the knowledge base holds the complete list), each quoted and capped at 80 characters; never for a column whose name marks it as personal data |
+| Schema | On every SQL question | Table and column names, types, keys, and descriptions, each description on one line and capped at 300 characters; business rules and glossary definitions on one line and capped at 1,000 |
+| Sample values | On every SQL question | Up to five stored values per column (all of them where the knowledge base holds the complete list), each quoted; a value over 80 characters is left out, not cut, and a complete list that loses one is shown as samples. Never for a column whose name marks it as personal data |
 | Result rows | On the hybrid path only | Up to 20 rows, personal-data columns withheld; with `NLQ_SEND_RESULT_ROWS_TO_LLM=false`, the column names and the row count only. A SQL-only answer sends no rows |
-| Document excerpts | On document and hybrid questions | Each excerpt in a delimited block with its source label |
+| Document excerpts | On document and hybrid questions | Each excerpt in a delimited block with its source label. Only the block markers inside it are neutralised; the rest of the text, `&`, `<` and `>` included, is sent as written |
 
 Descriptions, sample values, glossary entries, example queries and excerpts are framed in the prompt as reference data that never changes its instructions. Up to 1,000 characters of a database error go back to the model when it corrects a failed statement, and literal grounding can send nearby stored values to its repair step (see `NLQ_LITERAL_GROUNDING_REPAIR`).
 
-Document answers are not written to the semantic cache, so an answer is never replayed after its source document has changed.
+Document and hybrid answers are not written to the semantic cache, so an answer built from a document is never replayed after that document has changed. Entries written by an earlier version expire with the TTL.
 
 ---
 

@@ -891,11 +891,12 @@ def _write_refusal(question: str, result: _PutResult) -> str | None:
     stored with its SQL and re-executed against a customer's database on every
     subsequent hit.
     """
-    if result.agent_type == "document":
-        # A document answer restates excerpts as they read when it was written.
-        # Replayed from the cache, it outlives an edited or removed document for
-        # the whole TTL, and nothing on a hit could tell the reader so.
-        return "document answers are not cached"
+    if result.agent_type in ("document", "hybrid"):
+        # A document answer restates excerpts as they read when it was written,
+        # and a hybrid answer is synthesised from the same excerpts. Replayed
+        # from the cache, either outlives an edited or removed document for the
+        # whole TTL, and nothing on a hit could tell the reader so.
+        return f"{result.agent_type} answers are not cached"
     answer = (result.answer or "").strip()
     if not answer:
         return "the answer was empty"

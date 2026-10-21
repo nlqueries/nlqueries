@@ -248,15 +248,16 @@ def load_dbt_artifacts(path: Path | str) -> tuple[dict[str, DbtTableDoc], list[D
     files simply yield empty results — a docs-only project (no semantic layer)
     returns metrics ``[]``, and vice versa.
     """
-    p = Path(path)
-    docs = {doc.name: doc for doc in load_dbt_models(p)}
+    docs = {doc.name: doc for doc in load_dbt_models(path)}
+    return docs, load_dbt_metrics(path)
 
-    metrics: list[DbtMetric] = []
-    if p.is_dir():
-        sem_path = p / "semantic_manifest.json"
-        if sem_path.exists():
-            metrics = parse_dbt_metrics(sem_path)
-    return docs, metrics
+
+def load_dbt_metrics(path: Path | str) -> list[DbtMetric]:
+    """The metrics of a dbt artifacts directory's ``semantic_manifest.json``;
+    ``[]`` for a manifest file or a directory without one."""
+    p = Path(path)
+    sem_path = p / "semantic_manifest.json"
+    return parse_dbt_metrics(sem_path) if p.is_dir() and sem_path.exists() else []
 
 
 def load_dbt_models(path: Path | str) -> list[DbtTableDoc]:

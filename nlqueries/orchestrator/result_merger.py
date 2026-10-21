@@ -179,9 +179,9 @@ def _format_sql_for_llm(sql_result: QueryResult, *, send_rows: bool) -> str:
 def _format_citations_for_llm(citations: list[Citation], top_n: int = 3) -> str:
     """The top-N citations as delimited excerpt blocks for the synthesis prompt.
 
-    Each excerpt sits between markers that carry its source label, with ``<``,
-    ``>`` and ``&`` escaped inside, so text in a document cannot close its block
-    and read as part of the prompt around it.
+    Each excerpt sits between markers that carry its source label, with any
+    block marker inside it neutralised, so text in a document cannot close its
+    block and read as part of the prompt around it.
     """
     parts: list[str] = []
     for c in citations[:top_n]:

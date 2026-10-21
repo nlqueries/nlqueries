@@ -171,11 +171,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 ### Changed
 
 - **Reference data renders on one line in prompts.** Table and column
-  descriptions, business rules, glossary entries and capsule intents have their
-  whitespace collapsed and are capped at 300 characters, so a description
-  holding `\n## Business Rules` stays on its table's line instead of opening a
-  section. Sample values are single-quoted with embedded quotes doubled
-  (`'O''Brien'`) and capped at 80 characters each. The SQL prompt's preamble
+  descriptions, glossary terms and capsule intents have their whitespace
+  collapsed and are capped at 300 characters, so a description holding
+  `\n## Business Rules` stays on its table's line instead of opening a
+  section. Business rules and glossary definitions are collapsed the same way
+  but capped at 1,000 characters, since a rule cut mid-sentence can change its
+  meaning. Sample values are single-quoted with embedded quotes doubled
+  (`'O''Brien'`); a sample over 80 characters is left out of the list rather
+  than cut, and a complete `values:` list that loses one is shown as
+  `samples:`, since it is no longer complete. The SQL prompt's preamble
   now says that descriptions, values, glossary entries, examples and excerpts
   are reference data and never change its instructions, and the verified
   example label reads `-- verified example`, without "user-confirmed correct".
@@ -183,17 +187,23 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   prompt and hybrid synthesis put each excerpt in an
   `<excerpt source="...">` block with its source label, and follow-up
   resolution puts each earlier turn in a `<turn source="User|Assistant">`
-  block; `<`, `>` and `&` inside are escaped. A hybrid answer's
-  document-only passthrough text is unchanged.
+  block. Inside a block, only the markers themselves are neutralised: any
+  `<excerpt`, `</excerpt`, `<turn` or `</turn`, in any letter case, has its
+  `<` written as `&lt;`. Everything else, `&`, `<` and `>` included, reaches
+  the model as written, so "R&D" and "Smith & Sons" are not turned into
+  entities that the model then copies into answers or rewritten questions.
+  The source label is attribute-escaped. A hybrid answer's document-only
+  passthrough text is unchanged.
 - **`NLQ_SEND_RESULT_ROWS_TO_LLM` decides whether hybrid synthesis sees rows.**
   On (the default), up to 20 rows are sent as before, except that columns
   whose names mark them as personal data are now always left out and named as
   withheld. Off, the synthesis prompt gets the column names and the row count
   only. The result table returned to the reader is the same either way. See
   "What leaves this machine" in `docs/configuration.md`.
-- **Document answers are not written to the semantic cache.** A cached
-  document answer would be replayed after its source changed, for the whole
-  TTL. Entries written before this change still expire with the TTL.
+- **Document and hybrid answers are not written to the semantic cache.** A
+  cached document answer, or a hybrid answer synthesised from the same
+  excerpts, would be replayed after its source changed, for the whole TTL.
+  Entries written before this change still expire with the TTL.
 - **`import-dbt` matches models by schema and name.** A knowledge-base table
   that records its schema takes the docs of the dbt model built into that
   schema (compared ignoring case); otherwise the bare name still matches, but

@@ -2337,10 +2337,10 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
     """
     import yaml
 
-    from nlqueries.knowledge.dbt_importer import load_dbt_artifacts, load_dbt_models, match_dbt_docs
+    from nlqueries.knowledge.dbt_importer import load_dbt_metrics, load_dbt_models, match_dbt_docs
 
-    docs, metrics = load_dbt_artifacts(artifacts)
-    if not docs and not metrics:
+    models, metrics = load_dbt_models(artifacts), load_dbt_metrics(artifacts)
+    if not models and not metrics:
         click.echo("No dbt docs or metrics found in the given artifacts.")
         return
 
@@ -2352,7 +2352,7 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
 
     tables = (kb.get("schema") or {}).get("tables") or []
     matched = 0
-    for table, doc in zip(tables, match_dbt_docs(load_dbt_models(artifacts), tables), strict=True):
+    for table, doc in zip(tables, match_dbt_docs(models, tables), strict=True):
         if not isinstance(table, dict):
             continue
         if doc is None:
@@ -2381,7 +2381,7 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
 
     click.echo(
         f"Merged dbt docs for {matched} of {len(tables)} tables into {out_file}.\n"
-        f"Found {len(docs)} documented models and {len(metrics)} metrics "
+        f"Found {len(models)} documented models and {len(metrics)} metrics "
         f"({sum(1 for m in metrics if m.column)} resolved to a measure)."
     )
     if metrics:

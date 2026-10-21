@@ -781,6 +781,12 @@ class MultiAgentOrchestrator:
             # keep the rest, but it needs the statement and the citations stored
             # too, and a synthesis call on every hit -- a larger change, and one
             # to make deliberately rather than as a side effect of this one.
+            #
+            # `SemanticCache.put` now refuses every hybrid answer, these
+            # included: the prose is synthesised from document excerpts too, and
+            # a replay would outlive an edit to the document (see
+            # `_write_refusal`). The write is still scheduled so that the
+            # live-rows rule above stays stated here.
             if hybrid_result is not None and not _carries_executed_data(sql_tokens):
                 _schedule_cache_write(
                     _cache,
