@@ -456,8 +456,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   mapping values are not allowed here`, without the line the parser quoted,
   which may hold a password. That applies to the MCP `list_connectors` tool
   and to the CLI, where the parse error used to escape as a traceback and is
-  now an ordinary error with exit status 1. The loader raises
-  `ConnectorsFileError`, a `ValueError`, for it.
+  now an ordinary error with exit status 1. `health` reports it as a failed
+  `Database` check and still runs its other checks, so `health --json` still
+  prints a report. The loader raises `ConnectorsFileError`, a `ValueError`,
+  for it, and `list_connectors` now reads the file through the loader rather
+  than parsing it itself.
 - **Promoted feedback reaches the prompt.** `promote-feedback`, and `export-kb`
   which runs it, write confirmed (question, SQL) pairs to
   `agent_<id>_verified` with the connector ID made safe for a collection name

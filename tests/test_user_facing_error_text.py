@@ -154,3 +154,57 @@ def test_the_cli_names_the_line_not_its_text(malformed_file: Path) -> None:
         result.output
     )
     assert SECRET not in result.output
+
+
+def test_health_reports_the_file_and_runs_the_other_checks(malformed_file: Path) -> None:
+    """A file that does not parse is one failed check, not the end of the run."""
+    import json
+
+    from nlqueries.cli.main import _CheckResult
+
+    others = {
+        name: MagicMock(return_value=_CheckResult(service, "ok", "up"))
+        for name, service in [
+            ("_check_qdrant", "Qdrant"),
+            ("_check_llm", "LLM"),
+            ("_check_embedding", "Embedding"),
+            ("_check_config", "Config"),
+        ]
+    }
+    with (
+        patch("nlqueries.connectors.loader.config.CONNECTORS_FILE", malformed_file),
+        patch.multiple("nlqueries.cli.main", **others),
+    ):
+        result = CliRunner().invoke(cli, ["health", "--json"])
+
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.output)
+    by_service = {c["service"]: c for c in report["checks"]}
+    assert set(by_service) == {"Qdrant", "Database", "LLM", "Embedding", "Config"}
+    database = by_service["Database"]
+    assert database["status"] == "fail"
+    assert database["detail"].startswith(
+        "Failed to read connectors file: line 4: mapping values are not allowed here"
+    )
+    assert report["healthy"] is False
+    assert SECRET not in result.output
+
+
+def test_the_mcp_listing_reads_the_file_through_the_loader(tmp_path: Path) -> None:
+    """One reader: whatever the loader refuses, the listing reports the same way."""
+    from nlqueries.connectors.loader import ConnectorsFileError
+    from nlqueries.mcp_server.server import list_connectors
+
+    # Valid on its own, so only the loader's refusal can produce the message.
+    f = tmp_path / "connectors.yaml"
+    f.write_text("good:\n  db_type: postgres\n", encoding="utf-8")
+    with (
+        patch("nlqueries.mcp_server.server.config.CONNECTORS_FILE", f),
+        patch(
+            "nlqueries.connectors.loader._read_connectors_root",
+            side_effect=ConnectorsFileError("line 9: a problem the loader found"),
+        ),
+    ):
+        out = list_connectors()
+
+    assert out == "Failed to read connectors file: line 9: a problem the loader found"

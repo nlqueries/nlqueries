@@ -115,7 +115,9 @@ def _load_connectors() -> dict[str, Any]:
     try:
         loaded: dict[str, Any] = _load()
     except ConnectorsFileError as exc:
-        raise click.ClickException(f"{exc} (in {CONNECTORS_FILE})") from None
+        # Chained so `_check_connectors` can tell this failure apart. The cause
+        # quotes nothing from the file: the loader raised it `from None`.
+        raise click.ClickException(f"{exc} (in {CONNECTORS_FILE})") from exc
     return loaded
 
 
@@ -459,7 +461,16 @@ def _identity_check(service: str, identity: Any) -> _CheckResult:
 
 
 def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
-    connectors = _load_connectors()
+    from nlqueries.connectors.loader import ConnectorsFileError  # noqa: PLC0415
+
+    try:
+        connectors = _load_connectors()
+    except click.ClickException as exc:
+        # Reported, not raised, as a bad entry is below: the other checks still
+        # run, and `--json` still emits a report.
+        if not isinstance(exc.__cause__, ConnectorsFileError):
+            raise
+        return [_CheckResult("Database", "fail", exc.message)]
     if not connectors:
         return [
             _CheckResult(

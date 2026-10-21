@@ -144,7 +144,7 @@ Loading weights: 100%|████████████████| 103/103 
 Error: Failed to read connectors file: line 4: mapping values are not allowed here (in /home/you/.nlqueries/connectors.yaml)
 ```
 
-**When:** Any command that reads `connectors.yaml` (`connectors`, `health`, and every command given a connector ID or alias) finds that the file is not valid YAML. The command exits with status 1. The MCP `list_connectors` tool returns the same message without the path.
+**When:** Any command that reads `connectors.yaml` (`connectors` and every command given a connector ID or alias) finds that the file is not valid YAML. The command exits with status 1. `health` reports the same message as a failed `Database` check, runs its other checks, and exits with status 1; `health --json` still prints the full report. The MCP `list_connectors` tool returns the same message without the path.
 
 **Why:** The file was edited by hand and a line no longer parses. A common cause is a value that contains `: `, such as `password: a: b`, which needs quotes.
 

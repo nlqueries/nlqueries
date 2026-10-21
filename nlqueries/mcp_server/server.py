@@ -573,19 +573,20 @@ def list_connectors() -> str:
         Formatted list of connector IDs and their db-types, or a message
         when no connectors are registered.
     """
-    import yaml  # noqa: PLC0415
-
-    from nlqueries.connectors.loader import yaml_problem  # noqa: PLC0415
+    from nlqueries.connectors.loader import (  # noqa: PLC0415
+        ConnectorsFileError,
+        _read_connectors_root,
+    )
 
     if not config.CONNECTORS_FILE.exists():
         return "No connectors registered. Use 'nlqueries connect' to add one."
 
     try:
-        # `object`: YAML can hold any shape, and the checks below are for that.
-        raw: object = yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        # Not `{exc}`: PyYAML quotes the offending line, which may hold a password.
-        return f"Failed to read connectors file: {yaml_problem(exc)}"
+        # The loader's reader, so this tool reads the file as every other path
+        # does. `object`: YAML can hold any shape, and the checks below are for that.
+        raw: object = _read_connectors_root() or {}
+    except ConnectorsFileError as exc:
+        return str(exc)
     except Exception as exc:  # noqa: BLE001
         return f"Failed to read connectors file: {exc}"
 
