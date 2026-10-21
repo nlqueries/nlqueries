@@ -1443,3 +1443,39 @@ class TestCacheDoesNotStoreOrRunInvalidSQL:
         from nlqueries.orchestrator.multi_agent_orchestrator import _is_executable_select
 
         assert _is_executable_select("SELECT 1 FROM t", "postgres")
+
+
+# ---------------------------------------------------------------------------
+# A cache that cannot be read is reported once, not on every question
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_cache_lookup_failures_warn_once(caplog: Any) -> None:
+    from nlqueries.orchestrator import multi_agent_orchestrator as mao
+
+    mao._CACHE_LOOKUP_FAILURES_LOGGED.clear()
+    sql_instance = MagicMock()
+    sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+
+    async def run() -> None:
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                return_value=sql_instance,
+            ),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+        ):
+            MockCache.return_value.get.side_effect = ConnectionError("cache unreachable")
+            orch = MultiAgentOrchestrator()
+            for _ in range(3):
+                async for _token in orch.handle_question(
+                    "Count orders", "agent1", available_types=["sql"]
+                ):
+                    pass
+
+    with caplog.at_level("DEBUG", logger="nlqueries.orchestrator.multi_agent_orchestrator"):
+        asyncio.run(run())
+
+    failures = [r for r in caplog.records if "Semantic cache lookup failed" in r.getMessage()]
+    assert [r.levelname for r in failures] == ["WARNING", "DEBUG", "DEBUG"]
