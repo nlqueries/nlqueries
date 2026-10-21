@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.kb_generator import (
@@ -714,6 +715,91 @@ def test_contact_details_are_pii() -> None:
     # Which is why pagila's `customer.email` and `address.phone` are covered.
     for name in ("email", "customer_email", "phone", "phone_number", "address", "address2"):
         assert is_pii_column(name) is True, name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pwd",
+        "db_credential",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+        "otp_code",
+        "user_otp",
+        "totp",
+        "totp_code",
+        "totp_key",
+        "hotp_counter",
+        "iban",
+        "account_number",
+        "account_no",
+        "national_id",
+        "passport_number",
+        "tax_id",
+        "first_name",
+        "lastname",
+        "full_name",
+        "given_name",
+        "family_name",
+        "session_id",
+        "cookie",
+        "auth_code",
+        "oauth_code",
+        "region_auth",
+        "authorization",
+        "authorisation",
+        "authorization_header",
+        "pin",
+        "card_pin",
+        "signing_key",
+        "encryption_key",
+        "ssh_key",
+        "master_key",
+        "license_key",
+        "licence_key",
+    ],
+)
+def test_more_credentials_identifiers_and_names_are_pii(name: str) -> None:
+    assert is_pii_column(name) is True, name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "order_total",
+        "status",
+        "keyword",
+        "product_name",
+        "account_type",
+        "shipping",
+        "spinner",
+        "author",
+        "authority",
+        "authorized_by",
+        "co_author",
+        "footprint",
+        "hotpot",
+        "hotplate",
+        "account_notes",
+        "customer_key",
+        "date_key",
+        "product_key",
+    ],
+)
+def test_ordinary_names_that_contain_a_sensitive_word_are_not_pii(name: str) -> None:
+    # `pin` counts only as a whole word, `otp` only at the start of one, `auth`
+    # not when it goes on to `or`, `account_no` not before another letter; bare
+    # `key`, `name` and `account`, and a `_key` suffix, not at all.
+    assert is_pii_column(name) is False, name
+
+
+@pytest.mark.parametrize("name", ["xtotp", "ahotp_count"])
+def test_totp_and_hotp_count_only_at_the_start_of_a_word(name: str) -> None:
+    # No ordinary column name puts a letter straight before `totp` or `hotp`, so
+    # these made-up ones pin the anchor that the kept list cannot reach.
+    assert is_pii_column(name) is False, name
 
 
 def test_it_is_case_insensitive() -> None:

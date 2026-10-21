@@ -2198,6 +2198,8 @@ def export_kb(
         from sqlalchemy import create_engine, select, table, text
         from sqlalchemy import inspect as sa_inspect
 
+        from nlqueries.knowledge.kb_generator import is_pii_column
+
         engine = create_engine(_get_full_url(connector_id, cfg))
         inspector = sa_inspect(engine)
 
@@ -2264,6 +2266,7 @@ def export_kb(
                                     else v
                                 )
                                 for k, v in row.items()
+                                if not is_pii_column(k)
                             }
                             for row in samples
                         ]

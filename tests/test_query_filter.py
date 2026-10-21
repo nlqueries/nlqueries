@@ -283,6 +283,28 @@ def test_fingerprint_strips_multiple_literals() -> None:
     assert fp1 == fp2
 
 
+def test_national_string_literal_difference_same_fingerprint() -> None:
+    sql1 = "SELECT * FROM users WHERE name = N'Jane Doe'"
+    sql2 = "SELECT * FROM users WHERE name = N'John Roe'"
+    results = filter_and_deduplicate([_qr(sql1), _qr(sql2)])
+    assert len(results) == 2
+    assert results[0].fingerprint == results[1].fingerprint
+    assert "Jane" not in results[0].fingerprint
+
+
+def test_normalized_sql_carries_no_comments() -> None:
+    sql = "/* for jane.doe@example.com */ SELECT id FROM orders WHERE total > 5 -- 4111"
+    assert _normalize(sql) == "SELECT id FROM orders WHERE total > 5"
+
+
+def test_queries_that_differ_only_in_a_comment_are_deduped() -> None:
+    sql1 = "SELECT id FROM orders WHERE total > 5 /* run 1 */"
+    sql2 = "SELECT id FROM orders WHERE total > 5 /* run 2 */"
+    results = filter_and_deduplicate([_qr(sql1, 3), _qr(sql2, 4)])
+    assert len(results) == 1
+    assert results[0].execution_count == 7
+
+
 # ---------------------------------------------------------------------------
 # tables_referenced
 # ---------------------------------------------------------------------------
