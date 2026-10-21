@@ -746,6 +746,12 @@ def test_contact_details_are_pii() -> None:
         "region_auth",
         "pin",
         "card_pin",
+        "signing_key",
+        "encryption_key",
+        "ssh_key",
+        "master_key",
+        "license_key",
+        "licence_key",
     ],
 )
 def test_more_credentials_identifiers_and_names_are_pii(name: str) -> None:
