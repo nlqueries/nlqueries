@@ -96,8 +96,18 @@ def _daemon_body(value: Any) -> bytes:
     every non-ASCII character took six bytes, or twelve outside the BMP.
     `_daemon_parts` measures with this too, so the size it budgets is the size
     sent.
+
+    Raises:
+        EmbeddingServiceUnavailable: for a text UTF-8 cannot encode -- a lone
+            surrogate, as ``json.loads`` or a non-UTF-8 ``sys.argv`` can
+            produce. Escaped, such a text used to reach the daemon; now it
+            falls back like any other daemon-path failure instead of raising
+            past the callers' handlers.
     """
-    return _json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    try:
+        return _json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    except UnicodeEncodeError as exc:
+        raise EmbeddingServiceUnavailable(FAILING, "text is not valid Unicode") from exc
 
 
 def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:

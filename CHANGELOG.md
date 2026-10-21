@@ -177,8 +177,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   text over the character or body limit is sent on its own and is the only
   request refused. If any part fails, or comes back with a different number
   of vectors than texts sent, the whole batch falls back as one request's
-  failure did before, so no vector is paired with the wrong text.
-  `GET /healthz` is unchanged.
+  failure did before, so no vector is paired with the wrong text. A text
+  that cannot be encoded as UTF-8, such as one holding a lone surrogate, is
+  never sent: it falls back the same way, or raises under
+  `EMBED_SERVER_REQUIRED`. `GET /healthz` is unchanged.
 - **`embed-server start` keeps the working directory off the daemon's import
   path.** The background daemon is now started as
   `python -P -m nlqueries.embeddings.embed_server`, so it imports the

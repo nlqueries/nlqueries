@@ -641,3 +641,80 @@ def test_integration_upsert_and_search() -> None:
             QdrantClient(url=url).delete_collection(collection)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# A text UTF-8 cannot encode
+# ---------------------------------------------------------------------------
+
+
+class TestLoneSurrogate:
+    """A lone surrogate, as ``json.loads`` or a non-UTF-8 ``sys.argv`` yields,
+    cannot be sent to the daemon as UTF-8. It falls back like any other daemon
+    failure rather than raising past `embed_text` and `embed_batch`."""
+
+    _TEXT = "orders by region \ud800"
+
+    @staticmethod
+    def _no_daemon_contact() -> Any:
+        return patch(
+            "nlqueries.embeddings.embedder.urllib.request.urlopen",
+            side_effect=AssertionError("the request was sent"),
+        )
+
+    def test_embed_text_falls_back_to_the_local_model(self) -> None:
+        from nlqueries.embeddings.embedder import embed_text
+
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(1)[0], dtype=np.float32)
+        embed_text.cache_clear()
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            self._no_daemon_contact(),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            result = embed_text(self._TEXT)
+
+        mock_model.encode.assert_called_once_with(self._TEXT, normalize_embeddings=True)
+        assert len(result) == _VECTOR_SIZE
+
+    def test_embed_batch_falls_back_to_the_local_model(self) -> None:
+        from nlqueries.embeddings.embedder import embed_batch
+
+        texts = ["fine", self._TEXT, "also fine"]
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.array(_fake_vectors(3), dtype=np.float32)
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            self._no_daemon_contact(),
+            patch("nlqueries.embeddings.embedder._model", mock_model),
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        ):
+            result = embed_batch(texts)
+
+        mock_model.encode.assert_called_once_with(texts, batch_size=64, normalize_embeddings=True)
+        assert len(result) == 3
+
+    @pytest.mark.parametrize("call", ["embed_text", "embed_batch"])
+    def test_it_raises_when_the_daemon_is_required(self, call: str) -> None:
+        from nlqueries.embeddings import embedder
+        from nlqueries.embeddings.embedder import FAILING, EmbeddingServiceUnavailable
+
+        embedder.embed_text.cache_clear()
+        with (
+            patch("nlqueries.embeddings.embedder._require_daemon_model_agreement"),
+            self._no_daemon_contact(),
+            patch("nlqueries.embeddings.embedder._get_model") as get_model,
+            patch("nlqueries.config.EMBED_SERVER_REQUIRED", True),
+            pytest.raises(EmbeddingServiceUnavailable) as raised,
+        ):
+            if call == "embed_text":
+                embedder.embed_text(self._TEXT)
+            else:
+                embedder.embed_batch(["fine", self._TEXT])
+
+        assert raised.value.reason == FAILING
+        assert "text is not valid Unicode" in str(raised.value)
+        assert isinstance(raised.value.__cause__, UnicodeEncodeError)
+        get_model.assert_not_called()
