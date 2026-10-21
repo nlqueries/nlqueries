@@ -31,6 +31,7 @@ import inspect
 import ipaddress
 import logging
 import os
+import secrets
 import socket
 import time
 from collections.abc import Callable
@@ -208,6 +209,24 @@ def _agent_not_found(agent_id: str) -> str:
     return f"Agent '{agent_id}' not found. Use list_agents() to see the agents you can use."
 
 
+def _reference() -> str:
+    """A short id tying a failure in a tool reply to its full entry in the log."""
+    return secrets.token_hex(4)
+
+
+def _database_error_summary(error: str) -> str:
+    """*error* cut down as :func:`short_cause` cuts down an exception.
+
+    The connectors hand the orchestrator ``str(exc)``, and that string is what
+    reaches this tool, so there is no exception left to pass to ``short_cause``.
+    Its rule applies all the same: the first line names the failure, and the
+    lines after it are where drivers quote what they were sent -- the statement,
+    its parameters, a connection string.
+    """
+    first = next((line for line in error.splitlines() if line.strip()), "")
+    return first[:300] or "the database reported an error"
+
+
 #: How long the MCP `query` tool waits for an answer.
 _QUERY_BUDGET_SECONDS = 45
 #: The database's own limit on the statement, at or just under the tool's wait
@@ -246,6 +265,7 @@ async def query(
         (for SQL/hybrid agents), and source citations (for document/hybrid agents).
         Includes per-query latency and agent-type metadata.
     """
+    from nlqueries.connectors.base import short_cause  # noqa: PLC0415
     from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
 
@@ -285,8 +305,9 @@ async def query(
     except FileNotFoundError:
         return _agent_not_found(agent_id)
     except Exception as exc:  # noqa: BLE001
-        _log.exception("MCP query tool error for agent %r", agent_id)
-        return f"Query failed: {exc}"
+        reference = _reference()
+        _log.exception("MCP query tool error for agent %r [ref %s]", agent_id, reference)
+        return f"Query failed: {short_cause(exc)} (reference {reference})"
 
     parts: list[str] = [result.answer]
 
@@ -302,7 +323,17 @@ async def query(
             parts.append(f"\n\n**In plain English**\n{described.text}{hint}")
 
     if result.sql_result and result.sql_result.error:
-        parts.append(f"\n\n⚠ SQL execution error: {result.sql_result.error}")
+        # The full text goes to the log only; `sql_result.error` itself stays
+        # raw, as the correction loop needs it.
+        reference = _reference()
+        _log.warning(
+            "SQL execution error for agent %r [ref %s]: %s",
+            agent_id,
+            reference,
+            result.sql_result.error,
+        )
+        summary = _database_error_summary(result.sql_result.error)
+        parts.append(f"\n\n⚠ SQL execution error: {summary} (reference {reference})")
 
     if result.sql_result and not result.sql_result.error and result.sql_result.rows:
         qr = result.sql_result
@@ -544,12 +575,17 @@ def list_connectors() -> str:
     """
     import yaml  # noqa: PLC0415
 
+    from nlqueries.connectors.loader import yaml_problem  # noqa: PLC0415
+
     if not config.CONNECTORS_FILE.exists():
         return "No connectors registered. Use 'nlqueries connect' to add one."
 
     try:
         # `object`: YAML can hold any shape, and the checks below are for that.
         raw: object = yaml.safe_load(config.CONNECTORS_FILE.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        # Not `{exc}`: PyYAML quotes the offending line, which may hold a password.
+        return f"Failed to read connectors file: {yaml_problem(exc)}"
     except Exception as exc:  # noqa: BLE001
         return f"Failed to read connectors file: {exc}"
 

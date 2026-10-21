@@ -179,11 +179,38 @@ def _listed(connectors: dict[str, Any]) -> str:
     return shown
 
 
+class ConnectorsFileError(ValueError):
+    """The connectors file is not valid YAML.
+
+    The message is the line number and the parser's description of the
+    problem. PyYAML's own message quotes the offending line, and in this file
+    that line is as likely as any other to hold a password or a connection URL.
+    A ``ValueError`` so that a writer's existing refusal covers it too.
+    """
+
+    def __init__(self, problem: str) -> None:
+        self.problem = problem
+        super().__init__(f"Failed to read connectors file: {problem}")
+
+
+def yaml_problem(exc: yaml.YAMLError) -> str:
+    """Where a YAML document stopped parsing and why, without quoting it."""
+    if isinstance(exc, yaml.MarkedYAMLError):
+        mark = exc.problem_mark or exc.context_mark
+        problem = exc.problem or exc.context or "it is not valid YAML"
+        return f"line {mark.line + 1}: {problem}" if mark is not None else problem
+    return "it is not valid YAML"
+
+
 def _read_connectors_root() -> Any:
     """The connectors file parsed, with no shape policy applied."""
     if not config.CONNECTORS_FILE.exists():
         return None
-    return yaml.safe_load(config.CONNECTORS_FILE.read_text())
+    try:
+        return yaml.safe_load(config.CONNECTORS_FILE.read_text())
+    except yaml.YAMLError as exc:
+        # `from None`: the original carries the quoted line in its message.
+        raise ConnectorsFileError(yaml_problem(exc)) from None
 
 
 def _normalised(root: dict[Any, Any]) -> dict[str, Any]:

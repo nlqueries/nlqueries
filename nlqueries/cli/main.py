@@ -106,12 +106,16 @@ def _load_connectors() -> dict[str, Any]:
     raised AttributeError on a file whose root is a sequence, and still compared
     raw YAML keys, while the agent path handled both.
     """
+    from nlqueries.connectors.loader import ConnectorsFileError  # noqa: PLC0415
     from nlqueries.connectors.loader import _load_connectors as _load  # noqa: PLC0415
 
     # `Any` values, as the loader declares them: an entry is meant to be a
     # mapping, but a hand-edit can make it anything, and the readers here guard
     # for that -- a narrower type would let mypy treat those guards as dead.
-    loaded: dict[str, Any] = _load()
+    try:
+        loaded: dict[str, Any] = _load()
+    except ConnectorsFileError as exc:
+        raise click.ClickException(f"{exc} (in {CONNECTORS_FILE})") from None
     return loaded
 
 
