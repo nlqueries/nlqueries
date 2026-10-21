@@ -155,17 +155,17 @@ def match_dbt_docs(models: list[DbtTableDoc], tables: list[Any]) -> list[DbtTabl
     """The dbt docs for each knowledge-base table in *tables*, in order, or ``None``.
 
     A table that records its schema takes the model built into that schema with
-    its name (compared without regard to case, as warehouses fold identifiers).
-    Otherwise the bare name decides, as it did before schemas were compared, but
+    its name. Otherwise the bare name decides, as it did before schemas were compared, but
     only when one model has that name and no other table already took it by
     schema: ``staging.orders`` must not take the docs of ``analytics.orders``
-    because both are called ``orders``.
+    because both are called ``orders``. Both comparisons ignore letter case, as
+    warehouses fold identifiers: Snowflake reports ``ORDERS`` for dbt's ``orders``.
     """
     by_relation: dict[tuple[str, str], DbtTableDoc] = {}
     by_name: dict[str, list[DbtTableDoc]] = {}
     for model in models:
         by_relation.setdefault((model.schema.lower(), model.name.lower()), model)
-        by_name.setdefault(model.name, []).append(model)
+        by_name.setdefault(model.name.lower(), []).append(model)
 
     qualified: list[DbtTableDoc | None] = []
     for table in tables:
@@ -183,7 +183,7 @@ def match_dbt_docs(models: list[DbtTableDoc], tables: list[Any]) -> list[DbtTabl
             matched.append(found)
             continue
         candidates = [
-            m for m in by_name.get(str(table.get("name") or ""), []) if id(m) not in claimed
+            m for m in by_name.get(str(table.get("name") or "").lower(), []) if id(m) not in claimed
         ]
         matched.append(candidates[0] if len(candidates) == 1 else None)
     return matched

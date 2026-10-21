@@ -192,13 +192,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `<` written as `&lt;`. Everything else, `&`, `<` and `>` included, reaches
   the model as written, so "R&D" and "Smith & Sons" are not turned into
   entities that the model then copies into answers or rewritten questions.
-  The source label is attribute-escaped. A hybrid answer's document-only
-  passthrough text is unchanged.
+  The source label, which the model cites, is put on one line (capped at 300
+  characters like a description) with its markers neutralised, and only `"`
+  is escaped (as `&quot;`), so `Director's Report.pdf` and
+  `Profit & Loss.xlsx` are cited as written. A hybrid answer's
+  document-only passthrough text is unchanged.
 - **`NLQ_SEND_RESULT_ROWS_TO_LLM` decides whether hybrid synthesis sees rows.**
   On (the default), up to 20 rows are sent as before, except that columns
   whose names mark them as personal data are now always left out and named as
-  withheld. Off, the synthesis prompt gets the column names and the row count
-  only. The result table returned to the reader is the same either way. See
+  withheld; when that is every column, the prompt still gets the row count and
+  any failure. Off, the synthesis prompt gets the column names and the row
+  count only. The result table returned to the reader is the same either way. See
   "What leaves this machine" in `docs/configuration.md`.
 - **Document and hybrid answers are not written to the semantic cache.** A
   cached document answer, or a hybrid answer synthesised from the same
@@ -206,8 +210,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   Entries written before this change still expire with the TTL.
 - **`import-dbt` matches models by schema and name.** A knowledge-base table
   that records its schema takes the docs of the dbt model built into that
-  schema (compared ignoring case); otherwise the bare name still matches, but
-  only when one model has it and no other table took that model by schema.
+  schema; otherwise the bare name still matches, but only when one model has
+  it and no other table took that model by schema. Both comparisons ignore
+  letter case, so Snowflake's `ORDERS` matches dbt's `orders`.
   dbt model and column descriptions are cut to 2,000 characters on import.
 - **`nlqueries/core:latest` moves only on a final release.** A tag of the form
   `vX.Y.Z` pushes the image as `X.Y.Z` and `latest`; a pre-release tag such as

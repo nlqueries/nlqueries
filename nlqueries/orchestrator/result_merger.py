@@ -149,17 +149,7 @@ def _format_sql_for_llm(sql_result: QueryResult, *, send_rows: bool) -> str:
         return _format_sql_table(sql_result)
 
     if not send_rows:
-        columns = ", ".join(_cell(c) for c in sql_result.columns)
-        count = max(sql_result.row_count, len(sql_result.rows))
-        qualifier = "at least " if sql_result.truncated else ""
-        lines = [
-            f"Columns: {columns}",
-            f"Rows returned: {qualifier}{count}",
-            "(row values are not shared with this assistant)",
-        ]
-        if sql_result.error:
-            lines.append(f"(this query failed: {_cell(short_error_text(sql_result.error))})")
-        return "\n".join(lines)
+        return _format_sql_shape(sql_result, "(row values are not shared with this assistant)")
 
     keep = [i for i, c in enumerate(sql_result.columns) if not is_pii_column(str(c))]
     if len(keep) == len(sql_result.columns):
@@ -172,8 +162,22 @@ def _format_sql_for_llm(sql_result: QueryResult, *, send_rows: bool) -> str:
     )
     note = f"(values of {', '.join(_cell(c) for c in withheld)} withheld as personal data)"
     if not keep:
-        return f"Columns: {', '.join(_cell(c) for c in sql_result.columns)}\n{note}"
+        # Nothing left to show, but the count and any failure still have to be
+        # said, or the model reads an empty table as a query that found nothing.
+        return _format_sql_shape(sql_result, note)
     return f"{_format_sql_table(filtered)}\n{note}"
+
+
+def _format_sql_shape(sql_result: QueryResult, note: str) -> str:
+    """The columns, the row count (a lower bound when truncated), *note*, and the
+    failure if there was one: a result described without any of its values."""
+    columns = ", ".join(_cell(c) for c in sql_result.columns)
+    count = max(sql_result.row_count, len(sql_result.rows))
+    qualifier = "at least " if sql_result.truncated else ""
+    lines = [f"Columns: {columns}", f"Rows returned: {qualifier}{count}", note]
+    if sql_result.error:
+        lines.append(f"(this query failed: {_cell(short_error_text(sql_result.error))})")
+    return "\n".join(lines)
 
 
 def _format_citations_for_llm(citations: list[Citation], top_n: int = 3) -> str:

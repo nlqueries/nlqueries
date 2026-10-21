@@ -33,7 +33,6 @@ Public API
 from __future__ import annotations
 
 import asyncio
-import html
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -128,11 +127,18 @@ def _excerpt_block(label: str, text: str) -> str:
     """A document excerpt as a delimited block carrying its source label.
 
     Block markers inside the excerpt are neutralised (see
-    :func:`_neutralise_markers`) and the label is escaped as an attribute, so
-    text in a document cannot close the block or open another; the rest of the
-    text, ``&``, ``<`` and ``>`` included, reaches the model as written.
+    :func:`_neutralise_markers`), so text in a document cannot close the block
+    or open another; the rest of the text, ``&``, ``<`` and ``>`` included,
+    reaches the model as written.
+
+    The label is the name the model is told to cite, so it is changed as little
+    as keeps the marker whole: put on one line (:func:`_one_line`), so a name
+    holding a newline cannot put text on a line of its own; markers neutralised,
+    as in the body; and ``"`` written as ``&quot;``, the one character that
+    would close the attribute. Nothing else is escaped: ``Director's
+    Report.pdf`` and ``Profit & Loss.xlsx`` are cited as written.
     """
-    source = html.escape(label, quote=True)
+    source = _neutralise_markers(_one_line(label)).replace('"', "&quot;")
     return f'<excerpt source="{source}">\n{_neutralise_markers(text)}\n</excerpt>'
 
 
