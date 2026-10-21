@@ -6,6 +6,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Audit events for query execution, and a file to keep them in.** Every
+  statement sent to a database through the connector an agent's query opens
+  (`PermittedConnector.execute_query`) is recorded as a `query_execution` event
+  on the `nlqueries.audit` logger, from the CLI, the MCP server, the library
+  and cache replays alike. It carries the request id, surface (`cli`, `mcp` or
+  `library`), principal when known, agent, connector type and dialect, a
+  SHA-256 digest and the byte length of the statement, the SQL policy's
+  version and decision, and the outcome, row count, truncation, duration and
+  exception class. It never carries the question, the SQL text, the rows or a
+  credential. Authorization decisions now carry the request id and surface as
+  well, so a tool call's decision and the statements it ran share an id, and
+  both kinds of event put their JSON (sorted keys, one line, control
+  characters escaped) in the log message as well as in `extra`. Set
+  `NLQ_AUDIT_LOG` to a path to have each event appended to it as one JSON
+  line; the file is created at mode `0600`. See "Audit events" in
+  `docs/configuration.md`.
 - **SBOMs for each release.** The Docker image is built with a BuildKit SBOM
   attestation, so each platform in a pushed `nlqueries/core` manifest carries
   an SPDX SBOM (`docker buildx imagetools inspect nlqueries/core:<version>

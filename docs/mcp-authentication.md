@@ -255,21 +255,39 @@ limit, so raise it instead.
 ## What gets recorded
 
 Every decision, allowed and denied, goes to the `nlqueries.audit` logger. The
-message is `authorization denied` or `authorization allowed`; the record itself
-is attached to the log record as `extra={"audit": payload}`, a dict of this
-shape:
+message is `authorization denied` or `authorization allowed` followed by the
+record as JSON, with sorted keys, so a default formatter writes the whole
+record. The same record is attached to the log record as
+`extra={"audit": payload}`, a dict of this shape:
 
 ```json
-{"at": "2026-08-28T09:00:00+00:00", "principal": "alice@example.com",
- "source": "oidc", "action": "query:execute", "agent_id": "sales",
- "decision": "deny", "reason": "no grant covers this action on this agent"}
+{"action": "query:execute", "agent_id": "sales", "at": "2026-08-28T09:00:00+00:00",
+ "decision": "deny", "event": "authorization", "principal": "alice@example.com",
+ "reason": "no grant covers this action on this agent",
+ "request_id": "6f1c0e2a9b8d4f3e8a7c5b1d2e3f4a5b", "schema_version": 1,
+ "source": "oidc", "surface": "mcp"}
 ```
 
 Denials log at `WARNING` and allows at `INFO`, so the two can be routed
-differently without parsing messages. A default formatter prints only the
-message; to write the payload out, attach a handler to `nlqueries.audit` whose
-formatter reads the record's `audit` attribute. Neither carries the token nor
-the token's claims — these records travel into support bundles.
+differently without parsing messages. Neither carries the token nor the
+token's claims — these records travel into support bundles.
+
+Each statement a tool sends to a database is recorded too, as a
+`query_execution` event under the same `request_id` as the decision that let
+the call through. It names the principal, the agent, the connector type and
+dialect, and carries a SHA-256 digest and the length of the statement, the
+SQL policy's version and its decision on the statement, and the outcome, row
+count, truncation, duration and, when the call raised, the exception's class.
+It never carries the question, the statement, the rows or a credential. The
+fields are listed under
+[Audit events](configuration.md#audit-events) in the configuration reference.
+
+The JSON escapes control characters and non-ASCII text, so a line break inside
+a subject, an agent ID or a reason is written as `\n` and cannot start a record
+of its own. To keep the events in a file of their own without configuring
+logging, name one in the setting described under
+[Audit events](configuration.md#audit-events): each event is appended to it as
+one JSON line, and the file is created readable and writable by its owner only.
 
 The refusal returned to the caller names the action and the agent and never the
 reason. A caller learning which agents exist from the wording of a denial is one

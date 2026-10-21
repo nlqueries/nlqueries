@@ -27,6 +27,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `EMBED_SERVER_MAX_CONCURRENCY` | No | `min(4, CPU count)` | How many embeddings the daemon computes at once. `1` serialises them |
 | `EMBED_SERVER_TORCH_THREADS` | No | `1` | Intra-op thread count for the `torch` backend inside the daemon. `0` leaves torch's own default |
 | `NLQ_LOG_FORMAT` | No | `text` | Log line format of the embedding daemon, `text` or `json`, when it runs in the foreground (`embed-server start --foreground`, or `python -m nlqueries.embeddings.embed_server`, whose `--log-format` overrides it). Any other value is treated as `text`, with a warning |
+| `NLQ_AUDIT_LOG` | No | — | A file that receives every audit event (authorization decisions and query executions) as one JSON line. Opened append-only for each event and created at mode `0600`; an existing file readable by others is narrowed to `0600`. A file that cannot be written is reported once on the `nlqueries.audit.sink` logger and does not fail the query. Unset, the events still go to the `nlqueries.audit` logger. See [Audit events](#audit-events). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | — | Not read by NLQueries. Its OpenTelemetry instrumentation installs no tracer provider or exporter of its own, so spans and metrics go nowhere unless the process runs under an OpenTelemetry SDK setup that configures one (for example `opentelemetry-instrument`), which is what reads this variable. Set on its own, it exports nothing |
 | `LLM_MAX_OUTPUT_TOKENS` | No | `4096` | Tokens an answer may generate, and the two derived budgets: a SQL correction or candidate set gets half (floor 512), intent classification and follow-up resolution an eighth (floor 200). At the default that is 4096 / 2048 / 512. The classification floor binds until this exceeds **1600**, so lowering it to, say, 1536 moves the answer and correction budgets but leaves classification at 200. The default was 1024 until the defaults moved to Claude Sonnet 5.5 and Haiku 5.5, which think before answering when a question calls for it; at 1024 Sonnet 5.5 can run out part-way through its SQL. The allowance is a ceiling: tokens are billed as generated. It does **not** govern knowledge-base column descriptions, which size their own allowance from the column count (`kb_generator`), nor the CLI and MCP health checks. **Raise it for a reasoning model** — such a model bills its private reasoning from the same allowance and spends it first, so a budget sized for the answer alone returns a short answer, or nothing at all on the smallest calls. Producing nothing now raises `OutputBudgetExhausted`, naming the model and the budget it spent, rather than returning an empty string that is indistinguishable from a model with nothing to say. Follow-up resolution and knowledge-base column descriptions are the exception: they log it at `WARNING` and carry on with a degraded result, because an unresolved follow-up is still worth asking. A non-positive value is ignored with a warning and the default applies. |
 | `LLM_EFFORT` | No | `low` | How hard Claude 5 and later think before answering, sent as `output_config.effort`: `low`, `medium`, `high`, `xhigh` or `max`. Blank sends nothing, so the model uses its own default (`high` for Sonnet 5.5, `medium` for Haiku 5.5). An unrecognised value is ignored with a warning and `low` applies. Sent to Claude only through the Anthropic API (the Anthropic provider, or LiteLLM with an `anthropic/` or bare `claude-` model), and never to an earlier Claude model. Bedrock, Vertex and OpenRouter keep each model's default effort. Claude 5 and later also reject a `temperature`, so none is sent to them. DeepSeek through LiteLLM (a `deepseek/` model) is sent it as `reasoning_effort`, which takes `low`, `high` or `max`: `low` and `medium` send `low`, `high` sends `high`, `xhigh` and `max` send `max`. It goes in `extra_body`, since LiteLLM turns a top-level `reasoning_effort` for DeepSeek into thinking on or off and drops the level; none is sent while `LLM_THINKING` is `off`. Other models are sent nothing. |
@@ -197,6 +198,41 @@ Anthropic key in its environment for something else keeps going to Bedrock.
 ---
 
 **Windows note:** `~` in default paths resolves to `C:\Users\<YourUsername>` in PowerShell. To set a variable for the current session use `$env:VAR = "value"`; to persist it, use **System Properties → Environment Variables** or add it to your PowerShell profile.
+
+---
+
+## Audit events
+
+Two events go to the `nlqueries.audit` logger, and to `NLQ_AUDIT_LOG` when it is set: `authorization`, one per decision the MCP guard makes (see [What gets recorded](mcp-authentication.md#what-gets-recorded)), and `query_execution`, one per statement sent to a database for an agent. Each is a JSON object with sorted keys, rendered on one line: control characters and non-ASCII text are escaped, so no field can break a record across lines. The log message is the event's words (`authorization allowed`, `query executed`) followed by that JSON, and the record is attached as `extra={"audit": ...}` as well.
+
+Every event carries:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `1`. Raised when a field is renamed, removed or changes meaning; adding a field does not raise it, so ignore fields you do not know. |
+| `event` | `authorization` or `query_execution` |
+| `request_id` | 32 hex characters. One per MCP tool call, shared by its decision and the statements it ran; one per CLI invocation. A caller that uses the package as a library gets a new one per event. |
+| `surface` | `mcp`, `cli` or `library` |
+| `at` | When it happened, ISO 8601 in UTC |
+
+A `query_execution` event adds:
+
+| Field | Meaning |
+|---|---|
+| `principal`, `source` | The caller's subject and how it was established (`oidc`, `static-token`, `local`, `anonymous`), or `null` when not known: the library binds none |
+| `agent_id` | The agent the statement ran for |
+| `connector_type` | The connector's registered type, such as `postgres` or `sqlite` |
+| `dialect` | The SQL grammar of that database, as the SQL policy names it (`tsql` for SQL Server); `null` when it cannot be told |
+| `sql_sha256` | SHA-256 of the statement's UTF-8 bytes, the same digest the SQL policy records for a decision |
+| `sql_bytes` | The statement's length in UTF-8 bytes |
+| `policy_version` | The SQL policy's version |
+| `policy_decision` | `allow` or `deny`: what the SQL policy decides about this statement for this dialect. It is recorded, not enforced, at this point; `null` when there is no dialect to decide for |
+| `outcome` | `ok`; `error` when the database returned an error; `exception` when the call raised, a refusal to execute included |
+| `row_count`, `truncated` | As the connector reported them; `null` when the call raised |
+| `duration_ms` | Wall-clock time of the call |
+| `error_class` | The exception's class name when the call raised, else `null`. Never its message, which can quote the statement. |
+
+An event never carries the question, the SQL text, the rows or a credential. Every statement run through the connector an agent's query opens is recorded, whether it comes from a fresh question, a cache replay or literal grounding's value lookups. Statements the CLI runs on a connector it opens itself (the `health` check's `SELECT 1`, `export-kb`'s table sampling) are not.
 
 ---
 

@@ -1026,3 +1026,14 @@ questions rather than turning it off.
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+AUDIT_LOG: str = os.getenv("NLQ_AUDIT_LOG", "").strip()
+"""A file that receives every audit event as one JSON line. Empty: none.
+
+Authorisation decisions and query executions (see :mod:`nlqueries.audit`) are
+logged to the ``nlqueries.audit`` logger whether or not this is set. This is for
+a deployment that wants them in a file of their own without configuring
+logging: the file is opened append-only for each event and created readable and
+writable by its owner only (0600). A file that cannot be written is reported
+once on ``nlqueries.audit.sink`` and does not fail the query.
+"""

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
-logger = logging.getLogger("nlqueries.audit")
+from nlqueries.audit import AUTHORIZATION, publish
 
 
 class Action(StrEnum):
@@ -174,9 +174,14 @@ def record(event: AuditEvent) -> None:
 
     Denials are warnings and allows are informational, so a deployment can route
     the two differently without parsing the message.
+
+    Rendered by :func:`nlqueries.audit.publish`: the message carries the
+    event's JSON after its words, so a default formatter writes the whole
+    record, and the record is in ``extra={"audit": ...}`` as well. The JSON goes
+    to ``NLQ_AUDIT_LOG`` too, when one is set.
     """
     payload = event.as_dict()
     if event.decision == AuditEvent.DENY:
-        logger.warning("authorization denied", extra={"audit": payload})
+        publish(AUTHORIZATION, "authorization denied", payload, logging.WARNING)
     else:
-        logger.info("authorization allowed", extra={"audit": payload})
+        publish(AUTHORIZATION, "authorization allowed", payload, logging.INFO)

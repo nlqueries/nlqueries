@@ -655,6 +655,17 @@ def cli() -> None:
       3. nlqueries process-history postgres:localhost:mydb --days 90
       4. nlqueries export-kb postgres:localhost:mydb --output kb.yaml
     """
+    import getpass  # noqa: PLC0415
+
+    from nlqueries.audit import Surface, bind_process  # noqa: PLC0415
+    from nlqueries.auth.principal import local_principal  # noqa: PLC0415
+
+    # One invocation is one request, made by whoever runs it.
+    try:
+        principal = local_principal(getpass.getuser())
+    except (KeyError, OSError, ValueError):
+        principal = None
+    bind_process(Surface.CLI, principal)
 
 
 # ---------------------------------------------------------------------------

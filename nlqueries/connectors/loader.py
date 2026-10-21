@@ -592,7 +592,9 @@ def open_connector_for_agent(
         fingerprint = _fingerprint(connector_id, cfg)
         cached = _cache_get(connector_id, fingerprint)
         if cached is not None:
-            return PermittedConnector(cached, execution, connector_id=connector_id)
+            return PermittedConnector(
+                cached, execution, connector_id=connector_id, agent_id=agent_id
+            )
 
     # `or ""` rather than a default: a `db_type:` key with no value under it
     # parses to None, which `.get("db_type", "")` returns happily and `.lower()`
@@ -644,7 +646,9 @@ def open_connector_for_agent(
                 connector,
                 f"{fingerprint}:degraded" if resolution_degraded else fingerprint,
             )
-        return PermittedConnector(connector, execution, connector_id=connector_id)
+        return PermittedConnector(
+            connector, execution, connector_id=connector_id, agent_id=agent_id
+        )
     except Exception:  # noqa: BLE001
         # Deliberately not "the connection attempt failed". This block covers
         # `credentials_for` as well as `connect`, and `connect` on the
