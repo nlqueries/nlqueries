@@ -13,6 +13,7 @@ from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
 from nlqueries.knowledge.concept_hierarchy import build_glossary_hierarchy
 from nlqueries.knowledge.description_dates import stamp_descriptions
 from nlqueries.processing.parameterizer import QueryCapsule
+from nlqueries.state_files import write_private
 
 logger = logging.getLogger(__name__)
 
@@ -668,8 +669,8 @@ def generate_knowledge_base(
 
 
 def save_knowledge_base(kb: dict[str, Any], path: str) -> None:
-    """Write *kb* to *path* as YAML."""
-    out_path = Path(path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as fh:
-        yaml.dump(kb, fh, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    """Write *kb* to *path* as YAML, readable by its owner only (see :func:`write_private`)."""
+    write_private(
+        Path(path),
+        yaml.safe_dump(kb, allow_unicode=True, default_flow_style=False, sort_keys=False),
+    )
