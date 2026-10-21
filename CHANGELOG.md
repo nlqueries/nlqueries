@@ -205,6 +205,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   1.25.1 with them, because aiohttp 3.14.4 requires it. Every other pin is
   unchanged, and so are the `pyproject.toml` floors, so a `pip install` of the
   package resolves as before.
+- **certifi moves from 2026.7.22 to 2026.10.19 in the image's lock.**
 - **A plain-http LLM gateway logs a warning.** When `ANTHROPIC_BASE_URL` or
   an `api_base` override (for the Anthropic or the LiteLLM client, including
   one passed in `extra`) uses `http://` to a host that is not `localhost` or a
