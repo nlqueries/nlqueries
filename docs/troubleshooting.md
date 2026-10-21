@@ -135,3 +135,19 @@ Loading weights: 100%|████████████████| 103/103 
 **Risk:** None — loading from local cache, not downloading.
 
 **Action:** None required. If startup time matters, run the embedding daemon (`nlqueries embed-server start`, see [cli-reference.md](cli-reference.md#embed-server)) or run NLQueries as a persistent server (MCP mode or Docker), so the model loads once and stays resident.
+
+---
+
+## W8 — Failed to read connectors file
+
+```
+Error: Failed to read connectors file: line 4: mapping values are not allowed here (in /home/you/.nlqueries/connectors.yaml)
+```
+
+**When:** Any command that reads `connectors.yaml` (`connectors`, `health`, and every command given a connector ID or alias) finds that the file is not valid YAML. The command exits with status 1. The MCP `list_connectors` tool returns the same message without the path.
+
+**Why:** The file was edited by hand and a line no longer parses. A common cause is a value that contains `: `, such as `password: a: b`, which needs quotes.
+
+**Risk:** None. Nothing is written, and the message gives the line number and the problem but not the line itself, which may hold a password.
+
+**Action:** Open the file at the line named and fix it. Quote any value that contains `: ` or starts with a special character (`'a: b'`).

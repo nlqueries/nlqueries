@@ -445,6 +445,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **Errors no longer pass on what a driver or the connectors file quoted.**
+  When the MCP `query` tool reports a failed query, it now shows the first
+  line of the error and a short reference id, and logs the full error with
+  that reference (`[ref …]`) on the server. The lines a driver adds after the
+  first, where it quotes the statement, its parameters or a connection
+  string, no longer reach the client. `QueryResult.error` itself is
+  unchanged. A `connectors.yaml` that is not valid YAML is now reported by
+  line number and problem, as `Failed to read connectors file: line 4:
+  mapping values are not allowed here`, without the line the parser quoted,
+  which may hold a password. That applies to the MCP `list_connectors` tool
+  and to the CLI, where the parse error used to escape as a traceback and is
+  now an ordinary error with exit status 1. The loader raises
+  `ConnectorsFileError`, a `ValueError`, for it.
 - **Promoted feedback reaches the prompt.** `promote-feedback`, and `export-kb`
   which runs it, write confirmed (question, SQL) pairs to
   `agent_<id>_verified` with the connector ID made safe for a collection name

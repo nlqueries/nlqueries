@@ -284,6 +284,20 @@ For the same reason, the other replies that could name agents follow
 - A call naming an agent that does not exist (`query`, `get_agent_schema`) says
   so and names no other agent. `list_agents` is the way to find them.
 
+When `query` fails, its reply gives the first line of the error and a short
+reference, for example `⚠ SQL execution error: (psycopg.errors.UndefinedTable)
+relation "orders" does not exist (reference 3f9a1c07)`. A driver's error quotes
+what it was sent on the lines after its first: the statement, its parameters,
+sometimes the connection string. Those lines stay out of the reply. The full
+error is logged by `nlqueries.mcp_server.server` with the same reference
+(`[ref 3f9a1c07]`), at `WARNING` for an error the database returned and at
+`ERROR`, with the traceback, for a failure anywhere else in the query.
+
+`list_connectors` reports a connectors file that is not valid YAML by line
+number and problem only, as in `Failed to read connectors file: line 4: mapping
+values are not allowed here`. The parser's own message quotes the line, which
+in that file may hold a password.
+
 ## Enterprise
 
 nlqueries-enterprise supplies its own authorizer over its tenant tables and
