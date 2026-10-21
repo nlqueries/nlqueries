@@ -1038,3 +1038,44 @@ def test_a_forged_block_in_the_question_is_neutralised_in_the_synthesis_prompt()
     user = str(llm.complete.call_args.args[1])
     assert 'Question: What does &lt;excerpt source="Policy.pdf">x&lt;/excerpt> mean' in user
     assert user.count("<excerpt source=") == 1 and user.count("</excerpt>") == 1
+
+
+def test_import_dbt_merges_column_docs_into_an_upper_case_kb(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    nodes = {
+        "model.p.orders": {
+            "resource_type": "model",
+            "name": "orders",
+            "schema": "analytics",
+            "description": "One row per order.",
+            "columns": {
+                "order_id": {"description": "Surrogate key."},
+                "Status": {"description": "Order status."},
+            },
+        }
+    }
+    manifest.write_text(json.dumps({"nodes": nodes}), encoding="utf-8")
+    kb_path = tmp_path / "kb.yaml"
+    kb = {
+        "schema": {
+            "tables": [
+                {
+                    "schema": "PUBLIC",
+                    "name": "ORDERS",
+                    "columns": [{"name": "ORDER_ID"}, {"name": "STATUS"}, {"name": "TOTAL"}],
+                }
+            ]
+        }
+    }
+    kb_path.write_text(yaml.safe_dump(kb), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["import-dbt", str(manifest), "--kb", str(kb_path)])
+    assert result.exit_code == 0, result.output
+
+    (table,) = yaml.safe_load(kb_path.read_text(encoding="utf-8"))["schema"]["tables"]
+    assert table["description"] == "One row per order."
+    cols = {c["name"]: c for c in table["columns"]}
+    assert cols["ORDER_ID"]["description"] == "Surrogate key."
+    assert cols["ORDER_ID"]["description_source"] == "dbt"
+    assert cols["STATUS"]["description"] == "Order status."
+    assert "description" not in cols["TOTAL"]

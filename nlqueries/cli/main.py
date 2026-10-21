@@ -2365,10 +2365,12 @@ def import_dbt(artifacts: str, kb_path: str, output: str | None) -> None:
         if doc.description and not (table.get("description") and t_src in ("manual", "")):
             table["description"] = doc.description
             table["description_source"] = "dbt"
+        # Case folded like the table match: Snowflake's ORDER_ID is dbt's order_id.
+        col_docs = {name.lower(): text for name, text in doc.columns.items()}
         for col in table.get("columns") or []:
             if not isinstance(col, dict):
                 continue
-            col_doc = doc.columns.get(str(col.get("name") or ""))
+            col_doc = col_docs.get(str(col.get("name") or "").lower())
             if not col_doc:
                 continue
             src = str(col.get("description_source") or "")

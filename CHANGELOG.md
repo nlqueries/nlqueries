@@ -221,7 +221,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   that records its schema takes the docs of the dbt model built into that
   schema; otherwise the bare name still matches, but only when one model has
   it and no other table took that model by schema. Both comparisons ignore
-  letter case, so Snowflake's `ORDERS` matches dbt's `orders`.
+  letter case, so Snowflake's `ORDERS` matches dbt's `orders`, and column
+  descriptions are matched the same way (`ORDER_ID` takes `order_id`'s).
   dbt model and column descriptions are cut to 2,000 characters on import.
 - **Knowledge bases, query capsules and `connectors.yaml` are written privately
   and atomically.** `export-kb` (including the fallback for a connector type
