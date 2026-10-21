@@ -94,13 +94,22 @@ artefacts.
   docker buildx imagetools inspect nlqueries/core:<version> --format '{{ json .SBOM }}'
   ```
 
-- **The wheel.** The `build` job installs the wheel into an empty virtualenv and
-  describes that environment with `cyclonedx-py`. The result,
+- **The wheel.** The `wheel-sbom` job installs the wheel into a virtualenv
+  created without pip, so the environment holds only the wheel and its
+  dependencies, and describes it with `cyclonedx-py`. The result,
   `nlqueries_core-<version>-py3-none-any.whl.cdx.json`, is attached to the
-  GitHub release beside the wheel and sdist. It is not uploaded to PyPI. Because
-  the wheel declares `>=` floors rather than the lock, this SBOM records what
-  `pip install nlqueries-core` resolved to when the release was built; a later
-  install can resolve newer versions.
+  GitHub release beside the wheel and sdist. It is not uploaded to PyPI.
+
+  The wheel declares `>=` floors rather than the lock, so this SBOM records one
+  resolution: the one on linux/amd64 with CPython 3.11, the release runner's
+  platform and interpreter, at the time of the release. Other platforms and
+  Python versions resolve differently (`torch`, for one, brings CUDA packages
+  on Linux and none on macOS), and a later install can resolve newer versions.
+
+  The SBOM job runs after `build` and apart from it. PyPI publishing does not
+  wait on it; the GitHub release does, so if generating the SBOM fails, the
+  packages still reach PyPI and only the GitHub release is held back until the
+  job is re-run.
 
 ## pip-tools version
 

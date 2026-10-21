@@ -72,16 +72,49 @@ jobs:
         run: python -m build
         working-directory: ${{ github.workspace }}
 
-      # A CycloneDX SBOM of the wheel as `pip install` resolves it today: the
-      # wheel is installed into an empty virtualenv and that environment is
-      # described, so the SBOM lists the dependency versions a user installing
-      # this release would have received. The generator runs from the runner's
-      # own Python, so it is not one of the components. Written outside dist/
-      # because the PyPI upload takes every file in dist/.
+      - name: Store distribution packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2b. A CycloneDX SBOM of the wheel
+  #     Its own job, so the step most likely to fail (it resolves the wheel's
+  #     whole dependency closure from PyPI) cannot stop the packages being
+  #     stored or published. `publish-pypi` does not wait on it; only
+  #     `github-release`, which attaches it and can be re-run, does.
+  # ---------------------------------------------------------------------------
+  wheel-sbom:
+    name: Build the wheel's SBOM
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Download distribution packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      # The wheel is installed into a virtualenv created without pip, by the
+      # runner's pip, so the environment holds the wheel and its dependencies
+      # and nothing else: no pip or setuptools, and not the generator, which
+      # runs from the runner's own Python. The resolution is the one for this
+      # runner, linux/amd64 and CPython 3.11, on the day of the release.
       - name: Generate the wheel's SBOM (CycloneDX)
         run: |
-          python -m venv "$RUNNER_TEMP/wheel-env"
-          "$RUNNER_TEMP/wheel-env/bin/pip" install --no-cache-dir dist/*.whl
+          python -m venv --without-pip "$RUNNER_TEMP/wheel-env"
+          pip --python "$RUNNER_TEMP/wheel-env/bin/python" install --no-cache-dir dist/*.whl
           pip install "cyclonedx-bom==7.5.0"
           wheel="$(basename dist/*.whl)"
           mkdir -p sbom
@@ -92,13 +125,7 @@ jobs:
             -o "sbom/${wheel}.cdx.json" \
             "$RUNNER_TEMP/wheel-env/bin/python"
 
-      - name: Store distribution packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: python-package-distributions
-          path: dist/
-          retention-days: 7
-
+      # Not in dist/: the PyPI upload takes every file there.
       - name: Store the wheel's SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -193,9 +220,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 4b. Dry run: on a manual run only, everything a release does short of
-  #     publishing. It downloads the packages `build` stored, as
-  #     `publish-pypi` and `github-release` do, and builds the same
-  #     multi-platform image as `publish-docker` with push: false. Same
+  #     publishing. It downloads the packages `build` stored and the SBOM
+  #     `wheel-sbom` stored, as `publish-pypi` and `github-release` do, and
+  #     builds the same multi-platform image as `publish-docker` with
+  #     push: false. The image is exported as an OCI tarball rather than
+  #     discarded, so the build has an exporter to attach its SBOM
+  #     attestations to and `sbom: true` is exercised here first. Same
   #     pinned actions as those jobs, so an action bump runs here first. No
   #     environment and no secrets: docker/login-action and the PyPI upload
   #     are the two steps a dry run cannot exercise.
@@ -203,7 +233,7 @@ jobs:
   release-dry-run:
     name: Release dry run (nothing published)
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, wheel-sbom]
     if: github.event_name == 'workflow_dispatch'
 
     steps:
@@ -238,8 +268,14 @@ jobs:
           push: false
           tags: nlqueries/core:dry-run
           sbom: true
+          # Both platforms and their attestations, written to the runner's
+          # disk. Without an exporter there is nothing to attach an SBOM to.
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Show the exported image's size
+        run: ls -l "$RUNNER_TEMP/image.tar"
 
   # ---------------------------------------------------------------------------
   # 5. Create a GitHub Release with the built artifacts attached
@@ -247,7 +283,9 @@ jobs:
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish-pypi]
+    # wheel-sbom too: a failed SBOM holds back only this job, which can be
+    # re-run once the packages are already on PyPI.
+    needs: [publish-pypi, wheel-sbom]
     if: github.event_name == 'push'
     permissions:
       contents: write   # required to create releases

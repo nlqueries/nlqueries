@@ -168,11 +168,55 @@ def test_every_image_build_attaches_an_sbom(job: str) -> None:
 def test_the_wheel_sbom_is_built_outside_dist() -> None:
     """`publish-pypi` uploads every file in dist/, and PyPI refuses anything
     that is not a distribution, so the SBOM has its own directory and artifact."""
-    script = _step("build", "Generate the wheel's SBOM (CycloneDX)")["run"]
+    script = _step("wheel-sbom", "Generate the wheel's SBOM (CycloneDX)")["run"]
     assert "cyclonedx-py environment" in script
     assert '-o "sbom/' in script
-    upload = _step("build", "Store the wheel's SBOM")
+    upload = _step("wheel-sbom", "Store the wheel's SBOM")
     assert upload["with"] == {"name": "wheel-sbom", "path": "sbom/", "retention-days": 7}
+
+
+def test_the_wheel_sbom_has_a_job_of_its_own_that_publishes_nothing() -> None:
+    """Generating it resolves the wheel's whole closure from PyPI, the step
+    most likely to fail, so it runs apart from `build` and with nothing to
+    publish with: no environment, no secret, no token, read-only contents."""
+    job = _jobs()["wheel-sbom"]
+    assert job["needs"] == ["build"]
+    assert job["permissions"] == {"contents": "read"}
+    assert not _publishes(job)
+    assert "if" not in job, "a dry run needs the SBOM too"
+    assert not [s for s in _steps("build") if "cyclonedx" in yaml.safe_dump(s)]
+
+
+def test_publishing_to_pypi_does_not_wait_on_the_sbom() -> None:
+    """A failed SBOM must not stop the packages reaching PyPI after the image
+    is already pushed; `publish-docker` needs only `ci`."""
+    assert _jobs()["publish-pypi"]["needs"] == ["build"]
+
+
+@pytest.mark.parametrize("job", ["github-release", "release-dry-run"])
+def test_the_jobs_that_take_the_sbom_wait_for_it(job: str) -> None:
+    """Only the GitHub release, which can be re-run, is held back by it."""
+    assert "wheel-sbom" in _jobs()[job]["needs"]
+
+
+def test_the_sbom_environment_holds_only_the_wheel_and_its_dependencies() -> None:
+    """A virtualenv seeded with pip would list pip and setuptools as
+    components of the release. The runner's pip installs into it instead."""
+    script = _step("wheel-sbom", "Generate the wheel's SBOM (CycloneDX)")["run"]
+    assert 'python -m venv --without-pip "$RUNNER_TEMP/wheel-env"' in script
+    assert 'pip --python "$RUNNER_TEMP/wheel-env/bin/python" install' in script
+    assert "wheel-env/bin/pip" not in script
+
+
+def test_the_dry_run_exports_the_image_so_its_sbom_is_built() -> None:
+    """With no exporter BuildKit has nothing to attach an attestation to, so
+    the dry run writes the image as an OCI tarball and shows its size."""
+    build = _image_builds()["release-dry-run"]["with"]
+    assert build["push"] is False
+    assert build["outputs"] == "type=oci,dest=${{ runner.temp }}/image.tar"
+    steps = _steps("release-dry-run")
+    after = steps[steps.index(_image_builds()["release-dry-run"]) + 1 :]
+    assert any('ls -l "$RUNNER_TEMP/image.tar"' in str(s.get("run", "")) for s in after)
 
 
 def test_the_github_release_attaches_the_wheel_sbom() -> None:
