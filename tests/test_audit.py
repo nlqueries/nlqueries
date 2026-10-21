@@ -21,6 +21,7 @@ import threading
 from typing import Any
 
 import pytest
+import sqlalchemy
 import yaml
 from click.testing import CliRunner
 from nlqueries import audit, config
@@ -253,7 +254,9 @@ class TestExecutionEvents:
         connector = SQLAlchemyConnector()
         assert audit.connector_identity(connector) == ("sqlalchemy", None)
 
-        connector.connect({"url": f"sqlite:///{database}"})
+        # The engine directly: the generic connector refuses sqlite URLs in
+        # favour of the dedicated connector, and any backend will do here.
+        connector._engine = sqlalchemy.create_engine(f"sqlite:///{database}")  # noqa: SLF001
 
         assert connector.dialect_name == "sqlite"
         assert audit.connector_identity(connector) == ("sqlalchemy", "sqlite")
