@@ -1058,3 +1058,24 @@ questions rather than turning it off.
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+AUDIT_LOG: str = os.getenv("NLQ_AUDIT_LOG", "").strip()
+"""A file that receives every audit event as one JSON line. Empty: none.
+
+Authorisation decisions and query executions (see :mod:`nlqueries.audit`) are
+logged to the ``nlqueries.audit`` logger whether or not this is set. This is for
+a deployment that wants them in a file of their own without configuring
+logging: the file is opened append-only for each event and created readable and
+writable by its owner only (0600).
+
+Nothing is written to a file this process cannot vouch for. A symbolic link at
+the path is not followed, where the platform supports that. Anything but a
+regular file is refused: a FIFO nobody is reading fails at once rather than
+blocking, and one somebody is reading gets nothing. So is a file with more than
+one hard link, which a hard link planted at the path would create. A file owned by
+another user is refused, where user ids exist. On POSIX, an existing file that
+group or others can reach is narrowed to 0600, and refused if that fails.
+A file that is refused or cannot be written is reported once, with the reason,
+on ``nlqueries.audit.sink``; the events still go to the ``nlqueries.audit``
+logger, and the query is not failed.
+"""

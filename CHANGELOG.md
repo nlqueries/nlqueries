@@ -6,6 +6,30 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Audit events for query execution, and a file to keep them in.** Every
+  statement sent to a database through the connector an agent's query opens
+  (`PermittedConnector.execute_query`) is recorded as a `query_execution` event
+  on the `nlqueries.audit` logger, from the CLI, the MCP server, the library
+  and cache replays alike. It carries the request id, surface (`cli`, `mcp` or
+  `library`), principal when known, agent, connector type and dialect, a
+  SHA-256 digest and the byte length of the statement, the SQL policy's
+  version and decision, and the outcome, row count, truncation, duration and
+  exception class, plus the digest and length of the statement that actually
+  ran when a connector wrapper rewrote it. It never carries the question, the SQL text, the rows or a
+  credential. Authorization decisions now carry the request id and surface as
+  well, so a tool call's decision and the statements it ran share an id, and
+  both kinds of event put their JSON (sorted keys, one line, control
+  characters escaped) in the log message as well as in `extra`. Set
+  `NLQ_AUDIT_LOG` to a path to have each event appended to it as one JSON
+  line; the file is created at mode `0600`. A symbolic link at that path is
+  not followed, and anything but a regular file is refused without blocking.
+  A file with more than one hard link, a file owned by another user, or one
+  group or others can still reach after narrowing to `0600` gets no events
+  and one warning on `nlqueries.audit.sink`. See "Audit events" in
+  `docs/configuration.md`. `SQLAlchemyConnector.dialect_name` is new: the
+  backend SQLAlchemy reports for the connection (`postgresql`, `mysql`, ...),
+  or `None` before `connect`; the event's dialect for that connector comes
+  from it.
 - **`BIGQUERY_MAX_BYTES_BILLED`: a cost cap for BigQuery answers.** Set to a
   number of bytes, it is carried on every query job that answers a question as
   `maximum_bytes_billed`, so BigQuery fails a job that would bill more before

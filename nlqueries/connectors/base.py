@@ -17,11 +17,13 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from nlqueries import audit
 from nlqueries.execution import (
     DEFAULT_POLICY,
     ExecutionNotPermitted,
@@ -663,6 +665,12 @@ class PermittedConnector(DatabaseConnector):
     text it actually sent. A database error describes that text, so the
     one-correction retry shows it to the model beside the model's own SQL.
     Leave it ``None`` when the statement ran unchanged.
+
+    **Every statement is recorded.** :meth:`execute_query` emits one
+    ``query_execution`` audit event per call (see :mod:`nlqueries.audit`),
+    including a call the policy refuses and one that raises. Here rather than
+    at each caller, because every surface that runs SQL for an agent reaches
+    the database through this class.
     """
 
     def __init__(
@@ -670,9 +678,12 @@ class PermittedConnector(DatabaseConnector):
         inner: DatabaseConnector,
         policy: ExecutionPolicy,
         connector_id: str | None = None,
+        agent_id: str | None = None,
     ) -> None:
         self._inner = inner
         self._execution_policy = policy
+        #: The agent the statements run for, for the audit record only.
+        self._agent_id = agent_id
         #: Which connector this wrapper is for, so a released one can be rebuilt
         #: under the caller. The ID and not the agent: an agent's binding can be
         #: changed, and a caller that obtained this wrapper for one database must
@@ -775,6 +786,31 @@ class PermittedConnector(DatabaseConnector):
         """
 
     # -- the one thing that is gated -------------------------------------
+    def execute_query(
+        self,
+        sql: str,
+        timeout_seconds: float | None = None,
+        max_rows: int | None = None,
+    ) -> QueryResult:
+        """The inherited, permission-checked execution, recorded as an audit event.
+
+        The record is written after the call, whatever it did: returned rows,
+        returned a database error, or raised (a refusal by policy included).
+        Recording never raises, so it cannot change what the caller gets.
+        """
+        started = time.monotonic()
+        try:
+            result = super().execute_query(sql, timeout_seconds, max_rows)
+        except Exception as exc:
+            audit.record_execution(
+                self._inner, sql, agent_id=self._agent_id, started=started, error=exc
+            )
+            raise
+        audit.record_execution(
+            self._inner, sql, agent_id=self._agent_id, started=started, result=result
+        )
+        return result
+
     def _execute_query(
         self,
         sql: str,

@@ -13,6 +13,8 @@ has. Breaking that would break every Claude Desktop install for no gain.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from nlqueries.mcp_server import server as mcp_server
 
@@ -197,6 +199,20 @@ def test_a_server_builds_with_authentication_and_a_grants_file(monkeypatch, tmp_
     assert len(server._tool_manager.list_tools()) == len(mcp_server._ALL_TOOLS)
 
 
+def _closed_over(fn: Any) -> list[Any]:
+    """What a registered tool and every wrapper inside it close over.
+
+    The registered function is the audit wrapper, and the guard holding the
+    admission control is inside it: followed through ``__wrapped__``, which
+    each wrapper sets with ``functools.wraps``.
+    """
+    values: list[Any] = []
+    while fn is not None:
+        values.extend(cell.cell_contents for cell in (fn.__closure__ or ()))
+        fn = getattr(fn, "__wrapped__", None)
+    return values
+
+
 def test_an_unauthenticated_networked_server_has_no_admission_control(monkeypatch) -> None:
     """Every request on it resolves to the same anonymous subject, so the limits
     would stop being per-caller and become one budget for the deployment — a cap
@@ -212,9 +228,7 @@ def test_an_unauthenticated_networked_server_has_no_admission_control(monkeypatc
     for tool in server._tool_manager.list_tools():
         assert tool.fn.__closure__ is not None
         admission = [
-            cell.cell_contents
-            for cell in tool.fn.__closure__
-            if type(cell.cell_contents).__name__ == "AdmissionControl"
+            value for value in _closed_over(tool.fn) if type(value).__name__ == "AdmissionControl"
         ]
         assert admission == [], f"{tool.name} was given admission control"
 
@@ -236,9 +250,7 @@ def test_an_authenticated_networked_server_does_have_it(monkeypatch, tmp_path) -
 
     tool = server._tool_manager.list_tools()[0]
     admission = [
-        cell.cell_contents
-        for cell in (tool.fn.__closure__ or ())
-        if type(cell.cell_contents).__name__ == "AdmissionControl"
+        value for value in _closed_over(tool.fn) if type(value).__name__ == "AdmissionControl"
     ]
 
     assert len(admission) == 1

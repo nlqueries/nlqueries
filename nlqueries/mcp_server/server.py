@@ -853,6 +853,7 @@ def _build_server(
 
     # One guard, at the one place every tool is registered. Nine call sites
     # would be nine chances for the tenth tool to be added without one.
+    from nlqueries.audit import Surface, audited_tool  # noqa: PLC0415
     from nlqueries.auth.admission import from_config  # noqa: PLC0415
     from nlqueries.auth.enforcement import guard  # noqa: PLC0415
 
@@ -873,7 +874,10 @@ def _build_server(
     for fn in _ALL_TOOLS:
         if fn is health:
             fn = _health_tool(authorizer, resolve)
-        server.add_tool(guard(_bounded(fn, limits), authorizer, resolve, admission))
+        # Outermost, so the authorisation decision and the execution it lets
+        # through are recorded under one request id.
+        guarded = guard(_bounded(fn, limits), authorizer, resolve, admission)
+        server.add_tool(audited_tool(guarded, Surface.MCP, resolve))
     return server
 
 
@@ -1200,6 +1204,11 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
         host:      Bind host for the networked transports (ignored for stdio).
         port:      Port for the networked transports (ignored for stdio).
     """
+    from nlqueries.audit import Surface, bind_process  # noqa: PLC0415
+
+    # For work a tool call starts on a thread that does not inherit its
+    # context: recorded as the server's, not the library's or the CLI's.
+    bind_process(Surface.MCP)
     # Authentication first, so the bind guard below can say whether it is on.
     authenticated = _require_authentication(transport)
     if transport in _NETWORK_TRANSPORTS:
