@@ -135,7 +135,9 @@ def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     connectors[connector_id] = config
-    CONNECTORS_FILE.write_text(yaml.dump(connectors, default_flow_style=False, sort_keys=False))
+    CONNECTORS_FILE.write_text(
+        yaml.dump(connectors, default_flow_style=False, sort_keys=False), encoding="utf-8"
+    )
     CONNECTORS_FILE.chmod(0o600)
 
 

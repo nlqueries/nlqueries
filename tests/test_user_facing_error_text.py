@@ -341,16 +341,22 @@ UTF8_PASSWORD = "pässwörd-ß"
 
 @pytest.fixture
 def cp1252_locale():  # type: ignore[no-untyped-def]
-    """`read_text()` with no encoding behaves as on a cp1252 Windows locale.
+    """`read_text()` and `write_text()` with no encoding behave as on a cp1252
+    Windows locale.
 
     The container's own locale is UTF-8, where a missing encoding goes unnoticed.
     """
-    real = Path.read_text
+    real_read, real_write = Path.read_text, Path.write_text
 
     def read_text(self: Path, encoding: str | None = None, *args: object, **kwargs: object) -> str:
-        return real(self, encoding or "cp1252", *args, **kwargs)  # type: ignore[arg-type]
+        return real_read(self, encoding or "cp1252", *args, **kwargs)  # type: ignore[arg-type]
 
-    with patch.object(Path, "read_text", read_text):
+    def write_text(
+        self: Path, data: str, encoding: str | None = None, *args: object, **kwargs: object
+    ) -> int:
+        return real_write(self, data, encoding or "cp1252", *args, **kwargs)  # type: ignore[arg-type]
+
+    with patch.object(Path, "read_text", read_text), patch.object(Path, "write_text", write_text):
         yield
 
 
@@ -394,3 +400,29 @@ def test_the_cli_says_a_cp1252_file_is_not_utf8(cp1252_file: Path) -> None:
     assert isinstance(result.exception, SystemExit), result.exception
     assert NOT_UTF8 in result.output
     assert "0xe4" not in result.output and SECRET not in result.output
+
+
+def test_a_saved_connector_is_written_as_utf8(tmp_path: Path, cp1252_locale: None) -> None:
+    """The writer states the encoding every reader now uses.
+
+    `yaml.dump` escapes non-ASCII by default, so today's file is ASCII either
+    way. This dumps with `allow_unicode=True`, as the knowledge-base writers in
+    the same module do: written in the locale's cp1252, no reader could open it.
+    """
+    import yaml
+    from nlqueries.cli import main as cli_main
+    from nlqueries.connectors.loader import _load_connectors
+
+    f = tmp_path / "connectors.yaml"
+    real_dump = yaml.dump
+
+    def dump_unicode(*args: object, **kwargs: object) -> str:
+        return real_dump(*args, allow_unicode=True, **kwargs)  # type: ignore[no-any-return, call-overload]
+
+    with (
+        patch.object(cli_main, "CONNECTORS_FILE", f),
+        patch("nlqueries.connectors.loader.config.CONNECTORS_FILE", f),
+        patch.object(cli_main.yaml, "dump", dump_unicode),
+    ):
+        cli_main._save_connector("db", {"db_type": "postgres", "password": UTF8_PASSWORD})
+        assert _load_connectors()["db"]["password"] == UTF8_PASSWORD
