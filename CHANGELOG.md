@@ -600,6 +600,21 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **Cache keys keep operators and numbers, and follow-ups are keyed on what
+  they mean.** The Tier 0 exact-match key no longer strips `<`, `>`, `=`, `!`,
+  `-`, `.` or `%` from the question, so `orders with total > 100` and
+  `orders with total < 100`, `1.5` and `15`, or `!=` and `=` no longer share one
+  cache entry and one answer. Other punctuation is still dropped. `run_query`
+  now looks up and stores a follow-up under its resolved question rather than
+  the text typed, so "and last month?" in one conversation is not answered
+  with another conversation's entry. A stored `hit_count` that is not an
+  integer is read as 0 instead of raising, and an exception from the cache
+  lookup in `MultiAgentOrchestrator.handle_question` is logged and treated as
+  a miss, so the question is answered instead of failing. **Upgrading:**
+  existing Tier 0 entries whose question contains one of those characters are
+  now keyed differently, so each is a one-time Tier 0 miss and is stored under
+  its new key the next time it is answered. Tiers 1 and 2 are keyed by
+  embedding and are unaffected.
 - **A knowledge base built over SQLAlchemy reflection now loads.** The
   generic `sqlalchemy` connector and the `export-kb` fallback took table,
   column, schema and key names from SQLAlchemy's inspector as `quoted_name`, a

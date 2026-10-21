@@ -739,6 +739,33 @@ class TestMultiAgentOrchestratorNewPaths:
         mock_get.assert_called_once()
         assert mock_get.call_args.args[0] == "my-override-key"
 
+    def test_a_failing_cache_lookup_is_a_miss(self) -> None:
+        """An exception from the cache lookup does not fail the question: it is
+        answered by the SQL agent as on any other miss."""
+
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+
+        async def run() -> list[str]:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+            ):
+                MockCache.return_value.get.side_effect = RuntimeError("qdrant is down")
+                orch = MultiAgentOrchestrator()
+                return [t async for t in orch.handle_question("Count orders", "agent1")]
+
+        tokens = asyncio.run(run())
+
+        assert tokens[0] == "Let me query the database."
+        final = json.loads(tokens[-1])
+        assert final["sql"] == "SELECT count(*) FROM orders"
+        assert "from_cache" not in final
+
     def test_cache_hit_document_bypasses_document_orchestrator(self) -> None:
         """A semantic-cache hit for a document entry yields citations-shaped output
         without instantiating the DocumentOrchestrator."""

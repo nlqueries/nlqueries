@@ -616,9 +616,14 @@ class MultiAgentOrchestrator:
                 vector = _embed_text(effective_question)
             except Exception:  # noqa: BLE001 — a missing embedder degrades to a text-only lookup
                 pass
-            return vector, _cache.get(
-                _cache_lookup_key, vector=vector, payload_filter=cache_context
-            )
+            # A cache that cannot be read is a miss, not a failed question: the
+            # cache only saves work that a miss goes on to do anyway.
+            try:
+                cached = _cache.get(_cache_lookup_key, vector=vector, payload_filter=cache_context)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("Semantic cache lookup failed; treating it as a miss: %s", exc)
+                cached = None
+            return vector, cached
 
         _question_vector, _cached = await asyncio.to_thread(_embed_and_lookup)
         if _cached is None:

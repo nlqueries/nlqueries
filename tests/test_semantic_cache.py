@@ -1419,3 +1419,85 @@ class TestNegativeCollectionCache:
         assert sc._collection_exists(client, "cache_agent") is True
         assert sc._collection_exists(client, "cache_agent") is True
         assert client.get_collections.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tier 0 keys keep the characters that change what a question asks for
+# ---------------------------------------------------------------------------
+
+
+class TestTier0KeysKeepOperatorsAndNumbers:
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("orders with total > 100", "orders with total < 100"),
+            ("orders with discount 1.5", "orders with discount 15"),
+            ("orders where status != shipped", "orders where status = shipped"),
+            ("orders with margin above 5%", "orders with margin above 5"),
+            ("accounts with balance -50", "accounts with balance 50"),
+        ],
+    )
+    def test_questions_that_differ_in_an_operator_or_number_get_different_ids(
+        self, first: str, second: str
+    ) -> None:
+        assert _point_id_for_question(_normalize_question(first)) != _point_id_for_question(
+            _normalize_question(second)
+        )
+
+    def test_other_punctuation_is_still_stripped(self) -> None:
+        assert _normalize_question("How many orders, in total?") == "how many orders in total"
+
+    def test_an_entry_for_one_operator_is_not_served_for_the_other(self) -> None:
+        """The answer stored for `> 100` is not returned for `< 100` by Tier 0."""
+        stored = "Orders with total > 100"
+        record = MagicMock()
+        record.id = _point_id_for_question(_normalize_question(stored))
+        record.payload = _fresh_payload(question=stored, resolved=stored)
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        client.retrieve.side_effect = lambda **kw: [record] if kw["ids"] == [record.id] else []
+        client.query_points.return_value = _make_query_response([])
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.config.CACHE_ANSWER_TIERS", "0"),
+        ):
+            cache = SemanticCache("agent1", binding=TEST_BINDING)
+            assert cache.get("Orders with total > 100") is not None
+            assert cache.get("Orders with total < 100") is None
+
+
+# ---------------------------------------------------------------------------
+# A stored hit_count that is not an integer
+# ---------------------------------------------------------------------------
+
+
+class TestUnparseableHitCount:
+    @pytest.mark.parametrize("bad", ["many", None, "1.5", [3]])
+    def test_tier1_hit_is_served_with_the_count_restarted(self, bad: Any) -> None:
+        payload = _fresh_payload()
+        payload["hit_count"] = bad  # not covered by the signature
+        coll = MagicMock()
+        coll.name = "cache_agent1"
+        client = MagicMock()
+        client.get_collections.return_value.collections = [coll]
+        client.retrieve.return_value = []
+        client.query_points.return_value = _make_query_response(
+            [_make_scored_point(score=0.99, payload=payload, point_id=9)]
+        )
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+        ):
+            entry = SemanticCache("agent1", binding=TEST_BINDING).get("How many orders?")
+
+        assert entry is not None
+        assert entry.answer == "There were 42 orders."
+        assert entry.hit_count == 1
+        client.set_payload.assert_called_once_with(
+            collection_name="cache_agent1", payload={"hit_count": 1}, points=[9]
+        )

@@ -4,7 +4,8 @@ nlqueries.cache.semantic_cache
 Semantic query cache backed by Qdrant with three lookup tiers.
 
 **Tier 0 — exact-match** (zero embed calls on hit):
-    Normalize the question (lowercase, strip punctuation, collapse whitespace),
+    Normalize the question (lowercase, strip punctuation other than
+    ``< > = ! - . %``, collapse whitespace),
     derive a deterministic point ID via SHA-256, and call ``client.retrieve()``
     directly.  No embedding is needed.
 
@@ -136,11 +137,21 @@ _PARAM_TYPE_TO_ENTITY: dict[str, str] = {
     "VARCHAR": "STRING",
 }
 
-_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+# Characters that carry meaning in a question about data are kept: an operator
+# (`> 100` / `< 100`, `!=` / `=`), a sign, a decimal point (`1.5` / `15`) or a
+# percentage. Stripping them made questions that ask for different rows
+# normalise to the same text, and so share one Tier 0 entry.
+_KEPT_PUNCTUATION = "<>=!-.%"
+_PUNCT_TABLE = str.maketrans(
+    "", "", "".join(c for c in string.punctuation if c not in _KEPT_PUNCTUATION)
+)
 
 
 def _normalize_question(question: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace for exact-match lookup."""
+    """Lowercase, strip punctuation, collapse whitespace for exact-match lookup.
+
+    The characters in ``_KEPT_PUNCTUATION`` are not stripped.
+    """
     q = question.lower().translate(_PUNCT_TABLE)
     return re.sub(r"\s+", " ", q).strip()
 
@@ -536,6 +547,18 @@ class CacheEntry:
 # ---------------------------------------------------------------------------
 
 _cache_client: Any = None
+
+
+def _hit_count_of(payload: dict[str, Any]) -> int:
+    """The stored ``hit_count``, or 0 when it is missing or not an integer.
+
+    The count is bookkeeping, not part of the answer, so a value that does not
+    parse must not cost the caller the hit it belongs to.
+    """
+    try:
+        return int(payload.get("hit_count", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _get_client() -> Any:
@@ -996,7 +1019,7 @@ class SemanticCache:
             answer=str(payload.get("answer", "")),
             sql=payload.get("sql") or None,
             created_at=created_at,
-            hit_count=int(payload.get("hit_count", 0)),
+            hit_count=_hit_count_of(payload),
             kind=str(payload.get("kind", "answer")),
         )
 
@@ -1013,7 +1036,7 @@ class SemanticCache:
 
     def _increment_hit_count(self, client: Any, point_id: Any, payload: dict[str, Any]) -> int:
         """Increment ``hit_count`` in the Qdrant payload and return the new value."""
-        new_count = int(payload.get("hit_count", 0)) + 1
+        new_count = _hit_count_of(payload) + 1
         with contextlib.suppress(Exception):
             client.set_payload(
                 collection_name=self._collection,
