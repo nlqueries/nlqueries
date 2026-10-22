@@ -54,6 +54,7 @@ def _clean_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Non
     monkeypatch.setattr(config, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(config, "CACHE_ENCRYPTION", False)
     at_rest._warned.clear()
+    monkeypatch.setattr(at_rest, "_warned_short", False)
     yield
     at_rest._cipher.cache_clear()
 
@@ -138,7 +139,7 @@ def test_another_key_does_not_open_it(monkeypatch, caplog) -> None:
 
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) is None
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) is None
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    warnings = [r for r in caplog.records if "could not be read" in r.getMessage()]
     assert len(warnings) == 1  # once per process, not once per read
     assert "another key" in warnings[0].getMessage()
 
@@ -205,6 +206,44 @@ def test_a_key_that_cannot_be_written_is_an_error_not_a_key_in_memory(monkeypatc
     monkeypatch.setattr(at_rest.tempfile, "mkstemp", refuse)
     with pytest.raises(RuntimeError, match=at_rest.KEY_ENV):
         at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+
+
+def test_a_stored_key_this_process_cannot_read_is_no_key(monkeypatch) -> None:
+    """Written by another user at 0600, say: reading treats it as missing and
+    writing fails naming the settings, rather than either raising PermissionError."""
+    _encrypt_with(monkeypatch, "first key")
+    sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    monkeypatch.delenv(at_rest.KEY_ENV)
+    path = at_rest.key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"0" * 64)
+    real_read = Path.read_bytes
+
+    def refuse(self):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+
+    assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) is None
+    with pytest.raises(RuntimeError, match=at_rest.KEY_ENV):
+        at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+
+
+def test_a_short_configured_key_is_warned_about_once(monkeypatch, caplog) -> None:
+    _encrypt_with(monkeypatch, "hunter2")
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "7 characters" in warnings[0] and "openssl rand -hex 32" in warnings[0]
+
+
+def test_a_long_configured_key_is_not_warned_about(monkeypatch, caplog) -> None:
+    _encrypt_with(monkeypatch, "a" * 64)
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 def test_a_key_file_is_read(monkeypatch, tmp_path) -> None:

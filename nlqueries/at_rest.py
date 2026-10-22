@@ -67,6 +67,12 @@ _HKDF_INFO = b"nlqueries at-rest encryption v1"
 #: a collection full of them warns once rather than on every read.
 _warned: set[bytes] = set()
 
+#: A configured key shorter than this is warned about. The AES key is derived
+#: with HKDF, which has no work factor, so a guessable key is guessable offline
+#: against a copy of Qdrant's data. A generated key is 64 characters.
+_SHORT_KEY = 32
+_warned_short = False
+
 
 def key_path() -> Path:
     """Where a generated key is kept: the state directory, beside the signing key."""
@@ -84,7 +90,7 @@ def _configured() -> bytes | None:
     """
     value = os.getenv(KEY_ENV, "").strip()
     if value:
-        return value.encode("utf-8")
+        return _checked(value.encode("utf-8"))
     key_file = os.getenv(KEY_FILE_ENV, "").strip()
     if not key_file:
         return None
@@ -94,14 +100,35 @@ def _configured() -> bytes | None:
         raise RuntimeError(f"{KEY_FILE_ENV} is set to {key_file}, which cannot be read") from exc
     if not material:
         raise RuntimeError(f"{KEY_FILE_ENV} is set to {key_file}, which is empty")
+    return _checked(material)
+
+
+def _checked(material: bytes) -> bytes:
+    """*material*, after warning once if it is short enough to guess."""
+    global _warned_short  # noqa: PLW0603 - once per process
+    if len(material) < _SHORT_KEY and not _warned_short:
+        _warned_short = True
+        logger.warning(
+            "The configured encryption key is %d characters long. Use a random one of at "
+            "least %d, such as the output of `openssl rand -hex 32`: anyone with a copy of "
+            "Qdrant's data can try guesses against it offline.",
+            len(material),
+            _SHORT_KEY,
+        )
     return material
 
 
 def _stored() -> bytes | None:
+    """The generated key, or None if there is none this process can read.
+
+    Unreadable counts as none -- a key written by another user at 0600, say --
+    so that reading reports it as a missing key and writing fails with the
+    message naming the settings, rather than either raising the bare error.
+    """
     path = key_path()
     try:
         material = path.read_bytes().strip()
-    except FileNotFoundError:
+    except OSError:
         return None
     return material or None
 
@@ -170,10 +197,6 @@ def _cipher(material: bytes) -> AESGCM:
     return AESGCM(key)
 
 
-def is_sealed(value: object) -> bool:
-    return isinstance(value, str) and value.startswith(MARKER)
-
-
 def seal(text: str, purpose: bytes) -> str:
     """*text* sealed for *purpose* when encryption is on; *text* unchanged when it is off."""
     from nlqueries import config  # noqa: PLC0415
@@ -197,7 +220,7 @@ def unseal(value: str, purpose: bytes) -> str | None:
         return None
     if material is None:
         _report(
-            purpose, f"no key is configured ({KEY_ENV}, {KEY_FILE_ENV}) or stored at {key_path()}"
+            purpose, f"no key is configured ({KEY_ENV}, {KEY_FILE_ENV}) or readable at {key_path()}"
         )
         return None
     try:
