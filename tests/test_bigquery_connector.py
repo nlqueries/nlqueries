@@ -918,3 +918,20 @@ def test_an_unreadable_cap_does_not_stop_the_process_at_import(tmp_path):
     value, error = done.stdout.strip().split(" | ")
     assert value == "None"
     assert "BIGQUERY_MAX_BYTES_BILLED" in error and "10GB" in error
+    # And said, where the other unreadable settings are said.
+    assert "every BigQuery query is refused until it is fixed" in done.stderr
+
+
+def test_doctor_reports_an_unreadable_cap(monkeypatch):
+    from nlqueries.cli import main as cli_main
+
+    monkeypatch.setattr(
+        config,
+        "BIGQUERY_MAX_BYTES_BILLED_ERROR",
+        "BIGQUERY_MAX_BYTES_BILLED must be a whole number of bytes, not '10GB'",
+    )
+
+    result = cli_main._check_config()
+
+    assert result.status == "warn"
+    assert "BIGQUERY_MAX_BYTES_BILLED must be a whole number of bytes" in result.detail

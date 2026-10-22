@@ -459,3 +459,30 @@ def test_start_reports_a_daemon_that_exits_at_once(pid_file: Path, out: io.Strin
     assert popen.return_value.wait.call_args.kwargs == {
         "timeout": cli_main._EMBED_START_GRACE_SECONDS
     }
+
+
+def test_start_refuses_a_port_already_in_use(pid_file: Path, out: io.StringIO) -> None:
+    """The daemon binds only after loading its model, about nine seconds in,
+    far past the start-up watch, so `start` checks the port itself first."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        taken = holder.getsockname()[1]
+        popen = _running_popen()
+        with patch("subprocess.Popen", popen):
+            result = _run("start", "--port", str(taken))
+
+    assert result.exit_code == 1
+    assert f"Port {taken} is already in use" in out.getvalue()
+    popen.assert_not_called()
+
+
+def test_a_free_port_is_not_reported_taken() -> None:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        free = probe.getsockname()[1]
+    assert cli_main._port_taken(free) is False

@@ -410,9 +410,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `python -P -m nlqueries.embeddings.embed_server`, so it imports the
   installed package rather than any module of the same name in the directory
   `start` was run from. `--foreground` runs in the CLI's own process, as
-  before. `start` now watches the daemon for two seconds and fails, pointing
-  at `--foreground`, if it exits in that time, where it used to report
-  success for a daemon that had already died.
+  before. `start` now fails at once if the port is already in use, and then
+  watches the daemon for two seconds and fails, pointing at `--foreground`,
+  if it exits in that time, where it used to report success for a daemon
+  that had already died.
 - **Query capsules carry no comments and no literal in any string form.**
   `process-history` already replaced plain `'...'` and number literals with
   typed placeholders. The parameterizer now also replaces `N'...'`, `X'...'`,

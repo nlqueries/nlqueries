@@ -944,6 +944,9 @@ try:
 except ValueError as _exc:
     BIGQUERY_MAX_BYTES_BILLED = None
     BIGQUERY_MAX_BYTES_BILLED_ERROR = str(_exc)
+    logging.getLogger(__name__).warning(
+        "%s; every BigQuery query is refused until it is fixed.", BIGQUERY_MAX_BYTES_BILLED_ERROR
+    )
 """Most bytes one BigQuery query job may bill, or None for no cap.
 
 Set on every job the BigQuery connector runs as ``maximum_bytes_billed``.

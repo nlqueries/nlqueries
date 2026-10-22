@@ -609,10 +609,16 @@ def _check_embedding() -> _CheckResult:
 
 
 def _check_config() -> _CheckResult:
+    from nlqueries import config as _config  # noqa: PLC0415
     from nlqueries.config import llm_credentials_available  # noqa: PLC0415
 
     issues: list[str] = []
     notes: list[str] = []
+
+    # Recorded rather than raised at import, so this is the first place an
+    # operator sees it before a BigQuery question fails on it.
+    if _config.BIGQUERY_MAX_BYTES_BILLED_ERROR is not None:
+        issues.append(f"{_config.BIGQUERY_MAX_BYTES_BILLED_ERROR} (BigQuery queries are refused)")
 
     if KB_PATH.exists():
         notes.append("KB_PATH exists")
@@ -3834,6 +3840,18 @@ _EMBED_STOP_WAIT_SECONDS = 5.0
 _EMBED_START_GRACE_SECONDS = 2.0
 
 
+def _port_taken(port: int) -> bool:
+    """Whether 127.0.0.1:*port* is already bound, which the daemon needs free."""
+    import socket  # noqa: PLC0415
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
 @cli.group("embed-server")
 def embed_server_group() -> None:
     """Manage the persistent embedding daemon.
@@ -3906,6 +3924,15 @@ def embed_server_start(port: int | None, foreground: bool) -> None:
         _daemon.serve(port=port)
         return
 
+    # Checked here because the daemon would only find out after loading its
+    # model, about nine seconds in, which is long after `start` has reported.
+    if _port_taken(port):
+        err_console.print(
+            f"[bold red]✗ Port {port} is already in use on 127.0.0.1.[/bold red] "
+            "Stop what is using it, or start the daemon on another port with --port."
+        )
+        sys.exit(1)
+
     # `-P` keeps the working directory off `sys.path`, so the daemon imports the
     # installed package and nothing that happens to sit where it was started.
     daemon = subprocess.Popen(
@@ -3915,9 +3942,9 @@ def embed_server_start(port: int | None, foreground: bool) -> None:
         start_new_session=True,
     )
     # A daemon that cannot start dies at once -- a source checkout that is not
-    # installed has nothing for `-P` to import, a port already taken refuses
-    # the bind -- and its output goes nowhere. Reporting success then left
-    # every query loading the model itself with nothing to say why.
+    # installed has nothing for `-P` to import -- and its output goes nowhere.
+    # Reporting success then left every query loading the model itself with
+    # nothing to say why.
     try:
         status = daemon.wait(timeout=_EMBED_START_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
