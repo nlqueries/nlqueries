@@ -426,6 +426,46 @@ def test_a_chunk_under_another_key_is_skipped_and_plaintext_ones_still_read(
     assert len(retrieved.citations) == 1
 
 
+def test_a_chunk_moved_to_another_document_does_not_open(monkeypatch, qdrant) -> None:
+    """Chunk payloads are not signed; the sealed text is bound to its document."""
+    from qdrant_client.models import PointStruct
+
+    _encrypt_with(monkeypatch)
+    qdrant_store.upsert_chunks("doc_policy_chunks", [_chunk(CHUNK)])
+    points, _ = qdrant.scroll(
+        collection_name="doc_policy_chunks", limit=10, with_payload=True, with_vectors=True
+    )
+    (point,) = points
+    moved = {**(point.payload or {}), "source_id": "salaries"}
+    qdrant_store.upsert_chunks("doc_salaries_chunks", [_chunk("placeholder")])
+    qdrant.upsert(
+        collection_name="doc_salaries_chunks",
+        points=[PointStruct(id=point.id, vector=point.vector, payload=moved)],
+    )
+
+    assert qdrant_store.chunk_from_payload(point.payload or {}) is not None
+    assert qdrant_store.chunk_from_payload(moved) is None
+
+
+def test_the_first_key_leaves_the_state_directory_as_it_was(monkeypatch) -> None:
+    """It also holds the knowledge base and the connector registry."""
+    _encrypt_with(monkeypatch, key=None)
+    state = at_rest.key_path().parent
+    state.mkdir(parents=True)
+    calls: list[object] = []
+    real_chmod = Path.chmod
+
+    def record(self, mode, *args, **kwargs):
+        calls.append(self)
+        return real_chmod(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", record)
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+
+    assert state not in calls
+    assert at_rest.key_path().exists()
+
+
 def test_with_encryption_off_chunks_are_stored_as_before(qdrant) -> None:
     qdrant_store.upsert_chunks("doc_policy_chunks", [_chunk(CHUNK)])
     (payload,) = _payloads(qdrant, "doc_policy_chunks")

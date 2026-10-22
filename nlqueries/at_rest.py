@@ -59,6 +59,18 @@ MARKER = "nlqenc:v1:"
 CACHE_ANSWER = b"nlqueries cache answer"
 CHUNK_TEXT = b"nlqueries document chunk text"
 
+
+def chunk_text_purpose(source_id: str) -> bytes:
+    """The associated data for a chunk of *source_id*'s text.
+
+    Bound to the document as well as to the kind of value: chunk payloads are
+    not signed, so without it a sealed text moved into another document's
+    collection would open there. Not bound to the collection, so that a
+    snapshot restored under another name still reads.
+    """
+    return CHUNK_TEXT + b"\x00" + source_id.encode("utf-8")
+
+
 KEY_ENV = "NLQ_CACHE_ENCRYPTION_KEY"
 KEY_FILE_ENV = "NLQ_CACHE_ENCRYPTION_KEY_FILE"
 
@@ -160,12 +172,13 @@ def _generated() -> bytes:
     written, unlike the signing key: a document sealed with a key that is gone
     after a restart is lost until it is ingested again.
     """
-    from nlqueries.state_files import private_dir  # noqa: PLC0415
-
     path = key_path()
     key = secrets.token_hex(32).encode("ascii")
     try:
-        private_dir(path.parent)
+        # Created if missing, and otherwise left as it is: the key's own file
+        # is 0600, and the directory is the whole state directory, whose mode
+        # is not this feature's to change.
+        path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as fh:

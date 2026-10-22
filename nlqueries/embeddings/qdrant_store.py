@@ -48,7 +48,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from nlqueries import config
-from nlqueries.at_rest import CHUNK_TEXT, seal, unseal
+from nlqueries.at_rest import chunk_text_purpose, seal, unseal
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
@@ -583,7 +583,7 @@ def upsert_chunks(
                     "chunk_index": chunk.chunk_index,
                     # Embedded above from the plaintext; stored sealed when
                     # NLQ_CACHE_ENCRYPTION is on.
-                    "text": seal(chunk.text, CHUNK_TEXT),
+                    "text": seal(chunk.text, chunk_text_purpose(chunk.source_id)),
                     "metadata": chunk.metadata,
                 },
             )
@@ -598,7 +598,9 @@ def chunk_from_payload(payload: dict[str, Any]) -> DocumentChunk | None:
     Text sealed under a key this process does not have is skipped rather than
     returned as ciphertext, which would otherwise reach the model as content.
     """
-    text = unseal(str(payload.get("text", "")), CHUNK_TEXT)
+    text = unseal(
+        str(payload.get("text", "")), chunk_text_purpose(str(payload.get("source_id", "")))
+    )
     if text is None:
         return None
     return DocumentChunk(
