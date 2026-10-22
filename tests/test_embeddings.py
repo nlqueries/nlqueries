@@ -746,3 +746,23 @@ def test_the_daemon_and_the_client_read_one_declaration_of_the_limits() -> None:
     assert embed_server.MAX_BATCH_CHARS == config.EMBED_MAX_BATCH_CHARS
     assert embed_server.MAX_BODY_BYTES == config.EMBED_MAX_BODY_BYTES
     assert embed_server._EmbedHandler.MAX_BODY_BYTES == config.EMBED_MAX_BODY_BYTES
+
+
+def test_the_fallback_warning_does_not_say_the_daemon_is_required(caplog) -> None:
+    """The exception's message is written for the required case ("will not load a
+    model in-process"); the fallback, which does, says what happened instead."""
+    from nlqueries.embeddings.embedder import (
+        ABSENT,
+        EmbeddingServiceUnavailable,
+        _fall_back_or_raise,
+    )
+
+    with (
+        patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        caplog.at_level("WARNING", logger="nlqueries.embeddings.embedder"),
+    ):
+        _fall_back_or_raise(EmbeddingServiceUnavailable(ABSENT, "connection refused"))
+
+    (line,) = [r.getMessage() for r in caplog.records if "in-process instead" in r.getMessage()]
+    assert "connection refused" in line
+    assert "EMBED_SERVER_REQUIRED is set" not in line

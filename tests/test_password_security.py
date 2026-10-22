@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from nlqueries.cli.main import _get_full_url, _load_password, _save_password
+from nlqueries.cli.main import _save_password
+from nlqueries.connectors.loader import _get_full_url, _load_password
 
 # ---------------------------------------------------------------------------
 # _save_password
