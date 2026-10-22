@@ -4,15 +4,16 @@ nlqueries.sql_policy_report
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 What :mod:`nlqueries.sql_policy` would refuse, reported without refusing it.
 
-The policy denies any function sqlglot does not model. That set contains both
-the payloads the policy refuses and a minority of ordinary analytics functions,
-and which of the latter appear depends on the deployment.
+The policy allows only what it lists: expression classes per dialect, in
+:mod:`nlqueries.sql_constructs`, and functions sqlglot does not model, by name.
+What a deployment's queries need beyond those lists depends on the deployment,
+and on the installed sqlglot, whose classes the lists name.
 
 This module runs the policy over statements a deployment has issued and reports
-the outcome: how many would be refused, for what reason, and which unrecognised
-functions were called and how often. The functions listed are candidates for
-:data:`~nlqueries.sql_policy.ALLOWED_ANONYMOUS`; the refusals are the cost of
-enabling enforcement.
+the outcome: how many would be refused, for what reason, which unrecognised
+functions were called and which constructs not on the list were used, and how
+often. Those are the candidates for the lists; the refusals are the cost of
+enforcement.
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ class InventoryReport:
     #: Every unrecognised function seen, with the number of statements calling
     #: it. Includes allowlisted functions, so unused entries are also visible.
     anonymous_counts: Counter[str] = field(default_factory=Counter)
+    #: Expression classes not on the dialect's list, with the number of
+    #: statements using each.
+    unlisted_counts: Counter[str] = field(default_factory=Counter)
 
     @property
     def refused(self) -> int:
@@ -98,6 +102,11 @@ class InventoryReport:
         elif self.anonymous_counts:
             lines += ["", "Every unrecognised function seen is already allowlisted."]
 
+        if self.unlisted_counts:
+            lines += ["", "Constructs not on the list (sqlglot expression classes):"]
+            for name, count in self.unlisted_counts.most_common():
+                lines.append(f"  {count:5}  {name}")
+
         if self.refusals:
             lines += ["", f"Examples (first {min(examples, len(self.refusals))}):"]
             for refusal in self.refusals[:examples]:
@@ -116,6 +125,7 @@ def build_inventory(statements: list[str], dialect: str) -> InventoryReport:
         report.total += 1
         decision = evaluate(sql, dialect)
         report.anonymous_counts.update(decision.anonymous_functions)
+        report.unlisted_counts.update(decision.unlisted_constructs)
         if decision.allowed:
             report.allowed += 1
         else:
