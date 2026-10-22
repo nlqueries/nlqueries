@@ -18,6 +18,8 @@ from nlqueries.sql_policy import evaluate
 
 from tests.sql_corpus import CORPUS, FIXTURE_COLUMNS, FIXTURE_ROWS, policy_tables
 
+pytestmark = pytest.mark.security
+
 _PG_TYPES = {"JSON": "JSONB", "TEXT": "TEXT"}
 
 

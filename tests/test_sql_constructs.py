@@ -129,6 +129,25 @@ def test_a_subclass_of_a_listed_class_is_not_allowed_by_inheriting() -> None:
     assert decision.unlisted_constructs == ("Sort",)
 
 
+def test_a_class_sqlglot_does_not_export_is_refused_not_raised() -> None:
+    """A node whose class is not on `sqlglot.expressions` under its own name, as
+    `_TimeUnit` is not: named in the refusal, not an AttributeError."""
+    import sqlglot
+    from sqlglot import exp
+
+    class _Unexported(exp.Expression):
+        pass
+
+    sql = "SELECT a FROM t"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Column).replace(_Unexported())
+    assert not hasattr(exp, "_Unexported")
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.unlisted == ("_Unexported",)
+
+
 def test_an_unmodelled_aggregate_is_judged_by_name() -> None:
     """ClickHouse's combinators parse as an unmodelled aggregate class that the
     old rule, which looked only for `Anonymous`, never saw."""

@@ -449,12 +449,18 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
     # construct, and is not allowed by inheriting. What a rule above already
     # names is not named twice.
     listed = allowed_constructs(_sqlglot_dialect(dialect))
-    seen = {type(n).__name__ for n in tree.walk() if not isinstance(n, _UNMODELLED)}
+    # Classes, not names looked up in `exp`: sqlglot does not export every
+    # class its parser produces under its own name (`_TimeUnit` is not), and a
+    # lookup that failed would raise here rather than refuse.
+    already_named = {*forbidden, *file_readers, root_name}
     unlisted = tuple(
         sorted(
-            name
-            for name in seen - set(forbidden) - set(file_readers) - {root_name}
-            if getattr(exp, name) not in listed
+            {
+                type(n).__name__
+                for n in tree.walk()
+                if not isinstance(n, _UNMODELLED) and type(n) not in listed
+            }
+            - already_named
         )
     )
     if unlisted:
