@@ -10,9 +10,12 @@ it cannot corrupt the result.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pickle  # noqa: S403 - both ends are this package
+import signal
 import sys
+import threading
 
 if sys.platform == "win32":
     import ctypes
@@ -55,17 +58,25 @@ if sys.platform == "win32":
         ]
 
     _EXTENDED_LIMIT_INFORMATION = 9  # JobObjectExtendedLimitInformation
+    _LIMIT_JOB_TIME = 0x4  # JOB_OBJECT_LIMIT_JOB_TIME
     _LIMIT_PROCESS_MEMORY = 0x100  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+    # The job's members are killed when its last handle closes: this
+    # process holds the only one, so whatever the parser started ends with it.
+    _LIMIT_KILL_ON_JOB_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
     def _apply_resource_limits(memory_bytes: int, cpu_seconds: int) -> None:
-        """A Job Object memory limit; Windows has no CPU-time limit to match.
+        """A Job Object memory limit and CPU-time limit.
 
         The process puts itself in a job of its own, which Windows 8 and later
         allow inside whatever job it already runs in. An allocation past the
         limit fails, which Python reports as ``MemoryError``, as ``RLIMIT_AS``
-        does on POSIX. The wall-clock deadline in the parent is the time limit.
-        If the job cannot be set up, the error ends the child and the parse is
-        reported as failed, rather than running without the limit.
+        does on POSIX. The CPU-time limit counts the user-mode time of every
+        process in the job, and past it Windows ends them all with
+        ``STATUS_QUOTA_EXCEEDED``; like ``RLIMIT_CPU`` it needs nothing from
+        the process, so it ends a parser that holds the GIL in C code, which
+        the watchdog cannot. If the job cannot be set up, the error ends the
+        child and the parse is reported as failed, rather than running without
+        the limits.
         """
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -84,7 +95,10 @@ if sys.platform == "win32":
         if not job:
             raise ctypes.WinError(ctypes.get_last_error())
         limits = _ExtendedLimits()
-        limits.BasicLimitInformation.LimitFlags = _LIMIT_PROCESS_MEMORY
+        limits.BasicLimitInformation.LimitFlags = (
+            _LIMIT_PROCESS_MEMORY | _LIMIT_KILL_ON_JOB_CLOSE | _LIMIT_JOB_TIME
+        )
+        limits.BasicLimitInformation.PerJobUserTimeLimit = cpu_seconds * 10_000_000  # 100 ns
         limits.ProcessMemoryLimit = memory_bytes
         if not kernel32.SetInformationJobObject(
             job, _EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
@@ -114,6 +128,51 @@ else:
         )
 
 
+def _arm_watchdog(seconds: float) -> None:
+    """End this process at *seconds*, whatever the parser is doing.
+
+    The parent kills the child at the same deadline, so this matters only when
+    the parent cannot: killed itself, or stopped by a hard time limit that gave
+    it no chance. Without it the parse would run on, holding the file and up
+    to its memory limit, and on Windows with nothing bounding its time.
+
+    What the parser started goes too. On Windows the Job Object sees to that
+    however this process ends. On POSIX the parent would kill the process
+    group this process leads, and the parent is the one thing not there, so
+    the watchdog kills the group itself -- this process with it, so the exit
+    is SIGKILL rather than the watchdog's code. It says so on stderr first,
+    so the parent can tell that SIGKILL from the kernel's. Only when it leads
+    the group, as the parent starts it: run any other way, the group is
+    someone else's.
+
+    The watchdog is Python, so it waits for the GIL, which a parser stuck in
+    C code -- a regular expression backtracking -- does not let go. On POSIX
+    SIGALRM is the backstop, a little later: its default action ends the
+    process in the kernel, with no Python involved, though it leaves the
+    group. On Windows the Job Object's CPU-time limit ends such a parse, as
+    ``RLIMIT_CPU`` does on POSIX.
+    """
+    from nlqueries.document_connectors._isolation import (  # noqa: PLC0415
+        WATCHDOG_BACKSTOP_SECONDS,
+        WATCHDOG_EXIT_CODE,
+        WATCHDOG_MARKER,
+    )
+
+    def fire() -> None:
+        with contextlib.suppress(OSError):
+            os.write(2, WATCHDOG_MARKER)
+        if sys.platform != "win32" and os.getpgrp() == os.getpid():
+            with contextlib.suppress(OSError):
+                os.killpg(os.getpgrp(), signal.SIGKILL)
+        os._exit(WATCHDOG_EXIT_CODE)
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    if sys.platform != "win32":
+        signal.setitimer(signal.ITIMER_REAL, seconds + WATCHDOG_BACKSTOP_SECONDS)
+
+
 def main() -> int:
     # The result goes out on a private copy of descriptor 1, and descriptor 1
     # itself is pointed at stderr. Rebinding `sys.stdout` alone would leave the
@@ -130,6 +189,9 @@ def main() -> int:
     for name, value in payload["limits"].items():
         setattr(_limits, name, value)
     _apply_resource_limits(payload["memory_bytes"], payload["cpu_seconds"])
+    # Indexed, not `get`: a parent that stopped sending it would otherwise
+    # disarm every child without a word.
+    _arm_watchdog(payload["deadline_seconds"])
 
     result = _isolation.child_result(payload["connector"], payload["source"], payload["source_id"])
     out.write(pickle.dumps(result))

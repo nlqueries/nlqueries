@@ -66,6 +66,18 @@ class Spins(_Fake):
             n += 1
 
 
+class HoldsTheGil(_Fake):
+    """Sums in C, which holds the GIL until it returns -- here, for longer than
+    any test -- so no other thread runs. Measured: a one-second timer fired only
+    when a five-second sum of this kind returned."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import itertools  # noqa: PLC0415
+
+        sum(itertools.repeat(1, 10**13))
+        return []
+
+
 class LxmlRunsOutOfMemory(_Fake):
     """What python-docx raises when libxml2 cannot allocate: not MemoryError."""
 
@@ -154,14 +166,27 @@ class ChattersThenDies(_Fake):
         os._exit(3)
 
 
+def _long_lived(seconds: int) -> list[str]:
+    """A command that runs for *seconds*, inheriting the caller's handles.
+
+    Not Python: on Windows a virtualenv's python.exe is a launcher that starts
+    the interpreter as its own child, which fails inside the parsing child's
+    Job Object, so a Python grandchild ends at once there and shows nothing.
+    """
+    import sys  # noqa: PLC0415
+
+    if sys.platform == "win32":
+        return ["ping", "-n", str(seconds), "127.0.0.1"]
+    return ["sleep", str(seconds)]
+
+
 class LeavesAGrandchild(_Fake):
     """Starts a process that outlives it holding stderr open; returns its pid."""
 
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         import subprocess  # noqa: PLC0415
-        import sys  # noqa: PLC0415
 
-        grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        grandchild = subprocess.Popen(_long_lived(60))
         return [_chunk(source_id, str(grandchild.pid))]
 
 
@@ -191,6 +216,30 @@ class KilledBySystem(_Fake):
         import signal  # noqa: PLC0415
 
         os.kill(os.getpid(), signal.SIGKILL)  # type: ignore[attr-defined]
+        return []
+
+
+class LeavesAnEscapedGrandchild(_Fake):
+    """Starts a process in a session of its own, out of reach of the group kill,
+    holding stderr open; returns its pid."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        escaped = subprocess.Popen(_long_lived(60), start_new_session=sys.platform != "win32")
+        return [_chunk(source_id, str(escaped.pid))]
+
+
+class StartsAGrandchildThenHangs(_Fake):
+    """Starts a long-lived process, records its pid beside the source, then hangs."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import subprocess  # noqa: PLC0415
+
+        grandchild = subprocess.Popen(_long_lived(120))
+        Path(source).with_suffix(".pid").write_text(str(grandchild.pid))
+        time.sleep(600)
         return []
 
 
