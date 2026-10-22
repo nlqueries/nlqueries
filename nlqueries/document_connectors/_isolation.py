@@ -65,6 +65,18 @@ STDERR_TAIL_BYTES = 64 * 1024
 #: or failed to stop it at the deadline. Read as a timeout.
 WATCHDOG_EXIT_CODE = 124
 
+#: What the watchdog writes to stderr before it kills the child's process
+#: group, so that SIGKILL is read as the deadline, not the kernel's.
+WATCHDOG_MARKER = b"\nnlqueries: the parse reached its deadline and stopped itself\n"
+
+#: How long after the watchdog SIGALRM ends a child on POSIX, for a parser
+#: that holds the GIL and so never lets the watchdog run.
+WATCHDOG_BACKSTOP_SECONDS = 5.0
+
+#: How Windows ends the processes of a job past its CPU-time limit. Exit codes
+#: on POSIX stop at 255, so it cannot be mistaken for one there.
+_STATUS_QUOTA_EXCEEDED = 0xC0000044
+
 #: How long to wait, once the child has exited, for its output to finish
 #: arriving. stdout ends with the child; stderr can be held open by a process
 #: the parser started, and is not waited on past this.
@@ -276,19 +288,22 @@ def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
     text = stderr.decode("utf-8", "replace")
     if "MemoryError" in text:
         return _memory_refusal(name)
-    if returncode == WATCHDOG_EXIT_CODE:
+    if _stopped_itself(returncode, stderr):
         return DocumentExtractionTimeout(
             f"Extracting {name} did not finish within its deadline and stopped itself."
         )
     cpu_signal = getattr(signal, "SIGXCPU", None)
-    if cpu_signal is not None and returncode == -int(cpu_signal):
+    if returncode == _STATUS_QUOTA_EXCEEDED or (
+        cpu_signal is not None and returncode == -int(cpu_signal)
+    ):
         return DocumentExtractionTimeout(
             f"Extracting {name} used up its {config.DOCUMENT_PARSE_CPU_SECONDS}s of CPU time."
         )
-    # SIGKILL, with nothing on stderr: the kernel's out-of-memory killer, which
-    # is how a container's memory limit is reached -- a cgroup, not an rlimit,
-    # so the child never sees MemoryError. Nothing else here sends it: the
-    # deadline and an interrupted caller both raise before this is reached.
+    # Any other SIGKILL: the kernel's out-of-memory killer, which is how a
+    # container's memory limit is reached -- a cgroup, not an rlimit, so the
+    # child never sees MemoryError. The watchdog's group kill is the only other
+    # sender here, and says so first; the deadline and an interrupted caller
+    # both raise before this is reached.
     # A timeout rather than a final refusal: the limit is the whole container's
     # and the kernel kills the largest process in it, so the document is not
     # necessarily the cause, and a caller may retry (see that class).
@@ -300,6 +315,17 @@ def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
         )
     last = next((line for line in reversed(text.splitlines()) if line.strip()), "")
     return RuntimeError(f"Extracting {name} failed: the parser exited with {returncode}. {last}")
+
+
+def _stopped_itself(returncode: int | None, stderr: bytes) -> bool:
+    """Whether the child's own watchdog, or its backstop, ended it."""
+    if returncode == WATCHDOG_EXIT_CODE:
+        return True
+    alarm = getattr(signal, "SIGALRM", None)
+    if alarm is not None and returncode == -int(alarm):
+        return True
+    kill = getattr(signal, "SIGKILL", None)
+    return kill is not None and returncode == -int(kill) and WATCHDOG_MARKER.strip() in stderr
 
 
 def _memory_refusal(name: str) -> DocumentTooComplexError:

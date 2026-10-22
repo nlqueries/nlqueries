@@ -21,8 +21,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   bound, held the process that asked. Now the parse runs in a child that is
   killed at the extraction deadline (plus 15 seconds to start) and runs under
   a memory limit (`NLQ_DOCUMENT_PARSE_MEMORY_BYTES`, 2 GiB: an address-space
-  limit on Linux and macOS, a Job Object on Windows), and on Linux and macOS a
-  CPU-time limit (`NLQ_DOCUMENT_PARSE_CPU_SECONDS`, 180). Running out of memory
+  limit on Linux and macOS, a Job Object on Windows) and a CPU-time limit
+  (`NLQ_DOCUMENT_PARSE_CPU_SECONDS`, 180: `RLIMIT_CPU` on Linux and macOS, the
+  Job Object on Windows). Running out of memory
   raises `DocumentTooComplexError`, including when the XML parser reports it as
   a parse error; the deadline or the CPU limit raises
   `DocumentExtractionTimeout`, as before. `NLQ_DOCUMENT_PARSE_ISOLATION=false`

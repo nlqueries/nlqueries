@@ -32,7 +32,8 @@ from tests import _fake_parsers as fake
 
 ROOT = Path(__file__).resolve().parents[1]
 _POSIX = sys.platform != "win32"
-posix_only = pytest.mark.skipif(not _POSIX, reason="Windows has no CPU-time limit")
+posix_only = pytest.mark.skipif(not _POSIX, reason="POSIX signals")
+windows_only = pytest.mark.skipif(_POSIX, reason="the Job Object")
 rlimits_only = pytest.mark.skipif(not _POSIX, reason="resource limits are POSIX-only")
 
 
@@ -82,12 +83,13 @@ def test_a_parser_that_allocates_without_bound_is_refused(source, monkeypatch) -
         fake.Allocates().ingest(source, "s1")
 
 
-@posix_only
-def test_a_parser_that_spins_is_stopped_by_its_cpu_limit(source, monkeypatch) -> None:
+@pytest.mark.parametrize("parser", [fake.Spins, fake.HoldsTheGil], ids=["spins", "holds-the-gil"])
+def test_a_parser_that_spins_is_stopped_by_its_cpu_limit(source, monkeypatch, parser) -> None:
+    """``RLIMIT_CPU`` on POSIX, the Job Object on Windows: neither needs the GIL."""
     monkeypatch.setattr(config, "DOCUMENT_PARSE_CPU_SECONDS", 1)
 
     with pytest.raises(DocumentExtractionTimeout, match="1s of CPU time"):
-        fake.Spins().ingest(source, "s1")
+        parser().ingest(source, "s1")
 
 
 def test_lxml_running_out_of_memory_is_a_memory_refusal(source) -> None:
@@ -384,6 +386,8 @@ def test_the_watchdog_takes_what_the_parser_started_with_it(source) -> None:
         start_new_session=True,
     )
     assert ran.returncode == -signal.SIGKILL  # the group, this process with it
+    assert _isolation.WATCHDOG_MARKER.strip() in ran.stderr
+    assert "stopped itself" in str(_isolation._death("doc.pdf", ran.returncode, ran.stderr))
     pid = int(source.with_suffix(".pid").read_text())
     try:
         assert _gone(pid)
@@ -392,9 +396,86 @@ def test_the_watchdog_takes_what_the_parser_started_with_it(source) -> None:
             os.kill(pid, signal.SIGTERM)
 
 
+def _run_child(source, connector: str, *, cpu_seconds: int, deadline: float, **popen):
+    """The child as a dead parent would leave it: nothing here kills it."""
+    import os
+    import pickle
+
+    payload = {
+        "connector": connector,
+        "source": str(source),
+        "source_id": "s1",
+        "limits": {},
+        "memory_bytes": 1024 * 1024 * 1024,
+        "cpu_seconds": cpu_seconds,
+        "deadline_seconds": deadline,
+    }
+    return subprocess.run(
+        [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
+        input=pickle.dumps(payload),
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+        check=False,
+        **popen,
+    )
+
+
+@posix_only
+def test_the_backstop_ends_a_child_whose_watchdog_cannot_run(source) -> None:
+    """The parser holds the GIL, so the watchdog never runs; SIGALRM needs no GIL.
+    The CPU limit is set out of reach, so it is the alarm that ends it."""
+    import signal
+
+    started = time.monotonic()
+    ran = _run_child(source, "tests._fake_parsers:HoldsTheGil", cpu_seconds=120, deadline=2.0)
+
+    assert ran.returncode == -signal.SIGALRM
+    assert time.monotonic() - started < 30
+    error = _isolation._death("doc.pdf", ran.returncode, ran.stderr)
+    assert "stopped itself" in str(error)
+
+
+@windows_only
+def test_the_cpu_limit_ends_a_child_whose_watchdog_cannot_run(source) -> None:
+    """Windows has no SIGALRM; the Job Object's CPU-time limit needs no GIL."""
+    started = time.monotonic()
+    ran = _run_child(source, "tests._fake_parsers:HoldsTheGil", cpu_seconds=2, deadline=60.0)
+
+    assert ran.returncode == _isolation._STATUS_QUOTA_EXCEEDED
+    assert time.monotonic() - started < 30
+
+
 def test_a_child_its_watchdog_stopped_is_a_timeout() -> None:
     error = _isolation._death("doc.pdf", _isolation.WATCHDOG_EXIT_CODE, b"")
     assert isinstance(error, DocumentExtractionTimeout)
+    assert "stopped itself" in str(error)
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("signal_name", "stderr", "said"),
+    [
+        ("SIGALRM", b"", "stopped itself"),
+        ("SIGKILL", b"pdfminer warning\n" + _isolation.WATCHDOG_MARKER, "stopped itself"),
+        ("SIGKILL", b"pdfminer warning\n", "container's memory limit"),
+        ("SIGXCPU", b"", "of CPU time"),
+    ],
+    ids=["backstop", "watchdog-group-kill", "oom-killer", "cpu-limit"],
+)
+def test_how_a_child_ended_by_a_signal_is_reported(signal_name, stderr, said) -> None:
+    import signal
+
+    error = _isolation._death("doc.pdf", -int(getattr(signal, signal_name)), stderr)
+
+    assert isinstance(error, DocumentExtractionTimeout)
+    assert said in str(error)
+
+
+def test_a_child_past_its_job_cpu_limit_is_a_cpu_timeout() -> None:
+    error = _isolation._death("doc.pdf", _isolation._STATUS_QUOTA_EXCEEDED, b"")
+    assert isinstance(error, DocumentExtractionTimeout)
+    assert "of CPU time" in str(error)
 
 
 def test_a_child_that_dies_is_reported_by_its_last_line(source) -> None:

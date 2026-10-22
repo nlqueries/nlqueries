@@ -771,8 +771,8 @@ On by default. The parsers are third-party code reading untrusted files, and
 :data:`MAX_EXTRACTION_SECONDS` is checked only between pages, paragraphs and
 rows, so a parser stuck inside one of them, or one that allocates without
 bound, held the process that asked. In a child process it is killed at the
-deadline and runs under :data:`DOCUMENT_PARSE_MEMORY_BYTES`, and on POSIX under
-:data:`DOCUMENT_PARSE_CPU_SECONDS` too. Turn it off only where starting a process
+deadline and runs under :data:`DOCUMENT_PARSE_MEMORY_BYTES` and
+:data:`DOCUMENT_PARSE_CPU_SECONDS`. Turn it off only where starting a process
 per document is not possible; the in-process limits still apply.
 """
 
@@ -794,11 +794,15 @@ container's, so the document may not be the cause, and a caller may retry.
 """
 
 DOCUMENT_PARSE_CPU_SECONDS: int = _positive_int("NLQ_DOCUMENT_PARSE_CPU_SECONDS", 180)
-"""CPU-time limit (``RLIMIT_CPU``) for the child that parses a document, on POSIX.
+"""CPU-time limit for the child that parses a document.
+
+``RLIMIT_CPU`` on POSIX. On Windows the Job Object's CPU-time limit, which
+counts user-mode time only, of the child and every process it started.
 
 Above :data:`MAX_EXTRACTION_SECONDS`, which is wall time and normally ends a
 slow parse first; this catches CPU spent where the wall-clock check cannot see
-it. Not applied on Windows, where the wall-clock deadline is the only limit.
+it, including a parser that holds the GIL in C code and so stops the child's
+own deadline watchdog from running.
 """
 
 MAX_PDF_BYTES: int = _positive_int("NLQ_MAX_PDF_BYTES", 100 * 1024 * 1024)

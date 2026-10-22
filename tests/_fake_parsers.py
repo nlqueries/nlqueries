@@ -66,6 +66,17 @@ class Spins(_Fake):
             n += 1
 
 
+class HoldsTheGil(_Fake):
+    """Backtracks in the regular-expression engine, which holds the GIL until it
+    returns -- here, for longer than any test -- so no other thread runs."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import re  # noqa: PLC0415
+
+        re.match(r"(a+)+$", "a" * 64 + "b")
+        return []
+
+
 class LxmlRunsOutOfMemory(_Fake):
     """What python-docx raises when libxml2 cannot allocate: not MemoryError."""
 
