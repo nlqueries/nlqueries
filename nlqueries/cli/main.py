@@ -447,12 +447,14 @@ def _identity_check(service: str, identity: Any) -> _CheckResult:
     An identity that could not be read is reported as a failure, so that an
     incomplete check is distinguishable from a completed one. An identity that
     was read and found over-privileged is reported as a warning: the privileges
-    are granted by the operator and the deployment is functional.
+    are granted by the operator and the deployment is functional. So is one
+    read only in part (`unread`, SQL Server's server scope on Azure SQL), which
+    is a caveat on the result rather than a pass.
     """
     label = f"{service} identity"
     if identity.undetermined_reason is not None:
         return _CheckResult(label, "fail", identity.summary())
-    if identity.concerns:
+    if identity.concerns or getattr(identity, "unread", ()):
         return _CheckResult(label, "warn", f"{identity.summary()} — see docs/database-hardening.md")
     return _CheckResult(label, "ok", identity.summary())
 

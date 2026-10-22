@@ -51,15 +51,24 @@ class LoginIdentity:
 
     @property
     def is_least_privilege(self) -> bool:
-        """True when the grants were read and nothing beyond reading was found."""
-        return self.undetermined_reason is None and not self.concerns
+        """True when all the grants were read and nothing beyond reading was found.
+
+        Not when part of them went unread: a check that did not look at the
+        server scope cannot say the login holds nothing there.
+        """
+        return self.undetermined_reason is None and not self.concerns and not self.unread
 
     def summary(self) -> str:
         """A single line for logs and the health report."""
         if self.undetermined_reason is not None:
             return f"identity could not be determined: {self.undetermined_reason}"
         who = f"{self.user}@{self.database}" if self.database else self.user
-        found = "; ".join(self.concerns) if self.concerns else "least privilege"
+        if self.concerns:
+            found = "; ".join(self.concerns)
+        elif self.unread:
+            found = "nothing beyond reading in what was read"
+        else:
+            found = "least privilege"
         if self.unread:
             found += f" (not read: {'; '.join(self.unread)})"
         return f"{who}: {found}"

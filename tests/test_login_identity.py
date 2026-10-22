@@ -83,7 +83,18 @@ def test_a_login_with_no_concerns_is_least_privilege() -> None:
 
 def test_what_could_not_be_read_is_reported_with_the_result() -> None:
     identity = LoginIdentity("mssql", "reader", "shop", unread=("server roles (denied)",))
-    assert identity.summary() == "reader@shop: least privilege (not read: server roles (denied))"
+    assert identity.summary() == (
+        "reader@shop: nothing beyond reading in what was read (not read: server roles (denied))"
+    )
+    assert not identity.is_least_privilege  # a caveat, not a pass
+
+
+def test_health_warns_on_a_check_read_only_in_part() -> None:
+    from nlqueries.cli.main import _identity_check
+
+    partial = LoginIdentity("mssql", "reader", "shop", unread=("server roles (denied)",))
+    assert _identity_check("db", partial).status == "warn"
+    assert _identity_check("db", LoginIdentity("mssql", "reader", "shop")).status == "ok"
 
 
 def test_an_undetermined_check_is_not_least_privilege() -> None:
@@ -227,6 +238,32 @@ class TestSQLServer:
             }
         )
         assert concerns == ("holds VIEW ANY ERROR LOG on the server",)
+
+    def test_a_long_list_of_permissions_is_cut_short(self) -> None:
+        many = [f"ALTER ANY THING {n:02}" for n in range(12)]
+        (concern,) = mssql_identity.concerns_from(
+            **{
+                **_MSSQL_READER,
+                "database_permissions": [*_MSSQL_READER["database_permissions"], *many],
+            }
+        )
+        assert concern == f"holds {', '.join(many[:8])} and 4 more on the database"
+
+    def test_control_is_named_for_what_it_implies(self) -> None:
+        """A db_owner's effective permissions run past a hundred; CONTROL says it."""
+        owner = ["CONTROL", "ALTER", "DELETE", "INSERT", *(f"ALTER ANY X{n}" for n in range(100))]
+        server = ["CONTROL SERVER", "SHUTDOWN", "ALTER ANY LOGIN"]
+        concerns = mssql_identity.concerns_from(
+            **{
+                **_MSSQL_READER,
+                "database_permissions": [*_MSSQL_READER["database_permissions"], *owner],
+                "server_permissions": [*_MSSQL_READER["server_permissions"], *server],
+            }
+        )
+        assert concerns == (
+            "holds CONTROL and 103 more on the database",
+            "holds CONTROL SERVER and 2 more on the server",
+        )
 
     def test_server_and_database_roles_are_flagged(self) -> None:
         concerns = mssql_identity.concerns_from(

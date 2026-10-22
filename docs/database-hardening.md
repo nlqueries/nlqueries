@@ -636,7 +636,7 @@ and does not refuse a connection.
 On SQL Server the server scope is read apart from the database's. Where it cannot
 be read (Azure SQL may not offer it from a user database), the line reports the
 database and names what it could not read, `(not read: server permissions ...)`,
-instead of failing. A `sysadmin` login is still caught, because it is the database
+as a warning rather than a failure or a pass. A `sysadmin` login is still caught, because it is the database
 owner everywhere and holds `CONTROL` among the database's effective permissions;
 other server roles show only when the server scope can be read. On Snowflake the check waits up
 to 30 seconds for a running query to release the session; if the query is still

@@ -89,6 +89,26 @@ DATABASE_PERMISSIONS_SQL = "SELECT permission_name FROM fn_my_permissions(NULL, 
 SERVER_PERMISSIONS_SQL = "SELECT permission_name FROM fn_my_permissions(NULL, 'SERVER')"
 
 
+#: How many permissions one concern names before it counts the rest. A
+#: ``db_owner`` login's effective permissions run past a hundred.
+NAMED_PERMISSIONS = 8
+
+
+def _listed(permissions: Iterable[str], control: str) -> str:
+    """*permissions* for a concern, short enough to read.
+
+    ``CONTROL`` (``CONTROL SERVER`` for the server) implies every other
+    permission in its scope, so when it is there it is the one named.
+    """
+    names = sorted(set(permissions))
+    if control in names:
+        names.remove(control)
+        return f"{control} and {len(names)} more" if names else control
+    if len(names) <= NAMED_PERMISSIONS:
+        return ", ".join(names)
+    return f"{', '.join(names[:NAMED_PERMISSIONS])} and {len(names) - NAMED_PERMISSIONS} more"
+
+
 def concerns_from(
     server_roles: Iterable[str],
     database_roles: Iterable[str],
@@ -103,12 +123,12 @@ def concerns_from(
     roles = sorted({r for r in database_roles if r.lower() not in READ_DATABASE_ROLES})
     if roles:
         found.append(f"is a member of database role {', '.join(roles)}")
-    beyond = sorted({p.upper() for p in database_permissions} - READ_DATABASE_PERMISSIONS)
+    beyond = {p.upper() for p in database_permissions} - READ_DATABASE_PERMISSIONS
     if beyond:
-        found.append(f"holds {', '.join(beyond)} on the database")
-    beyond = sorted({p.upper() for p in server_permissions} - READ_SERVER_PERMISSIONS)
+        found.append(f"holds {_listed(beyond, 'CONTROL')} on the database")
+    beyond = {p.upper() for p in server_permissions} - READ_SERVER_PERMISSIONS
     if beyond:
-        found.append(f"holds {', '.join(beyond)} on the server")
+        found.append(f"holds {_listed(beyond, 'CONTROL SERVER')} on the server")
     return tuple(found)
 
 
