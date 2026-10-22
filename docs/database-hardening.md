@@ -636,12 +636,21 @@ and does not refuse a connection.
 On SQL Server the server scope is read apart from the database's. Where it cannot
 be read (Azure SQL may not offer it from a user database), the line reports the
 database and names what it could not read, `(not read: server permissions ...)`,
-as a warning rather than a failure or a pass. A `sysadmin` login is still caught, because it is the database
-owner everywhere and holds `CONTROL` among the database's effective permissions;
-other server roles show only when the server scope can be read. On Snowflake the check waits up
-to 30 seconds for a running query to release the session; if the query is still
-running after that, the check reports that it could not be determined, and the
-next `health` run reads it again.
+as a warning rather than a failure or a pass. A `sysadmin` login is still caught,
+because it is the database owner everywhere and holds `CONTROL` among the
+database's effective permissions; other server roles show only when the server
+scope can be read. Grants on a schema or an object (`GRANT INSERT ON SCHEMA::dbo
+TO app`) are not seen: `fn_my_permissions` is read for the database and the
+server, and those grants are held on the schema or the object. So on SQL Server,
+`least privilege` means nothing beyond reading at database and server scope;
+check schema and object grants in `sys.database_permissions`.
+
+On Snowflake the check waits up to 30 seconds for a running query to release the
+session; if the query is still running after that, the check reports that it
+could not be determined, and the next `health` run reads it again. A database
+role granted to the session's role is not expanded, since its grants take
+another statement (`SHOW GRANTS TO DATABASE ROLE`), so it is named as not read
+and the line warns.
 
 ---
 

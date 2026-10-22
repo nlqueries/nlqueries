@@ -9,6 +9,14 @@ Role membership names the obvious cases (``sysadmin``, ``db_owner``,
 ``db_datawriter``); the effective permissions from ``fn_my_permissions``
 catch the rest, including what a custom role or a direct grant gives, which a
 role list alone cannot show.
+
+What this does not see: grants on a schema or an object. ``fn_my_permissions``
+is read for the database and the server securables, and a permission granted
+``ON SCHEMA::dbo`` or on a table is held on that securable, not on the
+database, so a login granted ``INSERT, UPDATE, DELETE ON SCHEMA::dbo`` and no
+role reads as least privilege here. On SQL Server the line therefore means
+nothing beyond reading at database and server scope; schema and object grants
+are checked in ``sys.database_permissions``.
 """
 
 from __future__ import annotations

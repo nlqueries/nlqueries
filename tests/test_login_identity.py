@@ -463,6 +463,40 @@ class TestSnowflake:
         assert identity.user == "APP (role READER)" and identity.database == "SHOP"
         assert identity.concerns == ("holds DELETE on 1 table(s)",)
 
+    def test_a_granted_database_role_is_reported_as_not_read(self) -> None:
+        """USAGE on a database role reads as harmless; what it holds is not walked."""
+        description = [("created_on",), ("privilege",), ("granted_on",), ("name",)]
+        cursor = _Cursor(
+            {
+                "SELECT CURRENT_USER()": [("APP", "READER", "SHOP")],
+                'SHOW GRANTS TO ROLE "READER"': [
+                    ("t", "USAGE", "DATABASE", "SHOP"),
+                    ("t", "USAGE", "DATABASE_ROLE", "SHOP.WRITER"),
+                ],
+            },
+            description=description,
+        )
+        identity = snowflake_identity.inspect_identity(_connection(cursor))
+        assert identity.concerns == ()
+        assert identity.unread == ("the grants of database role SHOP.WRITER",)
+        assert not identity.is_least_privilege
+
+    @pytest.mark.parametrize(
+        ("granted_on", "unread"),
+        [
+            ("DATABASE_ROLE", True),
+            ("DATABASE ROLE", True),  # whichever way the kind is spelled
+            ("APPLICATION_ROLE", True),
+            ("ROLE", False),  # the account role the walk follows
+            ("DATABASE", False),
+        ],
+    )
+    def test_only_roles_the_walk_does_not_follow_are_unread(
+        self, granted_on: str, unread: bool
+    ) -> None:
+        found = snowflake_identity.unexpanded_roles([("READER", ("USAGE", granted_on, "X"))])
+        assert bool(found) is unread
+
     def test_a_role_name_is_quoted(self) -> None:
         assert snowflake_identity._quoted('we"ird') == '"we""ird"'
 

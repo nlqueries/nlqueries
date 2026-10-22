@@ -71,6 +71,24 @@ def walk_roles(
     return seen, grants, False
 
 
+def unexpanded_roles(grants: Iterable[tuple[str, Grant]]) -> tuple[str, ...]:
+    """Roles of another kind in the hierarchy, whose own grants the walk does not read.
+
+    A database role granted to an account role is listed by ``SHOW GRANTS TO
+    ROLE`` as ``USAGE`` on it, and ``USAGE`` alone reads as harmless; what the
+    database role holds -- ``INSERT`` on a schema's tables, say -- takes ``SHOW
+    GRANTS TO DATABASE ROLE``, which this does not run. Such a grant is reported
+    as unread, so the line is a caveat rather than a pass. Matched on any kind of
+    role but the account role the walk follows, rather than one spelling of it.
+    """
+    found: set[str] = set()
+    for _role, (privilege, granted_on, name) in grants:
+        kind = granted_on.upper()
+        if privilege.upper() == "USAGE" and kind != "ROLE" and kind.endswith("ROLE"):
+            found.add(f"the grants of {kind.lower().replace('_', ' ')} {name}")
+    return tuple(sorted(found))
+
+
 def concerns_from(
     roles: Iterable[str], grants: Iterable[tuple[str, Grant]], truncated: bool
 ) -> tuple[str, ...]:
@@ -124,4 +142,5 @@ def inspect_identity(connection: Any) -> LoginIdentity:
         user=f"{user} (role {role})",
         database=str(database or ""),
         concerns=concerns_from(roles, grants, truncated),
+        unread=unexpanded_roles(grants),
     )
