@@ -326,6 +326,25 @@ def test_an_unqualified_modelled_call_is_still_judged_by_its_class(dialect: str,
     assert decision.anonymous_functions == ()
 
 
+def test_a_qualified_call_written_without_brackets_is_named_by_its_rendering() -> None:
+    """``CURRENT_DATE`` has no argument list; named, it can be listed, where
+    unnamed it could only be refused. Built by hand: sqlglot 30.17 reads
+    ``t.current_date`` as a column."""
+    import sqlglot
+    from sqlglot import exp
+
+    sql = "SELECT t.x FROM t"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Column).replace(
+        exp.Dot(this=exp.to_identifier("t"), expression=exp.CurrentDate())
+    )
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.anonymous == ("t.current_date",)
+    assert "calls a function whose name could not be read" not in reading.reasons
+
+
 def test_a_qualified_modelled_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
     monkeypatch.setitem(
         sql_policy.ALLOWED_ANONYMOUS,
@@ -445,8 +464,9 @@ def test_the_rendered_form_is_not_consulted_for_a_statement_already_refused(monk
     [
         ("SELECT pg_sleep(1) FROM t", ("pg_sleep",), ()),
         ("SELECT a FROM t WHERE a = ?", (), ("Placeholder",)),
-        # Refused for its tables, not its rules: what it uses is still counted.
-        ("SELECT xmin_age(a) FROM secrets", ("xmin_age",), ()),
+        # Refused for its tables, not for what it calls: listing that would
+        # change nothing, so nothing is counted.
+        ("SELECT xmin_age(a) FROM secrets", (), ()),
     ],
 )
 def test_the_report_counts_what_only_the_rendered_form_uses(

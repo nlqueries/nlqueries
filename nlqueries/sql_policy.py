@@ -51,9 +51,11 @@ from nlqueries.sql_constructs import allowed_constructs
 #: unmodelled aggregates are checked by name like other unmodelled functions;
 #: and a statement whose rendered form the policy reads differently is refused.
 #:
-#: 5: an unmodelled function written with a qualifier is judged by the whole
-#: name, so ``some_schema.age`` no longer passes on the entry for ``age``; and
-#: one whose name cannot be read is refused.
+#: 5: a function call written with a qualifier is judged by the whole name,
+#: whether sqlglot models it or not, so ``some_schema.age`` no longer passes on
+#: the entry for ``age``, nor ``FROM some_schema.generate_series(...)`` on the
+#: class sqlglot parses it as; and an unmodelled call whose name cannot be
+#: read is refused.
 POLICY_VERSION = "5"
 
 #: The only statement types a generated query may be.
@@ -391,7 +393,10 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         reasons.extend(differs)
         # What only the rendering has -- a construct sqlglot's canonical form
         # introduced -- is what the inventory must count for the refusal to be
-        # actionable, so the second reading's lists join the first's.
+        # actionable, so the second reading's lists join the first's. Only
+        # when that reading is what refused: a rendering refused for reading
+        # other tables comes back without one, as listing what it calls
+        # would change nothing.
         if differs and second is not None:
             anonymous = tuple(sorted({*anonymous, *second.anonymous}))
             unlisted = tuple(sorted({*unlisted, *second.unlisted}))
@@ -460,13 +465,15 @@ def _function_name(node: exp.Func, dialect: str) -> str | None:
 
 def _written_name(node: exp.Func, dialect: str) -> str:
     """How *dialect* spells the function a modelled call stands for: its class
-    is named for sqlglot (`ExplodingGenerateSeries`), not for the database."""
+    is named for sqlglot (`ExplodingGenerateSeries`), not for the database.
+    One the dialect writes without an argument list, ``CURRENT_DATE``, is
+    named by its whole rendering."""
     try:
         rendered = node.sql(dialect=_sqlglot_dialect(dialect))
     except Exception:  # noqa: BLE001 - "" is unreadable, which refuses
         return ""
-    name, paren, _rest = rendered.partition("(")
-    return name.strip() if paren else ""
+    name, _paren, _rest = rendered.partition("(")
+    return name.strip()
 
 
 def _qualifier(node: exp.Func) -> list[str]:
@@ -630,7 +637,7 @@ def _rereading_differs(
         return [f"its rendered form parses as a {type(again[0]).__name__}"], None
     second = _read(again[0], rendered, dialect)
     if second.tables != reading.tables:
-        return ["its rendered form reads other tables"], second
+        return ["its rendered form reads other tables"], None
     if second.reasons:
         return [f"its rendered form is refused: {'; '.join(second.reasons)}"], second
     return [], second

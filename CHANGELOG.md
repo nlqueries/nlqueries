@@ -283,11 +283,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **SQL policy version 5: a qualified function call is judged by its whole
   name.** `some_schema.age(a, b)` was judged as `age`, which PostgreSQL's list
   allows, though the function that runs is whichever `some_schema` holds. It is
-  now judged as `some_schema.age`, and refused unless listed as written. An
-  unmodelled function whose name cannot be read is refused. When a statement is
-  refused because its rendered form reads differently, the functions and
-  constructs only the rendered form uses are recorded on the decision, so
-  `nlqueries.sql_policy_report` counts them.
+  now judged as `some_schema.age`, and refused unless listed as written in
+  `ALLOWED_ANONYMOUS`. The same holds for a function sqlglot models: a qualified
+  call is no longer allowed by its class, so `FROM
+  some_schema.generate_series(1, 3)` is refused unless
+  `some_schema.generate_series` is listed. An unmodelled function whose name
+  cannot be read is refused. When a statement is refused because its rendered
+  form is, the functions and constructs only the rendered form uses are
+  recorded on the decision, so `nlqueries.sql_policy_report` counts them.
 - **The default expanded-size cap for `.xlsx` and `.docx` is 128 MiB** (was
   400 MiB). Parsing a `.docx` costs several times its expanded size: one of
   250 MiB of ordinary paragraphs peaked at about 2 GiB. At 128 MiB an ordinary
