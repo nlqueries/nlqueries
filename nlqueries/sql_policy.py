@@ -472,6 +472,24 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
             f"uses construct(s) not on the {_sqlglot_dialect(dialect)} list: {', '.join(unlisted)}"
         )
 
+    # SQL Server still reads `FROM orders o (TABLOCKX)`, a table hint written
+    # without WITH, which sqlglot parses as a column list on the alias -- every
+    # class of it listed. It allows a column list only on a derived table,
+    # whose alias sits on the subquery, so one on a table is only ever a hint.
+    if _sqlglot_dialect(dialect) == "tsql":
+        hinted = sorted(
+            {
+                table.name
+                for table in tree.find_all(exp.Table)
+                if (alias := table.args.get("alias")) is not None and alias.args.get("columns")
+            }
+        )
+        if hinted:
+            reasons.append(
+                f"gives {', '.join(hinted)} a parenthesised list after its alias, which "
+                "SQL Server reads as a table hint"
+            )
+
     tables = frozenset(
         tuple(part.name for part in table.parts) for table in tree.find_all(exp.Table)
     )

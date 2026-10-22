@@ -70,6 +70,10 @@ _DANGEROUS: dict[str, list[str]] = {
         "SELECT @x",
         "SELECT SUM(total) FROM orders WITH (TABLOCKX)",
         "SELECT SUM(total) FROM orders WITH (UPDLOCK, HOLDLOCK)",
+        # The same hints without WITH, which SQL Server still honours.
+        "SELECT SUM(total) FROM orders o (TABLOCKX)",
+        "SELECT SUM(o.total) FROM orders AS o (UPDLOCK, HOLDLOCK)",
+        "SELECT SUM(total) FROM orders (UPDLOCK)",
     ],
     "snowflake": ["SELECT SYSTEM$WAIT(10)", "SELECT CURRENT_USER()"],
     "bigquery": ["SELECT * FROM EXTERNAL_QUERY('conn', 'SELECT 1')", "SELECT SESSION_USER()"],
@@ -114,6 +118,15 @@ def test_what_a_read_query_has_no_use_for_is_refused_by_name(
     assert not decision.allowed
     assert construct in decision.unlisted_constructs
     assert f"not on the {sql_policy._sqlglot_dialect(dialect)} list" in decision.summary()
+
+
+def test_a_tsql_derived_table_may_still_name_its_columns() -> None:
+    """Only a table's alias is read as a hint; a subquery's column list is not one."""
+    assert evaluate("SELECT v.x FROM (SELECT 1 AS a) AS v(x)", "tsql").allowed
+    refused = evaluate("SELECT SUM(total) FROM orders o (TABLOCKX)", "tsql")
+    assert "SQL Server reads as a table hint" in refused.summary()
+    # Elsewhere a column list on a table's alias is an ordinary rename.
+    assert evaluate("SELECT o.a FROM orders AS o(a, b)", "postgres").allowed
 
 
 def test_one_engines_clause_is_not_allowed_in_anothers_statement() -> None:
