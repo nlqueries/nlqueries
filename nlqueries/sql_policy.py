@@ -430,19 +430,49 @@ def _function_name(node: exp.Expression) -> str:
     bare ``age``. Judged by that, it would pass on the entry for the built-in
     it shadows, so the qualifier is part of the name: an entry vouches for one
     function, and a qualified call is allowed only if listed as written.
+
+    The qualifier is not always the call's parent. A suffix -- ``FILTER
+    (WHERE ...)``, ``WITHIN GROUP (...)``, ``IGNORE NULLS`` -- wraps the call
+    first, and then the qualifier lands either in a `Dot` around the wrapper
+    or, as table, schema and catalog, in a `Column` whose `this` the wrapper
+    is. So the search goes up through every node the call heads (is the
+    `this` of) until it finds one of the two. Taking a qualifier that was not
+    meant can only refuse a call; missing one allows it.
     """
-    parts = [node]
-    parent = node.parent
-    if isinstance(parent, exp.Dot) and parent.expression is node:
-        qualifier = parent.this
-        while isinstance(qualifier, exp.Dot):
-            parts.append(qualifier.expression)
-            qualifier = qualifier.this
-        parts.append(qualifier)
-    names = [part.name for part in reversed(parts)]
+    names = [*_qualifier(node), node.name]
     if not all(names):
         return ""
     return ".".join(names).lower()
+
+
+def _qualifier(node: exp.Expression) -> list[str]:
+    """The names qualifying the call *node*, outermost first, "" for one that
+    cannot be read; empty when there is no qualifier."""
+    # `object`: sqlglot types a node's parent as its base class, not Expression.
+    child: object = node
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.Dot) and parent.expression is child:
+            names = []
+            qualifier = parent.this
+            while isinstance(qualifier, exp.Dot):
+                names.append(qualifier.expression.name)
+                qualifier = qualifier.this
+            names.append(qualifier.name)
+            names.reverse()
+        elif isinstance(parent, exp.Column) and parent.this is child:
+            names = [
+                part.name
+                for part in (parent.args.get(key) for key in ("catalog", "db", "table"))
+                if part is not None
+            ]
+        elif parent.args.get("this") is child:
+            child, parent = parent, parent.parent
+            continue
+        else:
+            return []
+        return names
+    return []
 
 
 def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:

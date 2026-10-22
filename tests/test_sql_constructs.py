@@ -244,6 +244,50 @@ def test_a_qualified_call_is_judged_by_its_whole_name(
     assert f"calls unrecognised function(s): {qualified}" in decision.summary()
 
 
+@pytest.mark.parametrize(
+    ("dialect", "sql", "qualified"),
+    [
+        (
+            "postgres",
+            "SELECT some_schema.age(a, b) FILTER (WHERE a > 0) FROM t",
+            "some_schema.age",
+        ),
+        (
+            "postgres",
+            "SELECT some_schema.json_agg(a) FILTER (WHERE a IS NOT NULL) FROM t",
+            "some_schema.json_agg",
+        ),
+        (
+            "postgres",
+            "SELECT some_schema.json_agg(a) FILTER (WHERE a IS NOT NULL) OVER () FROM t",
+            "some_schema.json_agg",
+        ),
+        (
+            "postgres",
+            "SELECT some_schema.age(a, b) WITHIN GROUP (ORDER BY a) FROM t",
+            "some_schema.age",
+        ),
+        ("duckdb", "SELECT main.s.age(a) FILTER (WHERE a > 0) FROM t", "main.s.age"),
+        ("snowflake", "SELECT s.every(a) IGNORE NULLS FROM t", "s.every"),
+    ],
+)
+def test_a_suffix_does_not_hide_the_qualifier(dialect: str, sql: str, qualified: str) -> None:
+    """FILTER, WITHIN GROUP and IGNORE NULLS wrap the call before the qualifier
+    is attached, which puts it in a Column, or a Dot around the wrapper."""
+    decision = evaluate(sql, dialect)
+    assert not decision.allowed
+    assert qualified in decision.anonymous_functions
+
+
+def test_a_suffix_on_an_unqualified_call_changes_nothing() -> None:
+    for sql in (
+        "SELECT age(a, b) FILTER (WHERE a > 0) FROM t",
+        "SELECT json_agg(a) FILTER (WHERE a IS NOT NULL) OVER () FROM t",
+    ):
+        decision = evaluate(sql, "postgres")
+        assert decision.allowed, decision.summary()
+
+
 def test_a_qualified_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
     monkeypatch.setitem(
         sql_policy.ALLOWED_ANONYMOUS, "postgres", frozenset({"age", "some_schema.age"})
