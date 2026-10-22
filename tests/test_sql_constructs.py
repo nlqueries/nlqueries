@@ -150,6 +150,42 @@ def test_a_class_sqlglot_does_not_export_is_refused_not_raised() -> None:
     assert reading.unlisted == ("_Unexported",)
 
 
+def test_a_statement_too_deep_to_render_is_refused_not_raised() -> None:
+    """The parser builds a cast chain without recursing; the generator recurses."""
+    sql = "SELECT a" + "::INT" * 1000 + " FROM t"
+    decision = evaluate(sql, "postgres")
+    assert not decision.allowed
+    assert "could not be produced or parsed again" in decision.summary()
+
+
+def test_a_root_that_subclasses_select_is_still_checked_by_class() -> None:
+    """It passes the root rule's isinstance; the exact-class rule must catch it."""
+    import sqlglot
+    from sqlglot import exp
+
+    class _SelectSomehow(exp.Select):
+        pass
+
+    sql = "SELECT a FROM t"
+    tree = _SelectSomehow(**sqlglot.parse_one(sql, read="postgres").args)
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.unlisted == ("_SelectSomehow",)
+
+
+def test_set_operations_are_allowed_below_the_root_and_refused_at_it() -> None:
+    inner = (
+        "WITH kept AS (SELECT a FROM t EXCEPT SELECT a FROM u) SELECT * FROM kept",
+        "WITH kept AS (SELECT a FROM t INTERSECT SELECT a FROM u) SELECT * FROM kept",
+    )
+    for sql in inner:
+        assert evaluate(sql, "postgres").allowed
+    root = evaluate("SELECT a FROM t EXCEPT SELECT a FROM u", "postgres")
+    assert not root.allowed
+    assert "not a query" in root.summary()
+
+
 def test_an_unmodelled_aggregate_is_judged_by_name() -> None:
     """ClickHouse's combinators parse as an unmodelled aggregate class that the
     old rule, which looked only for `Anonymous`, never saw."""
@@ -183,7 +219,7 @@ def test_canonicalising_is_not_a_difference() -> None:
         ("SELECT a FROM secrets", "reads other tables"),
         ("SELECT a FROM t; SELECT 1", "parses as 2 statements"),
         ("SELECT pg_sleep(1) FROM t", "rendered form is refused"),
-        ("SELECT (", "could not be parsed again"),
+        ("SELECT (", "could not be produced or parsed again"),
         ("SELECT a FROM t UNION SELECT a FROM t", "parses as a Union"),
     ],
 )

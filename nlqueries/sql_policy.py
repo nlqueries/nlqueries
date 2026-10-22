@@ -452,7 +452,11 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
     # Classes, not names looked up in `exp`: sqlglot does not export every
     # class its parser produces under its own name (`_TimeUnit` is not), and a
     # lookup that failed would raise here rather than refuse.
-    already_named = {*forbidden, *file_readers, root_name}
+    # The root's class only when the root rule refused it: a subclass of
+    # `Select` passes that rule's isinstance, and must still be listed itself.
+    already_named = {*forbidden, *file_readers}
+    if not isinstance(tree, _ALLOWED_ROOTS):
+        already_named.add(root_name)
     unlisted = tuple(
         sorted(
             {
@@ -488,11 +492,15 @@ def _rereading_differs(tree: exp.Expression, reading: _Reading, dialect: str) ->
     changes the number of statements, the root, the tables, or whether a rule
     applies.
     """
-    rendered = _rendered(tree, dialect)
     try:
+        # Rendering inside the `try` too: sqlglot's generator recurses where its
+        # parser does not, so `a::INT::INT::...`, five hundred casts long, parses
+        # and reads cleanly and then exhausts the stack here. A statement this
+        # cannot render is one it cannot vouch for, and evaluate never raises.
+        rendered = _rendered(tree, dialect)
         again = [s for s in sqlglot.parse(rendered, read=_sqlglot_dialect(dialect)) if s]
-    except (SqlglotError, ValueError, RecursionError):
-        return ["its rendered form could not be parsed again"]
+    except Exception:  # noqa: BLE001 - RecursionError, or anything the generator raises
+        return ["its rendered form could not be produced or parsed again"]
     if len(again) != 1:
         return [f"its rendered form parses as {len(again)} statements"]
     if type(again[0]) is not type(tree):

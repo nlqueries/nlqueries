@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from nlqueries.sql_policy import evaluate
 
-from tests.sql_corpus import CORPUS, FIXTURE_COLUMNS, FIXTURE_ROWS, policy_tables
+from tests.sql_corpus import CORPUS, FIXTURE_COLUMNS, FIXTURE_ROWS, cte_names, policy_tables
 
 
 def _load(conn: Any) -> None:
@@ -58,6 +58,8 @@ def test_sqlite_runs_the_corpus_and_reads_only_what_the_policy_saw(
     finally:
         conn.close()
 
+    # A CTE SQLite materialises is reported under its own name; it is not a table.
+    read -= cte_names(sql, "sqlite")
     assert rows
     assert read
     assert read <= policy_tables(sql, "sqlite")

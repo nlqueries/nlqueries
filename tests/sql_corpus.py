@@ -18,6 +18,8 @@ as to the parser.
 from __future__ import annotations
 
 POSTGRES = [
+    "WITH kept AS (SELECT customer_id FROM orders EXCEPT SELECT customer_id FROM orders "
+    "WHERE status = 'refunded') SELECT COUNT(*) FROM kept",
     "SELECT created_at AT TIME ZONE 'UTC' AS utc, COUNT(*) FROM orders GROUP BY 1",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
@@ -178,6 +180,8 @@ BIGQUERY = [
 ]
 
 DUCKDB = [
+    "WITH kept AS (SELECT customer_id FROM orders EXCEPT SELECT customer_id FROM orders "
+    "WHERE status = 'refunded') SELECT COUNT(*) FROM kept",
     "SELECT created_at AT TIME ZONE 'UTC' AS utc FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
@@ -208,6 +212,9 @@ DUCKDB = [
 ]
 
 SQLITE = [
+    "WITH both_years AS (SELECT customer_id FROM orders WHERE created_at < '2025-01-01' "
+    "INTERSECT SELECT customer_id FROM orders WHERE created_at >= '2025-01-01') "
+    "SELECT COUNT(*) FROM both_years",
     "SELECT datetime(created_at, '+02:00') AS local_time FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
@@ -352,6 +359,14 @@ FIXTURE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("unit_price", "NUMERIC"),
     ],
 }
+
+
+def cte_names(sql: str, dialect: str) -> set[str]:
+    """The names *sql*'s CTEs define, which an engine may report as read."""
+    import sqlglot  # noqa: PLC0415
+    from sqlglot import exp  # noqa: PLC0415
+
+    return {cte.alias_or_name for cte in sqlglot.parse_one(sql, read=dialect).find_all(exp.CTE)}
 
 
 def policy_tables(sql: str, dialect: str) -> set[str]:

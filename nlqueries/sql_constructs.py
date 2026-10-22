@@ -32,7 +32,8 @@ from sqlglot import exp
 READ_STRUCTURE: frozenset[str] = frozenset(
     {
         # statements and clauses
-        "Select", "Union", "Subquery", "With", "CTE", "From", "Join", "Where",
+        "Select", "Union", "Except", "Intersect", "Subquery", "With", "CTE", "From",
+        "Join", "Where",
         "Group", "Having", "Order", "Ordered", "Limit", "Offset", "Fetch",
         "LimitOptions", "Distinct", "Window", "WindowSpec", "Filter",
         "WithinGroup", "IgnoreNulls", "RespectNulls", "Rollup", "Cube",
