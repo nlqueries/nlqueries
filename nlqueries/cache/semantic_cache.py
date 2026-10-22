@@ -52,6 +52,7 @@ import sqlglot
 from sqlglot import exp
 
 from nlqueries import config
+from nlqueries.at_rest import CACHE_ANSWER, seal, unseal
 from nlqueries.cache.envelope import (
     SIGNATURE_KEY,
     VERSION_KEY,
@@ -1018,11 +1019,18 @@ class SemanticCache:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _payload_to_entry(self, payload: dict[str, Any]) -> CacheEntry | None:
+    def _payload_to_entry(
+        self, payload: dict[str, Any], *, unreadable_answer: str | None = None
+    ) -> CacheEntry | None:
         """Deserialize a ``CacheEntry`` from *payload*, checking signature and TTL.
 
         Returns ``None`` when the entry does not verify, has expired, or the
         timestamp is missing or unparseable.
+
+        An encrypted answer that cannot be decrypted (see :mod:`nlqueries.at_rest`)
+        makes the entry ``None`` too, a miss, unless *unreadable_answer* is
+        given to stand in for it, which is how :meth:`list_entries` still shows
+        the entry.
 
         Does not verify the signature. Verification belongs to the read path
         that feeds execution -- see :meth:`_verified_entry` -- so that
@@ -1038,11 +1046,16 @@ class SemanticCache:
             return None
         if datetime.now(UTC) - created_at > timedelta(hours=self._ttl_hours):
             return None
+        answer = unseal(str(payload.get("answer", "")), CACHE_ANSWER)
+        if answer is None:
+            if unreadable_answer is None:
+                return None
+            answer = unreadable_answer
         return CacheEntry(
             question=str(payload.get("question", "")),
             resolved_question=str(payload.get("resolved_question", "")),
             agent_type=str(payload.get("agent_type", "")),
-            answer=str(payload.get("answer", "")),
+            answer=answer,
             sql=payload.get("sql") or None,
             created_at=created_at,
             hit_count=_hit_count_of(payload),
@@ -1429,7 +1442,8 @@ class SemanticCache:
             "question": question,
             "resolved_question": result.resolved_question,
             "agent_type": result.agent_type,
-            "answer": result.answer,
+            # Sealed before signing, so the signature covers what is stored.
+            "answer": seal(result.answer, CACHE_ANSWER),
             "sql": result.sql,
             "created_at": datetime.now(UTC).isoformat(),
             "hit_count": 0,
@@ -1463,7 +1477,7 @@ class SemanticCache:
                             "question": masked,
                             "resolved_question": result.resolved_question,
                             "agent_type": result.agent_type,
-                            "answer": result.answer,
+                            "answer": seal(result.answer, CACHE_ANSWER),
                             "sql": template_sql,
                             "created_at": datetime.now(UTC).isoformat(),
                             "hit_count": 0,
@@ -1533,7 +1547,9 @@ class SemanticCache:
         entries: list[CacheEntry] = []
         for record in records:
             payload = record.payload or {}
-            entry = self._payload_to_entry(payload)
+            entry = self._payload_to_entry(
+                payload, unreadable_answer="(encrypted; not readable with the current key)"
+            )
             if entry is not None:
                 entries.append(entry)
 
