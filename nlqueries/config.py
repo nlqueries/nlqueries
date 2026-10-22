@@ -697,7 +697,7 @@ def _positive_float(name: str, default: float) -> float:
 
 
 MAX_DOCUMENT_EXPANDED_BYTES: int = _positive_int(
-    "NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 400 * 1024 * 1024
+    "NLQ_MAX_DOCUMENT_EXPANDED_BYTES", 128 * 1024 * 1024
 )
 """Largest total uncompressed size permitted in a zip-based document (.xlsx, .docx).
 
@@ -707,8 +707,17 @@ expanded size, not the size on disk. Measured on ordinary content: 200k rows by
 10 columns is 5.2 MiB on disk and 108.8 MiB expanded; 300k rows of repeated text
 is 7.1 MiB and 231.2 MiB.
 
-400 MiB sits above both and well below what an unbounded expansion costs. Raise
-it knowingly for genuinely larger documents; the point is that a ceiling exists.
+128 MiB passes the first and refuses the second, which :data:`MAX_DOCUMENT_ROWS`
+would stop reading at 50,000 rows anyway. It was 400 MiB. The cost that matters
+is parsing, measured through the Word connector under ``RLIMIT_AS``: a ``.docx``
+whose ``document.xml`` expands to 250 MiB of ordinary paragraphs peaked at about
+2 GiB, and one of 127 MiB at about 1 GiB, while one of 250 MiB of one-word
+paragraphs did not fit in 4 GiB. So at 128 MiB an ordinary document fits within
+:data:`DOCUMENT_PARSE_MEMORY_BYTES`, and a pathological one is stopped by that
+limit. This check reads only the zip directory, so refusing here costs nothing,
+where refusing at the memory limit costs a child process that much memory first.
+Raise it knowingly for genuinely larger documents, together with that limit;
+the point is that a ceiling exists.
 """
 
 MAX_DOCUMENT_EXPANSION_RATIO: int = _positive_int("NLQ_MAX_DOCUMENT_EXPANSION_RATIO", 100)
@@ -752,6 +761,44 @@ batches -- so it bounds a long document rather than interrupting a single slow
 page. It is a ceiling on ingestion, not a latency target: ingestion is a
 background task, and the failure it prevents is a worker held for minutes by one
 upload.
+"""
+
+_document_parse_isolation = os.getenv("NLQ_DOCUMENT_PARSE_ISOLATION", "true").strip().lower()
+DOCUMENT_PARSE_ISOLATION: bool = _document_parse_isolation not in ("0", "false", "no", "off")
+"""Whether PDF, Word and Excel documents are parsed in a child process.
+
+On by default. The parsers are third-party code reading untrusted files, and
+:data:`MAX_EXTRACTION_SECONDS` is checked only between pages, paragraphs and
+rows, so a parser stuck inside one of them, or one that allocates without
+bound, held the process that asked. In a child process it is killed at the
+deadline and runs under :data:`DOCUMENT_PARSE_MEMORY_BYTES`, and on POSIX under
+:data:`DOCUMENT_PARSE_CPU_SECONDS` too. Turn it off only where starting a process
+per document is not possible; the in-process limits still apply.
+"""
+
+DOCUMENT_PARSE_MEMORY_BYTES: int = _positive_int(
+    "NLQ_DOCUMENT_PARSE_MEMORY_BYTES", 2 * 1024 * 1024 * 1024
+)
+"""Memory limit for the child that parses a document.
+
+``RLIMIT_AS`` on POSIX, which counts virtual memory, the interpreter and its
+libraries included; on Windows a Job Object's process memory limit, which counts
+committed memory. An ordinary document at :data:`MAX_DOCUMENT_EXPANDED_BYTES`
+needs about half of it (see there). A document that exceeds it is refused as too
+complex.
+
+A container's memory limit is a cgroup, not an rlimit, so it is not the lower
+hard limit the child keeps; when it is reached first, the kernel kills the
+child, which is reported as an extraction timeout: the limit is the whole
+container's, so the document may not be the cause, and a caller may retry.
+"""
+
+DOCUMENT_PARSE_CPU_SECONDS: int = _positive_int("NLQ_DOCUMENT_PARSE_CPU_SECONDS", 180)
+"""CPU-time limit (``RLIMIT_CPU``) for the child that parses a document, on POSIX.
+
+Above :data:`MAX_EXTRACTION_SECONDS`, which is wall time and normally ends a
+slow parse first; this catches CPU spent where the wall-clock check cannot see
+it. Not applied on Windows, where the wall-clock deadline is the only limit.
 """
 
 MAX_PDF_BYTES: int = _positive_int("NLQ_MAX_PDF_BYTES", 100 * 1024 * 1024)
