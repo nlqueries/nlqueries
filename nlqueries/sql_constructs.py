@@ -37,7 +37,7 @@ READ_STRUCTURE: frozenset[str] = frozenset(
         "Group", "Having", "Order", "Ordered", "Limit", "Offset", "Fetch",
         "LimitOptions", "Distinct", "Window", "WindowSpec", "Filter",
         "WithinGroup", "IgnoreNulls", "RespectNulls", "Rollup", "Cube",
-        "GroupingSets", "Pivot", "PivotAlias", "Values", "Lambda",
+        "GroupingSets", "Pivot", "PivotAlias", "Values", "Lambda", "TableSample",
         # names and values
         "Table", "TableAlias", "Alias", "Column", "Identifier", "Star",
         "Literal", "Null", "Boolean", "Var", "National", "HexString",
@@ -120,9 +120,10 @@ DIALECT_STRUCTURE: dict[str, frozenset[str]] = {
     "postgres": frozenset({"Lateral"}),
     "redshift": frozenset(),
     "mysql": frozenset({"Lateral"}),
-    # No table hints: `WITH (TABLOCKX)` or `(UPDLOCK)` takes the lock that
-    # `FOR UPDATE` is refused for, and its hint names parse as any word.
-    "tsql": frozenset(),
+    # CROSS and OUTER APPLY parse as Lateral. No table hints: `WITH (TABLOCKX)`
+    # or `(UPDLOCK)` takes the lock `FOR UPDATE` is refused for, and its hint
+    # names parse as any word.
+    "tsql": frozenset({"Lateral"}),
     "snowflake": frozenset({"Qualify", "Lateral", "Kwarg"}),
     "bigquery": frozenset({"Qualify"}),
     "duckdb": frozenset({"Qualify", "Lateral", "Kwarg"}),

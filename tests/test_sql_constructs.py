@@ -239,11 +239,15 @@ def test_a_statement_whose_rendering_reads_differently_is_refused(
 
 
 def test_the_rendered_form_is_not_consulted_for_a_statement_already_refused(monkeypatch) -> None:
-    def fail(tree, dialect):
-        raise AssertionError("rendered")
+    """Recorded, not raised: anything raised while rendering is now a refusal."""
+    rendered: list[object] = []
+    monkeypatch.setattr(sql_policy, "_rendered", lambda tree, dialect: rendered.append(tree) or "")
 
-    monkeypatch.setattr(sql_policy, "_rendered", fail)
-    assert not evaluate("SELECT pg_sleep(1)", "postgres").allowed
+    decision = evaluate("SELECT pg_sleep(1)", "postgres")
+
+    assert not decision.allowed
+    assert rendered == []
+    assert decision.reasons == ("calls unrecognised function(s): pg_sleep",)
 
 
 # --- the report -------------------------------------------------------------------

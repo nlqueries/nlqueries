@@ -18,6 +18,7 @@ as to the parser.
 from __future__ import annotations
 
 POSTGRES = [
+    "SELECT COUNT(*) FROM orders TABLESAMPLE SYSTEM (50)",
     "WITH kept AS (SELECT customer_id FROM orders EXCEPT SELECT customer_id FROM orders "
     "WHERE status = 'refunded') SELECT COUNT(*) FROM kept",
     "SELECT created_at AT TIME ZONE 'UTC' AS utc, COUNT(*) FROM orders GROUP BY 1",
@@ -93,6 +94,11 @@ MYSQL = [
 ]
 
 TSQL = [
+    "SELECT c.name, o.total FROM customers c CROSS APPLY (SELECT TOP 1 total FROM orders o "
+    "WHERE o.customer_id = c.id ORDER BY o.created_at DESC) AS o",
+    "SELECT c.name, o.total FROM customers c OUTER APPLY (SELECT TOP 1 total FROM orders o "
+    "WHERE o.customer_id = c.id) AS o",
+    "SELECT COUNT(*) FROM orders TABLESAMPLE (50 PERCENT)",
     "SELECT created_at AT TIME ZONE 'UTC' AS utc FROM orders",
     "SELECT TOP 10 c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC",
@@ -126,6 +132,7 @@ TSQL = [
 ]
 
 SNOWFLAKE = [
+    "SELECT COUNT(*) FROM orders SAMPLE (50)",
     "SELECT CONVERT_TIMEZONE('UTC', 'Europe/Berlin', created_at) FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
@@ -152,6 +159,7 @@ SNOWFLAKE = [
 ]
 
 BIGQUERY = [
+    "SELECT COUNT(*) FROM `shop.orders` TABLESAMPLE SYSTEM (50 PERCENT)",
     "SELECT DATETIME(created_at, 'Europe/Berlin') FROM `shop.orders`",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM `shop.customers` c "
     "JOIN `shop.orders` o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
@@ -180,6 +188,7 @@ BIGQUERY = [
 ]
 
 DUCKDB = [
+    "SELECT COUNT(*) FROM orders USING SAMPLE 50 PERCENT (bernoulli)",
     "WITH kept AS (SELECT customer_id FROM orders EXCEPT SELECT customer_id FROM orders "
     "WHERE status = 'refunded') SELECT COUNT(*) FROM kept",
     "SELECT created_at AT TIME ZONE 'UTC' AS utc FROM orders",
