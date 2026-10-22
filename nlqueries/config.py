@@ -74,6 +74,23 @@ mismatch the collection -- so :mod:`nlqueries.embeddings.embedder` checks the
 loaded model against this and refuses rather than writing them.
 """
 
+# The embedding daemon's request limits. Declared here, as EMBED_MODEL and
+# EMBED_DIMENSIONS are, because the daemon enforces them and the client sizes
+# its requests to them, and the client should not have to import the daemon --
+# and with it an HTTP server -- to learn three numbers.
+
+EMBED_MAX_BATCH_TEXTS: int = 512
+"""The most texts one embedding request may carry."""
+
+EMBED_MAX_BATCH_CHARS: int = 2_000_000
+"""The most characters one embedding request may carry, across all its texts.
+
+Encoding cost grows with the text, so a count alone does not bound the work a
+single request can ask for."""
+
+EMBED_MAX_BODY_BYTES: int = 10 * 1024 * 1024
+"""The largest embedding request body the daemon reads, in bytes."""
+
 # ---------------------------------------------------------------------------
 # Vector store
 # ---------------------------------------------------------------------------
@@ -916,7 +933,20 @@ def _optional_positive_int(name: str) -> int | None:
     return value
 
 
-BIGQUERY_MAX_BYTES_BILLED: int | None = _optional_positive_int("BIGQUERY_MAX_BYTES_BILLED")
+#: Why ``BIGQUERY_MAX_BYTES_BILLED`` could not be read, or None. Recorded
+#: rather than raised: raised here, a typo in the setting stopped every command
+#: at import, ``health`` and ``doctor`` included, with a traceback. The BigQuery
+#: connector refuses to run a query while this is set, so the cap still never
+#: quietly disappears.
+BIGQUERY_MAX_BYTES_BILLED_ERROR: str | None = None
+try:
+    BIGQUERY_MAX_BYTES_BILLED: int | None = _optional_positive_int("BIGQUERY_MAX_BYTES_BILLED")
+except ValueError as _exc:
+    BIGQUERY_MAX_BYTES_BILLED = None
+    BIGQUERY_MAX_BYTES_BILLED_ERROR = str(_exc)
+    logging.getLogger(__name__).warning(
+        "%s; every BigQuery query is refused until it is fixed.", BIGQUERY_MAX_BYTES_BILLED_ERROR
+    )
 """Most bytes one BigQuery query job may bill, or None for no cap.
 
 Set on every job the BigQuery connector runs as ``maximum_bytes_billed``.

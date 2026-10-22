@@ -42,10 +42,6 @@ def _docker_available() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _docker_available(), reason="Docker is not available in this environment"
-)
-
 #: The least-privilege login, built from docs/database-hardening.md. Every
 #: statement here is one the guide tells an operator to run, so the lab and the
 #: documentation cannot drift apart without a test noticing.
@@ -83,9 +79,17 @@ _LAB_SETUP = (
 
 @pytest.fixture(scope="session")
 def lab_postgres() -> Iterator[PostgresContainer]:
-    """A scratch PostgreSQL, torn down with the session."""
-    container = PostgresContainer("postgres:16-alpine")
+    """A scratch PostgreSQL, torn down with the session.
+
+    Skips, rather than errors, every test that needs it when Docker is not
+    there. The check is here because a ``pytestmark`` in a conftest applies to
+    nothing, and ``PostgresContainer`` raises while being *constructed* when it
+    cannot reach Docker, before ``start`` is called.
+    """
+    if not _docker_available():
+        pytest.skip("Docker is not available in this environment")
     try:
+        container = PostgresContainer("postgres:16-alpine")
         container.start()
     except Exception as exc:  # pragma: no cover - environment dependent
         pytest.skip(f"could not start the lab database: {exc}")

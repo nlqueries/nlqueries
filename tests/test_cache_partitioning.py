@@ -896,3 +896,16 @@ def test_tier0_refuses_an_entry_stored_under_another_question() -> None:
     assert entry is None, (
         f"Tier 0 answered {victim!r} with an entry stored for {stolen['question']!r}"
     )
+
+
+def test_the_answer_id_is_pinned_so_a_normalisation_change_bumps_its_version() -> None:
+    """If this fails, `_normalize_question` (or the id derivation) has changed:
+    bump `_NORMALIZATION_VERSION` in `semantic_cache` and update these values.
+
+    The version is what stops an id written under the old normalisation from
+    being the id a different question now normalises to, and it only works if
+    it changes whenever the normalisation does. Nothing else would notice."""
+    assert _answer_point_id("Orders with total > 100") == 1998643806087251635
+    assert _answer_point_id("Orders with total > 100", {"conversation": "abc"}) == (
+        13205178090084102471
+    )

@@ -29,7 +29,6 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, cast
 
 from nlqueries import config
-from nlqueries.embeddings.embed_server import MAX_BATCH_CHARS, MAX_BATCH_TEXTS, MAX_BODY_BYTES
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -310,9 +309,9 @@ def _daemon_parts(texts: list[str]) -> Iterator[list[str]]:
         # text needs none, so a part comes out a byte under its budget at worst.
         size = len(_daemon_body(text)) + 1
         if part and (
-            len(part) == MAX_BATCH_TEXTS
-            or chars + len(text) > MAX_BATCH_CHARS
-            or body + size > MAX_BODY_BYTES
+            len(part) == config.EMBED_MAX_BATCH_TEXTS
+            or chars + len(text) > config.EMBED_MAX_BATCH_CHARS
+            or body + size > config.EMBED_MAX_BODY_BYTES
         ):
             yield part
             part, chars, body = [], 0, _BATCH_ENVELOPE_BYTES

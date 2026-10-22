@@ -293,7 +293,18 @@ async def query(
         return _agent_not_found(agent_id)
     except Exception as exc:  # noqa: BLE001
         reference = _reference()
-        _log.exception("MCP query tool error for agent %r [ref %s]", agent_id, reference)
+        # The first line at ERROR, the traceback at DEBUG under the same
+        # reference: as for a failed statement below, the lines after a
+        # driver's first are where it quotes what it was sent, a connection
+        # string included, and a log usually reaches more people than
+        # connectors.yaml.
+        _log.error(
+            "MCP query tool error for agent %r [ref %s]: %s",
+            agent_id,
+            reference,
+            short_cause(exc),
+        )
+        _log.debug("MCP query tool error [ref %s], in full:", reference, exc_info=True)
         return f"Query failed: {short_cause(exc)} (reference {reference})"
 
     parts: list[str] = [result.answer]
