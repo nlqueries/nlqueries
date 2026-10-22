@@ -21,12 +21,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   bound, held the process that asked. Now the parse runs in a child that is
   killed at the extraction deadline (plus 15 seconds to start) and runs under
   a memory limit (`NLQ_DOCUMENT_PARSE_MEMORY_BYTES`, 2 GiB: an address-space
-  limit on Linux and macOS, a Job Object on Windows), and on Linux and macOS a
-  CPU-time limit (`NLQ_DOCUMENT_PARSE_CPU_SECONDS`, 180). Running out of memory
+  limit on Linux and macOS, a Job Object on Windows) and a CPU-time limit
+  (`NLQ_DOCUMENT_PARSE_CPU_SECONDS`, 180: `RLIMIT_CPU` on Linux and macOS, the
+  Job Object on Windows). Running out of memory
   raises `DocumentTooComplexError`, including when the XML parser reports it as
   a parse error; the deadline or the CPU limit raises
-  `DocumentExtractionTimeout`, as before. `NLQ_DOCUMENT_PARSE_ISOLATION=false`
-  parses in process, as before.
+  `DocumentExtractionTimeout`, as before. A child whose caller dies without
+  stopping it stops itself at the same deadline, and what the parser starts
+  ends with the parse. On Linux and macOS the child leads a session of its
+  own, so a signal sent to the caller's process group (a supervisor's
+  `kill -TERM -<pgid>`, a hang-up) no longer reaches it: it runs on until that
+  deadline. `NLQ_DOCUMENT_PARSE_ISOLATION=false` parses in process, as before.
 - **`nlqueries health` reports over-privileged logins for MySQL, SQL Server
   and Snowflake.** The identity line the PostgreSQL connector already gave is
   now printed for MySQL and MariaDB (through the `sqlalchemy` connector, from

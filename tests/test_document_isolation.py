@@ -32,7 +32,8 @@ from tests import _fake_parsers as fake
 
 ROOT = Path(__file__).resolve().parents[1]
 _POSIX = sys.platform != "win32"
-posix_only = pytest.mark.skipif(not _POSIX, reason="Windows has no CPU-time limit")
+posix_only = pytest.mark.skipif(not _POSIX, reason="POSIX signals")
+windows_only = pytest.mark.skipif(_POSIX, reason="the Job Object")
 rlimits_only = pytest.mark.skipif(not _POSIX, reason="resource limits are POSIX-only")
 
 
@@ -82,12 +83,13 @@ def test_a_parser_that_allocates_without_bound_is_refused(source, monkeypatch) -
         fake.Allocates().ingest(source, "s1")
 
 
-@posix_only
-def test_a_parser_that_spins_is_stopped_by_its_cpu_limit(source, monkeypatch) -> None:
+@pytest.mark.parametrize("parser", [fake.Spins, fake.HoldsTheGil], ids=["spins", "holds-the-gil"])
+def test_a_parser_that_spins_is_stopped_by_its_cpu_limit(source, monkeypatch, parser) -> None:
+    """``RLIMIT_CPU`` on POSIX, the Job Object on Windows: neither needs the GIL."""
     monkeypatch.setattr(config, "DOCUMENT_PARSE_CPU_SECONDS", 1)
 
     with pytest.raises(DocumentExtractionTimeout, match="1s of CPU time"):
-        fake.Spins().ingest(source, "s1")
+        parser().ingest(source, "s1")
 
 
 def test_lxml_running_out_of_memory_is_a_memory_refusal(source) -> None:
@@ -241,10 +243,11 @@ def test_a_process_left_holding_stderr_does_not_hold_the_caller(source) -> None:
     import signal
 
     started = time.monotonic()
-    (chunk,) = fake.LeavesAGrandchild().ingest(source, "s1")
+    # One that left the child's process group, so the group kill does not end
+    # it: it inherits descriptor 2 and, on POSIX, holds the pipe for its 60
+    # seconds, which leaves the bounded drain the only thing that lets go.
+    (chunk,) = fake.LeavesAnEscapedGrandchild().ingest(source, "s1")
     try:
-        # The drain waits are bounded. On POSIX the grandchild inherits
-        # descriptor 2 and holds the pipe for its 60 seconds.
         assert time.monotonic() - started < 40
     finally:
         with contextlib.suppress(OSError):  # gone already, or not ours to stop
@@ -271,6 +274,232 @@ def test_a_child_killed_by_the_system_is_a_retryable_timeout(source) -> None:
     retry, and still a DocumentTooComplexError to those catching the parent."""
     with pytest.raises(DocumentExtractionTimeout, match="killed by the system"):
         fake.KilledBySystem().ingest(source, "s1")
+
+
+def _gone(pid: int, within: float = 15.0) -> bool:
+    """Whether *pid* has ended, a zombie counted as ended.
+
+    The grandchild is reparented when the parse child exits, and is reaped by
+    whatever is PID 1 -- which in a container may be pytest, which does not --
+    so killed, it can stay a zombie, and `kill(pid, 0)` still succeeds on that.
+    """
+    from nlqueries.embeddings.embed_server import is_pid_alive
+
+    def zombie() -> bool:
+        try:
+            with open(f"/proc/{pid}/stat", encoding="ascii") as stat:
+                return stat.read().rsplit(")", 1)[1].split()[0] == "Z"
+        except OSError:
+            return False
+
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        if not is_pid_alive(pid) or zombie():
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def test_what_the_parser_starts_ends_when_the_parse_does(source) -> None:
+    """The limits are per process: a grandchild would keep its own budget."""
+    import os
+    import signal
+
+    (chunk,) = fake.LeavesAGrandchild().ingest(source, "s1")
+    pid = int(chunk.text)
+    try:
+        assert _gone(pid)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
+def test_what_the_parser_starts_ends_when_the_parse_is_stopped(source, monkeypatch) -> None:
+    import os
+    import signal
+
+    monkeypatch.setattr(_limits, "MAX_SECONDS", 2.0)
+    monkeypatch.setattr(_isolation, "CHILD_START_SECONDS", 8.0)
+
+    with pytest.raises(DocumentExtractionTimeout):
+        fake.StartsAGrandchildThenHangs().ingest(source, "s1")
+
+    pid = int(source.with_suffix(".pid").read_text())
+    try:
+        assert _gone(pid)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
+def test_the_child_stops_itself_when_its_parent_does_not(source) -> None:
+    """Run as a parent that died would leave it: nothing here kills it."""
+    import os
+    import pickle
+
+    payload = {
+        "connector": "tests._fake_parsers:Hangs",
+        "source": str(source),
+        "source_id": "s1",
+        "limits": {},
+        "memory_bytes": 1024 * 1024 * 1024,
+        "cpu_seconds": 120,
+        "deadline_seconds": 3.0,
+    }
+    started = time.monotonic()
+    ran = subprocess.run(
+        [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
+        input=pickle.dumps(payload),
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+        check=False,
+    )
+    assert ran.returncode == _isolation.WATCHDOG_EXIT_CODE
+    assert time.monotonic() - started < 30
+
+
+@pytest.mark.skipif(not _POSIX, reason="the Job Object covers this on Windows")
+def test_the_watchdog_takes_what_the_parser_started_with_it(source) -> None:
+    """With no parent left to kill the group, the watchdog does."""
+    import os
+    import pickle
+    import signal
+
+    payload = {
+        "connector": "tests._fake_parsers:StartsAGrandchildThenHangs",
+        "source": str(source),
+        "source_id": "s1",
+        "limits": {},
+        "memory_bytes": 1024 * 1024 * 1024,
+        "cpu_seconds": 120,
+        "deadline_seconds": 3.0,
+    }
+    # As the parent starts it, leading a session of its own.
+    ran = subprocess.run(
+        [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
+        input=pickle.dumps(payload),
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+        check=False,
+        start_new_session=True,
+    )
+    assert ran.returncode == -signal.SIGKILL  # the group, this process with it
+    assert _isolation.WATCHDOG_MARKER.strip() in ran.stderr
+    assert "stopped itself" in str(_isolation._death("doc.pdf", ran.returncode, ran.stderr))
+    pid = int(source.with_suffix(".pid").read_text())
+    try:
+        assert _gone(pid)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
+def _run_child(source, connector: str, *, cpu_seconds: int, deadline: float, **popen):
+    """The child as a dead parent would leave it: nothing here kills it."""
+    import os
+    import pickle
+
+    payload = {
+        "connector": connector,
+        "source": str(source),
+        "source_id": "s1",
+        "limits": {},
+        "memory_bytes": 1024 * 1024 * 1024,
+        "cpu_seconds": cpu_seconds,
+        "deadline_seconds": deadline,
+    }
+    return subprocess.run(
+        [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
+        input=pickle.dumps(payload),
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+        check=False,
+        **popen,
+    )
+
+
+@posix_only
+def test_the_backstop_ends_a_child_whose_watchdog_cannot_run(source) -> None:
+    """The parser holds the GIL, so the watchdog never runs; SIGALRM needs no GIL.
+    The CPU limit is set out of reach, so it is the alarm that ends it."""
+    import signal
+
+    started = time.monotonic()
+    ran = _run_child(source, "tests._fake_parsers:HoldsTheGil", cpu_seconds=120, deadline=2.0)
+
+    assert ran.returncode == -signal.SIGALRM
+    assert time.monotonic() - started < 30
+    error = _isolation._death("doc.pdf", ran.returncode, ran.stderr)
+    assert "stopped itself" in str(error)
+
+
+@windows_only
+def test_the_cpu_limit_ends_a_child_whose_watchdog_cannot_run(source) -> None:
+    """Windows has no SIGALRM; the Job Object's CPU-time limit needs no GIL."""
+    started = time.monotonic()
+    ran = _run_child(source, "tests._fake_parsers:HoldsTheGil", cpu_seconds=2, deadline=60.0)
+
+    assert ran.returncode == _isolation._STATUS_QUOTA_EXCEEDED
+    assert time.monotonic() - started < 30
+
+
+def test_the_parent_hands_the_child_its_deadline(source, monkeypatch) -> None:
+    """Every other watchdog test builds its own payload; this one reads the one
+    the real parent sends."""
+    import pickle
+
+    class _Sent(Exception):
+        pass
+
+    sent: list[dict] = []
+
+    def capture(child, payload: bytes) -> None:
+        sent.append(pickle.loads(payload))
+        raise _Sent
+
+    monkeypatch.setattr(_isolation, "_send", capture)
+
+    with pytest.raises(_Sent):
+        fake.Returns().ingest(source, "s1")
+
+    (payload,) = sent
+    expected = float(_limits.MAX_SECONDS) + _isolation.CHILD_START_SECONDS
+    assert payload["deadline_seconds"] == expected
+
+
+def test_a_child_its_watchdog_stopped_is_a_timeout() -> None:
+    error = _isolation._death("doc.pdf", _isolation.WATCHDOG_EXIT_CODE, b"")
+    assert isinstance(error, DocumentExtractionTimeout)
+    assert "stopped itself" in str(error)
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("signal_name", "stderr", "said"),
+    [
+        ("SIGALRM", b"", "stopped itself"),
+        ("SIGKILL", b"pdfminer warning\n" + _isolation.WATCHDOG_MARKER, "stopped itself"),
+        ("SIGKILL", b"pdfminer warning\n", "container's memory limit"),
+        ("SIGXCPU", b"", "of CPU time"),
+    ],
+    ids=["backstop", "watchdog-group-kill", "oom-killer", "cpu-limit"],
+)
+def test_how_a_child_ended_by_a_signal_is_reported(signal_name, stderr, said) -> None:
+    import signal
+
+    error = _isolation._death("doc.pdf", -int(getattr(signal, signal_name)), stderr)
+
+    assert isinstance(error, DocumentExtractionTimeout)
+    assert said in str(error)
+
+
+def test_a_child_past_its_job_cpu_limit_is_a_cpu_timeout() -> None:
+    error = _isolation._death("doc.pdf", _isolation._STATUS_QUOTA_EXCEEDED, b"")
+    assert isinstance(error, DocumentExtractionTimeout)
+    assert "of CPU time" in str(error)
 
 
 def test_a_child_that_dies_is_reported_by_its_last_line(source) -> None:
