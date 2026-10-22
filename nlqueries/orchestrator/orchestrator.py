@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from nlqueries import config
-from nlqueries.embeddings.qdrant_store import agent_collection_to_read
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
@@ -327,9 +326,7 @@ class Orchestrator:
             span.set_attribute("dialect", dialect)
 
             kb = self._load_knowledge_base(agent_id)
-            collection = await asyncio.to_thread(
-                agent_collection_to_read, "agent_", agent_id, "_schema"
-            )
+            collection = f"agent_{agent_id}_schema"
             prompt = await assemble_prompt_async(
                 question,
                 kb,

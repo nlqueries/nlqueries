@@ -105,11 +105,13 @@ class TestTheKnowledgeBase:
         ],
     )
     def test_an_existing_knowledge_base_is_still_loaded(
-        self, agent_id: str, file_name: str
+        self, agent_id: str, file_name: str, tmp_path, monkeypatch
     ) -> None:
         from nlqueries.orchestrator.orchestrator import Orchestrator
 
-        config.KB_PATH.mkdir(parents=True, exist_ok=True)
+        # A directory of its own: the shared KB_PATH is what the MCP server
+        # lists agents from, so files left there show up in later tests.
+        monkeypatch.setattr(config, "KB_PATH", tmp_path)
         (config.KB_PATH / file_name).write_text(
             yaml.safe_dump({"meta": {"marker": file_name}}), encoding="utf-8"
         )
@@ -193,7 +195,11 @@ class TestWhereTheNamesAreUsed:
 
         assert seen == ["doc_pg_h_db_chunks"]
 
-    def test_the_sql_agent_reads_its_schema_collection_by_storage_name(self) -> None:
+    def test_the_sql_agent_keeps_the_raw_id_in_its_schema_collection(self) -> None:
+        """Deliberately unchanged: `_search_verified` takes the agent ID back out
+        of this name and filters the verified examples on it, and
+        `promote-feedback` stores them under the ID as given. A storage name
+        here would hand it `pg_h_db` and match no promoted example."""
         from nlqueries.orchestrator import orchestrator as orch_module
 
         seen: list[str] = []
@@ -210,16 +216,62 @@ class TestWhereTheNamesAreUsed:
             async for _ in orchestrator.handle_question("q", "pg:h:db", dialect="postgres"):
                 pass
 
-        client = _client_with("agent_pg_h_db_schema")
         with (
             patch.object(orch_module.Orchestrator, "_load_knowledge_base", return_value={}),
             patch.object(orch_module, "assemble_prompt_async", assemble),
-            patch.object(qdrant_store, "_get_client", return_value=client),
             pytest.raises(_Stop),
         ):
             asyncio.run(drain())
 
-        assert seen == ["agent_pg_h_db_schema"]
+        assert seen == ["agent_pg:h:db_schema"]
+
+    def test_the_hybrid_merge_records_the_collection_read_without_asking_again(self) -> None:
+        """`_merge_hybrid` runs on the event loop; the collection `_run_hybrid`
+        resolved is passed in rather than resolved again with a Qdrant call."""
+        from nlqueries.orchestrator import multi_agent_orchestrator as mao
+        from nlqueries.orchestrator.document_retrieval import Citation
+
+        client = _client_with("doc_pg:h:db_chunks")
+        citation = Citation(
+            chunk_id="c",
+            source_name="Doc",
+            page_number=None,
+            chunk_index=0,
+            excerpt="x",
+            relevance_score=1.0,
+        )
+        passed: list[Any] = []
+
+        def merge_results(question: str, **kwargs: Any) -> Any:
+            passed.append(kwargs["document_result"])
+            return "merged"
+
+        with (
+            patch.object(qdrant_store, "_get_client", return_value=client),
+            patch.object(mao, "merge_results", merge_results),
+        ):
+            mao._merge_hybrid("q", "pg:h:db", [], [citation], "doc_pg:h:db_chunks")
+
+        assert client.calls == []
+        (document_result,) = passed
+        assert document_result.collection == "doc_pg:h:db_chunks"
+
+    def test_the_hybrid_run_returns_the_collection_it_read(self) -> None:
+        from nlqueries.orchestrator import multi_agent_orchestrator as mao
+
+        async def no_tokens(*args: Any, **kwargs: Any) -> Any:
+            if False:  # pragma: no cover - makes this an async generator
+                yield ""
+
+        client = _client_with("doc_pg:h:db_chunks")
+        with (
+            patch.object(mao.Orchestrator, "handle_question", no_tokens),
+            patch.object(mao.DocumentOrchestrator, "handle_question", no_tokens),
+            patch.object(qdrant_store, "_get_client", return_value=client),
+        ):
+            *_, collection = asyncio.run(mao._run_hybrid("q", "pg:h:db", "postgres"))
+
+        assert collection == "doc_pg:h:db_chunks"
 
     def test_doc_ingest_writes_the_storage_name(self) -> None:
         from nlqueries.cli import main as cli_main
@@ -233,27 +285,3 @@ class TestWhereTheNamesAreUsed:
             cli_main._store_document_chunks("pg:h:db", ["chunk"], allow_empty=False)
 
         assert written == ["doc_pg_h_db_chunks"]
-
-    def test_the_schema_is_embedded_under_the_storage_name(self) -> None:
-        from nlqueries.connectors.base import ColumnSpec, SchemaSpec, TableSpec
-        from nlqueries.knowledge.kb_generator import generate_knowledge_base
-
-        created: list[str] = []
-        upserted: list[str] = []
-        column = ColumnSpec("id", "INT", False, True, False, None, None)
-        schema = SchemaSpec(
-            database="shop",
-            tables=[TableSpec("orders", "public", None, [column], None)],
-            extracted_at="2026-10-22T00:00:00Z",
-        )
-        with (
-            patch.object(
-                qdrant_store, "ensure_collection", lambda name, *a, **k: created.append(name)
-            ),
-            patch.object(
-                qdrant_store, "upsert_schema", lambda name, *a, **k: upserted.append(name)
-            ),
-        ):
-            generate_knowledge_base(schema, [], "pg:h:db", embed=True)
-
-        assert created == upserted == ["agent_pg_h_db_schema"]

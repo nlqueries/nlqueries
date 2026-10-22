@@ -733,18 +733,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be
   served each other's answers. The knowledge base, the feedback and session
-  files, and the cache, document and schema collections now all use one
-  storage name (`nlqueries.state_files.agent_storage_id`): letters, digits,
-  `_`, `-` and `.` are kept and anything else becomes `_`. Document and schema
+  files, and the cache and document collections now all use one storage
+  name (`nlqueries.state_files.agent_storage_id`): letters, digits,
+  `_`, `-` and `.` are kept and anything else becomes `_`. Document
   collections used the raw ID, so the CLI (`postgres:localhost:mydb`) and the
   MCP server (`postgres_localhost_mydb`, from the knowledge-base file name)
   wrote and read different collections for one agent; they now share one.
   **Upgrading:** knowledge-base, feedback and session files keep their names.
-  A document or schema collection written under the raw ID is read until one
-  exists under the new name, and the next `doc-ingest` writes the new name. A
+  A document collection written under the raw ID is read until one exists
+  under the new name, and the next `doc-ingest` writes the new name. A
   cache collection for an ID containing `.` starts empty under its new name;
-  the old one is not read and can be deleted in Qdrant. The verified-examples
-  collection (`agent_<id>_verified`) keeps its current name for now. See
+  the old one is not read and can be deleted in Qdrant. The schema
+  (`agent_<id>_schema`) and verified-examples (`agent_<id>_verified`)
+  collections keep their current names for now. See
   [docs/qdrant-setup.md](docs/qdrant-setup.md).
 - **Cache keys keep operators and numbers, and follow-ups are keyed on what
   they mean.** The Tier 0 exact-match key no longer strips `<`, `>`, `=`, `!`,
