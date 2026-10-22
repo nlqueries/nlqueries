@@ -48,6 +48,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from nlqueries import config
+from nlqueries.at_rest import CHUNK_TEXT, seal, unseal
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
@@ -580,13 +581,35 @@ def upsert_chunks(
                     "source_name": chunk.source_name,
                     "page_number": chunk.page_number,
                     "chunk_index": chunk.chunk_index,
-                    "text": chunk.text,
+                    # Embedded above from the plaintext; stored sealed when
+                    # NLQ_CACHE_ENCRYPTION is on.
+                    "text": seal(chunk.text, CHUNK_TEXT),
                     "metadata": chunk.metadata,
                 },
             )
             for idx, chunk in enumerate(chunks)
         ]
         client.upsert(collection_name=collection, points=points)
+
+
+def chunk_from_payload(payload: dict[str, Any]) -> DocumentChunk | None:
+    """The ``DocumentChunk`` a point's payload stores, or ``None`` if its text cannot be read.
+
+    Text sealed under a key this process does not have is skipped rather than
+    returned as ciphertext, which would otherwise reach the model as content.
+    """
+    text = unseal(str(payload.get("text", "")), CHUNK_TEXT)
+    if text is None:
+        return None
+    return DocumentChunk(
+        chunk_id=str(payload.get("chunk_id", "")),
+        source_id=str(payload.get("source_id", "")),
+        source_name=str(payload.get("source_name", "")),
+        page_number=payload.get("page_number"),
+        chunk_index=int(payload.get("chunk_index", 0)),
+        text=text,
+        metadata=dict(payload.get("metadata") or {}),
+    )
 
 
 def search_chunks(
@@ -638,18 +661,9 @@ def search_chunks(
 
         result: list[DocumentChunk] = []
         for hit in response.points:
-            p = hit.payload or {}
-            result.append(
-                DocumentChunk(
-                    chunk_id=str(p.get("chunk_id", "")),
-                    source_id=str(p.get("source_id", "")),
-                    source_name=str(p.get("source_name", "")),
-                    page_number=p.get("page_number"),
-                    chunk_index=int(p.get("chunk_index", 0)),
-                    text=str(p.get("text", "")),
-                    metadata=dict(p.get("metadata") or {}),
-                )
-            )
+            chunk = chunk_from_payload(hit.payload or {})
+            if chunk is not None:
+                result.append(chunk)
 
         elapsed_ms = time.perf_counter() * 1000 - start_ms
         chunk_search_latency.record(elapsed_ms, {"collection": collection})

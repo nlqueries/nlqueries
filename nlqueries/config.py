@@ -1054,6 +1054,19 @@ that trade is not worth making -- it keeps the cache working for repeat
 questions rather than turning it off.
 """
 
+_cache_encryption = os.getenv("NLQ_CACHE_ENCRYPTION", "false").strip().lower()
+CACHE_ENCRYPTION: bool = _cache_encryption in ("1", "true", "yes", "on")
+"""Encrypt cached answers and document chunk text before storing them in Qdrant.
+
+Off by default. When on, the semantic cache's ``answer`` and each document
+chunk's ``text`` are sealed with AES-256-GCM under the key from
+``NLQ_CACHE_ENCRYPTION_KEY``, ``NLQ_CACHE_ENCRYPTION_KEY_FILE``, or one generated
+in the state directory (see :mod:`nlqueries.at_rest`). It governs writing only:
+entries stored in the clear are still read, and sealed ones are opened whenever
+a key is available, so turning it on or off never makes stored text unreadable
+by itself. Vectors, questions and SQL are stored as before.
+"""
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------

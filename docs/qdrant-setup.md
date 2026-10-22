@@ -196,6 +196,16 @@ export QDRANT_URL=http://localhost:6333
 
 NLQueries creates each collection listed at the top of this page automatically on its first write.
 
+## Encrypting what Qdrant stores
+
+Qdrant keeps the text of cached answers and of every ingested document chunk, readable by anyone with access to its storage, its snapshots or its API. With `NLQ_CACHE_ENCRYPTION=true`, both are encrypted with AES-256-GCM before they are stored and decrypted when they are read; searching is unchanged, since it runs on vectors computed from the text before it is encrypted.
+
+- **The key** is `NLQ_CACHE_ENCRYPTION_KEY`, or the file `NLQ_CACHE_ENCRYPTION_KEY_FILE` names, or one generated on the first encrypted write and kept as `cache_encryption_key` in the state directory. When more than one process or container writes to the same Qdrant, give them all the same key: a generated one belongs to one state directory. Keep a copy, and keep it apart from Qdrant's backups, which it is there to protect.
+- **What stays readable:** the vectors, which are derived from the text and can say something about it, and the questions, SQL, document names, chunk metadata and identifiers the store searches, filters and verifies on.
+- **Turning it on** encrypts what is written from then on. What is already stored stays readable as it is: ingest the documents again and run `nlqueries cache clear <agent>` to have them stored encrypted.
+- **Turning it off** stores new text unencrypted. Encrypted text is still read while the key is available.
+- **Without the key**, encrypted entries cannot be read: a cached answer is a miss and is answered afresh, and a document chunk is left out of retrieval, with one warning per process for each of the two. Ingesting the documents again restores them.
+
 ## Verify
 
 ```bash

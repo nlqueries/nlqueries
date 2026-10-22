@@ -66,7 +66,7 @@ def retrieve_for_question(
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
     from nlqueries.embeddings.embedder import embed_text
-    from nlqueries.embeddings.qdrant_store import _get_client  # noqa: PLC2701
+    from nlqueries.embeddings.qdrant_store import _get_client, chunk_from_payload  # noqa: PLC2701
 
     vector = embed_text(question)
     query_filter: Filter | None = None
@@ -87,16 +87,9 @@ def retrieve_for_question(
     citations: list[Citation] = []
 
     for hit in response.points:
-        p = hit.payload or {}
-        chunk = DocumentChunk(
-            chunk_id=str(p.get("chunk_id", "")),
-            source_id=str(p.get("source_id", "")),
-            source_name=str(p.get("source_name", "")),
-            page_number=p.get("page_number"),
-            chunk_index=int(p.get("chunk_index", 0)),
-            text=str(p.get("text", "")),
-            metadata=dict(p.get("metadata") or {}),
-        )
+        chunk = chunk_from_payload(hit.payload or {})
+        if chunk is None:
+            continue
         chunks.append(chunk)
         citations.append(
             Citation(

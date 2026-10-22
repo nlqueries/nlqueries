@@ -6,6 +6,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Cached answers and document text can be encrypted in Qdrant.** With
+  `NLQ_CACHE_ENCRYPTION=true`, the semantic cache's answer and each document
+  chunk's text are encrypted with AES-256-GCM before they are stored. The key
+  comes from `NLQ_CACHE_ENCRYPTION_KEY` or `NLQ_CACHE_ENCRYPTION_KEY_FILE`, or is
+  generated in the state directory at mode `0600`. Off by default. The setting
+  governs writing only: text stored unencrypted is still read, and encrypted text
+  is read whenever the key is available. Text that cannot be decrypted is a
+  cache miss or a skipped chunk. Vectors, questions and SQL are stored as before.
+  See `docs/qdrant-setup.md`.
 - **Audit events for query execution, and a file to keep them in.** Every
   statement sent to a database through the connector an agent's query opens
   (`PermittedConnector.execute_query`) is recorded as a `query_execution` event
