@@ -422,30 +422,54 @@ class _Reading:
 _UNMODELLED: tuple[type[exp.Expression], ...] = (exp.Anonymous, exp.AnonymousAggFunc)
 
 
-def _function_name(node: exp.Expression) -> str:
-    """The name an unmodelled function is judged by, or "" if it cannot be read.
+def _function_name(node: exp.Func, dialect: str) -> str | None:
+    """The name a function call is judged by: "" if it cannot be read, None if
+    the call is judged by its class instead.
 
-    A call written with a qualifier, ``some_schema.age(a, b)``, parses as a
-    `Dot` whose right-hand side is the call, and the call's own name is the
-    bare ``age``. Judged by that, it would pass on the entry for the built-in
-    it shadows, so the qualifier is part of the name: an entry vouches for one
-    function, and a qualified call is allowed only if listed as written.
+    An unmodelled call is judged by name. So is any call written with a
+    qualifier, ``some_schema.age(a, b)``, modelled or not: the qualifier is
+    part of the name, because an entry vouches for one function, and the one
+    ``some_schema`` holds is not the built-in it shadows -- nor, for a call
+    sqlglot models, the one its class stands for. A qualified call is
+    allowed only if listed as written.
 
-    The qualifier is not always the call's parent. A suffix -- ``FILTER
-    (WHERE ...)``, ``WITHIN GROUP (...)``, ``IGNORE NULLS`` -- wraps the call
-    first, and then the qualifier lands either in a `Dot` around the wrapper
-    or, as table, schema and catalog, in a `Column` whose `this` the wrapper
-    is. So the search goes up through every node the call heads (is the
-    `this` of) until it finds one of the two. Taking a qualifier that was not
-    meant can only refuse a call; missing one allows it.
+    The qualifier is not always the call's parent. In a select list it is a
+    `Dot` whose right-hand side is the call; a suffix -- ``FILTER (WHERE
+    ...)``, ``WITHIN GROUP (...)``, ``IGNORE NULLS`` -- wraps the call first,
+    and then it lands in a `Dot` around the wrapper or, as table, schema and
+    catalog, in a `Column` whose `this` the wrapper is; in a ``FROM`` it is
+    the schema and catalog of the `Table` whose `this` the call is. So the
+    search goes up through every node the call heads (is the `this` of) until
+    it finds one of those. Taking a qualifier that was not meant can only
+    refuse a call; missing one allows it. The shapes are sqlglot's, measured
+    against 30.17: a release that attached the qualifier some other way
+    would leave it unseen, and the tests for each shape would fail there.
     """
-    names = [*_qualifier(node), node.name]
+    qualifier = _qualifier(node)
+    if isinstance(node, _UNMODELLED):
+        written = node.name
+    elif not qualifier:
+        return None
+    else:
+        written = _written_name(node, dialect)
+    names = [*qualifier, written]
     if not all(names):
         return ""
     return ".".join(names).lower()
 
 
-def _qualifier(node: exp.Expression) -> list[str]:
+def _written_name(node: exp.Func, dialect: str) -> str:
+    """How *dialect* spells the function a modelled call stands for: its class
+    is named for sqlglot (`ExplodingGenerateSeries`), not for the database."""
+    try:
+        rendered = node.sql(dialect=_sqlglot_dialect(dialect))
+    except Exception:  # noqa: BLE001 - "" is unreadable, which refuses
+        return ""
+    name, paren, _rest = rendered.partition("(")
+    return name.strip() if paren else ""
+
+
+def _qualifier(node: exp.Func) -> list[str]:
     """The names qualifying the call *node*, outermost first, "" for one that
     cannot be read; empty when there is no qualifier."""
     # `object`: sqlglot types a node's parent as its base class, not Expression.
@@ -458,14 +482,14 @@ def _qualifier(node: exp.Expression) -> list[str]:
             while isinstance(qualifier, exp.Dot):
                 names.append(qualifier.expression.name)
                 qualifier = qualifier.this
-            names.append(qualifier.name)
+            # A Column at the bottom keeps its own table, schema and catalog.
+            parts = qualifier.parts if isinstance(qualifier, exp.Column) else [qualifier]
+            names.extend(part.name for part in reversed(parts))
             names.reverse()
         elif isinstance(parent, exp.Column) and parent.this is child:
-            names = [
-                part.name
-                for part in (parent.args.get(key) for key in ("catalog", "db", "table"))
-                if part is not None
-            ]
+            names = _named_parts(parent, ("catalog", "db", "table"))
+        elif isinstance(parent, exp.Table) and parent.this is child:
+            names = _named_parts(parent, ("catalog", "db"))
         elif parent.args.get("this") is child:
             child, parent = parent, parent.parent
             continue
@@ -473,6 +497,10 @@ def _qualifier(node: exp.Expression) -> list[str]:
             return []
         return names
     return []
+
+
+def _named_parts(node: exp.Expression, keys: tuple[str, ...]) -> list[str]:
+    return [part.name for part in (node.args.get(key) for key in keys) if part is not None]
 
 
 def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
@@ -504,7 +532,11 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
             + ", ".join(repr(name) for name in string_tables)
         )
 
-    names = [_function_name(n) for n in tree.find_all(*_UNMODELLED)]
+    names = [
+        name
+        for name in (_function_name(n, dialect) for n in tree.find_all(exp.Func))
+        if name is not None
+    ]
     anonymous = tuple(sorted({name for name in names if name}))
     permitted = allowed_anonymous(dialect)
     refused = [name for name in anonymous if name not in permitted]

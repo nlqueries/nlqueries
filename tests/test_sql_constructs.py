@@ -279,6 +279,62 @@ def test_a_suffix_does_not_hide_the_qualifier(dialect: str, sql: str, qualified:
     assert qualified in decision.anonymous_functions
 
 
+@pytest.mark.parametrize(
+    ("dialect", "sql", "qualified"),
+    [
+        # In FROM the qualifier is the Table's schema and catalog.
+        ("postgres", "SELECT * FROM some_schema.age(1, 2)", "some_schema.age"),
+        ("postgres", "SELECT * FROM db.some_schema.age(1, 2)", "db.some_schema.age"),
+        ("postgres", "SELECT * FROM t, LATERAL some_schema.age(t.a, 2) AS x", "some_schema.age"),
+        # A call sqlglot models is judged by name too once qualified, spelled
+        # as the dialect spells it rather than by its sqlglot class.
+        (
+            "postgres",
+            "SELECT * FROM some_schema.generate_series(1, 3)",
+            "some_schema.generate_series",
+        ),
+        (
+            "postgres",
+            "SELECT * FROM t, LATERAL some_schema.generate_series(1, t.a) AS g",
+            "some_schema.generate_series",
+        ),
+        ("duckdb", "SELECT * FROM main.range(3)", "main.range"),
+        # A Column under the Dot keeps all of its parts.
+        ("postgres", "SELECT a.b.c.d.age(x) FILTER (WHERE x > 0) FROM t", "a.b.c.d.age"),
+    ],
+)
+def test_a_qualified_call_in_any_position_is_judged_by_its_whole_name(
+    dialect: str, sql: str, qualified: str
+) -> None:
+    decision = evaluate(sql, dialect)
+    assert not decision.allowed
+    assert decision.anonymous_functions == (qualified,)
+    assert f"calls unrecognised function(s): {qualified}" in decision.summary()
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql"),
+    [
+        ("postgres", "SELECT * FROM generate_series(1, 3)"),
+        ("postgres", "SELECT * FROM t, LATERAL generate_series(1, t.a) AS g"),
+        ("duckdb", "SELECT * FROM range(3)"),
+    ],
+)
+def test_an_unqualified_modelled_call_is_still_judged_by_its_class(dialect: str, sql: str) -> None:
+    decision = evaluate(sql, dialect)
+    assert decision.allowed, decision.summary()
+    assert decision.anonymous_functions == ()
+
+
+def test_a_qualified_modelled_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS,
+        "postgres",
+        sql_policy.ALLOWED_ANONYMOUS["postgres"] | {"pg_catalog.generate_series"},
+    )
+    assert evaluate("SELECT * FROM pg_catalog.generate_series(1, 3)", "postgres").allowed
+
+
 def test_a_suffix_on_an_unqualified_call_changes_nothing() -> None:
     for sql in (
         "SELECT age(a, b) FILTER (WHERE a > 0) FROM t",
