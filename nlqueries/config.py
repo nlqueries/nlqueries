@@ -789,7 +789,8 @@ complex.
 
 A container's memory limit is a cgroup, not an rlimit, so it is not the lower
 hard limit the child keeps; when it is reached first, the kernel kills the
-child, which is reported the same way.
+child, which is reported as an extraction timeout: the limit is the whole
+container's, so the document may not be the cause, and a caller may retry.
 """
 
 DOCUMENT_PARSE_CPU_SECONDS: int = _positive_int("NLQ_DOCUMENT_PARSE_CPU_SECONDS", 180)

@@ -240,11 +240,14 @@ def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
     # is how a container's memory limit is reached -- a cgroup, not an rlimit,
     # so the child never sees MemoryError. Nothing else here sends it: the
     # deadline and an interrupted caller both raise before this is reached.
+    # A timeout rather than a final refusal: the limit is the whole container's
+    # and the kernel kills the largest process in it, so the document is not
+    # necessarily the cause, and a caller may retry (see that class).
     kill_signal = getattr(signal, "SIGKILL", None)
     if kill_signal is not None and returncode == -int(kill_signal):
-        return DocumentTooComplexError(
+        return DocumentExtractionTimeout(
             f"Extracting {name} was killed by the system, which a container's memory "
-            "limit does when it is reached; the document needs more memory than is available."
+            "limit does when the container as a whole reaches it."
         )
     last = next((line for line in reversed(text.splitlines()) if line.strip()), "")
     return RuntimeError(f"Extracting {name} failed: the parser exited with {returncode}. {last}")

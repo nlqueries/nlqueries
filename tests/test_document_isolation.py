@@ -228,9 +228,11 @@ def test_a_result_larger_than_the_pipe_comes_back_while_the_child_runs(source, m
 
 
 @pytest.mark.skipif(not _POSIX, reason="Windows has no SIGKILL")
-def test_a_child_killed_by_the_system_is_refused_as_too_complex(source) -> None:
-    """A container's memory limit is reached by the kernel killing the child."""
-    with pytest.raises(DocumentTooComplexError, match="killed by the system"):
+def test_a_child_killed_by_the_system_is_a_retryable_timeout(source) -> None:
+    """A container's memory limit is reached by the kernel killing the largest
+    process, so the document may not be the cause: a timeout, which callers may
+    retry, and still a DocumentTooComplexError to those catching the parent."""
+    with pytest.raises(DocumentExtractionTimeout, match="killed by the system"):
         fake.KilledBySystem().ingest(source, "s1")
 
 
