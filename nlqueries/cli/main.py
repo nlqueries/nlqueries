@@ -525,7 +525,13 @@ def _check_connectors(connector_filter: str | None) -> list[_CheckResult]:
             continue
 
         try:
+            from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+
             connector = connector_cls()
+            # Reaching the database is what this check is for. A connector
+            # refuses to execute without permission, and that refusal used to
+            # come back here as "connection failed" for every database.
+            connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
             connector.connect(credentials_for(cid, cfg))
             t0 = time.monotonic()
             qr = connector.execute_query("SELECT 1")

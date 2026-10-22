@@ -828,6 +828,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **`nlqueries health` reaches the databases it checks.** Its `SELECT 1` probe
+  ran without permission to execute, which every connector requires, so each
+  registered database was reported as "connection failed — is the database
+  running?" whether it was or not. The probe now runs read-only, as the other
+  commands that read from the database do.
 - **Every store names an agent the same way, so two agents no longer share
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be
