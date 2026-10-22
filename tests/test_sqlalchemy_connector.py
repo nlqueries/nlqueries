@@ -510,6 +510,29 @@ def test_mysql_urls_get_local_infile_off(url: str) -> None:
     assert "local_infile" not in engine_url.query
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["mysql+mysqldb://u:p@db/shop", "mariadb+mariadbconnector://u:p@db/shop"],
+)
+def test_the_other_known_drivers_get_local_infile_off(url: str) -> None:
+    _, connect_args = _engine_args(url)
+
+    assert connect_args == {"local_infile": 0}
+
+
+@pytest.mark.parametrize("url", ["mysql+pyodbc://u:p@dsn", "mysql+cymysql://u:p@db/shop"])
+def test_a_mysql_driver_it_cannot_harden_is_refused_by_name(url: str) -> None:
+    """Neither keyword is one such a driver takes, so passing one failed with a
+    TypeError at its first connection; it is refused with the reason instead."""
+    driver = url.split("+", 1)[1].split(":", 1)[0]
+    with (
+        patch.object(sqlalchemy_connector_module, "create_engine") as create,
+        pytest.raises(ValueError, match=rf"LOAD DATA LOCAL INFILE off for the '{driver}'"),
+    ):
+        SQLAlchemyConnector().connect({"url": url})
+    create.assert_not_called()
+
+
 def test_mysql_connector_python_gets_its_own_spelling() -> None:
     engine_url, connect_args = _engine_args(
         "mysql+mysqlconnector://u:p@db/shop?allow_local_infile=true"

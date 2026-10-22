@@ -3828,6 +3828,10 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
 
 #: How long `embed-server stop` waits for the daemon to exit after signalling it.
 _EMBED_STOP_WAIT_SECONDS = 5.0
+#: How long `embed-server start` watches a background daemon for an immediate
+#: exit before reporting it started. A failed start dies within this; a good
+#: one is still loading its model.
+_EMBED_START_GRACE_SECONDS = 2.0
 
 
 @cli.group("embed-server")
@@ -3904,12 +3908,26 @@ def embed_server_start(port: int | None, foreground: bool) -> None:
 
     # `-P` keeps the working directory off `sys.path`, so the daemon imports the
     # installed package and nothing that happens to sit where it was started.
-    subprocess.Popen(
+    daemon = subprocess.Popen(
         [sys.executable, "-P", "-m", "nlqueries.embeddings.embed_server", "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    # A daemon that cannot start dies at once -- a source checkout that is not
+    # installed has nothing for `-P` to import, a port already taken refuses
+    # the bind -- and its output goes nowhere. Reporting success then left
+    # every query loading the model itself with nothing to say why.
+    try:
+        status = daemon.wait(timeout=_EMBED_START_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        status = None
+    if status is not None:
+        err_console.print(
+            f"[bold red]✗ The embedding daemon exited at once (status {status}).[/bold red] "
+            "Run [bold]nlqueries embed-server start --foreground[/bold] to see why."
+        )
+        sys.exit(1)
     console.print(
         f"  [green]✓[/green] Embedding daemon started on port {port}. "
         "Future queries will skip model load (~10 ms embedding instead of ~9 s)."

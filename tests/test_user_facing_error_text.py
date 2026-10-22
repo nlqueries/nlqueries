@@ -101,7 +101,7 @@ async def test_a_failed_query_is_shown_without_what_the_driver_quoted(
             new_callable=AsyncMock,
             side_effect=RuntimeError(DRIVER_ERROR),
         ),
-        caplog.at_level(logging.WARNING, logger="nlqueries.mcp_server.server"),
+        caplog.at_level(logging.DEBUG, logger="nlqueries.mcp_server.server"),
     ):
         out = await query("How many orders?", "sales")
 
@@ -109,10 +109,16 @@ async def test_a_failed_query_is_shown_without_what_the_driver_quoted(
     assert "password=" not in out and SECRET not in out and HOST not in out
     match = REFERENCE.search(out)
     assert match, out
-    # `_log.exception`: the full error is in the record's traceback.
-    (record,) = [r for r in caplog.records if match.group(1) in r.getMessage()]
-    assert record.exc_info is not None
-    assert SECRET in str(record.exc_info[1]) and HOST in str(record.exc_info[1])
+    referenced = [r for r in caplog.records if match.group(1) in r.getMessage()]
+    # At ERROR, the first line only: no traceback, and nothing a driver quoted.
+    (error,) = [r for r in referenced if r.levelno == logging.ERROR]
+    assert error.exc_info is None
+    assert SECRET not in error.getMessage() and HOST not in error.getMessage()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r.exc_info]
+    # The whole of it at DEBUG, under the same reference.
+    (debug,) = [r for r in referenced if r.levelno == logging.DEBUG]
+    assert debug.exc_info is not None
+    assert SECRET in str(debug.exc_info[1]) and HOST in str(debug.exc_info[1])
 
 
 # --- A connectors file that does not parse -------------------------------------

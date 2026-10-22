@@ -432,6 +432,8 @@ nlqueries embed-server status [--port 8765]   # not running | starting | running
 nlqueries embed-server stop
 ```
 
+`start` watches the background daemon for two seconds and fails, telling you to rerun it with `--foreground` to see why, if it exits in that time (a port already in use, or a source checkout that is not installed).
+
 Not restarted automatically on reboot — add the `start` command to your shell profile or a startup task if you want it always on. To change the port, set `EMBED_SERVER_PORT`: it is the port the daemon listens on and the port clients, `status` and `health` look for it on. `start --port` and `status --port` override it for that command only; `start` warns when its port differs from `EMBED_SERVER_PORT`, because clients would not find the daemon there.
 
 `start` runs the daemon as `python -P -m nlqueries.embeddings.embed_server`, so the directory you start it from is not on its import path and it imports the installed package.

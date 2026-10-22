@@ -52,6 +52,13 @@ def _run(*args: str) -> Any:
     return CliRunner().invoke(cli, ["embed-server", *args])
 
 
+def _running_popen() -> MagicMock:
+    """A `subprocess.Popen` whose daemon is still running when `start` checks."""
+    popen = MagicMock()
+    popen.return_value.wait.side_effect = subprocess.TimeoutExpired("embed_server", 2.0)
+    return popen
+
+
 class _Daemon:
     """A process that is alive until it is sent SIGTERM."""
 
@@ -87,7 +94,7 @@ def test_stop_reports_a_stale_pid_file_and_removes_it(pid_file: Path, out: io.St
 
 def test_start_removes_a_stale_pid_file_and_starts(pid_file: Path, out: io.StringIO) -> None:
     pid_file.write_text("105552")
-    popen = MagicMock()
+    popen = _running_popen()
     with (
         patch.object(embed_server, "is_pid_alive", return_value=False),
         patch("subprocess.Popen", popen),
@@ -104,7 +111,7 @@ def test_start_removes_a_stale_pid_file_and_starts(pid_file: Path, out: io.Strin
 def test_start_still_refuses_while_a_daemon_runs(pid_file: Path, out: io.StringIO) -> None:
     """The negative control: a live PID is still "already running"."""
     pid_file.write_text("4242")
-    popen = MagicMock()
+    popen = _running_popen()
     with (
         patch.object(embed_server, "is_pid_alive", return_value=True),
         patch("subprocess.Popen", popen),
@@ -230,7 +237,7 @@ def test_a_pid_file_without_a_pid_is_stale_to_every_command(
 ) -> None:
     pid_file.write_text(content)
     kill = MagicMock()
-    popen = MagicMock()
+    popen = _running_popen()
     with (
         patch.object(embed_server, "is_pid_alive", return_value=True),
         patch("os.kill", kill),
@@ -362,7 +369,7 @@ def test_start_listens_on_the_port_clients_use(
     from nlqueries import config
 
     monkeypatch.setattr(config, "EMBED_SERVER_PORT", 9123)
-    popen = MagicMock()
+    popen = _running_popen()
     with patch("subprocess.Popen", popen):
         result = _run("start")
 
@@ -376,7 +383,7 @@ def test_start_keeps_the_working_directory_off_the_daemons_path(
     pid_file: Path, out: io.StringIO
 ) -> None:
     """`-P`: a module in the directory `start` runs from is not importable by the daemon."""
-    popen = MagicMock()
+    popen = _running_popen()
     with patch("subprocess.Popen", popen):
         result = _run("start")
 
@@ -391,7 +398,7 @@ def test_start_on_another_port_says_clients_will_not_find_it(
     from nlqueries import config
 
     monkeypatch.setattr(config, "EMBED_SERVER_PORT", 8765)
-    with patch("subprocess.Popen", MagicMock()):
+    with patch("subprocess.Popen", _running_popen()):
         result = _run("start", "--port", "9000")
 
     assert result.exit_code == 0, out.getvalue()
@@ -434,3 +441,21 @@ def test_the_client_reads_its_port_from_config(monkeypatch: pytest.MonkeyPatch) 
     finally:
         monkeypatch.undo()
         importlib.reload(embedder)
+
+
+def test_start_reports_a_daemon_that_exits_at_once(pid_file: Path, out: io.StringIO) -> None:
+    """Its output goes nowhere, so reporting success left every query loading
+    the model itself with nothing to say why."""
+    popen = MagicMock()
+    popen.return_value.wait.return_value = 1
+
+    with patch("subprocess.Popen", popen):
+        result = _run("start")
+
+    assert result.exit_code == 1
+    assert "exited at once (status 1)" in out.getvalue()
+    assert "--foreground" in out.getvalue()
+    assert "Embedding daemon started" not in out.getvalue()
+    assert popen.return_value.wait.call_args.kwargs == {
+        "timeout": cli_main._EMBED_START_GRACE_SECONDS
+    }
