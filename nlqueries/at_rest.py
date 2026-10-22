@@ -63,10 +63,11 @@ CHUNK_TEXT = b"nlqueries document chunk text"
 def chunk_text_purpose(source_id: str) -> bytes:
     """The associated data for a chunk of *source_id*'s text.
 
-    Bound to the document as well as to the kind of value: chunk payloads are
-    not signed, so without it a sealed text moved into another document's
-    collection would open there. Not bound to the collection, so that a
-    snapshot restored under another name still reads.
+    Bound to the document identifier as well as to the kind of value: chunk
+    payloads are not signed, so without it a sealed text given another
+    document's ``source_id`` would open as that document's. A point copied
+    whole, ``source_id`` and all, still opens: the collection is not part of
+    it, so that a snapshot restored under another name still reads.
     """
     return CHUNK_TEXT + b"\x00" + source_id.encode("utf-8")
 
@@ -94,6 +95,10 @@ _GENERATED_KEY_LENGTH = 64
 #: How long a process that lost the race to create the key waits for the
 #: winner's to be complete.
 _KEY_WAIT_SECONDS = 2.0
+
+#: Set once a wait for an incomplete key has run out, so that a file left half
+#: written by a process that died is not waited on again by every later write.
+_gave_up_waiting = False
 
 
 def key_path() -> Path:
@@ -150,16 +155,24 @@ def _stored() -> bytes | None:
     links the key is written in place, and a key read half-written would seal
     text no other process can open.
     """
-    path = key_path()
+    return _key_file()[0]
+
+
+def _key_file() -> tuple[bytes | None, bool]:
+    """The stored key, if whole, and whether the file may still be being written.
+
+    Only a readable file of fewer hex characters than a key may be one another
+    process is writing. One that cannot be read, or holds anything else, will
+    not become a key by waiting.
+    """
     try:
-        material = path.read_bytes().strip()
+        material = key_path().read_bytes().strip()
     except OSError:
-        return None
-    if len(material) != _GENERATED_KEY_LENGTH or not all(
-        chr(b) in string.hexdigits for b in material
-    ):
-        return None
-    return material
+        return None, False
+    hex_only = all(chr(b) in string.hexdigits for b in material)
+    if hex_only and len(material) == _GENERATED_KEY_LENGTH:
+        return material, False
+    return None, hex_only and len(material) < _GENERATED_KEY_LENGTH
 
 
 def _generated() -> bytes:
@@ -195,10 +208,11 @@ def _generated() -> bytes:
                     # instead: still one winner, though a reader can see the
                     # file before its 64 bytes are in it, which `_stored`
                     # does not take for a key.
-                    with open(path, "xb") as fh:
+                    # Created at 0600, not chmodded after: the key goes in
+                    # before a chmod would, readable to others meanwhile.
+                    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+                    with os.fdopen(os.open(path, flags, 0o600), "wb") as fh:
                         fh.write(key)
-                    with contextlib.suppress(OSError):
-                        path.chmod(0o600)
             except FileExistsError:
                 return _winners_key()
         finally:
@@ -220,15 +234,24 @@ def _generated() -> bytes:
 
 
 def _winners_key() -> bytes:
-    """The key another process created first, once it is complete."""
+    """The key another process created first, once it is complete.
+
+    Waited for only while the file may still be being written, and only until
+    one wait has run out in this process: a file that cannot be read, holds
+    something else, or was left half written will not change, and every write
+    would otherwise wait the full time for it.
+    """
+    global _gave_up_waiting  # noqa: PLW0603 - once per process
     deadline = time.monotonic() + _KEY_WAIT_SECONDS
-    while (existing := _stored()) is None:
-        if time.monotonic() >= deadline:
-            raise FileExistsError(
-                f"{key_path()} exists but holds no complete key after {_KEY_WAIT_SECONDS:g}s"
-            )
+    while True:
+        existing, in_progress = _key_file()
+        if existing is not None:
+            return existing
+        if not in_progress or _gave_up_waiting or time.monotonic() >= deadline:
+            if in_progress:
+                _gave_up_waiting = True
+            raise FileExistsError(f"{key_path()} exists but holds no complete key")
         time.sleep(0.05)
-    return existing
 
 
 @functools.lru_cache(maxsize=4)

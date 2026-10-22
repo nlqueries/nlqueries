@@ -11,6 +11,7 @@ import math
 import os
 import stat
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,7 @@ def _clean_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Non
     monkeypatch.setattr(config, "CACHE_ENCRYPTION", False)
     at_rest._warned.clear()
     monkeypatch.setattr(at_rest, "_warned_short", False)
+    monkeypatch.setattr(at_rest, "_gave_up_waiting", False)
     yield
     at_rest._cipher.cache_clear()
 
@@ -236,6 +238,48 @@ def test_a_key_still_being_written_is_not_used(monkeypatch) -> None:
         at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
     assert at_rest.unseal(at_rest.MARKER + "AAAA", at_rest.CACHE_ANSWER) is None
 
+    # Left half written for good: the next write does not wait again.
+    monkeypatch.setattr(at_rest, "_KEY_WAIT_SECONDS", 30.0)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="no complete key"):
+        at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    assert time.monotonic() - started < 5
+
+
+def test_a_stored_file_that_is_not_a_key_is_not_waited_on(monkeypatch) -> None:
+    """An operator's own key put at that path, say: it will never become one."""
+    _encrypt_with(monkeypatch, key=None)
+    _no_hard_links(monkeypatch)
+    path = at_rest.key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"correct horse battery staple")
+    monkeypatch.setattr(at_rest, "_KEY_WAIT_SECONDS", 30.0)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="no complete key"):
+        at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    assert time.monotonic() - started < 5
+
+
+def test_without_hard_links_the_key_is_created_at_0600_not_chmodded(monkeypatch) -> None:
+    """The mode is given when the file is created, before the key is in it."""
+    _encrypt_with(monkeypatch, key=None)
+    _no_hard_links(monkeypatch)
+    opened: list[tuple[int, int]] = []
+    real_open = at_rest.os.open
+
+    def record(path, flags, mode=0o777, *args, **kwargs):
+        if Path(path) == at_rest.key_path():  # not mkstemp's own temporary file
+            opened.append((flags, mode))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(at_rest.os, "open", record)
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+
+    ((flags, mode),) = opened
+    assert mode == 0o600
+    assert flags & os.O_EXCL and flags & os.O_CREAT
+
 
 def test_the_loser_waits_for_the_winners_key_to_be_complete(monkeypatch) -> None:
     _encrypt_with(monkeypatch, key=None)
@@ -283,10 +327,13 @@ def test_a_stored_key_this_process_cannot_read_is_no_key(monkeypatch) -> None:
         return real_read(self)
 
     monkeypatch.setattr(Path, "read_bytes", refuse)
+    monkeypatch.setattr(at_rest, "_KEY_WAIT_SECONDS", 30.0)
 
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) is None
+    started = time.monotonic()
     with pytest.raises(RuntimeError, match=at_rest.KEY_ENV):
         at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    assert time.monotonic() - started < 5  # nothing to wait for: it will not change
 
 
 def test_a_short_configured_key_is_warned_about_once(monkeypatch, caplog) -> None:
