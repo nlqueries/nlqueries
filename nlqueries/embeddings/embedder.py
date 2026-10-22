@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, cast
 
 from nlqueries import config
+from nlqueries.http_urls import NotAnHttpUrl, http_url
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -117,7 +118,7 @@ def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:
             to propagate it or fall back, based on EMBED_SERVER_REQUIRED.
     """
     return _daemon_send(
-        urllib.request.Request(
+        urllib.request.Request(  # noqa: S310 - checked in _daemon_send
             f"{_DAEMON_BASE}{path}",
             data=_daemon_body(payload),
             headers={"Content-Type": "application/json"},
@@ -128,7 +129,7 @@ def _daemon_post(path: str, payload: dict[str, Any], key: str) -> Any:
 
 def _daemon_get(path: str) -> Any:
     """GET from the daemon, with the same failure translation as a POST."""
-    return _daemon_send(urllib.request.Request(f"{_DAEMON_BASE}{path}"))
+    return _daemon_send(urllib.request.Request(f"{_DAEMON_BASE}{path}"))  # noqa: S310 - checked there
 
 
 def _daemon_send(request: urllib.request.Request, key: str | None = None) -> Any:
@@ -139,7 +140,11 @@ def _daemon_send(request: urllib.request.Request, key: str | None = None) -> Any
     and a second copy of it would drift from this one.
     """
     try:
-        with urllib.request.urlopen(
+        http_url(request.full_url)
+    except NotAnHttpUrl as exc:
+        raise EmbeddingServiceUnavailable(FAILING, str(exc)) from exc
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - scheme checked above
             request, timeout=config.EMBED_CLIENT_TIMEOUT_SECONDS
         ) as response:
             body = _json.loads(response.read())

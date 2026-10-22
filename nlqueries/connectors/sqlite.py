@@ -254,7 +254,7 @@ class SQLiteConnector(DatabaseConnector):
     @staticmethod
     def _row_count(conn: sqlite3.Connection, table: str) -> int | None:
         try:
-            row = conn.execute(f"SELECT COUNT(*) FROM {_quote_ident(table)}").fetchone()
+            row = conn.execute(f"SELECT COUNT(*) FROM {_quote_ident(table)}").fetchone()  # noqa: S608 - a quoted identifier
             return int(row[0]) if row and row[0] is not None else None
         except Exception:  # noqa: BLE001
             return None

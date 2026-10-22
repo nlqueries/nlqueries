@@ -490,7 +490,7 @@ class MSSQLConnector(DatabaseConnector):
                 rows = conn.execute(
                     text(
                         f"""
-                        SELECT TOP {limit}
+                        SELECT TOP {int(limit)}
                             SUBSTRING(
                                 qt.text,
                                 (qs.statement_start_offset / 2) + 1,
@@ -515,7 +515,7 @@ class MSSQLConnector(DatabaseConnector):
                           AND plan_db.dbid = DB_ID()
                           AND qt.text NOT LIKE '%sys.dm_exec%'
                         ORDER BY qs.execution_count DESC
-                        """
+                        """  # noqa: S608 - int(limit) only
                     ),
                     {"neg_days": -days},
                 )

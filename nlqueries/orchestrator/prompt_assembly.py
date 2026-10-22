@@ -609,7 +609,7 @@ def assemble_prompt(
             from nlqueries.embeddings.embedder import embed_text
 
             question_vector = embed_text(question)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - retrieval below embeds again or goes without
             pass
 
     dynamic_context = _build_dynamic_context(
@@ -668,7 +668,7 @@ async def assemble_prompt_async(
             from nlqueries.embeddings.embedder import embed_text
 
             question_vector = await asyncio.to_thread(embed_text, question)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - retrieval below embeds again or goes without
             pass
 
     dynamic_context = await _build_dynamic_context_async(
@@ -1186,7 +1186,7 @@ def _build_dynamic_context(
 
             hits = search_schema(collection, question, top_k=10, vector=question_vector)
             hit_names = sorted({str(h["table_name"]) for h in hits if h.get("table_name")})
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - the prompt is built without the hint
             pass
 
         # Phase 5B: Verified examples (user-confirmed correct SQL, threshold 0.75)
@@ -1200,7 +1200,7 @@ def _build_dynamic_context(
             capsule_hits = search(
                 collection, question, top_k=max(1, remaining_slots), vector=question_vector
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - the prompt is built without the examples
             pass
 
     return _format_dynamic_context(knowledge_base, top_k, hit_names, verified_hits, capsule_hits)

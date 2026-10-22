@@ -86,7 +86,7 @@ class Source(StrEnum):
     OIDC = "oidc"
     #: A pre-shared token held in the deployment's secret store. For a
     #: single-operator install that has no identity provider.
-    STATIC_TOKEN = "static-token"
+    STATIC_TOKEN = "static-token"  # noqa: S105 - the method's name, not a token
     #: The process owner, over stdio. There is no token: the caller launched
     #: this process and already has whatever it has.
     LOCAL = "local"

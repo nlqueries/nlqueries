@@ -9,6 +9,7 @@ against the live database schema, and returns a populated :class:`KBStats`.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from nlqueries.knowledge.concept_hierarchy import HierarchyError, build_glossary_hierarchy
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from nlqueries.connectors.base import DatabaseConnector
@@ -215,8 +218,9 @@ def compute_kb_stats(
                         fk_pairs.add((min(left, ref_table), max(left, ref_table)))
             stats.fk_joins = len(fk_pairs)
             stats.fk_joins_seen = len(fk_pairs & _capsule_join_pairs(capsules))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # The counts stay at zero, which would otherwise read as measured.
+            logger.warning("Could not read the live schema for %s's stats: %s", agent_id, exc)
 
     # -------------------------------------------------------------------------
     # Feedback
@@ -231,8 +235,8 @@ def compute_kb_stats(
         stats.feedback_corrections = sum(
             1 for f in feedback if f.rating == "down" and f.corrected_sql
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not count the feedback for %s: %s", agent_id, exc)
 
     # -------------------------------------------------------------------------
     # Cache entry count (best-effort Qdrant probe)
@@ -243,12 +247,14 @@ def compute_kb_stats(
 
         from nlqueries.cache.semantic_cache import cache_collection_name  # noqa: PLC0415
         from nlqueries.config import QDRANT_URL  # noqa: PLC0415
+        from nlqueries.http_urls import http_url  # noqa: PLC0415
 
         collection = cache_collection_name(agent_id)
-        with urllib.request.urlopen(f"{QDRANT_URL}/collections/{collection}", timeout=3) as resp:
+        url = http_url(f"{QDRANT_URL}/collections/{collection}")
+        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310 - scheme checked
             data = _json.loads(resp.read())
             stats.cache_entries = data.get("result", {}).get("vectors_count", 0)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not count the cache entries for %s: %s", agent_id, exc)
 
     return stats

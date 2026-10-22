@@ -249,6 +249,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **A URL the package opens must be `http` or `https`.** `urllib` opens
+  `file:` and `ftp:` URLs as readily as web ones, so a `QDRANT_URL` of
+  `file:///etc/passwd` would have been read. `nlqueries health`, the MCP
+  `health` tool, KB stats and the embedding client now refuse any other scheme
+  before opening it. Failures that used to pass without a word are reported: a
+  stored keychain password that could not be put into a connector's URL (the
+  connection then failed as a bad password), a password left in the connectors
+  file when `update-password` moved it to the keychain, KB stats that could not
+  be counted, and an optional connector that fails to load for any reason but a
+  missing driver. The SQL Server query-history limit is taken as an integer, as
+  the other engines' are, and a BigQuery dataset location is used in the
+  history query only in the shape of one. Ruff's security and print rules are
+  now part of the lint.
 - **The default expanded-size cap for `.xlsx` and `.docx` is 128 MiB** (was
   400 MiB). Parsing a `.docx` costs several times its expanded size: one of
   250 MiB of ordinary paragraphs peaked at about 2 GiB. At 128 MiB an ordinary

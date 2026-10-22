@@ -338,8 +338,12 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
                 from sqlalchemy.engine import make_url  # noqa: PLC0415
 
                 url = make_url(url).set(password=pwd).render_as_string(hide_password=False)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # The connection then goes out without the password, and fails
+                # as an authentication error that says nothing about why.
+                logger.warning(
+                    "Could not add the stored password for %s to its URL: %s", connector_id, exc
+                )
     return url
 
 
