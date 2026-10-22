@@ -86,6 +86,7 @@ READ_FUNCTIONS: frozenset[str] = frozenset(
         "WeekOfYear", "Quarter", "Hour", "Minute", "Second", "LastDay",
         "WeekStart", "AddMonths", "MonthsBetween", "DateFromParts",
         "TimestampFromParts", "GenerateDateArray", "GenerateSeries",
+        "AtTimeZone", "ConvertTimezone", "Datetime",
         "ExplodingGenerateSeries",
         # strings
         "Upper", "Lower", "Length", "Substring", "Trim", "Concat", "ConcatWs",
@@ -118,7 +119,9 @@ DIALECT_STRUCTURE: dict[str, frozenset[str]] = {
     "postgres": frozenset({"Lateral"}),
     "redshift": frozenset(),
     "mysql": frozenset({"Lateral"}),
-    "tsql": frozenset({"WithTableHint"}),
+    # No table hints: `WITH (TABLOCKX)` or `(UPDLOCK)` takes the lock that
+    # `FOR UPDATE` is refused for, and its hint names parse as any word.
+    "tsql": frozenset(),
     "snowflake": frozenset({"Qualify", "Lateral", "Kwarg"}),
     "bigquery": frozenset({"Qualify"}),
     "duckdb": frozenset({"Qualify", "Lateral", "Kwarg"}),

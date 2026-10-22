@@ -18,6 +18,7 @@ as to the parser.
 from __future__ import annotations
 
 POSTGRES = [
+    "SELECT created_at AT TIME ZONE 'UTC' AS utc, COUNT(*) FROM orders GROUP BY 1",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT date_trunc('month', o.created_at) AS month, SUM(o.total) FROM orders o "
@@ -60,6 +61,7 @@ POSTGRES = [
 ]
 
 MYSQL = [
+    "SELECT CONVERT_TZ(created_at, '+00:00', '+02:00') AS local_time FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT DATE_FORMAT(created_at, '%Y-%m') AS month, SUM(total) FROM orders "
@@ -89,6 +91,7 @@ MYSQL = [
 ]
 
 TSQL = [
+    "SELECT created_at AT TIME ZONE 'UTC' AS utc FROM orders",
     "SELECT TOP 10 c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC",
     "SELECT DATEPART(year, created_at) AS y, DATEPART(month, created_at) AS m, SUM(total) "
@@ -121,6 +124,7 @@ TSQL = [
 ]
 
 SNOWFLAKE = [
+    "SELECT CONVERT_TIMEZONE('UTC', 'Europe/Berlin', created_at) FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT DATE_TRUNC('month', created_at) AS month, SUM(total) FROM orders "
@@ -146,6 +150,7 @@ SNOWFLAKE = [
 ]
 
 BIGQUERY = [
+    "SELECT DATETIME(created_at, 'Europe/Berlin') FROM `shop.orders`",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM `shop.customers` c "
     "JOIN `shop.orders` o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month, SUM(total) FROM `shop.orders` "
@@ -173,6 +178,7 @@ BIGQUERY = [
 ]
 
 DUCKDB = [
+    "SELECT created_at AT TIME ZONE 'UTC' AS utc FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT date_trunc('month', created_at) AS month, SUM(total) FROM orders "
@@ -202,6 +208,7 @@ DUCKDB = [
 ]
 
 SQLITE = [
+    "SELECT datetime(created_at, '+02:00') AS local_time FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT strftime('%Y-%m', created_at) AS month, SUM(total) FROM orders "
@@ -235,6 +242,7 @@ SQLITE = [
 ]
 
 REDSHIFT = [
+    "SELECT CONVERT_TIMEZONE('UTC', 'US/Pacific', created_at) FROM orders",
     "SELECT c.name, COUNT(o.id) AS orders, SUM(o.total) AS revenue FROM customers c "
     "JOIN orders o ON o.customer_id = c.id GROUP BY c.name ORDER BY revenue DESC LIMIT 10",
     "SELECT DATE_TRUNC('month', created_at) AS month, SUM(total) FROM orders "

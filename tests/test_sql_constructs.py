@@ -68,6 +68,8 @@ _DANGEROUS: dict[str, list[str]] = {
         "SELECT * FROM OPENDATASOURCE('SQLNCLI', 'Data Source=x').db.dbo.t",
         "SELECT @@version",
         "SELECT @x",
+        "SELECT SUM(total) FROM orders WITH (TABLOCKX)",
+        "SELECT SUM(total) FROM orders WITH (UPDLOCK, HOLDLOCK)",
     ],
     "snowflake": ["SELECT SYSTEM$WAIT(10)", "SELECT CURRENT_USER()"],
     "bigquery": ["SELECT * FROM EXTERNAL_QUERY('conn', 'SELECT 1')", "SELECT SESSION_USER()"],
