@@ -13,11 +13,21 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+import nlqueries.connectors.mssql as mssql_module
 import pytest
 from nlqueries import config
 from nlqueries.connectors.mssql import MSSQLConnector
 
 from tests.conftest import granted
+
+
+@pytest.fixture(autouse=True)
+def _no_identity_watch(monkeypatch):
+    """These tests stand a mock in for `create_engine`, which SQLAlchemy cannot
+    attach the identity check's pool event to; that check has its own tests
+    in test_login_identity.py."""
+    monkeypatch.setattr(mssql_module, "watch_engine", lambda *args: None)
+
 
 _CREDS = {"host": "sql.example.com", "database": "analytics", "user": "u", "password": "p"}
 

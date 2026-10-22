@@ -35,6 +35,8 @@ from nlqueries.connectors.base import (
     TableSpec,
     short_cause,
 )
+from nlqueries.connectors.login_identity import LoginIdentity, log_identity
+from nlqueries.connectors.snowflake_identity import inspect_identity as inspect_snowflake_identity
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,23 @@ class SnowflakeConnector(DatabaseConnector):
         self._txn_lock = threading.Lock()
         self._database: str | None = None
         self._db_schema: str | None = None
+        self._identity: LoginIdentity | None = None
+
+    @property
+    def identity(self) -> LoginIdentity | None:
+        """What the session's role hierarchy holds beyond reading, or None.
+
+        Read once, on first use after ``connect`` rather than at connect: the
+        walk is one ``SHOW GRANTS`` per inherited role, which a query does not
+        need to wait for. Under the transaction lock, since it uses the
+        session the queries use.
+        """
+        if self._identity is None and self._connection is not None:
+            with self._txn_lock:
+                if self._identity is None:
+                    self._identity = inspect_snowflake_identity(self._connection)
+                    log_identity(self._identity)
+        return self._identity
 
     # ------------------------------------------------------------------
     # Connection lifecycle

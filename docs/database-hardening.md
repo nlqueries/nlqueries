@@ -614,6 +614,25 @@ The same shape, in each vendor's vocabulary:
 - a statement timeout and a cost or slot cap,
 - and no membership in any role that reads the host filesystem or all data.
 
+### What `nlqueries health` checks on other engines
+
+The identity line described for PostgreSQL in step 6 is also printed for MySQL
+and MariaDB (through the `sqlalchemy` connector), SQL Server and Snowflake. In
+each case it names the login and anything it holds beyond reading; a login that
+holds nothing more is `least privilege`, and a check that could not read the
+grants is a failure, not a pass.
+
+| Engine | Read from | Reported |
+|---|---|---|
+| MySQL, MariaDB | `SHOW GRANTS` | any privilege other than `SELECT`, `SHOW VIEW` and `USAGE`, with the scope it applies to (`INSERT`, `DROP`, `FILE`, `SUPER`, `ALL PRIVILEGES`, a dynamic `*_ADMIN` privilege, `EXECUTE`...); `WITH GRANT OPTION`; and any role granted, since a role's privileges are not expanded |
+| SQL Server | role membership and `fn_my_permissions` for the database and the server | membership of any server role but `public`, and of any database role but `public` and `db_datareader`; any effective database permission beyond `CONNECT`, `SELECT`, `VIEW DEFINITION`, `VIEW DATABASE STATE`, `VIEW DATABASE PERFORMANCE STATE`, `SHOWPLAN` and `REFERENCES`; any server permission beyond `CONNECT SQL`, `VIEW ANY DATABASE`, `VIEW ANY DEFINITION`, `VIEW SERVER STATE`, `VIEW SERVER PERFORMANCE STATE` and `CONNECT ANY DATABASE`. Effective permissions include what a custom role or a direct grant gives |
+| Snowflake | `SHOW GRANTS TO ROLE` for the current role and every role it inherits, up to 50 | `ACCOUNTADMIN`, `ORGADMIN`, `SECURITYADMIN`, `SYSADMIN` or `USERADMIN` in reach, and any privilege other than `USAGE`, `SELECT`, `REFERENCES`, `MONITOR`, `OPERATE`, `READ` and `IMPORTED PRIVILEGES`, counted by privilege and object type. Secondary roles are not followed |
+
+MySQL and SQL Server are read each time the pool opens a connection, as
+PostgreSQL is. Snowflake is read the first time `health` asks, since walking the
+role hierarchy is one `SHOW GRANTS` per role. As for PostgreSQL, the check reports
+and does not refuse a connection.
+
 ---
 
 ## If you take one thing
