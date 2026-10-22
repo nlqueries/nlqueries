@@ -61,6 +61,7 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(audit, "_process_context", None)
     monkeypatch.setattr(audit, "_reported", set())
     monkeypatch.setattr(audit, "_failures_reported", set())
+    monkeypatch.setattr(audit, "_dropped", {})
 
 
 def _permitted(agent_id: str | None = "sales", policy: ExecutionPolicy | None = None):
@@ -460,6 +461,46 @@ class TestTheFileSink:
         assert first.rows == second.rows == [[_SECRET]]
         warned = [r for r in caplog.records if "could not be written" in r.getMessage()]
         assert len(warned) == 1
+
+    def test_a_sink_that_stays_refused_keeps_count_of_what_it_lost(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """Warned at the first event and again at 10, 100... with the running
+        count, so a long outage is visible without a line per query."""
+        target = tmp_path / "audit.jsonl"
+        target.mkdir()  # a directory: every write fails
+        monkeypatch.setattr(config, "AUDIT_LOG", str(target))
+
+        with caplog.at_level(logging.WARNING, logger="nlqueries.audit.sink"):
+            for _ in range(10):
+                audit._write("{}")
+
+        warned = [
+            r.getMessage() for r in caplog.records if "could not be written" in r.getMessage()
+        ]
+        assert len(warned) == 2
+        assert "1 event(s) not written" in warned[0]
+        assert "10 event(s) not written" in warned[1]
+
+    def test_a_sink_that_recovers_says_how_many_events_it_lost(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        target = tmp_path / "audit.jsonl"
+        target.mkdir()
+        monkeypatch.setattr(config, "AUDIT_LOG", str(target))
+        for _ in range(3):
+            audit._write("{}")
+        target.rmdir()  # writable from here on
+
+        with caplog.at_level(logging.WARNING, logger="nlqueries.audit.sink"):
+            audit._write('{"n":1}')
+            audit._write('{"n":2}')
+
+        recovered = [r.getMessage() for r in caplog.records if "written again" in r.getMessage()]
+        assert recovered == [
+            f"The audit log {target} is being written again; 3 event(s) were not written to it."
+        ]
+        assert target.read_text(encoding="utf-8").splitlines() == ['{"n":1}', '{"n":2}']
 
 
 @pytest.mark.skipif(not _POSIX, reason="POSIX symlinks, owners and permission bits")

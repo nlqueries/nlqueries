@@ -479,7 +479,10 @@ class BigQueryConnector(DatabaseConnector):
                 job_config.job_timeout_ms = int(effective_timeout * 1000)
             # A cost ceiling, enforced by BigQuery before the job runs: a job
             # that would bill more fails without scanning anything. Unset
-            # means no cap, as before the setting existed.
+            # means no cap, as before the setting existed. One set but
+            # unreadable refuses the query rather than running it uncapped.
+            if config.BIGQUERY_MAX_BYTES_BILLED_ERROR is not None:
+                raise ValueError(config.BIGQUERY_MAX_BYTES_BILLED_ERROR)
             if config.BIGQUERY_MAX_BYTES_BILLED is not None:
                 job_config.maximum_bytes_billed = config.BIGQUERY_MAX_BYTES_BILLED
             query_job = client.query(sql, job_config=job_config)

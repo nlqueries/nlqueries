@@ -311,8 +311,9 @@ sometimes the connection string. Those lines stay out of the reply. The
 reference (`[ref 3f9a1c07]`). For an error the database returned, the
 `WARNING` record carries the same first line, and the full error is logged at
 `DEBUG` under that reference only, since a log is often read more widely than
-the connectors file. A failure anywhere else in the query is logged at
-`ERROR`, with the traceback.
+the connectors file. A failure anywhere else in the query follows the same
+rule: its first line at `ERROR`, and the traceback at `DEBUG` under the same
+reference.
 
 A hybrid answer follows the same rule. When its query fails, the SQL part
 says `this query failed:` with the first line of the error only, both in the

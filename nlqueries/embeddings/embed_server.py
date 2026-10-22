@@ -85,14 +85,12 @@ _ENCODE_WAIT_SECONDS = 300.0
 _PID_FILE = config.STATE_DIR / "embed-server.pid"
 #: The most texts one request may carry. The client splits larger batches into
 #: requests of this size, so a refusal means a caller that is not the client.
-MAX_BATCH_TEXTS = 512
-#: The most characters one request may carry, across all its texts. Encoding
-#: cost grows with the text, so a count alone does not bound the work a single
-#: request can ask for.
-MAX_BATCH_CHARS = 2_000_000
+MAX_BATCH_TEXTS = config.EMBED_MAX_BATCH_TEXTS
+#: The most characters one request may carry, across all its texts.
+MAX_BATCH_CHARS = config.EMBED_MAX_BATCH_CHARS
 #: The largest request body read, in bytes; a longer declared body is refused
 #: without being read. The client sizes its parts to fit.
-MAX_BODY_BYTES = 10 * 1024 * 1024
+MAX_BODY_BYTES = config.EMBED_MAX_BODY_BYTES
 #: The names a request's ``Host`` may give, with any port. The daemon listens on
 #: loopback only, so a client on this host addresses it by one of these; a
 #: request naming anything else was not meant for this daemon.
