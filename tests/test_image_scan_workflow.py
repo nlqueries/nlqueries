@@ -47,7 +47,10 @@ def test_it_runs_weekly_on_tags_on_image_changes_and_by_hand() -> None:
     assert set(triggers) == {"schedule", "push", "pull_request", "workflow_dispatch"}
     (cron,) = [entry["cron"] for entry in triggers["schedule"]]
     assert cron.split()[4] == "1"  # Monday
-    assert triggers["push"] == {"tags": ["v*"]}
+    assert triggers["push"]["tags"] == ["v*"]
+    # main too, so the analysis pull requests are compared against is current
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["paths"] == triggers["pull_request"]["paths"]
     assert set(triggers["pull_request"]) == {"paths"}
     assert sorted(triggers["pull_request"]["paths"]) == [
         ".github/workflows/image-scan.yml",

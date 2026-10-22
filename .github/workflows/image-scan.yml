@@ -5,8 +5,11 @@ name: Image scan (Trivy)
 #
 # Weekly, because a new advisory against something already shipped arrives
 # without any change here; on a version tag, so each release is scanned as it
-# is built; and on a pull request that changes what goes into the image, or
-# this workflow.
+# is built; and on a pull request, or a push to main, that changes what goes
+# into the image, or this workflow. The push keeps main's analysis current:
+# code scanning compares a pull request's findings with the latest analysis of
+# its base branch, so a stale one would put findings already on main on
+# whichever pull request next touched the image.
 #
 # It reports and does not fail: an advisory against the base image would
 # otherwise block unrelated work until upstream ships a fix. The Security tab
@@ -16,7 +19,14 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Mondays, 06:00 UTC
   push:
+    branches: [main]
+    # GitHub does not evaluate path filters for tag pushes, so every v* tag
+    # is scanned; the paths below apply to pushes to main.
     tags: ["v*"]
+    paths:
+      - Dockerfile
+      - "requirements/**"
+      - .github/workflows/image-scan.yml
   pull_request:
     paths:
       - Dockerfile
