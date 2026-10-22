@@ -457,7 +457,7 @@ def test_the_parent_hands_the_child_its_deadline(source, monkeypatch) -> None:
     sent: list[dict] = []
 
     def capture(child, payload: bytes) -> None:
-        sent.append(pickle.loads(payload))
+        sent.append(pickle.loads(payload))  # noqa: S301 - built by the parent under test
         raise _Sent
 
     monkeypatch.setattr(_isolation, "_send", capture)
