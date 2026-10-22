@@ -610,10 +610,16 @@ def _check_embedding() -> _CheckResult:
 
 
 def _check_config() -> _CheckResult:
+    from nlqueries import config as _config  # noqa: PLC0415
     from nlqueries.config import llm_credentials_available  # noqa: PLC0415
 
     issues: list[str] = []
     notes: list[str] = []
+
+    # Recorded rather than raised at import, so this is the first place an
+    # operator sees it before a BigQuery question fails on it.
+    if _config.BIGQUERY_MAX_BYTES_BILLED_ERROR is not None:
+        issues.append(f"{_config.BIGQUERY_MAX_BYTES_BILLED_ERROR} (BigQuery queries are refused)")
 
     if KB_PATH.exists():
         notes.append("KB_PATH exists")
@@ -3848,6 +3854,27 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
 
 #: How long `embed-server stop` waits for the daemon to exit after signalling it.
 _EMBED_STOP_WAIT_SECONDS = 5.0
+#: How long `embed-server start` watches a background daemon for an immediate
+#: exit before reporting it started. A failed start dies within this; a good
+#: one is still loading its model.
+_EMBED_START_GRACE_SECONDS = 2.0
+
+
+def _port_taken(port: int) -> bool:
+    """Whether something already listens on 127.0.0.1:*port*, which the daemon needs.
+
+    A connection rather than a bind. The daemon binds with ``SO_REUSEADDR``,
+    ``HTTPServer``'s default, and a bind without it fails on Linux while the
+    previous daemon's connections sit in ``TIME_WAIT`` for a minute or more
+    after ``stop``, a port the daemon itself would bind. A listener answers a
+    connection whatever options either side bound with. A port bound and not
+    listening is not caught here; the daemon fails on it when it binds.
+    """
+    import socket  # noqa: PLC0415
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
 @cli.group("embed-server")
@@ -3922,14 +3949,37 @@ def embed_server_start(port: int | None, foreground: bool) -> None:
         _daemon.serve(port=port)
         return
 
+    # Checked here because the daemon would only find out after loading its
+    # model, about nine seconds in, which is long after `start` has reported.
+    if _port_taken(port):
+        err_console.print(
+            f"[bold red]✗ Port {port} is already in use on 127.0.0.1.[/bold red] "
+            "Stop what is using it, or start the daemon on another port with --port."
+        )
+        sys.exit(1)
+
     # `-P` keeps the working directory off `sys.path`, so the daemon imports the
     # installed package and nothing that happens to sit where it was started.
-    subprocess.Popen(
+    daemon = subprocess.Popen(
         [sys.executable, "-P", "-m", "nlqueries.embeddings.embed_server", "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    # A daemon that cannot start dies at once -- a source checkout that is not
+    # installed has nothing for `-P` to import -- and its output goes nowhere.
+    # Reporting success then left every query loading the model itself with
+    # nothing to say why.
+    try:
+        status = daemon.wait(timeout=_EMBED_START_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        status = None
+    if status is not None:
+        err_console.print(
+            f"[bold red]✗ The embedding daemon exited at once (status {status}).[/bold red] "
+            "Run [bold]nlqueries embed-server start --foreground[/bold] to see why."
+        )
+        sys.exit(1)
     console.print(
         f"  [green]✓[/green] Embedding daemon started on port {port}. "
         "Future queries will skip model load (~10 ms embedding instead of ~9 s)."

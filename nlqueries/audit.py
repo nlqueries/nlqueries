@@ -366,6 +366,11 @@ _POSIX_MODES = os.name == "posix"
 #: one warning rather than one per query.
 _reported: set[str] = set()
 
+#: Events each path has not received since its last successful write. Reported
+#: again at each power of ten, so a sink that stays refused keeps saying how
+#: much it has lost without a line per query.
+_dropped: dict[str, int] = {}
+
 
 def _write(line: str) -> None:
     """Append *line* to ``NLQ_AUDIT_LOG``, if one is set.
@@ -432,19 +437,40 @@ def _write(line: str) -> None:
             _report(path, f"was refused: {refusal}")
             return
         _reported.discard(path)
+        lost = _dropped.pop(path, 0)
+        if lost:
+            _sink_log.warning(
+                "The audit log %s is being written again; %d event(s) were not written to it.",
+                path,
+                lost,
+            )
 
 
 def _report(path: str, problem: str, *, exc_info: bool = False) -> None:
-    """Warn that *path* got no event, once until a write to it succeeds."""
-    if path in _reported:
+    """Warn that *path* got no event: at the first, and again at 10, 100, 1000...
+
+    Counted until a write to it succeeds, which reports the total lost.
+    """
+    lost = _dropped.get(path, 0) + 1
+    _dropped[path] = lost
+    first = path not in _reported
+    if not first and not _is_power_of_ten(lost):
         return
     _reported.add(path)
     _sink_log.warning(
-        "The audit log %s %s. Events are still logged to nlqueries.audit.",
+        "The audit log %s %s; %d event(s) not written to it so far. Events are "
+        "still logged to nlqueries.audit.",
         path,
         problem,
-        exc_info=exc_info,
+        lost,
+        exc_info=exc_info and first,
     )
+
+
+def _is_power_of_ten(n: int) -> bool:
+    while n >= 10 and n % 10 == 0:
+        n //= 10
+    return n == 1
 
 
 def _refusal(fd: int) -> str | None:

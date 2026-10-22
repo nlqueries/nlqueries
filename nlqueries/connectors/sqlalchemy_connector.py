@@ -150,6 +150,19 @@ _CLIENT_FLAG_PARAMS = ("client_flag", "client_flags")
 #: URL parameters that would switch ``LOAD DATA LOCAL INFILE`` back on.
 _LOCAL_INFILE_PARAMS = ("local_infile", "allow_local_infile")
 
+#: For each MySQL driver whose spelling is known, the connect argument that
+#: turns ``LOAD DATA LOCAL INFILE`` off. The empty name is ``mysqldb``
+#: (mysqlclient), SQLAlchemy's default for ``mysql://``. Another driver -- one
+#: reached through ODBC, say -- takes neither keyword and failed with a
+#: ``TypeError`` at its first connection, so it is refused by name instead.
+_MYSQL_LOCAL_INFILE_OFF: dict[str, dict[str, Any]] = {
+    "": {"local_infile": 0},
+    "mysqldb": {"local_infile": 0},
+    "pymysql": {"local_infile": 0},
+    "mariadbconnector": {"local_infile": 0},
+    "mysqlconnector": {"allow_local_infile": False},
+}
+
 
 def _refuse_dedicated_backend(parsed: URL) -> None:
     """Raise if *parsed* names an engine that has a connector of its own."""
@@ -200,11 +213,15 @@ def _harden_mysql(parsed: URL) -> tuple[URL, dict[str, Any]]:
             ) from None
         query[param] = str(flags & ~_CLIENT_MULTI_STATEMENTS)
 
-    if parsed.get_driver_name() == "mysqlconnector":
-        connect_args: dict[str, Any] = {"allow_local_infile": False}
-    else:
-        connect_args = {"local_infile": 0}
-    return parsed.set(query=query), connect_args
+    connect_args = _MYSQL_LOCAL_INFILE_OFF.get(parsed.get_driver_name())
+    if connect_args is None:
+        known = ", ".join(sorted(d for d in _MYSQL_LOCAL_INFILE_OFF if d))
+        raise ValueError(
+            f"SQLAlchemyConnector cannot turn LOAD DATA LOCAL INFILE off for the "
+            f"{parsed.get_driver_name()!r} MySQL driver, so it does not open it. "
+            f"Use one of: {known}."
+        )
+    return parsed.set(query=query), dict(connect_args)
 
 
 #: Credential keys that configure TLS, mapped to the libpq connection

@@ -876,3 +876,62 @@ class TestTheBytesBilledSetting:
 
         with pytest.raises(ValueError, match="BIGQUERY_MAX_BYTES_BILLED"):
             config._optional_positive_int("BIGQUERY_MAX_BYTES_BILLED")
+
+
+def test_an_unreadable_cap_refuses_the_query_rather_than_running_it_uncapped(monkeypatch):
+    monkeypatch.setattr(config, "BIGQUERY_MAX_BYTES_BILLED", None)
+    monkeypatch.setattr(
+        config,
+        "BIGQUERY_MAX_BYTES_BILLED_ERROR",
+        "BIGQUERY_MAX_BYTES_BILLED must be a whole number of bytes, not '10GB'",
+    )
+    connector, client = _mock_client_for_timeout()
+
+    result = connector.execute_query("SELECT 1")
+
+    client.query.assert_not_called()
+    assert "BIGQUERY_MAX_BYTES_BILLED" in (result.error or "")
+
+
+def test_an_unreadable_cap_does_not_stop_the_process_at_import(tmp_path):
+    """It used to raise while `nlqueries.config` was imported, so every command,
+    `health` and `doctor` included, ended in a traceback."""
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "BIGQUERY_MAX_BYTES_BILLED": "10GB"}
+    probe = (
+        "from nlqueries import config; "
+        "print(config.BIGQUERY_MAX_BYTES_BILLED, '|', config.BIGQUERY_MAX_BYTES_BILLED_ERROR)"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert done.returncode == 0, done.stderr
+    value, error = done.stdout.strip().split(" | ")
+    assert value == "None"
+    assert "BIGQUERY_MAX_BYTES_BILLED" in error and "10GB" in error
+    # And said, where the other unreadable settings are said.
+    assert "every BigQuery query is refused until it is fixed" in done.stderr
+
+
+def test_doctor_reports_an_unreadable_cap(monkeypatch):
+    from nlqueries.cli import main as cli_main
+
+    monkeypatch.setattr(
+        config,
+        "BIGQUERY_MAX_BYTES_BILLED_ERROR",
+        "BIGQUERY_MAX_BYTES_BILLED must be a whole number of bytes, not '10GB'",
+    )
+
+    result = cli_main._check_config()
+
+    assert result.status == "warn"
+    assert "BIGQUERY_MAX_BYTES_BILLED must be a whole number of bytes" in result.detail
