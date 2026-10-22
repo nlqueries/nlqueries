@@ -7,6 +7,7 @@ asserted about storage is read back from the store itself.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import stat
@@ -134,6 +135,15 @@ def test_a_sealed_value_opens_with_its_key_and_shows_nothing(monkeypatch) -> Non
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) == ANSWER
 
 
+def _unreadable_warnings(caplog) -> list[str]:
+    """The warnings, not the debug line every failure also gets."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "could not be read" in r.getMessage()
+    ]
+
+
 def test_another_key_does_not_open_it(monkeypatch, caplog) -> None:
     _encrypt_with(monkeypatch, "first key")
     sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
@@ -141,9 +151,9 @@ def test_another_key_does_not_open_it(monkeypatch, caplog) -> None:
 
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) is None
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) is None
-    warnings = [r for r in caplog.records if "could not be read" in r.getMessage()]
+    warnings = _unreadable_warnings(caplog)
     assert len(warnings) == 1  # once per process, not once per read
-    assert "another key" in warnings[0].getMessage()
+    assert "another key" in warnings[0]
 
 
 def test_unreadable_chunks_warn_once_for_the_kind_not_per_document(monkeypatch, caplog) -> None:
@@ -158,7 +168,7 @@ def test_unreadable_chunks_warn_once_for_the_kind_not_per_document(monkeypatch, 
     for source, value in sealed.items():
         assert at_rest.unseal(value, at_rest.chunk_text_purpose(source)) is None
 
-    warnings = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    warnings = _unreadable_warnings(caplog)
     assert len(warnings) == 1
     assert "nlqueries document chunk text could not be read" in warnings[0]
     assert "\x00" not in warnings[0] and "policy" not in warnings[0]
@@ -195,7 +205,7 @@ def test_each_kind_warns_once_of_its_own(monkeypatch, caplog) -> None:
         assert at_rest.unseal(answer, at_rest.CACHE_ANSWER) is None
         assert at_rest.unseal(chunk, at_rest.chunk_text_purpose("policy")) is None
 
-    warnings = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    warnings = _unreadable_warnings(caplog)
     assert len(warnings) == 2
     assert "nlqueries cache answer could not be read" in warnings[0]
     assert "nlqueries document chunk text could not be read" in warnings[1]
