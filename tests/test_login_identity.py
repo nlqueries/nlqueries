@@ -184,6 +184,41 @@ class TestSQLServer:
     def test_a_read_only_login_reports_nothing(self) -> None:
         assert mssql_identity.concerns_from(**_MSSQL_READER) == ()
 
+    def test_what_public_holds_by_default_is_not_flagged(self) -> None:
+        """Every user's effective permissions since SQL Server 2016."""
+        concerns = mssql_identity.concerns_from(
+            **{
+                **_MSSQL_READER,
+                "database_permissions": [
+                    *_MSSQL_READER["database_permissions"],
+                    "VIEW ANY COLUMN ENCRYPTION KEY DEFINITION",
+                    "VIEW ANY COLUMN MASTER KEY DEFINITION",
+                ],
+            }
+        )
+        assert concerns == ()
+
+    def test_what_a_listed_view_permission_implies_is_not_flagged(self) -> None:
+        """SQL Server 2022 reports the narrower permissions a grant implies."""
+        concerns = mssql_identity.concerns_from(
+            **{
+                **_MSSQL_READER,
+                "database_permissions": [
+                    *_MSSQL_READER["database_permissions"],
+                    "VIEW DATABASE STATE",
+                    "VIEW DATABASE SECURITY STATE",
+                    "VIEW SECURITY DEFINITION",
+                ],
+                "server_permissions": [
+                    *_MSSQL_READER["server_permissions"],
+                    "VIEW SERVER STATE",
+                    "VIEW SERVER SECURITY STATE",
+                    "VIEW ANY ERROR LOG",
+                ],
+            }
+        )
+        assert concerns == ()
+
     def test_server_and_database_roles_are_flagged(self) -> None:
         concerns = mssql_identity.concerns_from(
             **{

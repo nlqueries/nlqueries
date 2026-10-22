@@ -27,6 +27,12 @@ ENGINE = "mssql"
 READ_DATABASE_ROLES = frozenset({"public", "db_datareader"})
 
 #: Database permissions that read or describe and do nothing else.
+#:
+#: ``fn_my_permissions`` reports effective permissions, which includes what
+#: ``public`` holds and what a listed permission implies, so both are here too.
+#: SQL Server 2016 and later grant the two column-key ``VIEW`` permissions to
+#: ``public`` in every database; SQL Server 2022 splits ``VIEW DEFINITION`` and
+#: ``VIEW DATABASE STATE`` into the narrower ``VIEW`` permissions below them.
 READ_DATABASE_PERMISSIONS = frozenset(
     {
         "CONNECT",
@@ -36,10 +42,20 @@ READ_DATABASE_PERMISSIONS = frozenset(
         "VIEW DATABASE PERFORMANCE STATE",
         "SHOWPLAN",
         "REFERENCES",
+        # public's, since SQL Server 2016
+        "VIEW ANY COLUMN ENCRYPTION KEY DEFINITION",
+        "VIEW ANY COLUMN MASTER KEY DEFINITION",
+        # implied by VIEW DEFINITION and VIEW DATABASE STATE, SQL Server 2022
+        "VIEW SECURITY DEFINITION",
+        "VIEW PERFORMANCE DEFINITION",
+        "VIEW CRYPTOGRAPHICALLY SECURED DEFINITION",
+        "VIEW DATABASE SECURITY STATE",
+        "VIEW DATABASE SECURITY AUDIT",
     }
 )
 
-#: Server permissions every login, or a monitoring one, holds.
+#: Server permissions every login, or a monitoring one, holds, and the
+#: narrower ``VIEW`` permissions SQL Server 2022 splits those into.
 READ_SERVER_PERMISSIONS = frozenset(
     {
         "CONNECT SQL",
@@ -48,6 +64,13 @@ READ_SERVER_PERMISSIONS = frozenset(
         "VIEW SERVER STATE",
         "VIEW SERVER PERFORMANCE STATE",
         "CONNECT ANY DATABASE",
+        # implied by VIEW ANY DEFINITION and VIEW SERVER STATE, SQL Server 2022
+        "VIEW ANY SECURITY DEFINITION",
+        "VIEW ANY PERFORMANCE DEFINITION",
+        "VIEW ANY CRYPTOGRAPHICALLY SECURED DEFINITION",
+        "VIEW SERVER SECURITY STATE",
+        "VIEW SERVER SECURITY AUDIT",
+        "VIEW ANY ERROR LOG",
     }
 )
 
