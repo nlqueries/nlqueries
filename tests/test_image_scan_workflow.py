@@ -98,6 +98,14 @@ def test_the_scan_reports_high_and_critical_without_failing_the_job() -> None:
     assert upload["with"] == {"sarif_file": output, "category": "trivy-image"}
 
 
+def test_a_fork_pull_request_scans_but_does_not_upload() -> None:
+    """A fork's token is read-only, so the upload would fail with a 403."""
+    upload_if = _step("Upload")["if"]
+    assert "github.event_name != 'pull_request'" in upload_if
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in upload_if
+    assert "if" not in _step("Scan")
+
+
 def test_the_image_is_built_locally_and_not_pushed() -> None:
     build = _step("Build the image")["run"]
     assert build.startswith("docker build ")
