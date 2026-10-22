@@ -146,6 +146,24 @@ def test_another_key_does_not_open_it(monkeypatch, caplog) -> None:
     assert "another key" in warnings[0].getMessage()
 
 
+def test_unreadable_chunks_warn_once_for_the_kind_not_per_document(monkeypatch, caplog) -> None:
+    """A chunk's associated data carries its document; the warning must not."""
+    _encrypt_with(monkeypatch, "first key")
+    sealed = {
+        source: at_rest.seal(CHUNK, at_rest.chunk_text_purpose(source))
+        for source in ("policy", "salaries")
+    }
+    monkeypatch.setenv(at_rest.KEY_ENV, "second key")
+
+    for source, value in sealed.items():
+        assert at_rest.unseal(value, at_rest.chunk_text_purpose(source)) is None
+
+    warnings = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "nlqueries document chunk text could not be read" in warnings[0]
+    assert "\x00" not in warnings[0] and "policy" not in warnings[0]
+
+
 def test_an_answer_cannot_be_moved_into_a_chunk(monkeypatch) -> None:
     _encrypt_with(monkeypatch)
     sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)

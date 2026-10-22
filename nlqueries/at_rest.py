@@ -302,13 +302,21 @@ def unseal(value: str, purpose: bytes) -> str | None:
 
 
 def _report(purpose: bytes, why: str) -> None:
-    if purpose in _warned:
-        logger.debug("An encrypted %s could not be read: %s", purpose.decode(), why)
+    """Warn once per process for each kind of value that could not be read.
+
+    The kind is the associated data up to its first NUL: a chunk's carries its
+    document identifier after one (:func:`chunk_text_purpose`), which would
+    otherwise make the warning once per document, and put the identifier and
+    the NUL in the log line.
+    """
+    kind = purpose.split(b"\x00", 1)[0]
+    if kind in _warned:
+        logger.debug("An encrypted %s could not be read: %s", kind.decode(), why)
         return
-    _warned.add(purpose)
+    _warned.add(kind)
     logger.warning(
         "An encrypted %s could not be read: %s. Such entries are treated as absent; this "
         "is reported once per process.",
-        purpose.decode(),
+        kind.decode(),
         why,
     )
