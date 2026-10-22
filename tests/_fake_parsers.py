@@ -207,6 +207,18 @@ class KilledBySystem(_Fake):
         return []
 
 
+class LeavesAnEscapedGrandchild(_Fake):
+    """Starts a process in a session of its own, out of reach of the group kill,
+    holding stderr open; returns its pid."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        escaped = subprocess.Popen(_long_lived(60), start_new_session=sys.platform != "win32")
+        return [_chunk(source_id, str(escaped.pid))]
+
+
 class StartsAGrandchildThenHangs(_Fake):
     """Starts a long-lived process, records its pid beside the source, then hangs."""
 

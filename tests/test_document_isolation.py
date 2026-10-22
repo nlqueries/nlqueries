@@ -241,10 +241,11 @@ def test_a_process_left_holding_stderr_does_not_hold_the_caller(source) -> None:
     import signal
 
     started = time.monotonic()
-    (chunk,) = fake.LeavesAGrandchild().ingest(source, "s1")
+    # One that left the child's process group, so the group kill does not end
+    # it: it inherits descriptor 2 and, on POSIX, holds the pipe for its 60
+    # seconds, which leaves the bounded drain the only thing that lets go.
+    (chunk,) = fake.LeavesAnEscapedGrandchild().ingest(source, "s1")
     try:
-        # The drain waits are bounded. On POSIX the grandchild inherits
-        # descriptor 2 and holds the pipe for its 60 seconds.
         assert time.monotonic() - started < 40
     finally:
         with contextlib.suppress(OSError):  # gone already, or not ours to stop
@@ -274,11 +275,24 @@ def test_a_child_killed_by_the_system_is_a_retryable_timeout(source) -> None:
 
 
 def _gone(pid: int, within: float = 15.0) -> bool:
+    """Whether *pid* has ended, a zombie counted as ended.
+
+    The grandchild is reparented when the parse child exits, and is reaped by
+    whatever is PID 1 -- which in a container may be pytest, which does not --
+    so killed, it can stay a zombie, and `kill(pid, 0)` still succeeds on that.
+    """
     from nlqueries.embeddings.embed_server import is_pid_alive
+
+    def zombie() -> bool:
+        try:
+            with open(f"/proc/{pid}/stat", encoding="ascii") as stat:
+                return stat.read().rsplit(")", 1)[1].split()[0] == "Z"
+        except OSError:
+            return False
 
     deadline = time.monotonic() + within
     while time.monotonic() < deadline:
-        if not is_pid_alive(pid):
+        if not is_pid_alive(pid) or zombie():
             return True
         time.sleep(0.25)
     return False
