@@ -23,15 +23,38 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
+
+#: Characters an agent's storage name does not keep.
+_UNSAFE_NAME_CHARS = re.compile(r"[^\w.-]")
 
 #: Owner may read, write and enter. Nobody else.
 _DIR_MODE = stat.S_IRWXU
 
 #: Owner may read and write. Nobody else.
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
+
+
+def agent_storage_id(agent_id: str) -> str:
+    """The name *agent_id*'s files and Qdrant collections are stored under.
+
+    Letters, digits, ``_``, ``-`` and ``.`` are kept and anything else becomes
+    ``_``. Every store keyed by agent uses this one rule: the knowledge base,
+    the feedback and session files, and the cache, document and schema
+    collections. Two rules for one agent let the stores disagree about which
+    agent a name belongs to: the cache once turned ``.`` into ``_``, so
+    ``sales.eu`` and ``sales_eu`` shared one cache.
+
+    An ID and its sanitised form name the same storage on purpose. A connector
+    ID such as ``postgres:localhost:mydb`` is used by the CLI as written, while
+    the MCP server finds agents by knowledge-base file name and so knows it as
+    ``postgres_localhost_mydb``; both must reach the one agent, and
+    ``connectors.loader`` resolves either to the same connector.
+    """
+    return _UNSAFE_NAME_CHARS.sub("_", agent_id)
 
 
 def private_dir(path: Path) -> Path:

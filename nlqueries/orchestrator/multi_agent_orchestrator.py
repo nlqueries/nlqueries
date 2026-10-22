@@ -53,6 +53,7 @@ from typing import Any
 from nlqueries.cache.envelope import binding_for_agent
 from nlqueries.cache.semantic_cache import CacheEntry, SemanticCache
 from nlqueries.connectors.base import QueryResult
+from nlqueries.embeddings.qdrant_store import agent_collection, agent_collection_to_read
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
@@ -330,7 +331,7 @@ async def _run_sql(
 
 async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[Citation] | None]:
     orch = DocumentOrchestrator()
-    collection = f"doc_{agent_id}_chunks"
+    collection = await asyncio.to_thread(agent_collection_to_read, "doc_", agent_id, "_chunks")
     tokens: list[str] = []
     async for token in orch.handle_question(question, collection):
         tokens.append(token)
@@ -346,11 +347,16 @@ async def _run_hybrid(
     extra_dynamic_context: str | None = None,
     execution: ExecutionPolicy = DEFAULT_POLICY,
     deadline: float | None = None,
-) -> tuple[list[str], list[str], list[Citation] | None]:
-    """Run SQL and Document agents concurrently via ``asyncio.gather``."""
+) -> tuple[list[str], list[str], list[Citation] | None, str]:
+    """Run SQL and Document agents concurrently via ``asyncio.gather``.
+
+    Returns the SQL tokens, the document tokens, the citations, and the
+    document collection that was read, so the merge records that one without
+    asking Qdrant again on the event loop.
+    """
     sql_orch = Orchestrator()
     doc_orch = DocumentOrchestrator()
-    collection = f"doc_{agent_id}_chunks"
+    collection = await asyncio.to_thread(agent_collection_to_read, "doc_", agent_id, "_chunks")
 
     async def _collect_sql() -> list[str]:
         tokens: list[str] = []
@@ -374,7 +380,7 @@ async def _run_hybrid(
 
     sql_tokens, doc_tokens = await asyncio.gather(_collect_sql(), _collect_doc())
     citations = _extract_citations_from_tokens(doc_tokens)
-    return sql_tokens, doc_tokens, citations
+    return sql_tokens, doc_tokens, citations, collection
 
 
 def _merge_hybrid(
@@ -382,6 +388,7 @@ def _merge_hybrid(
     agent_id: str,
     sql_tokens: list[str],
     citations: list[Citation] | None,
+    collection: str | None = None,
 ) -> HybridQueryResult:
     # Whether a query ran: when not, the result is the statement-only fallback,
     # and its one cell is the generated statement rather than data.
@@ -392,7 +399,9 @@ def _merge_hybrid(
         doc_retrieval = DocumentRetrievalResult(
             chunks=[],
             citations=citations,
-            collection=f"doc_{agent_id}_chunks",
+            # The collection `_run_hybrid` read, passed in: resolving it again
+            # here could block the event loop on a Qdrant round trip.
+            collection=collection or agent_collection("doc_", agent_id, "_chunks"),
         )
 
     return merge_results(
@@ -760,7 +769,9 @@ class MultiAgentOrchestrator:
 
         if intent == IntentType.document:
             doc_orch = DocumentOrchestrator()
-            collection = f"doc_{agent_id}_chunks"
+            collection = await asyncio.to_thread(
+                agent_collection_to_read, "doc_", agent_id, "_chunks"
+            )
             seen = []
             async for token in doc_orch.handle_question(effective_question, collection):
                 seen.append(token)
@@ -784,7 +795,7 @@ class MultiAgentOrchestrator:
         citations: list[Citation] | None = None
 
         if intent == IntentType.hybrid:
-            sql_tokens, document_tokens, citations = await _run_hybrid(
+            sql_tokens, document_tokens, citations, document_collection = await _run_hybrid(
                 effective_question,
                 agent_id,
                 dialect,
@@ -793,7 +804,9 @@ class MultiAgentOrchestrator:
                 execution,
                 deadline=deadline,
             )
-            hybrid_result = _merge_hybrid(effective_question, agent_id, sql_tokens, citations)
+            hybrid_result = _merge_hybrid(
+                effective_question, agent_id, sql_tokens, citations, document_collection
+            )
 
             # Hybrid answers are not cached, and no write is scheduled.
             #
