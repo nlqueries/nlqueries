@@ -236,6 +236,16 @@ def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
         return DocumentExtractionTimeout(
             f"Extracting {name} used up its {config.DOCUMENT_PARSE_CPU_SECONDS}s of CPU time."
         )
+    # SIGKILL, with nothing on stderr: the kernel's out-of-memory killer, which
+    # is how a container's memory limit is reached -- a cgroup, not an rlimit,
+    # so the child never sees MemoryError. Nothing else here sends it: the
+    # deadline and an interrupted caller both raise before this is reached.
+    kill_signal = getattr(signal, "SIGKILL", None)
+    if kill_signal is not None and returncode == -int(kill_signal):
+        return DocumentTooComplexError(
+            f"Extracting {name} was killed by the system, which a container's memory "
+            "limit does when it is reached; the document needs more memory than is available."
+        )
     last = next((line for line in reversed(text.splitlines()) if line.strip()), "")
     return RuntimeError(f"Extracting {name} failed: the parser exited with {returncode}. {last}")
 

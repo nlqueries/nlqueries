@@ -769,6 +769,10 @@ libraries included; on Windows a Job Object's process memory limit, which counts
 committed memory. An ordinary document at :data:`MAX_DOCUMENT_EXPANDED_BYTES`
 needs about half of it (see there). A document that exceeds it is refused as too
 complex.
+
+A container's memory limit is a cgroup, not an rlimit, so it is not the lower
+hard limit the child keeps; when it is reached first, the kernel kills the
+child, which is reported the same way.
 """
 
 DOCUMENT_PARSE_CPU_SECONDS: int = _positive_int("NLQ_DOCUMENT_PARSE_CPU_SECONDS", 180)

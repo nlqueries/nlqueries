@@ -214,6 +214,26 @@ def test_a_process_left_holding_stderr_does_not_hold_the_caller(source) -> None:
             os.kill(int(chunk.text), signal.SIGTERM)
 
 
+def test_a_result_larger_than_the_pipe_comes_back_while_the_child_runs(source, monkeypatch) -> None:
+    """The result is read as it is written. Read after the wait instead, the
+    child would block on a full pipe until the deadline killed it."""
+    monkeypatch.setattr(_limits, "MAX_SECONDS", 5.0)
+    started = time.monotonic()
+
+    chunks = fake.ReturnsMany().ingest(source, "s1")
+
+    assert len(chunks) == 5000
+    assert chunks[-1].text.startswith("chunk 4999 ")
+    assert time.monotonic() - started < 15  # inside the 5 + 10 second deadline
+
+
+@pytest.mark.skipif(not _POSIX, reason="Windows has no SIGKILL")
+def test_a_child_killed_by_the_system_is_refused_as_too_complex(source) -> None:
+    """A container's memory limit is reached by the kernel killing the child."""
+    with pytest.raises(DocumentTooComplexError, match="killed by the system"):
+        fake.KilledBySystem().ingest(source, "s1")
+
+
 def test_a_child_that_dies_is_reported_by_its_last_line(source) -> None:
     with pytest.raises(RuntimeError, match="exited with 3.*the last thing it said"):
         fake.ChattersThenDies().ingest(source, "s1")

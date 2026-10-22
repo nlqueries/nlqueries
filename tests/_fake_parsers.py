@@ -151,6 +151,35 @@ class LeavesAGrandchild(_Fake):
         return [_chunk(source_id, str(grandchild.pid))]
 
 
+class ReturnsMany(_Fake):
+    """A result far larger than a pipe's buffer, as any real document's is."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        return [
+            DocumentChunk(
+                chunk_id=f"{source_id}-{n}",
+                source_id=source_id,
+                source_name="fake",
+                page_number=None,
+                chunk_index=n,
+                text=f"chunk {n} " + "of a long document " * 5,
+                metadata={},
+            )
+            for n in range(5000)
+        ]
+
+
+class KilledBySystem(_Fake):
+    """Dies as the kernel's out-of-memory killer leaves a process: SIGKILL, no traceback."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import os  # noqa: PLC0415
+        import signal  # noqa: PLC0415
+
+        os.kill(os.getpid(), signal.SIGKILL)  # type: ignore[attr-defined]
+        return []
+
+
 class ReportsLimits(_Fake):
     """Returns the limits it ran under."""
 
