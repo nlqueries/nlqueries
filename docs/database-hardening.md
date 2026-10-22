@@ -641,9 +641,9 @@ because it is the database owner everywhere and holds `CONTROL` among the
 database's effective permissions; other server roles show only when the server
 scope can be read. Grants on a schema or an object (`GRANT INSERT ON SCHEMA::dbo
 TO app`) are not seen: `fn_my_permissions` is read for the database and the
-server, and those grants are held on the schema or the object. So on SQL Server,
-`least privilege` means nothing beyond reading at database and server scope;
-check schema and object grants in `sys.database_permissions`.
+server, and those grants are held on the schema or the object. So on SQL Server
+a clean result reads `least privilege at database and server scope`; check
+schema and object grants in `sys.database_permissions`.
 
 On Snowflake the check waits up to 30 seconds for a running query to release the
 session; if the query is still running after that, the check reports that it

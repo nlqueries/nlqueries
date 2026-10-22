@@ -48,6 +48,9 @@ class LoginIdentity:
     #: with its reason. The check completed on what it read, so this is
     #: reported alongside the result rather than in place of it.
     unread: tuple[str, ...] = ()
+    #: What the check covers, where that is less than the whole login: said
+    #: with a clean result, so it cannot be read as more than it is.
+    scope: str = ""
 
     @property
     def is_least_privilege(self) -> bool:
@@ -68,7 +71,7 @@ class LoginIdentity:
         elif self.unread:
             found = "nothing beyond reading in what was read"
         else:
-            found = "least privilege"
+            found = f"least privilege at {self.scope}" if self.scope else "least privilege"
         if self.unread:
             found += f" (not read: {'; '.join(self.unread)})"
         return f"{who}: {found}"
@@ -86,6 +89,13 @@ def log_identity(identity: LoginIdentity) -> None:
         logger.warning(
             "The %s login is more privileged than this connector needs: %s. "
             "See docs/database-hardening.md for the login to create instead.",
+            identity.engine,
+            identity.summary(),
+        )
+    elif identity.unread:
+        # As `health` reports it: a check read in part is a caveat, not a pass.
+        logger.warning(
+            "The %s login's grants were read only in part: %s",
             identity.engine,
             identity.summary(),
         )

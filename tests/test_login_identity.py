@@ -81,6 +81,19 @@ def test_a_login_with_no_concerns_is_least_privilege() -> None:
     assert identity.summary() == "reader@%@shop: least privilege"
 
 
+def test_a_partly_read_identity_is_logged_as_a_warning(caplog) -> None:
+    """The log and `health` agree: a check read in part is not a clean one."""
+    import logging
+
+    from nlqueries.connectors.login_identity import log_identity
+
+    with caplog.at_level(logging.DEBUG, logger="nlqueries.connectors.login_identity"):
+        log_identity(LoginIdentity("snowflake", "APP", "SHOP", unread=("the grants of X",)))
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert "read only in part" in record.getMessage()
+
+
 def test_what_could_not_be_read_is_reported_with_the_result() -> None:
     identity = LoginIdentity("mssql", "reader", "shop", unread=("server roles (denied)",))
     assert identity.summary() == (
@@ -371,20 +384,30 @@ class TestSQLServer:
         identity = mssql_identity.inspect_identity(_connection(cursor))
         assert identity.undetermined_reason == "denied"
 
-    def test_a_contained_user_is_named(self) -> None:
-        """No server login, so ``SUSER_SNAME()`` is NULL; the user name stands in."""
-        assert "COALESCE(SUSER_SNAME(), USER_NAME())" in mssql_identity.LOGIN_SQL
+    @staticmethod
+    def _clean_read(login_row: tuple[object, str]) -> LoginIdentity:
         cursor = _Cursor(
             {
-                mssql_identity.LOGIN_SQL: [(None, "shop")],
+                mssql_identity.LOGIN_SQL: [login_row],
                 mssql_identity.SERVER_ROLES_SQL: [],
                 mssql_identity.DATABASE_ROLES_SQL: [("public",)],
                 mssql_identity.DATABASE_PERMISSIONS_SQL: [("CONNECT",)],
                 mssql_identity.SERVER_PERMISSIONS_SQL: [],
             }
         )
-        identity = mssql_identity.inspect_identity(_connection(cursor))
-        assert "None" not in identity.summary()
+        return mssql_identity.inspect_identity(_connection(cursor))
+
+    def test_a_contained_user_is_named(self) -> None:
+        """No server login, so ``SUSER_SNAME()`` is NULL; the user name stands in."""
+        assert "COALESCE(SUSER_SNAME(), USER_NAME())" in mssql_identity.LOGIN_SQL
+        assert self._clean_read(("app_user", "shop")).summary().startswith("app_user@shop: ")
+        # And a NULL that got through anyway is not printed as a login called None.
+        assert "None" not in self._clean_read((None, "shop")).summary()
+
+    def test_a_clean_read_says_what_it_covered(self) -> None:
+        """Schema and object grants are not read, so the pass is qualified."""
+        summary = self._clean_read(("app_user", "shop")).summary()
+        assert summary == "app_user@shop: least privilege at database and server scope"
 
 
 # --- Snowflake ------------------------------------------------------------------

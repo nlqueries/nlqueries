@@ -203,4 +203,6 @@ def inspect_identity(connection: Any) -> LoginIdentity:
             server["server permissions"],
         ),
         unread=tuple(unread),
+        # Said with a clean result: schema and object grants are not read.
+        scope="database and server scope",
     )
