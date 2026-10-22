@@ -128,7 +128,7 @@ else:
         )
 
 
-def _arm_watchdog(seconds: float | None) -> None:
+def _arm_watchdog(seconds: float) -> None:
     """End this process at *seconds*, whatever the parser is doing.
 
     The parent kills the child at the same deadline, so this matters only when
@@ -152,8 +152,6 @@ def _arm_watchdog(seconds: float | None) -> None:
     group. On Windows the Job Object's CPU-time limit ends such a parse, as
     ``RLIMIT_CPU`` does on POSIX.
     """
-    if not seconds:
-        return
     from nlqueries.document_connectors._isolation import (  # noqa: PLC0415
         WATCHDOG_BACKSTOP_SECONDS,
         WATCHDOG_EXIT_CODE,
@@ -191,7 +189,9 @@ def main() -> int:
     for name, value in payload["limits"].items():
         setattr(_limits, name, value)
     _apply_resource_limits(payload["memory_bytes"], payload["cpu_seconds"])
-    _arm_watchdog(payload.get("deadline_seconds"))
+    # Indexed, not `get`: a parent that stopped sending it would otherwise
+    # disarm every child without a word.
+    _arm_watchdog(payload["deadline_seconds"])
 
     result = _isolation.child_result(payload["connector"], payload["source"], payload["source_id"])
     out.write(pickle.dumps(result))

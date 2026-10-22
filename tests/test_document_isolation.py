@@ -446,6 +446,30 @@ def test_the_cpu_limit_ends_a_child_whose_watchdog_cannot_run(source) -> None:
     assert time.monotonic() - started < 30
 
 
+def test_the_parent_hands_the_child_its_deadline(source, monkeypatch) -> None:
+    """Every other watchdog test builds its own payload; this one reads the one
+    the real parent sends."""
+    import pickle
+
+    class _Sent(Exception):
+        pass
+
+    sent: list[dict] = []
+
+    def capture(child, payload: bytes) -> None:
+        sent.append(pickle.loads(payload))
+        raise _Sent
+
+    monkeypatch.setattr(_isolation, "_send", capture)
+
+    with pytest.raises(_Sent):
+        fake.Returns().ingest(source, "s1")
+
+    (payload,) = sent
+    expected = float(_limits.MAX_SECONDS) + _isolation.CHILD_START_SECONDS
+    assert payload["deadline_seconds"] == expected
+
+
 def test_a_child_its_watchdog_stopped_is_a_timeout() -> None:
     error = _isolation._death("doc.pdf", _isolation.WATCHDOG_EXIT_CODE, b"")
     assert isinstance(error, DocumentExtractionTimeout)
