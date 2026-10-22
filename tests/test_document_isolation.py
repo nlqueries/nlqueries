@@ -8,6 +8,7 @@ caller gets the refusal it already handles.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -140,6 +141,38 @@ def test_an_error_that_cannot_cross_the_pipe_is_still_reported(source) -> None:
 def test_what_a_parser_prints_does_not_corrupt_the_result(source) -> None:
     (chunk,) = fake.Prints().ingest(source, "s1")
     assert chunk.text == "after the chatter"
+
+
+def test_what_reaches_the_descriptor_does_not_corrupt_the_result(source) -> None:
+    (chunk,) = fake.WritesToTheDescriptor().ingest(source, "s1")
+    assert chunk.text == "after the noise"
+
+
+def test_a_caller_stopped_mid_parse_does_not_leave_the_child_running(source, monkeypatch) -> None:
+    """A task's time limit or an interrupt reaches the parent, not the child."""
+    started: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    class Interrupted(real_popen):  # type: ignore[type-arg, misc]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            started.append(self)
+
+        def communicate(self, input=None, timeout=None):
+            if input is not None:
+                self.stdin.write(input)  # the child starts parsing
+                self.stdin.close()
+                time.sleep(1)
+                raise KeyboardInterrupt
+            return super().communicate(timeout=timeout)
+
+    monkeypatch.setattr(_isolation.subprocess, "Popen", Interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        fake.Hangs().ingest(source, "s1")
+
+    (child,) = started
+    assert child.poll() is not None  # killed and reaped, not left behind
+    assert child.stdout is not None and child.stdout.closed
 
 
 def test_the_child_runs_under_the_parents_limits(source, monkeypatch) -> None:

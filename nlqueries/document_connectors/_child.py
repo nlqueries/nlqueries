@@ -4,12 +4,13 @@ nlqueries.document_connectors._child
 The child process :mod:`._isolation` starts to parse one document.
 
 Reads its instructions from stdin, applies the limits, parses, and writes the
-outcome to stdout. Anything a parser prints goes to stderr, so it cannot corrupt
-the result.
+outcome to stdout. Anything a parser writes to stdout goes to stderr instead, so
+it cannot corrupt the result.
 """
 
 from __future__ import annotations
 
+import os
 import pickle  # noqa: S403 - both ends are this package
 import sys
 
@@ -114,7 +115,13 @@ else:
 
 
 def main() -> int:
-    out = sys.stdout.buffer
+    # The result goes out on a private copy of descriptor 1, and descriptor 1
+    # itself is pointed at stderr. Rebinding `sys.stdout` alone would leave the
+    # descriptor to the parser's C libraries, `sys.__stdout__` and any process
+    # the parser starts, and one stray byte there makes the result unreadable.
+    # The copy is not inherited (PEP 446), so a grandchild cannot reach it.
+    out = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
     sys.stdout = sys.stderr
     payload = pickle.loads(sys.stdin.buffer.read())  # noqa: S301 - written by our parent
 

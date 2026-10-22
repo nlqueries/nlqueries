@@ -112,6 +112,22 @@ class Prints(_Fake):
         return [_chunk(source_id, "after the chatter")]
 
 
+class WritesToTheDescriptor(_Fake):
+    """Writes to descriptor 1 directly, as a C library or a child process would."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import os  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        os.write(1, b"written below Python's sys.stdout\n")
+        assert sys.__stdout__ is not None
+        sys.__stdout__.write("through sys.__stdout__\n")
+        sys.__stdout__.flush()
+        subprocess.run([sys.executable, "-c", "print('from a grandchild')"], check=True)
+        return [_chunk(source_id, "after the noise")]
+
+
 class ReportsLimits(_Fake):
     """Returns the limits it ran under."""
 

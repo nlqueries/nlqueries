@@ -98,11 +98,17 @@ def parse_in_child(connector: type, source: str | Path, source_id: str) -> list[
     try:
         out, err = child.communicate(pickle.dumps(payload), timeout=deadline)
     except subprocess.TimeoutExpired:
-        child.kill()
-        child.communicate()
+        _stop(child)
         raise DocumentExtractionTimeout(
             f"Extracting {name} did not finish within {deadline:g}s and was stopped."
         ) from None
+    except BaseException:
+        # The caller was stopped rather than the parse: a task's time limit, a
+        # worker shutting down, an interrupt. The child would otherwise outlive
+        # it holding the file and its memory, and on Windows with no limit on
+        # its time at all, since the deadline above was the only one.
+        _stop(child)
+        raise
 
     if out:
         try:
@@ -118,6 +124,12 @@ def parse_in_child(connector: type, source: str | Path, source_id: str) -> list[
         if kind == "unpicklable":
             raise RuntimeError(value)
     raise _death(name, child.returncode, err)
+
+
+def _stop(child: subprocess.Popen[bytes]) -> None:
+    """Kill *child* and reap it, closing its pipes."""
+    child.kill()
+    child.communicate()
 
 
 def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
