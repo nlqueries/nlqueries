@@ -281,6 +281,25 @@ def test_without_hard_links_the_key_is_created_at_0600_not_chmodded(monkeypatch)
     assert flags & os.O_EXCL and flags & os.O_CREAT
 
 
+def test_without_hard_links_the_key_is_on_disk_before_it_is_used(monkeypatch) -> None:
+    """Synced as the linked key is: an empty file after a power cut never completes."""
+    _encrypt_with(monkeypatch, key=None)
+    _no_hard_links(monkeypatch)
+    synced: list[bytes] = []
+    real_fsync = at_rest.os.fsync
+
+    def record(fd):
+        real_fsync(fd)
+        synced.append(at_rest.key_path().read_bytes() if at_rest.key_path().exists() else b"")
+
+    monkeypatch.setattr(at_rest.os, "fsync", record)
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+
+    # The temporary file's sync happens before the key path exists; the
+    # fallback's happens with the key written to it.
+    assert len(synced[-1]) == 64
+
+
 def test_the_loser_waits_for_the_winners_key_to_be_complete(monkeypatch) -> None:
     _encrypt_with(monkeypatch, key=None)
     _no_hard_links(monkeypatch)

@@ -213,6 +213,10 @@ def _generated() -> bytes:
                     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
                     with os.fdopen(os.open(path, flags, 0o600), "wb") as fh:
                         fh.write(key)
+                        # On disk before it is closed, as the linked file is: a
+                        # file left empty by a power cut would stop every write.
+                        fh.flush()
+                        os.fsync(fh.fileno())
             except FileExistsError:
                 return _winners_key()
         finally:
