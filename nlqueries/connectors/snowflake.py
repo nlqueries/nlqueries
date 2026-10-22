@@ -315,7 +315,7 @@ class SnowflakeConnector(DatabaseConnector):
             WHERE table_type = 'BASE TABLE'
               AND table_schema NOT IN ({_placeholders(_SYSTEM_SCHEMAS)})
             ORDER BY table_schema, table_name
-            """,
+            """,  # noqa: S608 - a quoted identifier and placeholders
             params=_SYSTEM_SCHEMAS,
         )
         result: dict[tuple[str, str], dict[str, Any]] = {}
@@ -339,7 +339,7 @@ class SnowflakeConnector(DatabaseConnector):
             FROM {_quote_identifier(database)}.INFORMATION_SCHEMA.COLUMNS
             WHERE table_schema NOT IN ({_placeholders(_SYSTEM_SCHEMAS)})
             ORDER BY table_schema, table_name, ordinal_position
-            """,
+            """,  # noqa: S608 - a quoted identifier and placeholders
             params=_SYSTEM_SCHEMAS,
         )
         result: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -402,7 +402,7 @@ class SnowflakeConnector(DatabaseConnector):
                AND kcu.table_name = tc.table_name
             WHERE tc.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
               AND tc.table_schema NOT IN ({_placeholders(_SYSTEM_SCHEMAS)})
-            """,
+            """,  # noqa: S608 - quoted identifiers only
             params=_SYSTEM_SCHEMAS,
         )
         primary_keys: dict[tuple[str, str], set[str]] = {}
@@ -473,7 +473,7 @@ class SnowflakeConnector(DatabaseConnector):
             GROUP BY query_text
             ORDER BY execution_count DESC
             LIMIT {int(limit)}
-            """,
+            """,  # noqa: S608 - int()s only
         )
         return [cls._row_to_query_record(row) for row in rows]
 
@@ -496,7 +496,7 @@ class SnowflakeConnector(DatabaseConnector):
             GROUP BY query_text
             ORDER BY execution_count DESC
             LIMIT {int(limit)}
-            """,
+            """,  # noqa: S608 - int()s only
         )
         return [cls._row_to_query_record(row) for row in rows]
 

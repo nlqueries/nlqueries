@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -34,6 +35,9 @@ from nlqueries.connectors.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What a BigQuery location looks like: `us`, `eu`, `europe-west1`.
+_LOCATION = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 # Region used to qualify INFORMATION_SCHEMA.JOBS_BY_PROJECT when the
@@ -199,7 +203,9 @@ class BigQueryConnector(DatabaseConnector):
             try:
                 dataset = self._client.get_dataset(self._dataset_id)
                 location = dataset.location
-                if location:
+                # It goes between backticks in the history query, unescaped, so
+                # only the shape a location has (`us`, `europe-west1`) is used.
+                if location and _LOCATION.fullmatch(location.lower()):
                     return f"region-{location.lower()}"
             except Exception:  # noqa: BLE001 — fall through to the default
                 logger.debug(
@@ -369,7 +375,7 @@ class BigQueryConnector(DatabaseConnector):
                 GROUP BY query
                 ORDER BY job_count DESC
                 LIMIT {int(limit)}
-                """,
+                """,  # noqa: S608 - a validated region, int()s and a fixed filter
                 params=params,
             )
         except Exception as exc:

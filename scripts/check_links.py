@@ -79,9 +79,10 @@ def check(url: str) -> tuple[str, int | None, str]:
     last = ""
     for attempt in range(_ATTEMPTS):
         for method in ("HEAD", "GET"):
-            request = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})
+            # `_LINK` extracts https:// links only, so no other scheme gets here.
+            request = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})  # noqa: S310
             try:
-                with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
+                with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:  # noqa: S310
                     return url, int(response.status), ""
             except urllib.error.HTTPError as exc:
                 if exc.code in _REACHABLE:

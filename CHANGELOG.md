@@ -254,6 +254,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **A URL the package opens must be `http` or `https`.** `urllib` opens
+  `file:` and `ftp:` URLs as readily as web ones, so a `QDRANT_URL` of
+  `file:///etc/passwd` would have been read. `nlqueries health`, the MCP
+  `health` tool, KB stats and the embedding client now refuse any other scheme
+  before opening it. Failures that used to pass without a word are reported: a
+  stored keychain password that could not be put into a connector's URL (the
+  connection then failed as a bad password), a password left in the connectors
+  file when `update-password` moved it to the keychain, KB stats that could not
+  be counted, and an optional connector that fails to load for any reason but a
+  missing driver. The SQL Server query-history limit is taken as an integer, as
+  the other engines' are, and a BigQuery dataset location is used in the
+  history query only in the shape of one. Ruff's security and print rules are
+  now part of the lint.
 - **SQL policy version 4: a generated statement may contain only what is listed
   for its dialect.** The policy used to refuse a function sqlglot does not model
   unless it was allowlisted, so anything sqlglot did model was allowed. It now

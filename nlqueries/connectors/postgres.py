@@ -598,7 +598,7 @@ class PostgresConnector(DatabaseConnector):
                           AND {STATEMENT_IS_A_READ}
                         ORDER BY calls DESC
                         LIMIT :limit
-                        """
+                        """  # noqa: S608 - module constants; the limit is bound
                     ),
                     {"limit": limit},
                 )
@@ -615,7 +615,7 @@ class PostgresConnector(DatabaseConnector):
                           AND {STATEMENT_IS_A_READ}
                         ORDER BY calls DESC
                         LIMIT :limit
-                        """
+                        """  # noqa: S608 - module constants; the limit is bound
                     ),
                     {"limit": limit},
                 )

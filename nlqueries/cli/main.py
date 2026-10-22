@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging as _logging
 import os
 import sys
 import time
@@ -178,8 +179,16 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
                 from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
 
                 url = _mu(url).set(password=pwd).render_as_string(hide_password=False)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # The connection then goes out without the password, and fails
+                # as an authentication error that says nothing about why. Named
+                # by type only: SQLAlchemy 2.0 quotes the URL it could not
+                # parse, password and all.
+                _logging.getLogger(__name__).warning(
+                    "Could not add the stored password for %s to its URL (%s)",
+                    connector_id,
+                    type(exc).__name__,
+                )
     return url
 
 
@@ -392,9 +401,15 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
     import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
 
+    from nlqueries.http_urls import NotAnHttpUrl, http_url  # noqa: PLC0415
+
+    try:
+        url = http_url(f"{qdrant_url}/")
+    except NotAnHttpUrl as exc:
+        return _CheckResult("Qdrant", "fail", f"QDRANT_URL is not usable: {exc}", str(exc))
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(f"{qdrant_url}/", timeout=3) as resp:
+        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310 - scheme checked
             data = _json.loads(resp.read())
             ms = int((time.monotonic() - t0) * 1000)
             version = data.get("version", "?")
@@ -1074,7 +1089,7 @@ def connect(
         "registered": datetime.now(UTC).isoformat(),
     }
     if stored_in_keychain:
-        config["password_storage"] = "keychain"
+        config["password_storage"] = "keychain"  # noqa: S105 - where it is, not what it is
     if alias:
         config["alias"] = alias
     if db_type_l == "snowflake":
@@ -1198,13 +1213,20 @@ def update_password(connector_id: str, password_env: str | None) -> None:
         # Ensure the config marks this connector as using keychain storage and
         # the stored URL does not contain the old password.
         if cfg.get("password_storage") != "keychain":
-            cfg["password_storage"] = "keychain"
+            cfg["password_storage"] = "keychain"  # noqa: S105 - where it is, not what it is
             try:
                 from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
 
                 cfg["url"] = str(_mu(cfg["url"]).set(password=None))
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # The password is in the keychain now, and still in the URL in
+                # the connectors file: say so rather than report it moved. By
+                # type only, as the message may quote the URL it could not parse.
+                console.print(
+                    "[yellow]Warning:[/yellow] the password is stored in the keychain, but "
+                    f"could not be removed from the URL in {CONNECTORS_FILE} "
+                    f"({type(exc).__name__}). Edit the URL there to remove it."
+                )
             _save_connector(connector_id, cfg)
         console.print(
             f"  [bold green]✓[/bold green] Password updated in OS keychain "
@@ -2081,7 +2103,7 @@ def export_kb(
                         f"  [dim]Incorporated {correction_count} feedback "
                         f"correction(s) as high-priority capsules.[/dim]"
                     )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 - being reworked separately
                 pass
 
             # Column values, so the prompt shows how they are spelled: every
@@ -2224,7 +2246,7 @@ def export_kb(
                 console.print(
                     f"  [dim]Promoted {promoted} verified feedback pair(s) to Qdrant.[/dim]"
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - being reworked separately
             pass  # best-effort; never fail export-kb because of this
 
         return
@@ -3960,7 +3982,7 @@ def embed_server_start(port: int | None, foreground: bool) -> None:
 
     # `-P` keeps the working directory off `sys.path`, so the daemon imports the
     # installed package and nothing that happens to sit where it was started.
-    daemon = subprocess.Popen(
+    daemon = subprocess.Popen(  # noqa: S603 - this interpreter, a fixed module, an int
         [sys.executable, "-P", "-m", "nlqueries.embeddings.embed_server", "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

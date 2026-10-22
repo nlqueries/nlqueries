@@ -157,7 +157,21 @@ line-length = 100
 src = ["nlqueries", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID", "S", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use literal test secrets and temporary paths, build SQL for
+# their fixtures, bind test servers to every interface, start processes and
+# open URLs on local test servers.
+"tests/**" = ["S101", "S104", "S105", "S106", "S108", "S310", "S603", "S607", "S608"]
+# The CLI, and the scripts beside the package, print by design.
+"nlqueries/cli/**" = ["T20"]
+"scripts/**" = ["T20"]
+"benchmarks/**" = ["T20"]
+# being reworked separately; remove when that lands
+"nlqueries/auth/mcp_verifier.py" = ["S101", "S105"]
+# being reworked separately; remove when that lands
+"nlqueries/feedback/promoter.py" = ["S110"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # ARCHITECTURAL RULE: core/ must NEVER import from the enterprise layer.
