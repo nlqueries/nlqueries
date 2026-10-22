@@ -38,7 +38,9 @@ import functools
 import logging
 import os
 import secrets
+import string
 import tempfile
+import time
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -72,6 +74,14 @@ _warned: set[bytes] = set()
 #: against a copy of Qdrant's data. A generated key is 64 characters.
 _SHORT_KEY = 32
 _warned_short = False
+
+#: A generated key: 32 random bytes as hex. A stored file holding anything else
+#: is not taken for one, since it may be a key another process is still writing.
+_GENERATED_KEY_LENGTH = 64
+
+#: How long a process that lost the race to create the key waits for the
+#: winner's to be complete.
+_KEY_WAIT_SECONDS = 2.0
 
 
 def key_path() -> Path:
@@ -119,18 +129,25 @@ def _checked(material: bytes) -> bytes:
 
 
 def _stored() -> bytes | None:
-    """The generated key, or None if there is none this process can read.
+    """The generated key, or None if there is no complete one this process can read.
 
     Unreadable counts as none -- a key written by another user at 0600, say --
     so that reading reports it as a missing key and writing fails with the
     message naming the settings, rather than either raising the bare error.
+    So does anything but a whole generated key: on a filesystem without hard
+    links the key is written in place, and a key read half-written would seal
+    text no other process can open.
     """
     path = key_path()
     try:
         material = path.read_bytes().strip()
     except OSError:
         return None
-    return material or None
+    if len(material) != _GENERATED_KEY_LENGTH or not all(
+        chr(b) in string.hexdigits for b in material
+    ):
+        return None
+    return material
 
 
 def _generated() -> bytes:
@@ -162,17 +179,15 @@ def _generated() -> bytes:
                     raise
                 except OSError:
                     # A filesystem without hard links. Created exclusively
-                    # instead: still one winner, though a reader could see the
-                    # file before its 64 bytes are in it.
+                    # instead: still one winner, though a reader can see the
+                    # file before its 64 bytes are in it, which `_stored`
+                    # does not take for a key.
                     with open(path, "xb") as fh:
                         fh.write(key)
                     with contextlib.suppress(OSError):
                         path.chmod(0o600)
             except FileExistsError:
-                existing = _stored()
-                if existing is None:
-                    raise
-                return existing
+                return _winners_key()
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
@@ -189,6 +204,18 @@ def _generated() -> bytes:
         KEY_FILE_ENV,
     )
     return key
+
+
+def _winners_key() -> bytes:
+    """The key another process created first, once it is complete."""
+    deadline = time.monotonic() + _KEY_WAIT_SECONDS
+    while (existing := _stored()) is None:
+        if time.monotonic() >= deadline:
+            raise FileExistsError(
+                f"{key_path()} exists but holds no complete key after {_KEY_WAIT_SECONDS:g}s"
+            )
+        time.sleep(0.05)
+    return existing
 
 
 @functools.lru_cache(maxsize=4)

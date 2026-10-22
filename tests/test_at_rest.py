@@ -186,14 +186,72 @@ def test_a_key_another_process_wrote_first_is_the_one_used(monkeypatch) -> None:
     path = at_rest.key_path()
     real_link = os.link
 
+    theirs = b"ab" * 32
+
     def lose_the_race(src, dst):
-        Path(dst).write_bytes(b"the other process's key")
+        Path(dst).write_bytes(theirs)
         return real_link(src, dst)
 
     monkeypatch.setattr(at_rest.os, "link", lose_the_race)
     sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
 
-    assert path.read_bytes() == b"the other process's key"
+    assert path.read_bytes() == theirs
+    assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) == ANSWER
+
+
+def _no_hard_links(monkeypatch) -> None:
+    def refuse(src, dst):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(at_rest.os, "link", refuse)
+
+
+def test_without_hard_links_the_key_is_created_in_place_once(monkeypatch) -> None:
+    """The only path taken on a filesystem that cannot link."""
+    _encrypt_with(monkeypatch, key=None)
+    _no_hard_links(monkeypatch)
+    sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    path = at_rest.key_path()
+    first = path.read_bytes()
+
+    assert len(first) == 64
+    at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    assert path.read_bytes() == first
+    assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) == ANSWER
+    if sys.platform != "win32":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not [p for p in path.parent.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_key_still_being_written_is_not_used(monkeypatch) -> None:
+    """Seen half-written, a key would seal text no other process can open."""
+    _encrypt_with(monkeypatch, key=None)
+    _no_hard_links(monkeypatch)
+    path = at_rest.key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"ab" * 10)  # the winner is 20 bytes into its 64
+    monkeypatch.setattr(at_rest, "_KEY_WAIT_SECONDS", 0.2)
+
+    with pytest.raises(RuntimeError, match="no complete key"):
+        at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    assert at_rest.unseal(at_rest.MARKER + "AAAA", at_rest.CACHE_ANSWER) is None
+
+
+def test_the_loser_waits_for_the_winners_key_to_be_complete(monkeypatch) -> None:
+    _encrypt_with(monkeypatch, key=None)
+    _no_hard_links(monkeypatch)
+    path = at_rest.key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"cd" * 10)
+    theirs = b"cd" * 32
+
+    def finish_writing(seconds):
+        path.write_bytes(theirs)
+
+    monkeypatch.setattr(at_rest.time, "sleep", finish_writing)
+    sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+
+    monkeypatch.setenv(at_rest.KEY_ENV, theirs.decode())
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) == ANSWER
 
 
