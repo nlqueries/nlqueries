@@ -50,7 +50,11 @@ from nlqueries.sql_constructs import allowed_constructs
 #: 4: only listed constructs are allowed, per dialect (:mod:`.sql_constructs`);
 #: unmodelled aggregates are checked by name like other unmodelled functions;
 #: and a statement whose rendered form the policy reads differently is refused.
-POLICY_VERSION = "4"
+#:
+#: 5: an unmodelled function written with a qualifier is judged by the whole
+#: name, so ``some_schema.age`` no longer passes on the entry for ``age``; and
+#: one whose name cannot be read is refused.
+POLICY_VERSION = "5"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -381,8 +385,16 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
     tree = parsed[0]
     reading = _read(tree, sql, dialect)
     reasons.extend(reading.reasons)
+    anonymous, unlisted = reading.anonymous, reading.unlisted
     if not reasons:
-        reasons.extend(_rereading_differs(tree, reading, dialect))
+        differs, second = _rereading_differs(tree, reading, dialect)
+        reasons.extend(differs)
+        # What only the rendering has -- a construct sqlglot's canonical form
+        # introduced -- is what the inventory must count for the refusal to be
+        # actionable, so the second reading's lists join the first's.
+        if differs and second is not None:
+            anonymous = tuple(sorted({*anonymous, *second.anonymous}))
+            unlisted = tuple(sorted({*unlisted, *second.unlisted}))
 
     return PolicyDecision(
         allowed=not reasons,
@@ -390,8 +402,8 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         policy_version=POLICY_VERSION,
         sql_digest=digest_of(sql),
         reasons=tuple(reasons),
-        anonymous_functions=reading.anonymous,
-        unlisted_constructs=reading.unlisted,
+        anonymous_functions=anonymous,
+        unlisted_constructs=unlisted,
     )
 
 
@@ -408,6 +420,29 @@ class _Reading:
 #: Unmodelled functions, judged by name rather than by class. Aggregates
 #: included: sqlglot has a class of its own for an unmodelled aggregate.
 _UNMODELLED: tuple[type[exp.Expression], ...] = (exp.Anonymous, exp.AnonymousAggFunc)
+
+
+def _function_name(node: exp.Expression) -> str:
+    """The name an unmodelled function is judged by, or "" if it cannot be read.
+
+    A call written with a qualifier, ``some_schema.age(a, b)``, parses as a
+    `Dot` whose right-hand side is the call, and the call's own name is the
+    bare ``age``. Judged by that, it would pass on the entry for the built-in
+    it shadows, so the qualifier is part of the name: an entry vouches for one
+    function, and a qualified call is allowed only if listed as written.
+    """
+    parts = [node]
+    parent = node.parent
+    if isinstance(parent, exp.Dot) and parent.expression is node:
+        qualifier = parent.this
+        while isinstance(qualifier, exp.Dot):
+            parts.append(qualifier.expression)
+            qualifier = qualifier.this
+        parts.append(qualifier)
+    names = [part.name for part in reversed(parts)]
+    if not all(names):
+        return ""
+    return ".".join(names).lower()
 
 
 def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
@@ -439,11 +474,16 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
             + ", ".join(repr(name) for name in string_tables)
         )
 
-    anonymous = tuple(sorted({n.name.lower() for n in tree.find_all(*_UNMODELLED) if n.name}))
+    names = [_function_name(n) for n in tree.find_all(*_UNMODELLED)]
+    anonymous = tuple(sorted({name for name in names if name}))
     permitted = allowed_anonymous(dialect)
     refused = [name for name in anonymous if name not in permitted]
     if refused:
         reasons.append(f"calls unrecognised function(s): {', '.join(refused)}")
+    # Exempt from the class list below and judged by name, so one whose name
+    # cannot be read would otherwise be judged by neither.
+    if not all(names):
+        reasons.append("calls a function whose name could not be read")
 
     # Exact classes, not isinstance: a subclass of a listed class is another
     # construct, and is not allowed by inheriting. What a rule above already
@@ -500,8 +540,11 @@ def _rendered(tree: exp.Expression, dialect: str) -> str:
     return tree.sql(dialect=_sqlglot_dialect(dialect))
 
 
-def _rereading_differs(tree: exp.Expression, reading: _Reading, dialect: str) -> list[str]:
-    """Why sqlglot's rendering of *tree*, parsed again, reads differently, if it does.
+def _rereading_differs(
+    tree: exp.Expression, reading: _Reading, dialect: str
+) -> tuple[list[str], _Reading | None]:
+    """Why sqlglot's rendering of *tree*, parsed again, reads differently, if it does,
+    with the rendering's reading when there is one.
 
     Compared as the policy reads it rather than node for node. sqlglot
     canonicalises freely -- MySQL's ``IF`` comes back as ``CASE``, Snowflake's
@@ -518,14 +561,14 @@ def _rereading_differs(tree: exp.Expression, reading: _Reading, dialect: str) ->
         rendered = _rendered(tree, dialect)
         again = [s for s in sqlglot.parse(rendered, read=_sqlglot_dialect(dialect)) if s]
     except Exception:  # noqa: BLE001 - RecursionError, or anything the generator raises
-        return ["its rendered form could not be produced or parsed again"]
+        return ["its rendered form could not be produced or parsed again"], None
     if len(again) != 1:
-        return [f"its rendered form parses as {len(again)} statements"]
+        return [f"its rendered form parses as {len(again)} statements"], None
     if type(again[0]) is not type(tree):
-        return [f"its rendered form parses as a {type(again[0]).__name__}"]
+        return [f"its rendered form parses as a {type(again[0]).__name__}"], None
     second = _read(again[0], rendered, dialect)
     if second.tables != reading.tables:
-        return ["its rendered form reads other tables"]
+        return ["its rendered form reads other tables"], second
     if second.reasons:
-        return [f"its rendered form is refused: {'; '.join(second.reasons)}"]
-    return []
+        return [f"its rendered form is refused: {'; '.join(second.reasons)}"], second
+    return [], second
