@@ -216,6 +216,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The container image is built on the current `python:3.11-slim-bookworm`**
+  (Python 3.11.17), pinned by digest as before. It picks up Debian's security
+  updates to `perl-base` and `libpcre2-8-0`, which the image scan reported as
+  high and critical findings with fixes available.
 - **The generic `sqlalchemy` connector refuses SQLite and DuckDB URLs.** A
   `sqlite://` or `duckdb://` URL is refused when the connector opens, with a
   message naming the dedicated `sqlite` or `duckdb` connector, which opens the
