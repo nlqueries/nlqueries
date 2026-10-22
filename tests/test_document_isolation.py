@@ -273,6 +273,81 @@ def test_a_child_killed_by_the_system_is_a_retryable_timeout(source) -> None:
         fake.KilledBySystem().ingest(source, "s1")
 
 
+def _gone(pid: int, within: float = 15.0) -> bool:
+    from nlqueries.embeddings.embed_server import is_pid_alive
+
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        if not is_pid_alive(pid):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def test_what_the_parser_starts_ends_when_the_parse_does(source) -> None:
+    """The limits are per process: a grandchild would keep its own budget."""
+    import os
+    import signal
+
+    (chunk,) = fake.LeavesAGrandchild().ingest(source, "s1")
+    pid = int(chunk.text)
+    try:
+        assert _gone(pid)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
+def test_what_the_parser_starts_ends_when_the_parse_is_stopped(source, monkeypatch) -> None:
+    import os
+    import signal
+
+    monkeypatch.setattr(_limits, "MAX_SECONDS", 2.0)
+    monkeypatch.setattr(_isolation, "CHILD_START_SECONDS", 8.0)
+
+    with pytest.raises(DocumentExtractionTimeout):
+        fake.StartsAGrandchildThenHangs().ingest(source, "s1")
+
+    pid = int(source.with_suffix(".pid").read_text())
+    try:
+        assert _gone(pid)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
+def test_the_child_stops_itself_when_its_parent_does_not(source) -> None:
+    """Run as a parent that died would leave it: nothing here kills it."""
+    import os
+    import pickle
+
+    payload = {
+        "connector": "tests._fake_parsers:Hangs",
+        "source": str(source),
+        "source_id": "s1",
+        "limits": {},
+        "memory_bytes": 1024 * 1024 * 1024,
+        "cpu_seconds": 120,
+        "deadline_seconds": 3.0,
+    }
+    started = time.monotonic()
+    ran = subprocess.run(
+        [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
+        input=pickle.dumps(payload),
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+        check=False,
+    )
+    assert ran.returncode == _isolation.WATCHDOG_EXIT_CODE
+    assert time.monotonic() - started < 30
+
+
+def test_a_child_its_watchdog_stopped_is_a_timeout() -> None:
+    error = _isolation._death("doc.pdf", _isolation.WATCHDOG_EXIT_CODE, b"")
+    assert isinstance(error, DocumentExtractionTimeout)
+
+
 def test_a_child_that_dies_is_reported_by_its_last_line(source) -> None:
     with pytest.raises(RuntimeError, match="exited with 3.*the last thing it said"):
         fake.ChattersThenDies().ingest(source, "s1")

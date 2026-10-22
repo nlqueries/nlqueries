@@ -61,6 +61,10 @@ CHILD_START_SECONDS = 15.0
 #: the memory the child's limit takes away.
 STDERR_TAIL_BYTES = 64 * 1024
 
+#: The exit code of a child whose own watchdog ended it: its parent was gone,
+#: or failed to stop it at the deadline. Read as a timeout.
+WATCHDOG_EXIT_CODE = 124
+
 #: How long to wait, once the child has exited, for its output to finish
 #: arriving. stdout ends with the child; stderr can be held open by a process
 #: the parser started, and is not waited on past this.
@@ -109,19 +113,30 @@ def parse_in_child(connector: type, source: str | Path, source_id: str) -> list[
         "cpu_seconds": config.DOCUMENT_PARSE_CPU_SECONDS,
     }
     deadline = float(_limits.MAX_SECONDS) + CHILD_START_SECONDS
+    # The child holds the same deadline itself, so it ends even when this
+    # process dies without stopping it -- killed outright, or by a task's hard
+    # time limit. It starts counting later than this process does, so the
+    # deadline here is the one that normally fires.
+    payload["deadline_seconds"] = deadline
     # `-P`: the child imports the installed package, never a module of the same
-    # name in the working directory.
+    # name in the working directory. On POSIX it leads a session of its own, so
+    # that what the parser starts can be ended with it (`_end_descendants`); on
+    # Windows its Job Object does that.
     child = subprocess.Popen(  # noqa: S603 - our own interpreter and module
         [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=sys.platform != "win32",
     )
     output = _Output(child)
     try:
         try:
             _send(child, pickle.dumps(payload))
             child.wait(timeout=deadline)
+            # Before collecting: a process the parser started can hold stderr
+            # open, and the limits that bound the child are per process.
+            _end_descendants(child)
         except subprocess.TimeoutExpired:
             _stop(child)
             raise DocumentExtractionTimeout(
@@ -230,9 +245,24 @@ def _send(child: subprocess.Popen[bytes], payload: bytes) -> None:
 
 
 def _stop(child: subprocess.Popen[bytes]) -> None:
-    """Kill *child* and reap it."""
+    """Kill *child*, and whatever it started, and reap it."""
     child.kill()
+    _end_descendants(child)
     child.wait()
+
+
+def _end_descendants(child: subprocess.Popen[bytes]) -> None:
+    """Kill the processes *child* started, which its limits do not cover.
+
+    On POSIX the child leads its own process group, so that is killed whole;
+    one that has already emptied is no error. On Windows the child's Job
+    Object is set to kill its members when the child's handle to it closes,
+    which happens when the child ends, so there is nothing to do here.
+    """
+    if sys.platform == "win32":
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(child.pid, signal.SIGKILL)
 
 
 def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
@@ -240,6 +270,10 @@ def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
     text = stderr.decode("utf-8", "replace")
     if "MemoryError" in text:
         return _memory_refusal(name)
+    if returncode == WATCHDOG_EXIT_CODE:
+        return DocumentExtractionTimeout(
+            f"Extracting {name} did not finish within its deadline and stopped itself."
+        )
     cpu_signal = getattr(signal, "SIGXCPU", None)
     if cpu_signal is not None and returncode == -int(cpu_signal):
         return DocumentExtractionTimeout(

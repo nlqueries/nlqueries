@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import pickle  # noqa: S403 - both ends are this package
 import sys
+import threading
 
 if sys.platform == "win32":
     import ctypes
@@ -56,6 +57,9 @@ if sys.platform == "win32":
 
     _EXTENDED_LIMIT_INFORMATION = 9  # JobObjectExtendedLimitInformation
     _LIMIT_PROCESS_MEMORY = 0x100  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+    # The job's members are killed when its last handle closes: this
+    # process holds the only one, so whatever the parser started ends with it.
+    _LIMIT_KILL_ON_JOB_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
     def _apply_resource_limits(memory_bytes: int, cpu_seconds: int) -> None:
         """A Job Object memory limit; Windows has no CPU-time limit to match.
@@ -84,7 +88,7 @@ if sys.platform == "win32":
         if not job:
             raise ctypes.WinError(ctypes.get_last_error())
         limits = _ExtendedLimits()
-        limits.BasicLimitInformation.LimitFlags = _LIMIT_PROCESS_MEMORY
+        limits.BasicLimitInformation.LimitFlags = _LIMIT_PROCESS_MEMORY | _LIMIT_KILL_ON_JOB_CLOSE
         limits.ProcessMemoryLimit = memory_bytes
         if not kernel32.SetInformationJobObject(
             job, _EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
@@ -114,6 +118,23 @@ else:
         )
 
 
+def _arm_watchdog(seconds: float | None) -> None:
+    """End this process at *seconds*, whatever the parser is doing.
+
+    The parent kills the child at the same deadline, so this matters only when
+    the parent cannot: killed itself, or stopped by a hard time limit that gave
+    it no chance. Without it the parse would run on, holding the file and up
+    to its memory limit, and on Windows with nothing bounding its time.
+    """
+    if not seconds:
+        return
+    from nlqueries.document_connectors._isolation import WATCHDOG_EXIT_CODE  # noqa: PLC0415
+
+    timer = threading.Timer(seconds, os._exit, args=(WATCHDOG_EXIT_CODE,))
+    timer.daemon = True
+    timer.start()
+
+
 def main() -> int:
     # The result goes out on a private copy of descriptor 1, and descriptor 1
     # itself is pointed at stderr. Rebinding `sys.stdout` alone would leave the
@@ -130,6 +151,7 @@ def main() -> int:
     for name, value in payload["limits"].items():
         setattr(_limits, name, value)
     _apply_resource_limits(payload["memory_bytes"], payload["cpu_seconds"])
+    _arm_watchdog(payload.get("deadline_seconds"))
 
     result = _isolation.child_result(payload["connector"], payload["source"], payload["source_id"])
     out.write(pickle.dumps(result))
