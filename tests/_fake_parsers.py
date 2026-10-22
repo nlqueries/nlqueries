@@ -67,13 +67,14 @@ class Spins(_Fake):
 
 
 class HoldsTheGil(_Fake):
-    """Backtracks in the regular-expression engine, which holds the GIL until it
-    returns -- here, for longer than any test -- so no other thread runs."""
+    """Sums in C, which holds the GIL until it returns -- here, for longer than
+    any test -- so no other thread runs. Measured: a one-second timer fired only
+    when a five-second sum of this kind returned."""
 
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
-        import re  # noqa: PLC0415
+        import itertools  # noqa: PLC0415
 
-        re.match(r"(a+)+$", "a" * 64 + "b")
+        sum(itertools.repeat(1, 10**13))
         return []
 
 
