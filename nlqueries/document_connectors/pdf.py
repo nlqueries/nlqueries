@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._isolation import IsolatedIngest
 from nlqueries.document_connectors._limits import (
     DocumentTooComplexError,
     ExtractionBudget,
@@ -56,7 +57,7 @@ def _refuse_page_count(name: str, pages: int) -> None:
         )
 
 
-class PdfConnector(DocumentConnector):
+class PdfConnector(IsolatedIngest, DocumentConnector):
     """Extract and chunk text from PDF files using pdfplumber.
 
     Each page is independently chunked with
@@ -67,7 +68,7 @@ class PdfConnector(DocumentConnector):
     _CHUNK_SIZE = 800
     _CHUNK_OVERLAP = 100
 
-    def ingest(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         try:
             import pdfplumber
         except ImportError as exc:

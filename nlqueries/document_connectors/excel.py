@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from nlqueries.document_connectors import _limits
+from nlqueries.document_connectors._isolation import IsolatedIngest
 from nlqueries.document_connectors._limits import (
     DocumentTooComplexError,
     ExtractionBudget,
@@ -116,7 +117,7 @@ def _batch_chunk(
     )
 
 
-class ExcelConnector(DocumentConnector):
+class ExcelConnector(IsolatedIngest, DocumentConnector):
     """Extract and chunk text from Excel (.xlsx) files using openpyxl.
 
     Each worksheet maps to a ``page_number`` equal to its 1-based sheet index.
@@ -126,7 +127,7 @@ class ExcelConnector(DocumentConnector):
     every subsequent data row.
     """
 
-    def ingest(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         try:
             import openpyxl
         except ImportError as exc:
