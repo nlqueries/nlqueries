@@ -16,6 +16,10 @@ Email **[security@nlqueries.com](mailto:security@nlqueries.com)** with:
 
 We aim to acknowledge reports within 5 business days. Once a fix is available, we'll credit the reporter (unless you'd prefer to stay anonymous) in the release notes and coordinate disclosure timing with you.
 
+## The container image
+
+The published `nlqueries/core` image is scanned for known vulnerabilities in its OS packages and Python dependencies every week and at each release, with results in this repository's Security tab.
+
 ## Hardening the database you point it at
 
 NLQueries generates SQL with a language model and runs it against your database.
