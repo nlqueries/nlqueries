@@ -91,4 +91,9 @@ jobs:
       - name: Show the findings in the log (fork pull requests)
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          "$RUNNER_TEMP/trivy/trivy" image             --severity HIGH,CRITICAL             --ignore-unfixed             --format table             --exit-code 0             nlqueries-core:scan
+          "$RUNNER_TEMP/trivy/trivy" image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format table \
+            --exit-code 0 \
+            nlqueries-core:scan
