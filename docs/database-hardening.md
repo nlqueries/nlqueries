@@ -39,6 +39,42 @@ SQLite and DuckDB are the exceptions to "the rest is yours to configure". Their
 file access is reachable from any `SELECT` rather than granted by a DBA, so the
 connectors close it in code. See [SQLite](#sqlite) and [DuckDB](#duckdb) below.
 
+### What a generated statement may contain
+
+Before a generated statement reaches any connector, the SQL policy parses it
+with sqlglot in the connector's dialect and allows only what it lists for that
+dialect:
+
+- the parts of a read query (`SELECT`, joins, CTEs, window functions, `CASE`,
+  the usual operators) and the functions sqlglot models that compute and do
+  nothing else, in `nlqueries/sql_constructs.py`;
+- functions sqlglot does not model, by name, in `ALLOWED_ANONYMOUS` in
+  `nlqueries/sql_policy.py`: PostgreSQL's `age`, MySQL's `now` and SQLite's
+  `julianday`, for example.
+
+Anything else is refused, including what a read query has no use for: session
+variables and parameters (`@@version`, `@x`, `$1`, `?`) and `CURRENT_USER`. The
+statement is also parsed again from the form sqlglot renders it in, and refused
+if the policy reads that differently: another number of statements, other
+tables, or something it would refuse.
+
+`tests/sql_corpus.py` holds the analytics queries, per dialect, that the lists
+must keep allowing. PostgreSQL, SQLite and DuckDB run theirs in CI and report
+which tables each query read; every one must be a table the policy saw.
+
+To see what the policy would refuse among your own queries, without refusing
+anything:
+
+```python
+from nlqueries.sql_policy_report import build_inventory
+
+print(build_inventory(statements, "postgres").render())
+```
+
+The lists name sqlglot's classes, so an upgrade of sqlglot that models a
+function differently can refuse a query that ran before; the report names the
+construct that would have to be listed.
+
 
 ---
 

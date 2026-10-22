@@ -216,6 +216,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **SQL policy version 4: a generated statement may contain only what is listed
+  for its dialect.** The policy used to refuse a function sqlglot does not model
+  unless it was allowlisted, so anything sqlglot did model was allowed. It now
+  lists, per dialect, the sqlglot classes a read query may contain
+  (`nlqueries/sql_constructs.py`) and the unmodelled functions it may call
+  (`ALLOWED_ANONYMOUS`), and refuses the rest, including session variables and
+  parameters (`@@version`, `@x`, `$1`, `?`) and `CURRENT_USER`. An unmodelled
+  aggregate is now checked by name too. A statement whose rendered form the
+  policy reads differently when parsed again is refused. MySQL's `now()` and
+  SQLite's `julianday()`, refused as unrecognised before, are allowed. The
+  queries the lists must keep allowing are in `tests/sql_corpus.py`;
+  `nlqueries.sql_policy_report` lists what the policy would refuse among a
+  deployment's own queries. See `docs/database-hardening.md`.
 - **The container image is built on the current `python:3.11-slim-bookworm`**
   (Python 3.11.17), pinned by digest as before. It picks up Debian's security
   updates to `perl-base` and `libpcre2-8-0`, which the image scan reported as

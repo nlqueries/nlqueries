@@ -76,6 +76,7 @@ nlqueries/
 ├── feedback/             Local JSONL feedback store + models, promotion of rated answers to Qdrant
 ├── mcp_server/           MCP server entry point
 ├── sql_policy.py         Which generated statements may run (whole-tree sqlglot checks)
+├── sql_constructs.py     The sqlglot classes a query may contain, per dialect
 ├── sql_policy_report.py  Reports what sql_policy would refuse, without refusing it
 ├── execution.py          Execution permission carried from the entry point to the connector
 ├── kb_eval.py            KB eval harness behind `nlqueries eval`
