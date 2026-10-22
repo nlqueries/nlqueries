@@ -295,6 +295,20 @@ def test_the_embed_handler_without_a_model_raises_even_without_asserts() -> None
         Bare._encode_unguarded(Bare.__new__(Bare), ["text"])
 
 
+@pytest.mark.parametrize("systemroot", ["", None])
+def test_tasklist_has_a_full_path_without_a_systemroot(monkeypatch, systemroot) -> None:
+    import ntpath
+
+    from nlqueries.embeddings import embed_server
+
+    if systemroot is None:
+        monkeypatch.delenv("SYSTEMROOT", raising=False)
+    else:
+        monkeypatch.setenv("SYSTEMROOT", systemroot)
+
+    assert ntpath.isabs(embed_server._tasklist_path())
+
+
 def test_tasklist_is_run_by_its_full_path(monkeypatch) -> None:
     import ntpath
     import subprocess

@@ -98,8 +98,15 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
 
 logger = logging.getLogger(__name__)
 
+
 #: By its full path, not looked up on PATH, where something else could be first.
-_TASKLIST = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "tasklist.exe")
+def _tasklist_path() -> str:
+    # `or`, not a default: set but empty, SYSTEMROOT would make the path
+    # relative, and it would be looked up in the working directory.
+    return os.path.join(os.environ.get("SYSTEMROOT") or r"C:\Windows", "System32", "tasklist.exe")
+
+
+_TASKLIST = _tasklist_path()
 
 
 # ---------------------------------------------------------------------------
