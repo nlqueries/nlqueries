@@ -164,6 +164,23 @@ def test_unreadable_chunks_warn_once_for_the_kind_not_per_document(monkeypatch, 
     assert "\x00" not in warnings[0] and "policy" not in warnings[0]
 
 
+def test_each_kind_warns_once_of_its_own(monkeypatch, caplog) -> None:
+    """Once per kind, not once in all: an answer and a chunk are two warnings."""
+    _encrypt_with(monkeypatch, "first key")
+    answer = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
+    chunk = at_rest.seal(CHUNK, at_rest.chunk_text_purpose("policy"))
+    monkeypatch.setenv(at_rest.KEY_ENV, "second key")
+
+    for _ in range(2):
+        assert at_rest.unseal(answer, at_rest.CACHE_ANSWER) is None
+        assert at_rest.unseal(chunk, at_rest.chunk_text_purpose("policy")) is None
+
+    warnings = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    assert len(warnings) == 2
+    assert "nlqueries cache answer could not be read" in warnings[0]
+    assert "nlqueries document chunk text could not be read" in warnings[1]
+
+
 def test_an_answer_cannot_be_moved_into_a_chunk(monkeypatch) -> None:
     _encrypt_with(monkeypatch)
     sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
