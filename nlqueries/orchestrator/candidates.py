@@ -157,7 +157,7 @@ def select_best(
                 continue
             canonical = stmt.sql(dialect=dialect, normalize=True)
             normalized.append((canonical, original))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112 - a candidate that does not parse gets no vote
             continue
 
     if not normalized:

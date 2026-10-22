@@ -935,7 +935,7 @@ def _try_mechanical_repair(
             err = _validate_sql(candidate, knowledge_base, dialect)
             if err is None:
                 return candidate, None
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
         pass
 
     # Step 1: dialect transpile
@@ -946,7 +946,7 @@ def _try_mechanical_repair(
             err = _validate_sql(candidate, knowledge_base, dialect)
             if err is None:
                 return candidate, None
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
         pass
 
     # Step 2: case-insensitive table name correction
@@ -968,7 +968,7 @@ def _try_mechanical_repair(
                 err = _validate_sql(corrected, knowledge_base, dialect)
                 if err is None:
                     return corrected, None
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
             pass
 
     # Step 3: strip garbage after first statement (handles multi-statement output)
@@ -979,7 +979,7 @@ def _try_mechanical_repair(
             err = _validate_sql(candidate, knowledge_base, dialect)
             if err is None:
                 return candidate, None
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
         pass
 
     return sql, "no mechanical fix found"

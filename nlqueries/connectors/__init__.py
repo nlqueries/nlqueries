@@ -2,6 +2,7 @@
 # This package must NEVER import from the enterprise layer.
 
 import copy
+import importlib
 import logging
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -47,41 +48,37 @@ CONNECTOR_REGISTRY: dict[str, type[DatabaseConnector]] = {
 
 
 def _register_optional_connectors() -> None:
-    """Register connectors that require optional driver extras."""
-    try:
-        from nlqueries.connectors.snowflake import SnowflakeConnector  # noqa: PLC0415
+    """Register connectors that require optional driver extras.
 
-        CONNECTOR_REGISTRY["snowflake"] = SnowflakeConnector
-    except Exception:  # noqa: BLE001
-        pass
+    A driver that is not installed is the ordinary reason one is missing, and
+    says nothing. Anything else -- a connector module that fails to import for
+    another reason -- is logged, rather than leaving the connector to vanish
+    and be reported later as an unknown type.
 
-    try:
-        from nlqueries.connectors.bigquery import BigQueryConnector  # noqa: PLC0415
+    An import that fails inside this package is not a missing driver, though
+    it raises ImportError too: a renamed name, or a circular import. So the
+    quiet case is the one that names a module outside it. One that names no
+    module at all is reported, since it cannot be told apart.
+    """
+    for name, module, cls in (
+        ("snowflake", "nlqueries.connectors.snowflake", "SnowflakeConnector"),
+        ("bigquery", "nlqueries.connectors.bigquery", "BigQueryConnector"),
+        ("redshift", "nlqueries.connectors.redshift", "RedshiftConnector"),
+        ("mssql", "nlqueries.connectors.mssql", "MSSQLConnector"),
+        ("duckdb", "nlqueries.connectors.duckdb", "DuckDBConnector"),
+    ):
+        try:
+            CONNECTOR_REGISTRY[name] = getattr(importlib.import_module(module), cls)
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, ImportError) and _names_another_package(exc):
+                continue  # the extra is not installed
+            logger.warning("The %s connector could not be loaded: %s", name, exc)
 
-        CONNECTOR_REGISTRY["bigquery"] = BigQueryConnector
-    except Exception:  # noqa: BLE001
-        pass
 
-    try:
-        from nlqueries.connectors.redshift import RedshiftConnector  # noqa: PLC0415
-
-        CONNECTOR_REGISTRY["redshift"] = RedshiftConnector
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        from nlqueries.connectors.mssql import MSSQLConnector  # noqa: PLC0415
-
-        CONNECTOR_REGISTRY["mssql"] = MSSQLConnector
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        from nlqueries.connectors.duckdb import DuckDBConnector  # noqa: PLC0415
-
-        CONNECTOR_REGISTRY["duckdb"] = DuckDBConnector
-    except Exception:  # noqa: BLE001
-        pass
+def _names_another_package(exc: ImportError) -> bool:
+    if not exc.name:
+        return False
+    return exc.name.partition(".")[0] != __name__.partition(".")[0]
 
 
 _register_optional_connectors()

@@ -659,7 +659,7 @@ class MultiAgentOrchestrator:
                 )
 
                 vector = _embed_text(effective_question)
-            except Exception:  # noqa: BLE001 — a missing embedder degrades to a text-only lookup
+            except Exception:  # noqa: BLE001, S110 — a missing embedder degrades to a text-only lookup
                 pass
             # A cache that cannot be read is a miss, not a failed question: the
             # cache only saves work that a miss goes on to do anyway.

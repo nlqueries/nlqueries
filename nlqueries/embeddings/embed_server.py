@@ -99,6 +99,16 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
 logger = logging.getLogger(__name__)
 
 
+#: By its full path, not looked up on PATH, where something else could be first.
+def _tasklist_path() -> str:
+    # `or`, not a default: set but empty, SYSTEMROOT would make the path
+    # relative, and it would be looked up in the working directory.
+    return os.path.join(os.environ.get("SYSTEMROOT") or r"C:\Windows", "System32", "tasklist.exe")
+
+
+_TASKLIST = _tasklist_path()
+
+
 # ---------------------------------------------------------------------------
 # Process-existence helper
 # ---------------------------------------------------------------------------
@@ -119,8 +129,8 @@ def is_pid_alive(pid: int) -> bool:
         return False
     if sys.platform == "win32":
         try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            result = subprocess.run(  # noqa: S603 - a fixed program and an int
+                [_TASKLIST, "/FI", f"PID eq {pid}", "/NH"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -548,7 +558,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
             # and reading it would block until the connection times out.
             self.connection.settimeout(0.25)
             self.rfile.read(65536)
-        except Exception:  # noqa: BLE001 - draining is best effort
+        except Exception:  # noqa: BLE001, S110 - draining is best effort
             pass
         finally:
             with contextlib.suppress(Exception):
@@ -689,8 +699,10 @@ class _EmbedHandler(BaseHTTPRequestHandler):
         cls = self.__class__
         if cls.encoder is not None:
             return cls.encoder(texts)
-        # Legacy path: existing tests set _EmbedHandler.model directly.
-        assert cls.model is not None, "neither encoder nor model is set"
+        # Legacy path: existing tests set _EmbedHandler.model directly. Not an
+        # assert, which `python -O` removes.
+        if cls.model is None:
+            raise RuntimeError("neither encoder nor model is set")
         result = cls.model.encode(
             texts[0] if len(texts) == 1 else texts,
             normalize_embeddings=True,

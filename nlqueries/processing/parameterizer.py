@@ -252,7 +252,7 @@ def _make_auto_description(tables: list[str], template_sql: str) -> str:
             filter_cols = sorted(
                 {col.name.lower() for col in where.find_all(exp.Column) if col.name}
             )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - no filter columns is the answer then
         pass
 
     tables_str = ", ".join(tables) if tables else "unknown"

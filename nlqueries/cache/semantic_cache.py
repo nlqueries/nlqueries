@@ -1490,7 +1490,7 @@ class SemanticCache:
                                 payload=sign(tmpl_payload, self._binding),
                             )
                         )
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S110 - the answer entry is stored either way
                     pass  # template storage is best-effort
 
         client = _get_client()

@@ -49,6 +49,12 @@ mypy nlqueries/       # type-check
 
 CI will fail if any of these report errors.
 
+The lint includes Ruff's security rules (`S`) and its print rule (`T20`). A
+finding is fixed, or, where the code is right as it stands, silenced on that
+line with `# noqa: <code> - <why>`; a rule is not switched off wholesale. Tests
+are exempt from the rules that flag what tests ordinarily do, and the CLI and
+the scripts may print; `pyproject.toml` lists both.
+
 ---
 
 ## Tests

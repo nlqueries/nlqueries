@@ -506,8 +506,10 @@ def health(probe_llm: bool = False) -> str:
 
     # Qdrant
     try:
-        req = urllib.request.Request(f"{config.QDRANT_URL}/healthz")
-        urllib.request.urlopen(req, timeout=3)
+        from nlqueries.http_urls import http_url  # noqa: PLC0415
+
+        req = urllib.request.Request(http_url(f"{config.QDRANT_URL}/healthz"))  # noqa: S310
+        urllib.request.urlopen(req, timeout=3)  # noqa: S310 - scheme checked
         lines.append(f"✅ **Qdrant** — {config.QDRANT_URL}")
     except Exception as exc:  # noqa: BLE001
         lines.append(f"❌ **Qdrant** — {config.QDRANT_URL}: {exc}")

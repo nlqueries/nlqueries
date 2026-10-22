@@ -134,7 +134,7 @@ class Prints(_Fake):
     """
 
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
-        print("a parser's chatter " * 10_000)
+        print("a parser's chatter " * 10_000)  # noqa: T201 - the behaviour under test
         return [_chunk(source_id, "after the chatter")]
 
 

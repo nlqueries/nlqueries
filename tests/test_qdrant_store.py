@@ -449,7 +449,7 @@ def test_integration_schema_upsert_and_search() -> None:
 
             url = os.getenv("QDRANT_URL", "http://localhost:6333")
             QdrantClient(url=url).delete_collection(collection)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - cleanup after the test, best effort
             pass
 
 
