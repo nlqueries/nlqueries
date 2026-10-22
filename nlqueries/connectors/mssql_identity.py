@@ -51,7 +51,9 @@ READ_SERVER_PERMISSIONS = frozenset(
     }
 )
 
-LOGIN_SQL = "SELECT SUSER_SNAME(), DB_NAME()"
+#: ``USER_NAME()`` when there is no server login to name: a contained database
+#: user, the usual kind on Azure SQL, has none, and ``SUSER_SNAME()`` is NULL.
+LOGIN_SQL = "SELECT COALESCE(SUSER_SNAME(), USER_NAME()), DB_NAME()"
 SERVER_ROLES_SQL = (
     "SELECT name FROM sys.server_principals WHERE type = 'R' AND IS_SRVROLEMEMBER(name) = 1"
 )
@@ -85,39 +87,67 @@ def concerns_from(
     return tuple(found)
 
 
+def _column(connection: Any, sql: str) -> list[str]:
+    """The first column of *sql*'s rows, on a cursor of its own."""
+    cursor = connection.cursor()
+    try:
+        cursor.execute(sql)
+        return [str(row[0]) for row in cursor.fetchall()]
+    finally:
+        cursor.close()
+
+
 def inspect_identity(connection: Any) -> LoginIdentity:
     """Read the connected login's roles and permissions. Never raises.
 
     *connection* is any object with a DBAPI ``cursor()``.
+
+    The database scope has to be read for the check to mean anything. The
+    server scope is read separately, one statement at a time, and may fail on
+    its own: Azure SQL does not reliably offer it from a user database, and a
+    hardened login there should not fail ``health`` because of that. What could
+    not be read is reported on the identity as unread. A ``sysadmin`` login is
+    caught without the server read, since it is the database owner and holds
+    ``CONTROL`` on the database; other server roles show only when it succeeds.
     """
     try:
         cursor = connection.cursor()
         try:
             cursor.execute(LOGIN_SQL)
-            user, database = cursor.fetchone() or ("", "")
-            columns: list[list[str]] = []
-            for sql in (
-                SERVER_ROLES_SQL,
-                DATABASE_ROLES_SQL,
-                DATABASE_PERMISSIONS_SQL,
-                SERVER_PERMISSIONS_SQL,
-            ):
-                cursor.execute(sql)
-                columns.append([str(row[0]) for row in cursor.fetchall()])
+            rows = cursor.fetchall()
         finally:
             cursor.close()
+        user, database = rows[0] if rows else ("", "")
+        database_roles = _column(connection, DATABASE_ROLES_SQL)
+        database_permissions = _column(connection, DATABASE_PERMISSIONS_SQL)
     except Exception as exc:  # noqa: BLE001 - reported, not raised
         logger.warning("Could not read the SQL Server login's permissions: %s", exc)
         return LoginIdentity.undetermined(ENGINE, str(exc))
-    server_roles, database_roles, database_permissions, server_permissions = columns
     if not database_permissions:
         # Every user holds at least CONNECT; nothing back means the read failed.
         return LoginIdentity.undetermined(ENGINE, "fn_my_permissions returned nothing")
+
+    server: dict[str, list[str]] = {}
+    unread: list[str] = []
+    for what, sql in (
+        ("server roles", SERVER_ROLES_SQL),
+        ("server permissions", SERVER_PERMISSIONS_SQL),
+    ):
+        try:
+            server[what] = _column(connection, sql)
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            logger.info("Could not read the SQL Server login's %s: %s", what, exc)
+            server[what] = []
+            unread.append(f"{what} ({exc})")
     return LoginIdentity(
         engine=ENGINE,
-        user=str(user),
+        user=str(user or ""),
         database=str(database or ""),
         concerns=concerns_from(
-            server_roles, database_roles, database_permissions, server_permissions
+            server["server roles"],
+            database_roles,
+            database_permissions,
+            server["server permissions"],
         ),
+        unread=tuple(unread),
     )

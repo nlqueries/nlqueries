@@ -44,6 +44,10 @@ class LoginIdentity:
     #: so that a check that did not complete is not mistaken for one that
     #: found nothing.
     undetermined_reason: str | None = None
+    #: Parts of the grants that could not be read while the rest was, each
+    #: with its reason. The check completed on what it read, so this is
+    #: reported alongside the result rather than in place of it.
+    unread: tuple[str, ...] = ()
 
     @property
     def is_least_privilege(self) -> bool:
@@ -55,9 +59,10 @@ class LoginIdentity:
         if self.undetermined_reason is not None:
             return f"identity could not be determined: {self.undetermined_reason}"
         who = f"{self.user}@{self.database}" if self.database else self.user
-        if not self.concerns:
-            return f"{who}: least privilege"
-        return f"{who}: {'; '.join(self.concerns)}"
+        found = "; ".join(self.concerns) if self.concerns else "least privilege"
+        if self.unread:
+            found += f" (not read: {'; '.join(self.unread)})"
+        return f"{who}: {found}"
 
     @classmethod
     def undetermined(cls, engine: str, reason: str) -> LoginIdentity:

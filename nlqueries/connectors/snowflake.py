@@ -60,6 +60,11 @@ _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
 #: fetch and the ROLLBACK that happen inside the span after the query returns.
 _LOCK_WAIT_MARGIN_SECONDS = 30.0
 
+#: How long reading the identity waits for a query to finish with the session.
+#: The identity is not urgent: a read that gives up returns an undetermined
+#: identity and the next read tries again.
+_IDENTITY_LOCK_WAIT_SECONDS = 30.0
+
 
 class SnowflakeConnector(DatabaseConnector):
     """Connector for Snowflake.
@@ -102,13 +107,25 @@ class SnowflakeConnector(DatabaseConnector):
         Read once, on first use after ``connect`` rather than at connect: the
         walk is one ``SHOW GRANTS`` per inherited role, which a query does not
         need to wait for. Under the transaction lock, since it uses the
-        session the queries use.
+        session the queries use, and bounded as ``_execute_query`` bounds it: a
+        query holding the session degrades this to an undetermined identity,
+        which is not kept, rather than blocking the reader for as long as the
+        query runs.
         """
         if self._identity is None and self._connection is not None:
-            with self._txn_lock:
+            if not self._txn_lock.acquire(timeout=_IDENTITY_LOCK_WAIT_SECONDS):
+                busy = LoginIdentity.undetermined(
+                    "snowflake",
+                    f"the session was busy with a query for {_IDENTITY_LOCK_WAIT_SECONDS:.0f}s",
+                )
+                log_identity(busy)
+                return busy
+            try:
                 if self._identity is None:
                     self._identity = inspect_snowflake_identity(self._connection)
                     log_identity(self._identity)
+            finally:
+                self._txn_lock.release()
         return self._identity
 
     # ------------------------------------------------------------------

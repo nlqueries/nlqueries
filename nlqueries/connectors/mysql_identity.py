@@ -72,7 +72,11 @@ def inspect_identity(connection: Any) -> LoginIdentity:
         cursor = connection.cursor()
         try:
             cursor.execute("SELECT CURRENT_USER(), DATABASE()")
-            user, database = cursor.fetchone() or ("", "")
+            # fetchall, not fetchone: mysql-connector-python's default cursor is
+            # unbuffered, and a result left partly read fails the next execute
+            # with "Unread result found".
+            rows = cursor.fetchall()
+            user, database = rows[0] if rows else ("", "")
             cursor.execute("SHOW GRANTS")
             grants = [row[0] for row in cursor.fetchall()]
         finally:

@@ -9,6 +9,7 @@ complete says so rather than passing.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -51,6 +52,26 @@ def _connection(cursor: _Cursor) -> Any:
     return SimpleNamespace(cursor=lambda: cursor)
 
 
+class _UnbufferedCursor(_Cursor):
+    """mysql-connector-python's default cursor: a result has to be read to its
+    end before the next statement, and ``fetchone`` does not read the end even
+    of a one-row result."""
+
+    def __init__(self, answers: dict[str, Any]) -> None:
+        super().__init__(answers)
+        self._unread = False
+
+    def execute(self, sql: str) -> None:
+        if self._unread:
+            raise RuntimeError("Unread result found")
+        super().execute(sql)
+        self._unread = True
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        self._unread = False
+        return super().fetchall()
+
+
 # --- the shared record ----------------------------------------------------------
 
 
@@ -58,6 +79,11 @@ def test_a_login_with_no_concerns_is_least_privilege() -> None:
     identity = LoginIdentity("mysql", "reader@%", "shop")
     assert identity.is_least_privilege
     assert identity.summary() == "reader@%@shop: least privilege"
+
+
+def test_what_could_not_be_read_is_reported_with_the_result() -> None:
+    identity = LoginIdentity("mssql", "reader", "shop", unread=("server roles (denied)",))
+    assert identity.summary() == "reader@shop: least privilege (not read: server roles (denied))"
 
 
 def test_an_undetermined_check_is_not_least_privilege() -> None:
@@ -122,6 +148,17 @@ class TestMySQL:
         assert identity.user == "app@%" and identity.database == "shop"
         assert identity.concerns == ("holds DELETE on `shop`.*",)
         assert cursor.closed
+
+    def test_an_unbuffered_cursor_reads_both_statements(self) -> None:
+        cursor = _UnbufferedCursor(
+            {
+                "SELECT CURRENT_USER()": [("app@%", "shop")],
+                "SHOW GRANTS": [("GRANT SELECT ON `shop`.* TO `app`@`%`",)],
+            }
+        )
+        identity = mysql_identity.inspect_identity(_connection(cursor))
+        assert identity.undetermined_reason is None
+        assert identity.is_least_privilege
 
     def test_a_failed_read_is_undetermined_not_clean(self) -> None:
         cursor = _Cursor(
@@ -206,6 +243,67 @@ class TestSQLServer:
         )
         identity = mssql_identity.inspect_identity(_connection(cursor))
         assert identity.undetermined_reason is not None
+
+    def test_an_unreadable_server_scope_leaves_the_database_result(self) -> None:
+        """Azure SQL, from a user database: the server reads can fail alone."""
+        cursor = _Cursor(
+            {
+                mssql_identity.LOGIN_SQL: [("app", "shop")],
+                mssql_identity.SERVER_ROLES_SQL: RuntimeError("no server_principals here"),
+                mssql_identity.DATABASE_ROLES_SQL: [("public",)],
+                mssql_identity.DATABASE_PERMISSIONS_SQL: [("CONNECT",), ("INSERT",)],
+                mssql_identity.SERVER_PERMISSIONS_SQL: RuntimeError("no server scope"),
+            }
+        )
+        identity = mssql_identity.inspect_identity(_connection(cursor))
+        assert identity.undetermined_reason is None
+        assert identity.concerns == ("holds INSERT on the database",)
+        assert identity.unread == (
+            "server roles (no server_principals here)",
+            "server permissions (no server scope)",
+        )
+
+    def test_each_server_read_stands_on_its_own(self) -> None:
+        cursor = _Cursor(
+            {
+                mssql_identity.LOGIN_SQL: [("app", "shop")],
+                mssql_identity.SERVER_ROLES_SQL: RuntimeError("denied"),
+                mssql_identity.DATABASE_ROLES_SQL: [("public",)],
+                mssql_identity.DATABASE_PERMISSIONS_SQL: [("CONNECT",)],
+                mssql_identity.SERVER_PERMISSIONS_SQL: [("CONNECT SQL",), ("ALTER ANY LOGIN",)],
+            }
+        )
+        identity = mssql_identity.inspect_identity(_connection(cursor))
+        assert identity.concerns == ("holds ALTER ANY LOGIN on the server",)
+        assert identity.unread == ("server roles (denied)",)
+
+    def test_an_unreadable_database_scope_is_undetermined(self) -> None:
+        cursor = _Cursor(
+            {
+                mssql_identity.LOGIN_SQL: [("app", "shop")],
+                mssql_identity.SERVER_ROLES_SQL: [("public",)],
+                mssql_identity.DATABASE_ROLES_SQL: RuntimeError("denied"),
+                mssql_identity.DATABASE_PERMISSIONS_SQL: [("CONNECT",)],
+                mssql_identity.SERVER_PERMISSIONS_SQL: [("CONNECT SQL",)],
+            }
+        )
+        identity = mssql_identity.inspect_identity(_connection(cursor))
+        assert identity.undetermined_reason == "denied"
+
+    def test_a_contained_user_is_named(self) -> None:
+        """No server login, so ``SUSER_SNAME()`` is NULL; the user name stands in."""
+        assert "COALESCE(SUSER_SNAME(), USER_NAME())" in mssql_identity.LOGIN_SQL
+        cursor = _Cursor(
+            {
+                mssql_identity.LOGIN_SQL: [(None, "shop")],
+                mssql_identity.SERVER_ROLES_SQL: [],
+                mssql_identity.DATABASE_ROLES_SQL: [("public",)],
+                mssql_identity.DATABASE_PERMISSIONS_SQL: [("CONNECT",)],
+                mssql_identity.SERVER_PERMISSIONS_SQL: [],
+            }
+        )
+        identity = mssql_identity.inspect_identity(_connection(cursor))
+        assert "None" not in identity.summary()
 
 
 # --- Snowflake ------------------------------------------------------------------
@@ -348,3 +446,57 @@ def test_the_snowflake_connector_reads_its_identity_once(monkeypatch) -> None:
     second = connector.identity
     assert first is second is not None
     assert len(calls) == 1
+
+
+def test_the_snowflake_identity_does_not_wait_out_a_running_query(monkeypatch) -> None:
+    from nlqueries.connectors import snowflake as snowflake_module
+
+    monkeypatch.setattr(snowflake_module, "_IDENTITY_LOCK_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        snowflake_module,
+        "inspect_snowflake_identity",
+        lambda connection: LoginIdentity("snowflake", "APP (role R)", "SHOP"),
+    )
+    connector = snowflake_module.SnowflakeConnector()
+    connector._connection = object()
+
+    connector._txn_lock.acquire()  # a query holds the session
+    started = time.monotonic()
+    try:
+        busy = connector.identity
+    finally:
+        connector._txn_lock.release()
+    assert time.monotonic() - started < 2  # the configured wait, not another
+    assert busy is not None and busy.undetermined_reason is not None
+    assert "busy" in busy.undetermined_reason
+
+    # Not kept: once the session is free, the next read reads it.
+    assert connector.identity == LoginIdentity("snowflake", "APP (role R)", "SHOP")
+
+
+# --- the pool event, on a real engine --------------------------------------------
+
+
+def test_the_watcher_reads_each_physical_connection_the_pool_opens() -> None:
+    """The listener runs inside connection creation, so it is run here for real."""
+    from nlqueries.connectors.login_identity import watch_engine
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine("sqlite://", poolclass=NullPool)
+    stored: list[LoginIdentity] = []
+
+    def inspect(dbapi_connection: Any) -> LoginIdentity:
+        # The raw DBAPI connection, usable for the reader's own statements.
+        cursor = dbapi_connection.cursor()
+        cursor.execute("SELECT 'reader', 'main'")
+        user, database = cursor.fetchall()[0]
+        cursor.close()
+        return LoginIdentity("sqlite", user, database)
+
+    watch_engine(engine, inspect, stored.append)
+    for _ in range(2):
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT 1")).scalar() == 1
+
+    assert stored == [LoginIdentity("sqlite", "reader", "main")] * 2
