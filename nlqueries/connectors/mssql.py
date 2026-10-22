@@ -42,6 +42,8 @@ from nlqueries.connectors.base import (
     TableSpec,
     short_cause,
 )
+from nlqueries.connectors.login_identity import LoginIdentity, watch_engine
+from nlqueries.connectors.mssql_identity import inspect_identity as inspect_mssql_identity
 
 logger = logging.getLogger(__name__)
 
@@ -177,11 +179,24 @@ class MSSQLConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._engine: Engine | None = None
         self._tls: EncryptionPosture | None = None
+        self._identity: LoginIdentity | None = None
 
     @property
     def tls(self) -> EncryptionPosture | None:
         """The encryption this connector opened with, or None before ``connect``."""
         return self._tls
+
+    @property
+    def identity(self) -> LoginIdentity | None:
+        """What the login holds beyond reading, from the most recent connection.
+
+        None until the pool has opened a connection, which it does lazily: no
+        check has run, rather than a check that found nothing.
+        """
+        return self._identity
+
+    def _set_identity(self, identity: LoginIdentity) -> None:
+        self._identity = identity
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -239,6 +254,7 @@ class MSSQLConnector(DatabaseConnector):
             connect_args["timeout"] = max(1, int(config.CONNECTOR_STATEMENT_TIMEOUT_SECONDS))
         self._tls = EncryptionPosture(encryption, applied, driver_version)
         self._engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+        watch_engine(self._engine, inspect_mssql_identity, self._set_identity)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

@@ -34,7 +34,12 @@ def engine_args():
         seen.update(kwargs)
         return object()
 
-    with patch("nlqueries.connectors.sqlalchemy_connector.create_engine", side_effect=_fake):
+    # The identity check attaches a pool event, which a stand-in engine cannot
+    # take; it has its own tests in test_login_identity.py.
+    with (
+        patch("nlqueries.connectors.sqlalchemy_connector.create_engine", side_effect=_fake),
+        patch("nlqueries.connectors.sqlalchemy_connector.watch_engine"),
+    ):
         yield seen
 
 

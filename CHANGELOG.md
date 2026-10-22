@@ -18,6 +18,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   a parse error; the deadline or the CPU limit raises
   `DocumentExtractionTimeout`, as before. `NLQ_DOCUMENT_PARSE_ISOLATION=false`
   parses in process, as before.
+- **`nlqueries health` reports over-privileged logins for MySQL, SQL Server
+  and Snowflake.** The identity line the PostgreSQL connector already gave is
+  now printed for MySQL and MariaDB (through the `sqlalchemy` connector, from
+  `SHOW GRANTS`), SQL Server (server and database role membership and the
+  effective permissions from `fn_my_permissions`) and Snowflake (the grants of
+  the current role and every role it inherits). It names the login and any
+  write, DDL or administrative right it holds, says `least privilege` when
+  there is none, and is a failure when the grants could not be read. It
+  reports and does not refuse a connection. See
+  [docs/database-hardening.md](docs/database-hardening.md).
 - **Audit events for query execution, and a file to keep them in.** Every
   statement sent to a database through the connector an agent's query opens
   (`PermittedConnector.execute_query`) is recorded as a `query_execution` event
