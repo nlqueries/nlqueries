@@ -740,8 +740,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   MCP server (`postgres_localhost_mydb`, from the knowledge-base file name)
   wrote and read different collections for one agent; they now share one.
   **Upgrading:** knowledge-base, feedback and session files keep their names.
-  A document collection written under the raw ID is read until one exists
-  under the new name, and the next `doc-ingest` writes the new name. A
+  A document collection written under the raw ID is still read until one
+  under the new name holds the source's chunks; the next successful
+  `doc-ingest` writes the new name and deletes the raw-ID collection, and
+  `--allow-empty` removes both. The MCP server reaches such a source (an ID
+  with `:`, `/` or a space) only after it is ingested again. A
   cache collection for an ID containing `.` starts empty under its new name;
   the old one is not read and can be deleted in Qdrant. The schema
   (`agent_<id>_schema`) and verified-examples (`agent_<id>_verified`)

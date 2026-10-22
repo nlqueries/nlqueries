@@ -33,16 +33,32 @@ def _no_remembered_resolutions():
     qdrant_store._resolved.clear()
 
 
-def _client_with(*names: str) -> Any:
-    """A Qdrant client stand-in that holds collections called *names*."""
-    collections = [SimpleNamespace(name=n) for n in names]
+def _client_with(*names: str, empty: tuple[str, ...] = ()) -> Any:
+    """A Qdrant client stand-in holding collections called *names*.
+
+    Each holds one point, except those named in *empty*.
+    """
+    held = list(names)
     calls: list[str] = []
 
     def get_collections() -> Any:
         calls.append("get_collections")
-        return SimpleNamespace(collections=collections)
+        return SimpleNamespace(collections=[SimpleNamespace(name=n) for n in held])
 
-    return SimpleNamespace(get_collections=get_collections, calls=calls)
+    def count(collection_name: str, exact: bool = True) -> Any:
+        return SimpleNamespace(count=0 if collection_name in empty else 1)
+
+    def delete_collection(name: str) -> None:
+        calls.append(f"delete {name}")
+        held.remove(name)
+
+    return SimpleNamespace(
+        get_collections=get_collections,
+        count=count,
+        delete_collection=delete_collection,
+        calls=calls,
+        held=held,
+    )
 
 
 class TestTheName:
@@ -143,6 +159,16 @@ class TestCollectionsToRead:
             name = qdrant_store.agent_collection_to_read("doc_", "pg:h:db", "_chunks")
         assert name == "doc_pg:h:db_chunks"
 
+    def test_the_old_name_is_read_while_the_new_one_holds_nothing(self) -> None:
+        """An ingest that failed before its first batch still created the new
+        collection; an empty one must not hide the copy that has the text."""
+        client = _client_with(
+            "doc_pg_h_db_chunks", "doc_pg:h:db_chunks", empty=("doc_pg_h_db_chunks",)
+        )
+        with patch.object(qdrant_store, "_get_client", return_value=client):
+            name = qdrant_store.agent_collection_to_read("doc_", "pg:h:db", "_chunks")
+        assert name == "doc_pg:h:db_chunks"
+
     def test_the_new_name_when_neither_exists(self) -> None:
         client = _client_with()
         with patch.object(qdrant_store, "_get_client", return_value=client):
@@ -173,6 +199,41 @@ class TestCollectionsToRead:
             qdrant_store._resolved[name] = (stamp - qdrant_store._RESOLVED_TTL_SECONDS - 1, chosen)
             qdrant_store.agent_collection_to_read("doc_", "pg:h:db", "_chunks")
         assert client.calls == ["get_collections", "get_collections"]
+
+
+class TestRetiringTheOldCollection:
+    def test_the_raw_id_collection_is_deleted(self) -> None:
+        client = _client_with("doc_pg_h_db_chunks", "doc_pg:h:db_chunks")
+        with patch.object(qdrant_store, "_get_client", return_value=client):
+            retired = qdrant_store.retire_legacy_collection("doc_", "pg:h:db", "_chunks")
+        assert retired == "doc_pg:h:db_chunks"
+        assert client.held == ["doc_pg_h_db_chunks"]
+
+    def test_nothing_is_deleted_when_the_name_is_unchanged(self) -> None:
+        client = _client_with("doc_sales.eu_chunks")
+        with patch.object(qdrant_store, "_get_client", return_value=client):
+            assert qdrant_store.retire_legacy_collection("doc_", "sales.eu", "_chunks") is None
+        assert client.held == ["doc_sales.eu_chunks"]
+        assert client.calls == []
+
+    def test_nothing_is_deleted_when_there_is_no_old_collection(self) -> None:
+        client = _client_with("doc_pg_h_db_chunks")
+        with patch.object(qdrant_store, "_get_client", return_value=client):
+            assert qdrant_store.retire_legacy_collection("doc_", "pg:h:db", "_chunks") is None
+        assert client.held == ["doc_pg_h_db_chunks"]
+
+    def test_a_reader_stops_reading_it_at_once(self) -> None:
+        client = _client_with(
+            "doc_pg_h_db_chunks", "doc_pg:h:db_chunks", empty=("doc_pg_h_db_chunks",)
+        )
+        with patch.object(qdrant_store, "_get_client", return_value=client):
+            assert qdrant_store.agent_collection_to_read("doc_", "pg:h:db", "_chunks") == (
+                "doc_pg:h:db_chunks"
+            )
+            qdrant_store.retire_legacy_collection("doc_", "pg:h:db", "_chunks")
+            assert qdrant_store.agent_collection_to_read("doc_", "pg:h:db", "_chunks") == (
+                "doc_pg_h_db_chunks"
+            )
 
 
 class TestWhereTheNamesAreUsed:
@@ -273,7 +334,12 @@ class TestWhereTheNamesAreUsed:
 
         assert collection == "doc_pg:h:db_chunks"
 
-    def test_doc_ingest_writes_the_storage_name(self) -> None:
+    @pytest.mark.parametrize(("chunks", "allow_empty"), [(["chunk"], False), ([], True)])
+    def test_doc_ingest_writes_the_storage_name_and_removes_the_old_copy(
+        self, chunks: list[str], allow_empty: bool
+    ) -> None:
+        """Including a deliberate --allow-empty removal, which would otherwise
+        leave the source's text in the collection an earlier release wrote."""
         from nlqueries.cli import main as cli_main
 
         written: list[str] = []
@@ -281,7 +347,43 @@ class TestWhereTheNamesAreUsed:
         def replace_chunks(collection: str, source_id: str, chunks: list[Any]) -> None:
             written.append(collection)
 
-        with patch.object(qdrant_store, "replace_chunks", replace_chunks):
-            cli_main._store_document_chunks("pg:h:db", ["chunk"], allow_empty=False)
+        client = _client_with("doc_pg_h_db_chunks", "doc_pg:h:db_chunks")
+        with (
+            patch.object(qdrant_store, "replace_chunks", replace_chunks),
+            patch.object(qdrant_store, "_get_client", return_value=client),
+        ):
+            cli_main._store_document_chunks("pg:h:db", chunks, allow_empty=allow_empty)
 
         assert written == ["doc_pg_h_db_chunks"]
+        assert client.held == ["doc_pg_h_db_chunks"]
+
+    def test_doc_ingest_fails_when_the_old_copy_cannot_be_removed(self) -> None:
+        from nlqueries.cli import main as cli_main
+
+        def unreachable() -> Any:
+            raise ConnectionError("refused")
+
+        with (
+            patch.object(qdrant_store, "replace_chunks", lambda *a: None),
+            patch.object(qdrant_store, "_get_client", unreachable),
+            pytest.raises(SystemExit) as exited,
+        ):
+            cli_main._store_document_chunks("pg:h:db", ["chunk"], allow_empty=False)
+
+        assert exited.value.code == 1
+
+    def test_doc_ingest_keeps_the_old_copy_when_the_store_fails(self) -> None:
+        from nlqueries.cli import main as cli_main
+
+        def replace_chunks(*args: Any) -> None:
+            raise ConnectionError("embedder down")
+
+        client = _client_with("doc_pg:h:db_chunks")
+        with (
+            patch.object(qdrant_store, "replace_chunks", replace_chunks),
+            patch.object(qdrant_store, "_get_client", return_value=client),
+            pytest.raises(SystemExit),
+        ):
+            cli_main._store_document_chunks("pg:h:db", ["chunk"], allow_empty=False)
+
+        assert client.held == ["doc_pg:h:db_chunks"]

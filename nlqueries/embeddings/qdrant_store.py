@@ -126,13 +126,15 @@ _resolved: dict[str, tuple[float, str]] = {}
 def agent_collection_to_read(prefix: str, agent_id: str, suffix: str) -> str:
     """The collection to read for *agent_id*: its name, or the one it had before.
 
-    Document and schema collections were named with the raw agent ID until
-    every store took the agent's storage name, so an ID with a character that
-    name replaces -- the ``:`` of a connector ID such as
-    ``postgres:localhost:mydb`` -- was written under the raw ID. When the
-    collection under the new name does not exist and the one under the raw ID
-    does, that one is read, so an agent ingested before the upgrade keeps
-    answering until it is ingested again, which writes the new name.
+    Document collections were named with the raw agent ID until every store
+    took the agent's storage name, so an ID with a character that name
+    replaces -- the ``:`` of a connector ID such as ``postgres:localhost:mydb``
+    -- was written under the raw ID. When the collection under the new name
+    does not exist, or holds nothing (an ingest that failed before its first
+    batch landed still creates it), and the one under the raw ID does exist,
+    that one is read. So an agent ingested before the upgrade keeps answering
+    until it is ingested again; a successful ingest writes the new name and
+    deletes the old one (:func:`retire_legacy_collection`).
 
     Only an ID the storage name changes needs Qdrant asked at all, and the
     answer is reused for a minute rather than costing a round trip per
@@ -148,12 +150,43 @@ def agent_collection_to_read(prefix: str, agent_id: str, suffix: str) -> str:
     if cached is not None and now - cached[0] < _RESOLVED_TTL_SECONDS:
         return cached[1]
     try:
-        existing = {c.name for c in _get_client().get_collections().collections}
+        client = _get_client()
+        existing = {c.name for c in client.get_collections().collections}
+        chosen = (
+            legacy
+            if legacy in existing and (name not in existing or not _holds_points(client, name))
+            else name
+        )
     except Exception:  # noqa: BLE001 - the caller reads `name` and reports the failure
         return name
-    chosen = legacy if name not in existing and legacy in existing else name
     _resolved[name] = (now, chosen)
     return chosen
+
+
+def _holds_points(client: Any, collection: str) -> bool:
+    return bool(client.count(collection_name=collection, exact=False).count)
+
+
+def retire_legacy_collection(prefix: str, agent_id: str, suffix: str) -> str | None:
+    """Delete the collection an earlier release wrote for *agent_id* under its raw ID.
+
+    Call it once the collection under the storage name holds the agent's data
+    (or, for a deliberate removal, once that one has been emptied): from then on
+    the raw-ID copy is never read, and leaving it would keep the old text in
+    Qdrant. Returns the name deleted, or None when there was nothing to delete.
+    Raises when Qdrant cannot be reached or refuses the deletion.
+    """
+    name = agent_collection(prefix, agent_id, suffix)
+    legacy = f"{prefix}{agent_id}{suffix}"
+    if legacy == name:
+        return None
+    client = _get_client()
+    if legacy not in {c.name for c in client.get_collections().collections}:
+        return None
+    client.delete_collection(legacy)
+    forget_collection_indexes(legacy)
+    _resolved.pop(name, None)
+    return legacy
 
 
 def forget_collection_indexes(name: str) -> None:

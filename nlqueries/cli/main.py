@@ -1527,6 +1527,7 @@ def _store_document_chunks(source_id: str, chunks: list[Any], *, allow_empty: bo
         StaleChunksRemain,
         agent_collection,
         replace_chunks,
+        retire_legacy_collection,
     )
 
     collection = agent_collection("doc_", source_id, "_chunks")
@@ -1554,6 +1555,20 @@ def _store_document_chunks(source_id: str, chunks: list[Any], *, allow_empty: bo
         )
         err_console.print("  The earlier version was not deleted. Is Qdrant running?")
         sys.exit(1)
+    # An earlier release named the collection with the raw source ID. It is no
+    # longer read once this one holds the source, and an --allow-empty removal
+    # that left it would leave the source's text in Qdrant.
+    try:
+        retired = retire_legacy_collection("doc_", source_id, "_chunks")
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(
+            f"[bold red]✗ Stored in {escape(collection)}, but the copy an earlier release "
+            f"stored under the raw source ID could not be removed:[/bold red] {escape(str(exc))}"
+        )
+        err_console.print("  Run this command again, or delete that collection in Qdrant.")
+        sys.exit(1)
+    if retired is not None:
+        console.print(f"  Removed         : {escape(retired)} (the earlier release's copy)")
     console.print(f"  Stored in       : [bold]{escape(collection)}[/bold]")
     console.print(f'  Ask with        : nlqueries doc-ask {escape(collection)} "<question>"')
 
