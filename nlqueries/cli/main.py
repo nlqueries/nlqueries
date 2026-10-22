@@ -181,9 +181,13 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
                 url = _mu(url).set(password=pwd).render_as_string(hide_password=False)
             except Exception as exc:  # noqa: BLE001
                 # The connection then goes out without the password, and fails
-                # as an authentication error that says nothing about why.
+                # as an authentication error that says nothing about why. Named
+                # by type only: SQLAlchemy 2.0 quotes the URL it could not
+                # parse, password and all.
                 _logging.getLogger(__name__).warning(
-                    "Could not add the stored password for %s to its URL: %s", connector_id, exc
+                    "Could not add the stored password for %s to its URL (%s)",
+                    connector_id,
+                    type(exc).__name__,
                 )
     return url
 
@@ -1216,11 +1220,12 @@ def update_password(connector_id: str, password_env: str | None) -> None:
                 cfg["url"] = str(_mu(cfg["url"]).set(password=None))
             except Exception as exc:  # noqa: BLE001
                 # The password is in the keychain now, and still in the URL in
-                # the connectors file: say so rather than report it moved.
+                # the connectors file: say so rather than report it moved. By
+                # type only, as the message may quote the URL it could not parse.
                 console.print(
                     "[yellow]Warning:[/yellow] the password is stored in the keychain, but "
-                    f"could not be removed from the URL in {CONNECTORS_FILE} ({exc}). "
-                    "Edit the URL there to remove it."
+                    f"could not be removed from the URL in {CONNECTORS_FILE} "
+                    f"({type(exc).__name__}). Edit the URL there to remove it."
                 )
             _save_connector(connector_id, cfg)
         console.print(

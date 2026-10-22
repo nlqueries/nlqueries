@@ -54,6 +54,11 @@ def _register_optional_connectors() -> None:
     says nothing. Anything else -- a connector module that fails to import for
     another reason -- is logged, rather than leaving the connector to vanish
     and be reported later as an unknown type.
+
+    An import that fails inside this package is not a missing driver, though
+    it raises ImportError too: a renamed name, or a circular import. So the
+    quiet case is the one that names a module outside it. One that names no
+    module at all is reported, since it cannot be told apart.
     """
     for name, module, cls in (
         ("snowflake", "nlqueries.connectors.snowflake", "SnowflakeConnector"),
@@ -64,10 +69,16 @@ def _register_optional_connectors() -> None:
     ):
         try:
             CONNECTOR_REGISTRY[name] = getattr(importlib.import_module(module), cls)
-        except ImportError:  # noqa: S112 - the extra is not installed
-            continue
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, ImportError) and _names_another_package(exc):
+                continue  # the extra is not installed
             logger.warning("The %s connector could not be loaded: %s", name, exc)
+
+
+def _names_another_package(exc: ImportError) -> bool:
+    if not exc.name:
+        return False
+    return exc.name.partition(".")[0] != __name__.partition(".")[0]
 
 
 _register_optional_connectors()

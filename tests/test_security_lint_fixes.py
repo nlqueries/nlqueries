@@ -69,12 +69,14 @@ def test_kb_stats_does_not_open_a_file_url(no_urlopen, monkeypatch, tmp_path, ca
     kb = tmp_path / "kb.yaml"
     kb.write_text("tables: []\n", encoding="utf-8")
 
-    with caplog.at_level(logging.WARNING, logger="nlqueries.knowledge.kb_stats"):
+    with caplog.at_level(logging.DEBUG, logger="nlqueries.knowledge.kb_stats"):
         stats = kb_stats.compute_kb_stats("sales", kb)
 
     assert no_urlopen == []
     assert stats.cache_entries is None  # not counted, rather than counted as none
-    assert any("cache entries" in r.getMessage() for r in caplog.records)
+    # Shown as n/a; Qdrant not running is ordinary, so it is not a warning.
+    (record,) = [r for r in caplog.records if "cache entries" in r.getMessage()]
+    assert record.levelno == logging.DEBUG
 
 
 def test_the_mcp_health_line_does_not_open_a_file_url(no_urlopen, monkeypatch) -> None:
@@ -100,6 +102,19 @@ def test_the_embedding_client_does_not_open_a_file_url(no_urlopen) -> None:
 
 # --- failures that passed silently ------------------------------------------------
 
+_LEGACY_URL = "postgresql://sales:s3cret@db.internal:notaport/sales"
+
+
+def _make_url_quoting_its_input(monkeypatch) -> None:
+    """SQLAlchemy 2.0's refusal, which quotes the string it was given."""
+    from sqlalchemy import engine
+    from sqlalchemy.exc import ArgumentError
+
+    def make_url(name: Any) -> Any:
+        raise ArgumentError(f"Could not parse SQLAlchemy URL from string '{name}'")
+
+    monkeypatch.setattr(engine, "make_url", make_url)
+
 
 @pytest.mark.parametrize("module", ["nlqueries.connectors.loader", "nlqueries.cli.main"])
 def test_a_stored_password_that_cannot_go_into_the_url_is_reported(
@@ -109,16 +124,21 @@ def test_a_stored_password_that_cannot_go_into_the_url_is_reported(
     import importlib
 
     target = importlib.import_module(module)
-    monkeypatch.setattr(target, "_load_password", lambda connector_id, cfg: "s3cret")
-    cfg = {"url": "this is not a url", "password_storage": "keychain"}
+    _make_url_quoting_its_input(monkeypatch)
+    monkeypatch.setattr(target, "_load_password", lambda connector_id, cfg: "n3w")
+    cfg = {"url": _LEGACY_URL, "password_storage": "keychain"}
 
     with caplog.at_level(logging.WARNING):
         url = target._get_full_url("sales", cfg)
 
-    assert url == "this is not a url"
-    assert any(
-        "Could not add the stored password for sales" in r.getMessage() for r in caplog.records
-    )
+    assert url == _LEGACY_URL
+    (message,) = [
+        r.getMessage()
+        for r in caplog.records
+        if "Could not add the stored password for sales" in r.getMessage()
+    ]
+    assert "ArgumentError" in message
+    assert "s3cret" not in caplog.text  # the URL the error quotes stays out of the log
 
 
 def test_a_password_left_in_the_url_after_moving_to_the_keychain_is_reported(monkeypatch) -> None:
@@ -127,19 +147,21 @@ def test_a_password_left_in_the_url_after_moving_to_the_keychain_is_reported(mon
 
     saved: list[dict[str, Any]] = []
     monkeypatch.setattr(cli_main, "_resolve_alias", lambda connector_id: connector_id)
-    monkeypatch.setattr(
-        cli_main, "_require_connector", lambda connector_id: {"url": "this is not a url"}
-    )
+    _make_url_quoting_its_input(monkeypatch)
+    monkeypatch.setattr(cli_main, "_require_connector", lambda connector_id: {"url": _LEGACY_URL})
     monkeypatch.setattr(cli_main, "_save_password", lambda connector_id, password: True)
     monkeypatch.setattr(cli_main, "_save_connector", lambda connector_id, cfg: saved.append(cfg))
-    monkeypatch.setenv("NEW_DB_PASSWORD", "s3cret")
+    monkeypatch.setenv("NEW_DB_PASSWORD", "n3w")
 
     result = CliRunner().invoke(
         cli_main.cli, ["update-password", "sales", "--password-env", "NEW_DB_PASSWORD"]
     )
 
     assert result.exit_code == 0, result.output
-    assert "could not be removed from the URL" in " ".join(result.output.split())
+    output = " ".join(result.output.split())
+    assert "could not be removed from the URL" in output
+    assert "(ArgumentError)" in output
+    assert "s3cret" not in output  # the password it is warning about
 
 
 def test_kb_stats_reports_a_live_schema_it_could_not_read(tmp_path, caplog) -> None:
@@ -174,7 +196,18 @@ def test_kb_stats_reports_feedback_it_could_not_count(tmp_path, monkeypatch, cap
 
 
 @pytest.mark.parametrize(
-    ("raised", "warned"), [(ImportError("no snowflake driver"), False), (RuntimeError("bug"), True)]
+    ("raised", "warned"),
+    [
+        (ModuleNotFoundError("No module named 'snowflake'", name="snowflake"), False),
+        # google-cloud-bigquery missing beside another google.cloud package.
+        (ImportError("cannot import name 'bigquery'", name="google.cloud"), False),
+        # Broken here rather than missing there: a renamed name, a circular import.
+        (ImportError("cannot import name 'X'", name="nlqueries.connectors.base"), True),
+        (ModuleNotFoundError("No module named 'nlqueries.x'", name="nlqueries.x"), True),
+        (ImportError("names no module"), True),
+        (RuntimeError("bug"), True),
+    ],
+    ids=["driver", "driver-in-namespace", "renamed", "own-module", "unnamed", "other"],
 )
 def test_an_optional_connector_that_fails_for_another_reason_is_reported(
     monkeypatch, caplog, raised: Exception, warned: bool

@@ -255,6 +255,8 @@ def compute_kb_stats(
             data = _json.loads(resp.read())
             stats.cache_entries = data.get("result", {}).get("vectors_count", 0)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not count the cache entries for %s: %s", agent_id, exc)
+        # Debug, not a warning: left None, the count shows as n/a, and Qdrant
+        # not running is ordinary for kb-stats.
+        logger.debug("Could not count the cache entries for %s: %s", agent_id, exc)
 
     return stats
