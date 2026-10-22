@@ -308,10 +308,17 @@ def _report(purpose: bytes, why: str) -> None:
     document identifier after one (:func:`chunk_text_purpose`), which would
     otherwise make the warning once per document, and put the identifier and
     the NUL in the log line.
+
+    Every failure is logged at debug in full, document included, so which
+    documents are affected can still be found out.
     """
     kind = purpose.split(b"\x00", 1)[0]
+    logger.debug(
+        "An encrypted %s could not be read: %s",
+        purpose.replace(b"\x00", b" ").decode(errors="replace"),
+        why,
+    )
     if kind in _warned:
-        logger.debug("An encrypted %s could not be read: %s", kind.decode(), why)
         return
     _warned.add(kind)
     logger.warning(

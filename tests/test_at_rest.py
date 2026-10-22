@@ -164,6 +164,26 @@ def test_unreadable_chunks_warn_once_for_the_kind_not_per_document(monkeypatch, 
     assert "\x00" not in warnings[0] and "policy" not in warnings[0]
 
 
+def test_each_unreadable_chunk_names_its_document_at_debug(monkeypatch, caplog) -> None:
+    """The warning is per kind; which documents are affected is still findable."""
+    import logging
+
+    _encrypt_with(monkeypatch, "first key")
+    sealed = {
+        source: at_rest.seal(CHUNK, at_rest.chunk_text_purpose(source))
+        for source in ("policy", "salaries")
+    }
+    monkeypatch.setenv(at_rest.KEY_ENV, "second key")
+
+    with caplog.at_level(logging.DEBUG, logger=at_rest.__name__):
+        for source, value in sealed.items():
+            assert at_rest.unseal(value, at_rest.chunk_text_purpose(source)) is None
+
+    debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert any("policy" in m for m in debug) and any("salaries" in m for m in debug)
+    assert not any("\x00" in m for m in debug)
+
+
 def test_each_kind_warns_once_of_its_own(monkeypatch, caplog) -> None:
     """Once per kind, not once in all: an answer and a chunk are two warnings."""
     _encrypt_with(monkeypatch, "first key")
