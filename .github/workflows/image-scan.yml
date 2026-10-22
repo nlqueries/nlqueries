@@ -1,0 +1,109 @@
+name: Image scan (Trivy)
+
+# Scans the nlqueries/core image for known vulnerabilities in its OS packages
+# and Python dependencies, and reports them to the repository's Security tab.
+#
+# Weekly, because a new advisory against something already shipped arrives
+# without any change here; on a version tag, so each release is scanned as it
+# is built; and on a pull request, or a push to main, that changes what goes
+# into the image, or this workflow. The push keeps main's analysis current:
+# code scanning compares a pull request's findings with the latest analysis of
+# its base branch, so a stale one would put findings already on main on
+# whichever pull request next touched the image.
+#
+# It reports and does not fail: an advisory against the base image would
+# otherwise block unrelated work until upstream ships a fix. The Security tab
+# is read before a release's publishing environments are approved.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  push:
+    branches: [main]
+    # GitHub does not evaluate path filters for tag pushes, so every v* tag
+    # is scanned; the paths below apply to pushes to main.
+    tags: ["v*"]
+    paths:
+      - Dockerfile
+      - "requirements/**"
+      - .github/workflows/image-scan.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - "requirements/**"
+      - .github/workflows/image-scan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Updating Trivy: take a release at least two weeks old, and its
+  # Linux-64bit archive's SHA-256 from that release's checksums file
+  # (trivy_<version>_checksums.txt).
+  TRIVY_VERSION: "0.75.0"
+  TRIVY_SHA256: "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f"
+
+jobs:
+  scan:
+    name: Scan the image (HIGH and CRITICAL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF report, and nothing else
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The image carries torch and its CUDA libraries, several GB, which the
+      # runner's free space does not always cover alongside the build layers.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build the image (not pushed)
+        run: docker build --tag nlqueries-core:scan .
+
+      # The binary from Trivy's own release, checked against a SHA-256 kept in
+      # this file rather than one fetched beside the archive: a changed archive
+      # fails here instead of being trusted because its checksum changed with it.
+      - name: Install Trivy ${{ env.TRIVY_VERSION }}
+        run: |
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trivy"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/trivy" trivy
+          "$RUNNER_TEMP/trivy/trivy" --version
+
+      - name: Scan
+        run: |
+          "$RUNNER_TEMP/trivy/trivy" image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format sarif \
+            --output trivy-image.sarif \
+            --exit-code 0 \
+            nlqueries-core:scan
+
+      # A pull request from a fork gets a read-only token whatever this job
+      # asks for, so the upload would fail with a 403 and leave the
+      # contributor a red check they cannot clear. There the findings are
+      # printed to the log instead: the SARIF above holds them only in its file.
+      - name: Upload to the Security tab
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Show the findings in the log (fork pull requests)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          "$RUNNER_TEMP/trivy/trivy" image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format table \
+            --exit-code 0 \
+            nlqueries-core:scan
