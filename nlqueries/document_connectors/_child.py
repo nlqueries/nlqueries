@@ -10,8 +10,10 @@ it cannot corrupt the result.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pickle  # noqa: S403 - both ends are this package
+import signal
 import sys
 import threading
 
@@ -125,12 +127,26 @@ def _arm_watchdog(seconds: float | None) -> None:
     the parent cannot: killed itself, or stopped by a hard time limit that gave
     it no chance. Without it the parse would run on, holding the file and up
     to its memory limit, and on Windows with nothing bounding its time.
+
+    What the parser started goes too. On Windows the Job Object sees to that
+    however this process ends. On POSIX the parent would kill the process
+    group this process leads, and the parent is the one thing not there, so
+    the watchdog kills the group itself -- this process with it, so the exit
+    is SIGKILL rather than the watchdog's code, which reads as a timeout all
+    the same. Only when it leads the group, as the parent starts it: run any
+    other way, the group is someone else's.
     """
     if not seconds:
         return
     from nlqueries.document_connectors._isolation import WATCHDOG_EXIT_CODE  # noqa: PLC0415
 
-    timer = threading.Timer(seconds, os._exit, args=(WATCHDOG_EXIT_CODE,))
+    def fire() -> None:
+        if sys.platform != "win32" and os.getpgrp() == os.getpid():
+            with contextlib.suppress(OSError):
+                os.killpg(os.getpgrp(), signal.SIGKILL)
+        os._exit(WATCHDOG_EXIT_CODE)
+
+    timer = threading.Timer(seconds, fire)
     timer.daemon = True
     timer.start()
 

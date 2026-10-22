@@ -258,6 +258,12 @@ def _end_descendants(child: subprocess.Popen[bytes]) -> None:
     one that has already emptied is no error. On Windows the child's Job
     Object is set to kill its members when the child's handle to it closes,
     which happens when the child ends, so there is nothing to do here.
+
+    The order matters on POSIX: the group id is the child's pid, which is
+    free for reuse once the child is reaped. `_stop` kills the group before
+    reaping. After a normal exit `wait` has already reaped it, so a host that
+    cycled through its whole pid space in between could have handed the id to
+    another group leader; improbable, and accepted rather than polled for.
     """
     if sys.platform == "win32":
         return

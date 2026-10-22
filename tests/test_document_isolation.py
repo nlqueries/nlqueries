@@ -357,6 +357,41 @@ def test_the_child_stops_itself_when_its_parent_does_not(source) -> None:
     assert time.monotonic() - started < 30
 
 
+@pytest.mark.skipif(not _POSIX, reason="the Job Object covers this on Windows")
+def test_the_watchdog_takes_what_the_parser_started_with_it(source) -> None:
+    """With no parent left to kill the group, the watchdog does."""
+    import os
+    import pickle
+    import signal
+
+    payload = {
+        "connector": "tests._fake_parsers:StartsAGrandchildThenHangs",
+        "source": str(source),
+        "source_id": "s1",
+        "limits": {},
+        "memory_bytes": 1024 * 1024 * 1024,
+        "cpu_seconds": 120,
+        "deadline_seconds": 3.0,
+    }
+    # As the parent starts it, leading a session of its own.
+    ran = subprocess.run(
+        [sys.executable, "-P", "-m", "nlqueries.document_connectors._child"],
+        input=pickle.dumps(payload),
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=60,
+        check=False,
+        start_new_session=True,
+    )
+    assert ran.returncode == -signal.SIGKILL  # the group, this process with it
+    pid = int(source.with_suffix(".pid").read_text())
+    try:
+        assert _gone(pid)
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
 def test_a_child_its_watchdog_stopped_is_a_timeout() -> None:
     error = _isolation._death("doc.pdf", _isolation.WATCHDOG_EXIT_CODE, b"")
     assert isinstance(error, DocumentExtractionTimeout)
