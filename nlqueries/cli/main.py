@@ -15,6 +15,7 @@ Commands
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging as _logging
 import os
@@ -662,6 +663,24 @@ def _check_config() -> _CheckResult:
     return _CheckResult("Config", "ok", ", ".join(notes))
 
 
+def _replace_what_output_cannot_encode() -> None:
+    """Write a character the output's encoding lacks as a replacement, not an error.
+
+    Redirected or piped on Windows, Python writes stdout and stderr in the
+    locale's code page (cp1252), which has no ✓ or ⚠. Strict, the first one
+    raised UnicodeEncodeError mid-command: `connect` printed its check mark
+    after testing the connection and before saving it, so the connector was
+    lost. The text is still written; only the characters it cannot carry change.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            # A stream that cannot be reconfigured (a test's capture, say)
+            # keeps what it has.
+            with contextlib.suppress(Exception):
+                reconfigure(errors="replace")
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -687,6 +706,8 @@ def cli() -> None:
 
     from nlqueries.audit import Surface, bind_process  # noqa: PLC0415
     from nlqueries.auth.principal import local_principal  # noqa: PLC0415
+
+    _replace_what_output_cannot_encode()
 
     # One invocation is one request, made by whoever runs it. Any failure to
     # name them leaves the principal unknown: attribution must never stop a

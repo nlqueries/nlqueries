@@ -833,6 +833,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   registered database was reported as "connection failed — is the database
   running?" whether it was or not. The probe now runs read-only, as the other
   commands that read from the database do.
+- **The CLI no longer fails when its output cannot carry a character.** With
+  output redirected or piped on Windows, Python writes in the locale's code
+  page, which has no check mark, and the first one raised `UnicodeEncodeError`.
+  `connect` prints one after testing the connection and before saving it, so
+  the connector was lost. Such characters are now written as a replacement.
 - **Every store names an agent the same way, so two agents no longer share
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be
