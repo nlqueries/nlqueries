@@ -8,13 +8,18 @@ Rules are applied to the whole parsed tree. The checks this replaced examined
 only the root node, and every payload in ``tests/security/payloads`` has a
 ``Select`` at its root.
 
-Permitted functions are determined by sqlglot rather than listed here. sqlglot
-models standard SQL functions as typed classes and falls back to
-:class:`exp.Anonymous` for the vendor, extension and user-defined set.
-Measured: that signal refuses all five function-based payloads in the audit
-corpus, and misclassifies 4 of 62 common analytics functions (``age``,
-``jsonb_agg``, ``regexp_matches``, ``every``), each requiring one allowlist
-entry.
+What a query may be built from is listed, per dialect: the expression classes
+in :mod:`nlqueries.sql_constructs`, and the functions sqlglot does not model
+(:class:`exp.Anonymous`), by name, in :data:`ALLOWED_ANONYMOUS`. Anything not
+listed is refused, so a function sqlglot happens to model is no longer allowed
+for that alone. ``tests/sql_corpus.py`` holds the analytics queries each list
+must keep allowing.
+
+A statement is also parsed again from the form sqlglot renders it in, and
+refused when the policy reads that differently: another statement count or
+root, other tables, or a refusal. The rules judge sqlglot's reading of a
+statement, and one whose reading does not survive a round trip is one sqlglot
+is not reading reliably.
 
 Root statement types are allow-listed. ``VACUUM``, ``CALL`` and ``DO`` parse to
 :class:`exp.Command`; ``COPY``, ``SET``, ``GRANT`` and ``TRUNCATE`` each parse
@@ -30,6 +35,8 @@ import sqlglot
 from sqlglot import TokenType, exp
 from sqlglot.errors import SqlglotError
 
+from nlqueries.sql_constructs import allowed_constructs
+
 #: Incremented when a decision made by this module could change. Recorded on
 #: every decision so a stored verdict can be told apart from a current one.
 #:
@@ -39,7 +46,11 @@ from sqlglot.errors import SqlglotError
 #:
 #: 3: the file-reading functions sqlglot models, and a string literal used as a
 #: table name, are refused.
-POLICY_VERSION = "3"
+#:
+#: 4: only listed constructs are allowed, per dialect (:mod:`.sql_constructs`);
+#: unmodelled aggregates are checked by name like other unmodelled functions;
+#: and a statement whose rendered form the policy reads differently is refused.
+POLICY_VERSION = "4"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -96,15 +107,22 @@ _FILE_READING_NODES: tuple[type[exp.Expression], ...] = tuple(
 #: and an entry under ``mssql`` was out of its reach -- as it already was for
 #: an enterprise SQLAlchemy connector, whose dialect comes from its URL.
 ALLOWED_ANONYMOUS: dict[str, frozenset[str]] = {
-    "postgres": frozenset({"age", "jsonb_agg", "regexp_matches", "every", "date_part"}),
+    "postgres": frozenset(
+        {
+            "age", "jsonb_agg", "regexp_matches", "every", "date_part", "cardinality",
+            "make_date", "to_json", "json_agg", "json_build_object", "jsonb_build_object",
+        }
+    ),
     "redshift": frozenset({"age", "regexp_matches", "every", "date_part"}),
-    "snowflake": frozenset({"every"}),
+    "snowflake": frozenset({"every", "to_timestamp"}),
     "bigquery": frozenset(),
     "tsql": frozenset(),
-    "mysql": frozenset(),
-    "sqlite": frozenset(),
-    "duckdb": frozenset({"every"}),
-}
+    "mysql": frozenset({"now", "sysdate", "unix_timestamp", "json_array"}),
+    "sqlite": frozenset({"julianday", "datetime", "time", "unixepoch"}),
+    "duckdb": frozenset(
+        {"every", "age", "cardinality", "date_part", "datepart", "date_sub", "now", "to_json"}
+    ),
+}  # fmt: skip
 
 #: Names sqlglot knows under a different spelling. The keys are both connector
 #: `db_type` values and SQLAlchemy backend names, since the two vocabularies
@@ -192,6 +210,9 @@ class PolicyDecision:
     #: Every unrecognised function seen, whether or not it was allowed.
     #: Recorded so the inventory can report what an allowlist would need.
     anonymous_functions: tuple[str, ...] = ()
+    #: Expression classes in the statement that the dialect's list does not
+    #: have, by name. Recorded for the inventory, as the functions are.
+    unlisted_constructs: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
         return self.allowed
@@ -358,7 +379,40 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         )
 
     tree = parsed[0]
+    reading = _read(tree, sql, dialect)
+    reasons.extend(reading.reasons)
+    if not reasons:
+        reasons.extend(_rereading_differs(tree, reading, dialect))
 
+    return PolicyDecision(
+        allowed=not reasons,
+        dialect=dialect,
+        policy_version=POLICY_VERSION,
+        sql_digest=digest_of(sql),
+        reasons=tuple(reasons),
+        anonymous_functions=reading.anonymous,
+        unlisted_constructs=reading.unlisted,
+    )
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """What the rules make of one parsed statement."""
+
+    reasons: tuple[str, ...]
+    anonymous: tuple[str, ...]
+    unlisted: tuple[str, ...]
+    tables: frozenset[tuple[str, ...]]
+
+
+#: Unmodelled functions, judged by name rather than by class. Aggregates
+#: included: sqlglot has a class of its own for an unmodelled aggregate.
+_UNMODELLED: tuple[type[exp.Expression], ...] = (exp.Anonymous, exp.AnonymousAggFunc)
+
+
+def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
+    """Apply every rule to *tree*, parsed from *sql*."""
+    reasons: list[str] = []
     root_name = type(tree).__name__
     if not isinstance(tree, _ALLOWED_ROOTS):
         reasons.append(f"statement is a {root_name}, not a query")
@@ -385,17 +439,93 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
             + ", ".join(repr(name) for name in string_tables)
         )
 
-    anonymous = tuple(sorted({n.name.lower() for n in tree.find_all(exp.Anonymous) if n.name}))
+    anonymous = tuple(sorted({n.name.lower() for n in tree.find_all(*_UNMODELLED) if n.name}))
     permitted = allowed_anonymous(dialect)
     refused = [name for name in anonymous if name not in permitted]
     if refused:
         reasons.append(f"calls unrecognised function(s): {', '.join(refused)}")
 
-    return PolicyDecision(
-        allowed=not reasons,
-        dialect=dialect,
-        policy_version=POLICY_VERSION,
-        sql_digest=digest_of(sql),
-        reasons=tuple(reasons),
-        anonymous_functions=anonymous,
+    # Exact classes, not isinstance: a subclass of a listed class is another
+    # construct, and is not allowed by inheriting. What a rule above already
+    # names is not named twice.
+    listed = allowed_constructs(_sqlglot_dialect(dialect))
+    # Classes, not names looked up in `exp`: sqlglot does not export every
+    # class its parser produces under its own name (`_TimeUnit` is not), and a
+    # lookup that failed would raise here rather than refuse.
+    # The root's class only when the root rule refused it: a subclass of
+    # `Select` passes that rule's isinstance, and must still be listed itself.
+    already_named = {*forbidden, *file_readers}
+    if not isinstance(tree, _ALLOWED_ROOTS):
+        already_named.add(root_name)
+    unlisted = tuple(
+        sorted(
+            {
+                type(n).__name__
+                for n in tree.walk()
+                if not isinstance(n, _UNMODELLED) and type(n) not in listed
+            }
+            - already_named
+        )
     )
+    if unlisted:
+        reasons.append(
+            f"uses construct(s) not on the {_sqlglot_dialect(dialect)} list: {', '.join(unlisted)}"
+        )
+
+    # SQL Server still reads `FROM orders o (TABLOCKX)`, a table hint written
+    # without WITH, which sqlglot parses as a column list on the alias -- every
+    # class of it listed. It allows a column list only on a derived table,
+    # whose alias sits on the subquery, so one on a table is only ever a hint.
+    if _sqlglot_dialect(dialect) == "tsql":
+        hinted = sorted(
+            {
+                table.name
+                for table in tree.find_all(exp.Table)
+                if (alias := table.args.get("alias")) is not None and alias.args.get("columns")
+            }
+        )
+        if hinted:
+            reasons.append(
+                f"gives {', '.join(hinted)} a parenthesised list after its alias, which "
+                "SQL Server reads as a table hint"
+            )
+
+    tables = frozenset(
+        tuple(part.name for part in table.parts) for table in tree.find_all(exp.Table)
+    )
+    return _Reading(tuple(reasons), anonymous, unlisted, tables)
+
+
+def _rendered(tree: exp.Expression, dialect: str) -> str:
+    return tree.sql(dialect=_sqlglot_dialect(dialect))
+
+
+def _rereading_differs(tree: exp.Expression, reading: _Reading, dialect: str) -> list[str]:
+    """Why sqlglot's rendering of *tree*, parsed again, reads differently, if it does.
+
+    Compared as the policy reads it rather than node for node. sqlglot
+    canonicalises freely -- MySQL's ``IF`` comes back as ``CASE``, Snowflake's
+    ``profile:tier`` as ``GET_PATH`` -- and a node-for-node comparison refused
+    six of the corpus queries for it. What matters is whether the round trip
+    changes the number of statements, the root, the tables, or whether a rule
+    applies.
+    """
+    try:
+        # Rendering inside the `try` too: sqlglot's generator recurses where its
+        # parser does not, so `a::INT::INT::...`, five hundred casts long, parses
+        # and reads cleanly and then exhausts the stack here. A statement this
+        # cannot render is one it cannot vouch for, and evaluate never raises.
+        rendered = _rendered(tree, dialect)
+        again = [s for s in sqlglot.parse(rendered, read=_sqlglot_dialect(dialect)) if s]
+    except Exception:  # noqa: BLE001 - RecursionError, or anything the generator raises
+        return ["its rendered form could not be produced or parsed again"]
+    if len(again) != 1:
+        return [f"its rendered form parses as {len(again)} statements"]
+    if type(again[0]) is not type(tree):
+        return [f"its rendered form parses as a {type(again[0]).__name__}"]
+    second = _read(again[0], rendered, dialect)
+    if second.tables != reading.tables:
+        return ["its rendered form reads other tables"]
+    if second.reasons:
+        return [f"its rendered form is refused: {'; '.join(second.reasons)}"]
+    return []
