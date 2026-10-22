@@ -64,6 +64,7 @@ from nlqueries.embeddings.qdrant_store import (
     ensure_collection,
     forget_collection_indexes,
 )
+from nlqueries.state_files import agent_storage_id
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,16 @@ CACHE_COLLECTION_PREFIX = "cache_"
 CACHE_VECTOR_SIZE = config.EMBED_DIMENSIONS
 SIMILARITY_THRESHOLD = 0.97  # kept for backward-compat; Tier 1 uses config value
 
-# Qdrant collection names must not contain ":" or other special chars.
-_SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+def cache_collection_name(agent_id: str) -> str:
+    """The cache collection for *agent_id*: its one storage name, prefixed.
+
+    Through :func:`~nlqueries.state_files.agent_storage_id`, the rule every
+    store for an agent uses. This once had a rule of its own that also turned
+    ``.`` into ``_``, so ``sales.eu`` and ``sales_eu`` read and wrote one cache.
+    """
+    return f"{CACHE_COLLECTION_PREFIX}{agent_storage_id(agent_id)}"
+
 
 # Module-level set of known-existing Qdrant collection names.
 _known_collections: set[str] = set()
@@ -1001,8 +1010,7 @@ class SemanticCache:
         :meth:`stats`, :meth:`invalidate` and :meth:`list_entries` do not read
         entry contents and work without one.
         """
-        safe_id = _SAFE_ID_RE.sub("_", agent_id)
-        self._collection = f"{CACHE_COLLECTION_PREFIX}{safe_id}"
+        self._collection = cache_collection_name(agent_id)
         self._ttl_hours = ttl_hours
         self._binding = binding
 

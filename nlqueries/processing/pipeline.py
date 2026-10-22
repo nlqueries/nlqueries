@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +31,7 @@ from nlqueries.connectors.base import DatabaseConnector, SchemaSpec
 from nlqueries.processing.parameterizer import Placeholder, QueryCapsule, parameterize_clusters
 from nlqueries.processing.query_clusterer import cluster_queries
 from nlqueries.processing.query_filter import filter_and_deduplicate
-from nlqueries.state_files import write_private
+from nlqueries.state_files import agent_storage_id, write_private
 
 
 def process_query_history(
@@ -115,7 +114,7 @@ def save_capsules(capsules: list[QueryCapsule], connector_id: str) -> Path:
     Returns:
         Absolute ``Path`` of the written file.
     """
-    safe_id = re.sub(r"[^\w.-]", "_", connector_id)
+    safe_id = agent_storage_id(connector_id)
     out_path = CAPSULES_DIR / f"{safe_id}.json"
     data = [dataclasses.asdict(c) for c in capsules]
     return write_private(out_path, json.dumps(data, indent=2, ensure_ascii=False))
@@ -134,7 +133,7 @@ def load_capsules(connector_id: str) -> list[QueryCapsule]:
     Raises:
         FileNotFoundError: When no saved capsules exist for *connector_id*.
     """
-    safe_id = re.sub(r"[^\w.-]", "_", connector_id)
+    safe_id = agent_storage_id(connector_id)
     path = CAPSULES_DIR / f"{safe_id}.json"
     if not path.exists():
         raise FileNotFoundError(
