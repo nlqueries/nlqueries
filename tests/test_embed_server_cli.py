@@ -8,7 +8,9 @@ rather than ``ProcessLookupError`` and crashed with a traceback. All three now
 read the file through ``embed_server.read_pid_file``.
 
 No real daemon: the PID file is under ``tmp_path``, and ``is_pid_alive``,
-``os.kill`` and ``subprocess.Popen`` are replaced.
+``os.kill`` and ``subprocess.Popen`` are replaced, and so is the port check
+``start`` makes, except where a test names it: otherwise a daemon a developer
+has running on the default port would fail them.
 """
 
 from __future__ import annotations
@@ -48,8 +50,11 @@ def out(monkeypatch: pytest.MonkeyPatch) -> Iterator[io.StringIO]:
     yield buffer
 
 
-def _run(*args: str) -> Any:
-    return CliRunner().invoke(cli, ["embed-server", *args])
+def _run(*args: str, probe_port: bool = False) -> Any:
+    if probe_port:
+        return CliRunner().invoke(cli, ["embed-server", *args])
+    with patch.object(cli_main, "_port_taken", return_value=False):
+        return CliRunner().invoke(cli, ["embed-server", *args])
 
 
 def _running_popen() -> MagicMock:
@@ -472,7 +477,7 @@ def test_start_refuses_a_port_already_in_use(pid_file: Path, out: io.StringIO) -
         taken = holder.getsockname()[1]
         popen = _running_popen()
         with patch("subprocess.Popen", popen):
-            result = _run("start", "--port", str(taken))
+            result = _run("start", "--port", str(taken), probe_port=True)
 
     assert result.exit_code == 1
     assert f"Port {taken} is already in use" in out.getvalue()
@@ -486,3 +491,24 @@ def test_a_free_port_is_not_reported_taken() -> None:
         probe.bind(("127.0.0.1", 0))
         free = probe.getsockname()[1]
     assert cli_main._port_taken(free) is False
+
+
+def test_a_port_the_last_daemon_left_in_time_wait_is_free() -> None:
+    """`stop` then `start`: the daemon closes each connection it served, so its
+    side of them waits in TIME_WAIT after it exits. It binds with SO_REUSEADDR
+    and would start; the check must not refuse it."""
+    import socket
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    client = socket.create_connection(("127.0.0.1", port))
+    served, _ = listener.accept()
+    served.close()  # the daemon's side closes first, as HTTP/1.0 does
+    client.recv(1)
+    client.close()
+    listener.close()
+
+    assert cli_main._port_taken(port) is False

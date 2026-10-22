@@ -3859,15 +3859,20 @@ _EMBED_START_GRACE_SECONDS = 2.0
 
 
 def _port_taken(port: int) -> bool:
-    """Whether 127.0.0.1:*port* is already bound, which the daemon needs free."""
+    """Whether something already listens on 127.0.0.1:*port*, which the daemon needs.
+
+    A connection rather than a bind. The daemon binds with ``SO_REUSEADDR``,
+    ``HTTPServer``'s default, and a bind without it fails on Linux while the
+    previous daemon's connections sit in ``TIME_WAIT`` for a minute or more
+    after ``stop``, a port the daemon itself would bind. A listener answers a
+    connection whatever options either side bound with. A port bound and not
+    listening is not caught here; the daemon fails on it when it binds.
+    """
     import socket  # noqa: PLC0415
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            return True
-    return False
+        probe.settimeout(0.5)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
 @cli.group("embed-server")
