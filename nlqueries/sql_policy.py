@@ -29,6 +29,7 @@ to a distinct class. A deny-list would require every such class to be named.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 
 import sqlglot
@@ -50,7 +51,14 @@ from nlqueries.sql_constructs import allowed_constructs
 #: 4: only listed constructs are allowed, per dialect (:mod:`.sql_constructs`);
 #: unmodelled aggregates are checked by name like other unmodelled functions;
 #: and a statement whose rendered form the policy reads differently is refused.
-POLICY_VERSION = "4"
+#:
+#: 5: a function call written with a qualifier is judged by the whole name,
+#: whether sqlglot models it or not, so ``some_schema.age`` no longer passes on
+#: the entry for ``age``, nor ``FROM some_schema.generate_series(...)`` on the
+#: class sqlglot parses it as; a qualifier on what is neither a name nor a
+#: call (``FROM public.mod(5, 2)``, the operator `Mod`) is refused; and an
+#: unmodelled call whose name cannot be read is refused.
+POLICY_VERSION = "5"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -381,8 +389,19 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
     tree = parsed[0]
     reading = _read(tree, sql, dialect)
     reasons.extend(reading.reasons)
+    anonymous, unlisted = reading.anonymous, reading.unlisted
     if not reasons:
-        reasons.extend(_rereading_differs(tree, reading, dialect))
+        differs, second = _rereading_differs(tree, reading, dialect)
+        reasons.extend(differs)
+        # What only the rendering has -- a construct sqlglot's canonical form
+        # introduced -- is what the inventory must count for the refusal to be
+        # actionable, so the second reading's lists join the first's. Only
+        # when that reading is what refused: a rendering refused for reading
+        # other tables comes back without one, as listing what it calls
+        # would change nothing.
+        if differs and second is not None:
+            anonymous = tuple(sorted({*anonymous, *second.anonymous}))
+            unlisted = tuple(sorted({*unlisted, *second.unlisted}))
 
     return PolicyDecision(
         allowed=not reasons,
@@ -390,8 +409,8 @@ def evaluate(sql: str, dialect: str) -> PolicyDecision:
         policy_version=POLICY_VERSION,
         sql_digest=digest_of(sql),
         reasons=tuple(reasons),
-        anonymous_functions=reading.anonymous,
-        unlisted_constructs=reading.unlisted,
+        anonymous_functions=anonymous,
+        unlisted_constructs=unlisted,
     )
 
 
@@ -408,6 +427,126 @@ class _Reading:
 #: Unmodelled functions, judged by name rather than by class. Aggregates
 #: included: sqlglot has a class of its own for an unmodelled aggregate.
 _UNMODELLED: tuple[type[exp.Expression], ...] = (exp.Anonymous, exp.AnonymousAggFunc)
+
+
+def _function_name(node: exp.Func, dialect: str) -> str | None:
+    """The name a function call is judged by: "" if it cannot be read, None if
+    the call is judged by its class instead.
+
+    An unmodelled call is judged by name. So is any call written with a
+    qualifier, ``some_schema.age(a, b)``, modelled or not: the qualifier is
+    part of the name, because an entry vouches for one function, and the one
+    ``some_schema`` holds is not the built-in it shadows -- nor, for a call
+    sqlglot models, the one its class stands for. A qualified call is
+    allowed only if listed as written.
+
+    The qualifier is not always the call's parent. In a select list it is a
+    `Dot` whose right-hand side is the call; a suffix -- ``FILTER (WHERE
+    ...)``, ``WITHIN GROUP (...)``, ``IGNORE NULLS`` -- wraps the call first,
+    and then it lands in a `Dot` around the wrapper or, as table, schema and
+    catalog, in a `Column` whose `this` the wrapper is; in a ``FROM`` it is
+    the schema and catalog of the `Table` whose `this` the call is. So the
+    search goes up through every node the call heads (is the `this` of) until
+    it finds one of those. Taking a qualifier that was not meant can only
+    refuse a call; missing one allows it. The shapes are sqlglot's, measured
+    against 30.17: a release that attached the qualifier some other way
+    would leave it unseen, and the tests for each shape would fail there.
+    """
+    qualifier = _qualifier(node)
+    if isinstance(node, _UNMODELLED):
+        written = node.name
+    elif not qualifier:
+        return None
+    else:
+        written = _written_name(node, dialect)
+    names = [*qualifier, written]
+    if not all(names):
+        return ""
+    return ".".join(names).lower()
+
+
+def _written_name(node: exp.Func, dialect: str) -> str:
+    """How *dialect* spells the function a modelled call stands for: its class
+    is named for sqlglot (`ExplodingGenerateSeries`), not for the database.
+    One the dialect writes without an argument list, ``CURRENT_DATE``, is
+    named by its whole rendering. One it writes as an operator, ``a -> 'b'``,
+    has no name in its rendering, and takes sqlglot's: stable, where the
+    rendering would vary with the operands."""
+    try:
+        rendered = node.sql(dialect=_sqlglot_dialect(dialect))
+    except Exception:  # noqa: BLE001 - "" is unreadable, which refuses
+        return ""
+    name = rendered.partition("(")[0].strip()
+    return name if _PLAIN_NAME.fullmatch(name) else node.sql_name()
+
+
+def _qualified_non_calls(tree: exp.Expression) -> list[str]:
+    """Classes that carry a qualifier but are neither a name nor a call.
+
+    ``FROM public.mod(5, 2)`` parses as a `Table` in schema ``public`` whose
+    `this` is `Mod`, an operator: no name to judge, and nothing a qualifier
+    means on it but a function the schema holds."""
+    found = set()
+    for node in tree.find_all(exp.Dot, exp.Column, exp.Table):
+        if isinstance(node, exp.Dot):
+            target = node.expression
+        elif _named_parts(node, ("catalog", "db", "table")):
+            target = node.this
+        else:
+            continue
+        while isinstance(target, _CALL_WRAPPERS):
+            target = target.this
+        if target is not None and not isinstance(target, (exp.Identifier, exp.Star, exp.Func)):
+            found.add(type(target).__name__)
+    return sorted(found)
+
+
+#: What sqlglot wraps around a call before it attaches the call's qualifier.
+#: Only these are climbed: through anything else -- `Mod`, the `this` of
+#: ``public.mod(length(a), 2)`` -- the qualifier is not the inner call's.
+_CALL_WRAPPERS: tuple[type[exp.Expression], ...] = tuple(
+    getattr(exp, name)
+    for name in ("Filter", "WithinGroup", "IgnoreNulls", "RespectNulls", "HavingMax")
+    if hasattr(exp, name)
+)
+
+#: A name as a dialect spells a function: what precedes the bracket of a call
+#: rendered ``NAME(...)``, and not what precedes it in an operator's rendering.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
+
+def _qualifier(node: exp.Func) -> list[str]:
+    """The names qualifying the call *node*, outermost first, "" for one that
+    cannot be read; empty when there is no qualifier."""
+    # `object`: sqlglot types a node's parent as its base class, not Expression.
+    child: object = node
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.Dot) and parent.expression is child:
+            names = []
+            qualifier = parent.this
+            while isinstance(qualifier, exp.Dot):
+                names.append(qualifier.expression.name)
+                qualifier = qualifier.this
+            # A Column at the bottom keeps its own table, schema and catalog.
+            parts = qualifier.parts if isinstance(qualifier, exp.Column) else [qualifier]
+            names.extend(part.name for part in reversed(parts))
+            names.reverse()
+        elif isinstance(parent, exp.Column) and parent.this is child:
+            names = _named_parts(parent, ("catalog", "db", "table"))
+        elif isinstance(parent, exp.Table) and parent.this is child:
+            names = _named_parts(parent, ("catalog", "db"))
+        elif isinstance(parent, _CALL_WRAPPERS) and parent.args.get("this") is child:
+            child, parent = parent, parent.parent
+            continue
+        else:
+            return []
+        return names
+    return []
+
+
+def _named_parts(node: exp.Expression, keys: tuple[str, ...]) -> list[str]:
+    return [part.name for part in (node.args.get(key) for key in keys) if part is not None]
 
 
 def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
@@ -439,11 +578,25 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
             + ", ".join(repr(name) for name in string_tables)
         )
 
-    anonymous = tuple(sorted({n.name.lower() for n in tree.find_all(*_UNMODELLED) if n.name}))
+    names = [
+        name
+        for name in (_function_name(n, dialect) for n in tree.find_all(exp.Func))
+        if name is not None
+    ]
+    anonymous = tuple(sorted({name for name in names if name}))
     permitted = allowed_anonymous(dialect)
     refused = [name for name in anonymous if name not in permitted]
     if refused:
         reasons.append(f"calls unrecognised function(s): {', '.join(refused)}")
+    misqualified = _qualified_non_calls(tree)
+    if misqualified:
+        reasons.append(
+            f"puts a qualifier on what is not a name or a function: {', '.join(misqualified)}"
+        )
+    # Exempt from the class list below and judged by name, so one whose name
+    # cannot be read would otherwise be judged by neither.
+    if not all(names):
+        reasons.append("calls a function whose name could not be read")
 
     # Exact classes, not isinstance: a subclass of a listed class is another
     # construct, and is not allowed by inheriting. What a rule above already
@@ -500,8 +653,11 @@ def _rendered(tree: exp.Expression, dialect: str) -> str:
     return tree.sql(dialect=_sqlglot_dialect(dialect))
 
 
-def _rereading_differs(tree: exp.Expression, reading: _Reading, dialect: str) -> list[str]:
-    """Why sqlglot's rendering of *tree*, parsed again, reads differently, if it does.
+def _rereading_differs(
+    tree: exp.Expression, reading: _Reading, dialect: str
+) -> tuple[list[str], _Reading | None]:
+    """Why sqlglot's rendering of *tree*, parsed again, reads differently, if it does,
+    with the rendering's reading when there is one.
 
     Compared as the policy reads it rather than node for node. sqlglot
     canonicalises freely -- MySQL's ``IF`` comes back as ``CASE``, Snowflake's
@@ -518,14 +674,14 @@ def _rereading_differs(tree: exp.Expression, reading: _Reading, dialect: str) ->
         rendered = _rendered(tree, dialect)
         again = [s for s in sqlglot.parse(rendered, read=_sqlglot_dialect(dialect)) if s]
     except Exception:  # noqa: BLE001 - RecursionError, or anything the generator raises
-        return ["its rendered form could not be produced or parsed again"]
+        return ["its rendered form could not be produced or parsed again"], None
     if len(again) != 1:
-        return [f"its rendered form parses as {len(again)} statements"]
+        return [f"its rendered form parses as {len(again)} statements"], None
     if type(again[0]) is not type(tree):
-        return [f"its rendered form parses as a {type(again[0]).__name__}"]
+        return [f"its rendered form parses as a {type(again[0]).__name__}"], None
     second = _read(again[0], rendered, dialect)
     if second.tables != reading.tables:
-        return ["its rendered form reads other tables"]
+        return ["its rendered form reads other tables"], None
     if second.reasons:
-        return [f"its rendered form is refused: {'; '.join(second.reasons)}"]
-    return []
+        return [f"its rendered form is refused: {'; '.join(second.reasons)}"], second
+    return [], second

@@ -50,7 +50,11 @@ dialect:
   nothing else, in `nlqueries/sql_constructs.py`;
 - functions sqlglot does not model, by name, in `ALLOWED_ANONYMOUS` in
   `nlqueries/sql_policy.py`: PostgreSQL's `age`, MySQL's `now` and SQLite's
-  `julianday`, for example.
+  `julianday`, for example. A call written with a qualifier is judged by the
+  whole name, by this list, whether or not sqlglot models it:
+  `some_schema.age(a, b)` is not PostgreSQL's `age`, and is allowed only if
+  `some_schema.age` is listed; `FROM some_schema.generate_series(1, 3)` only if
+  `some_schema.generate_series` is.
 
 Anything else is refused, including what a read query has no use for: session
 variables and parameters (`@@version`, `@x`, `$1`, `?`) and `CURRENT_USER`. The

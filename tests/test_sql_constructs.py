@@ -39,7 +39,7 @@ def test_every_listed_name_is_a_class_in_this_sqlglot() -> None:
 
 
 def test_the_version_records_the_change() -> None:
-    assert POLICY_VERSION == "4"
+    assert POLICY_VERSION == "5"
 
 
 #: Calls that read files, sleep, lock, reach the network, run commands, or read
@@ -222,6 +222,245 @@ def test_an_unmodelled_aggregate_is_judged_by_name() -> None:
     assert not decision.allowed
 
 
+@pytest.mark.parametrize(
+    ("dialect", "sql", "bare", "qualified"),
+    [
+        ("postgres", "SELECT some_schema.age(a, b) FROM t", "age", "some_schema.age"),
+        ("mysql", "SELECT x.now() FROM t", "now", "x.now"),
+        ("duckdb", "SELECT main.sch.age(a) FROM t", "age", "main.sch.age"),
+    ],
+)
+def test_a_qualified_call_is_judged_by_its_whole_name(
+    dialect: str, sql: str, bare: str, qualified: str
+) -> None:
+    """The bare name is listed; the function that runs is whatever the qualifier
+    finds, which the entry does not vouch for."""
+    from nlqueries.sql_policy import allowed_anonymous
+
+    assert bare in allowed_anonymous(dialect)
+    decision = evaluate(sql, dialect)
+    assert not decision.allowed
+    assert decision.anonymous_functions == (qualified,)
+    assert f"calls unrecognised function(s): {qualified}" in decision.summary()
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql", "qualified"),
+    [
+        (
+            "postgres",
+            "SELECT some_schema.age(a, b) FILTER (WHERE a > 0) FROM t",
+            "some_schema.age",
+        ),
+        (
+            "postgres",
+            "SELECT some_schema.json_agg(a) FILTER (WHERE a IS NOT NULL) FROM t",
+            "some_schema.json_agg",
+        ),
+        (
+            "postgres",
+            "SELECT some_schema.json_agg(a) FILTER (WHERE a IS NOT NULL) OVER () FROM t",
+            "some_schema.json_agg",
+        ),
+        (
+            "postgres",
+            "SELECT some_schema.age(a, b) WITHIN GROUP (ORDER BY a) FROM t",
+            "some_schema.age",
+        ),
+        ("duckdb", "SELECT main.s.age(a) FILTER (WHERE a > 0) FROM t", "main.s.age"),
+        ("snowflake", "SELECT s.every(a) IGNORE NULLS FROM t", "s.every"),
+    ],
+)
+def test_a_suffix_does_not_hide_the_qualifier(dialect: str, sql: str, qualified: str) -> None:
+    """FILTER, WITHIN GROUP and IGNORE NULLS wrap the call before the qualifier
+    is attached, which puts it in a Column, or a Dot around the wrapper."""
+    decision = evaluate(sql, dialect)
+    assert not decision.allowed
+    assert qualified in decision.anonymous_functions
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql", "qualified"),
+    [
+        # In FROM the qualifier is the Table's schema and catalog.
+        ("postgres", "SELECT * FROM some_schema.age(1, 2)", "some_schema.age"),
+        ("postgres", "SELECT * FROM db.some_schema.age(1, 2)", "db.some_schema.age"),
+        ("postgres", "SELECT * FROM t, LATERAL some_schema.age(t.a, 2) AS x", "some_schema.age"),
+        # A call sqlglot models is judged by name too once qualified, spelled
+        # as the dialect spells it rather than by its sqlglot class.
+        (
+            "postgres",
+            "SELECT * FROM some_schema.generate_series(1, 3)",
+            "some_schema.generate_series",
+        ),
+        (
+            "postgres",
+            "SELECT * FROM t, LATERAL some_schema.generate_series(1, t.a) AS g",
+            "some_schema.generate_series",
+        ),
+        ("duckdb", "SELECT * FROM main.range(3)", "main.range"),
+        # A Column under the Dot keeps all of its parts.
+        ("postgres", "SELECT a.b.c.d.age(x) FILTER (WHERE x > 0) FROM t", "a.b.c.d.age"),
+    ],
+)
+def test_a_qualified_call_in_any_position_is_judged_by_its_whole_name(
+    dialect: str, sql: str, qualified: str
+) -> None:
+    decision = evaluate(sql, dialect)
+    assert not decision.allowed
+    assert decision.anonymous_functions == (qualified,)
+    assert f"calls unrecognised function(s): {qualified}" in decision.summary()
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql"),
+    [
+        ("postgres", "SELECT * FROM generate_series(1, 3)"),
+        ("postgres", "SELECT * FROM t, LATERAL generate_series(1, t.a) AS g"),
+        ("duckdb", "SELECT * FROM range(3)"),
+    ],
+)
+def test_an_unqualified_modelled_call_is_still_judged_by_its_class(dialect: str, sql: str) -> None:
+    decision = evaluate(sql, dialect)
+    assert decision.allowed, decision.summary()
+    assert decision.anonymous_functions == ()
+
+
+def test_a_qualified_call_written_without_brackets_is_named_by_its_rendering() -> None:
+    """``CURRENT_DATE`` has no argument list; named, it can be listed, where
+    unnamed it could only be refused. Built by hand: sqlglot 30.17 reads
+    ``t.current_date`` as a column."""
+    import sqlglot
+    from sqlglot import exp
+
+    sql = "SELECT t.x FROM t"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Column).replace(
+        exp.Dot(this=exp.to_identifier("t"), expression=exp.CurrentDate())
+    )
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.anonymous == ("t.current_date",)
+    assert "calls a function whose name could not be read" not in reading.reasons
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM public.mod(5, 2)",
+        "SELECT * FROM public.mod(length(a), 2)",
+        "SELECT * FROM t, LATERAL s.mod(t.a, 2) AS m",
+    ],
+)
+def test_a_qualifier_on_an_operator_is_refused_and_not_lent_to_its_operand(
+    monkeypatch, sql: str
+) -> None:
+    """``mod`` here parses as the operator `Mod`. Its qualifier is not
+    ``length``'s, so listing ``public.length`` does not let it through."""
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS,
+        "postgres",
+        sql_policy.ALLOWED_ANONYMOUS["postgres"] | {"public.length"},
+    )
+    decision = evaluate(sql, "postgres")
+    assert not decision.allowed
+    assert "puts a qualifier on what is not a name or a function: Mod" in decision.summary()
+    assert "public.length" not in decision.anonymous_functions
+
+
+def test_an_unqualified_operator_is_not_said_to_carry_a_qualifier() -> None:
+    decision = evaluate("SELECT * FROM mod(5, 2)", "postgres")
+    assert "puts a qualifier" not in decision.summary()
+
+
+def test_a_suffixed_qualified_call_listed_as_written_is_allowed(monkeypatch) -> None:
+    """The suffix wraps the call, not something else the qualifier could be on."""
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS,
+        "postgres",
+        sql_policy.ALLOWED_ANONYMOUS["postgres"] | {"some_schema.age"},
+    )
+    for sql in (
+        "SELECT some_schema.age(a, b) FILTER (WHERE a > 0) FROM t",
+        "SELECT some_schema.age(a, b) FILTER (WHERE a > 0) OVER () FROM t",
+    ):
+        decision = evaluate(sql, "postgres")
+        assert decision.allowed, decision.summary()
+
+
+def test_a_qualified_call_rendered_as_an_operator_takes_sqlglots_name() -> None:
+    """Named by its rendering it would be ``s.a -> 'b'``, a name that changes with
+    the operands. Built by hand, as no FROM spelling parses to it on 30.17."""
+    import sqlglot
+    from sqlglot import exp
+
+    extract = sqlglot.parse_one("SELECT a -> 'b' FROM t", read="postgres").selects[0]
+    assert isinstance(extract, exp.JSONExtract)
+    sql = "SELECT * FROM x"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Table).replace(exp.Table(this=extract, db=exp.to_identifier("s")))
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.anonymous == ("s.json_extract",)
+
+
+def test_a_qualified_modelled_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS,
+        "postgres",
+        sql_policy.ALLOWED_ANONYMOUS["postgres"] | {"pg_catalog.generate_series"},
+    )
+    assert evaluate("SELECT * FROM pg_catalog.generate_series(1, 3)", "postgres").allowed
+
+
+def test_a_suffix_on_an_unqualified_call_changes_nothing() -> None:
+    for sql in (
+        "SELECT age(a, b) FILTER (WHERE a > 0) FROM t",
+        "SELECT json_agg(a) FILTER (WHERE a IS NOT NULL) OVER () FROM t",
+    ):
+        decision = evaluate(sql, "postgres")
+        assert decision.allowed, decision.summary()
+
+
+def test_a_qualified_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS, "postgres", frozenset({"age", "some_schema.age"})
+    )
+    assert evaluate("SELECT Some_Schema.AGE(a, b) FROM t", "postgres").allowed
+
+
+def test_a_function_whose_name_cannot_be_read_is_refused() -> None:
+    """Judged by name and exempt from the class list, so with no readable name it
+    would otherwise be judged by neither."""
+    import sqlglot
+    from sqlglot import exp
+
+    sql = "SELECT age(a, b) FROM t"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Anonymous).set("this", exp.Tuple())
+    assert tree.find(exp.Anonymous).name == ""
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert "calls a function whose name could not be read" in reading.reasons
+    assert reading.anonymous == ()
+
+
+def test_a_qualifier_whose_name_cannot_be_read_is_refused() -> None:
+    import sqlglot
+    from sqlglot import exp
+
+    sql = "SELECT some_schema.age(a, b) FROM t"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Dot).set("this", exp.Tuple())
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert "calls a function whose name could not be read" in reading.reasons
+
+
 def test_the_lists_are_per_dialect_and_a_dialect_without_one_gets_the_shared_set() -> None:
     from sqlglot import exp
 
@@ -279,6 +518,45 @@ def test_the_rendered_form_is_not_consulted_for_a_statement_already_refused(monk
 
 
 # --- the report -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rendered", "anonymous", "unlisted"),
+    [
+        ("SELECT pg_sleep(1) FROM t", ("pg_sleep",), ()),
+        ("SELECT a FROM t WHERE a = ?", (), ("Placeholder",)),
+        # Refused for its tables, not for what it calls: listing that would
+        # change nothing, so nothing is counted.
+        ("SELECT xmin_age(a) FROM secrets", (), ()),
+    ],
+)
+def test_the_report_counts_what_only_the_rendered_form_uses(
+    monkeypatch, rendered: str, anonymous: tuple[str, ...], unlisted: tuple[str, ...]
+) -> None:
+    """A construct that appears only once sqlglot has canonicalised the statement
+    is what the refusal is for; the report names it, not only the reason."""
+    sql = "SELECT a FROM t"
+    monkeypatch.setattr(sql_policy, "_rendered", lambda tree, dialect: rendered)
+
+    decision = evaluate(sql, "postgres")
+    report = build_inventory([sql], "postgres")
+
+    assert not decision.allowed
+    assert decision.anonymous_functions == anonymous
+    assert decision.unlisted_constructs == unlisted
+    assert [name for name, _ in report.candidates] == list(anonymous)
+    assert tuple(report.unlisted_counts) == unlisted
+
+
+def test_an_allowed_statement_reports_only_what_it_was_written_with(monkeypatch) -> None:
+    """The rendering's own spelling is not counted when it changes nothing."""
+    sql = "SELECT a FROM t"
+    monkeypatch.setattr(sql_policy, "_rendered", lambda tree, dialect: "SELECT age(a, a) FROM t")
+
+    decision = evaluate(sql, "postgres")
+
+    assert decision.allowed
+    assert decision.anonymous_functions == ()
 
 
 def test_the_report_counts_constructs_not_on_the_list() -> None:
