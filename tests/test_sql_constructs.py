@@ -122,9 +122,24 @@ def test_what_a_read_query_has_no_use_for_is_refused_by_name(
 
 def test_a_tsql_derived_table_may_still_name_its_columns() -> None:
     """Only a table's alias is read as a hint; a subquery's column list is not one."""
+    import sqlglot
+    from sqlglot import exp
+
     assert evaluate("SELECT v.x FROM (SELECT 1 AS a) AS v(x)", "tsql").allowed
-    refused = evaluate("SELECT SUM(total) FROM orders o (TABLOCKX)", "tsql")
-    assert "SQL Server reads as a table hint" in refused.summary()
+    sql = "SELECT SUM(total) FROM orders o (TABLOCKX)"
+    refused = evaluate(sql, "tsql")
+    assert not refused.allowed
+    # Refused whichever way sqlglot reads it. Later releases parse the hint as
+    # a WithTableHint, which is not listed; earlier ones, as a column list on
+    # the alias, which is what the T-SQL rule exists for.
+    as_column_list = any(
+        (alias := table.args.get("alias")) is not None and alias.args.get("columns")
+        for table in sqlglot.parse_one(sql, read="tsql").find_all(exp.Table)
+    )
+    if as_column_list:
+        assert "SQL Server reads as a table hint" in refused.summary()
+    else:
+        assert "WithTableHint" in refused.unlisted_constructs
     # Elsewhere a column list on a table's alias is an ordinary rename.
     assert evaluate("SELECT o.a FROM orders AS o(a, b)", "postgres").allowed
 
