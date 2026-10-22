@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from nlqueries.document_connectors._isolation import IsolatedIngest
 from nlqueries.document_connectors._limits import ExtractionBudget, check_archive_expansion
 from nlqueries.document_connectors.base import DocumentChunk, DocumentConnector
 from nlqueries.document_connectors.chunker import RecursiveCharacterTextSplitter
@@ -39,7 +40,7 @@ def _make_chunk_id(source_id: str, chunk_index: int) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-class WordConnector(DocumentConnector):
+class WordConnector(IsolatedIngest, DocumentConnector):
     """Extract and chunk text from Word (.docx) files using python-docx.
 
     Word files have no concept of pages without rendering, so ``page_number``
@@ -47,7 +48,10 @@ class WordConnector(DocumentConnector):
     paragraphs; documents without headings are treated as a single section.
     """
 
-    def ingest(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+    def _refuse_before_parsing(self, source: Path) -> None:
+        check_archive_expansion(source)
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         try:
             import docx  # python-docx
         except ImportError as exc:

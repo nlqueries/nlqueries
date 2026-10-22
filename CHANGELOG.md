@@ -6,6 +6,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **PDF, Word and Excel documents are parsed in a child process with time and
+  memory limits.** The extraction budget is checked between pages, paragraphs
+  and rows, so a parser stuck inside one of them, or one allocating without
+  bound, held the process that asked. Now the parse runs in a child that is
+  killed at the extraction deadline (plus 15 seconds to start) and runs under
+  a memory limit (`NLQ_DOCUMENT_PARSE_MEMORY_BYTES`, 2 GiB: an address-space
+  limit on Linux and macOS, a Job Object on Windows), and on Linux and macOS a
+  CPU-time limit (`NLQ_DOCUMENT_PARSE_CPU_SECONDS`, 180). Running out of memory
+  raises `DocumentTooComplexError`, including when the XML parser reports it as
+  a parse error; the deadline or the CPU limit raises
+  `DocumentExtractionTimeout`, as before. `NLQ_DOCUMENT_PARSE_ISOLATION=false`
+  parses in process, as before.
 - **`nlqueries health` reports over-privileged logins for MySQL, SQL Server
   and Snowflake.** The identity line the PostgreSQL connector already gave is
   now printed for MySQL and MariaDB (through the `sqlalchemy` connector, from
@@ -241,6 +253,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   queries the lists must keep allowing are in `tests/sql_corpus.py`;
   `nlqueries.sql_policy_report` lists what the policy would refuse among a
   deployment's own queries. See `docs/database-hardening.md`.
+- **The default expanded-size cap for `.xlsx` and `.docx` is 128 MiB** (was
+  400 MiB). Parsing a `.docx` costs several times its expanded size: one of
+  250 MiB of ordinary paragraphs peaked at about 2 GiB. At 128 MiB an ordinary
+  document fits within the parsing child's memory limit, and one over the cap
+  is refused from the zip directory before anything is parsed. A sheet of
+  200,000 rows by 10 columns (about 109 MiB) still passes. The same setting is
+  the largest `.txt` or `.md` file ingested, so that is 128 MiB too.
+  `NLQ_MAX_DOCUMENT_EXPANDED_BYTES` raises it, together with
+  `NLQ_DOCUMENT_PARSE_MEMORY_BYTES`.
 - **The container image is built on the current `python:3.11-slim-bookworm`**
   (Python 3.11.17), pinned by digest as before. It picks up Debian's security
   updates to `perl-base` and `libpcre2-8-0`, which the image scan reported as

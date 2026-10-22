@@ -194,6 +194,20 @@ def _no_semantic_cache():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _documents_parsed_in_process(monkeypatch):
+    """Parse PDF, Word and Excel documents in the test's own process.
+
+    The connectors parse in a child process by default, and the tests of the
+    parsers patch parser internals (`pdfplumber.open`, row counts, the clock),
+    which a child process never sees. The isolation itself is tested in
+    test_document_isolation.py, which turns it back on.
+    """
+    from nlqueries import config  # noqa: PLC0415
+
+    monkeypatch.setattr(config, "DOCUMENT_PARSE_ISOLATION", False)
+
+
 def granted(connector):
     """Give *connector* permission to execute, explicitly.
 
