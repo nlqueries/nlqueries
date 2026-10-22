@@ -287,8 +287,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `ALLOWED_ANONYMOUS`. The same holds for a function sqlglot models: a qualified
   call is no longer allowed by its class, so `FROM
   some_schema.generate_series(1, 3)` is refused unless
-  `some_schema.generate_series` is listed. An unmodelled function whose name
-  cannot be read is refused. When a statement is refused because its rendered
+  `some_schema.generate_series` is listed. A qualifier on what parses as an
+  operator rather than a call, as `FROM public.mod(5, 2)` does, is refused. An
+  unmodelled function whose name cannot be read is refused. When a statement is refused because its rendered
   form is, the functions and constructs only the rendered form uses are
   recorded on the decision, so `nlqueries.sql_policy_report` counts them.
 - **The default expanded-size cap for `.xlsx` and `.docx` is 128 MiB** (was

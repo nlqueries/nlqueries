@@ -29,6 +29,7 @@ to a distinct class. A deny-list would require every such class to be named.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 
 import sqlglot
@@ -54,8 +55,9 @@ from nlqueries.sql_constructs import allowed_constructs
 #: 5: a function call written with a qualifier is judged by the whole name,
 #: whether sqlglot models it or not, so ``some_schema.age`` no longer passes on
 #: the entry for ``age``, nor ``FROM some_schema.generate_series(...)`` on the
-#: class sqlglot parses it as; and an unmodelled call whose name cannot be
-#: read is refused.
+#: class sqlglot parses it as; a qualifier on what is neither a name nor a
+#: call (``FROM public.mod(5, 2)``, the operator `Mod`) is refused; and an
+#: unmodelled call whose name cannot be read is refused.
 POLICY_VERSION = "5"
 
 #: The only statement types a generated query may be.
@@ -467,13 +469,50 @@ def _written_name(node: exp.Func, dialect: str) -> str:
     """How *dialect* spells the function a modelled call stands for: its class
     is named for sqlglot (`ExplodingGenerateSeries`), not for the database.
     One the dialect writes without an argument list, ``CURRENT_DATE``, is
-    named by its whole rendering."""
+    named by its whole rendering. One it writes as an operator, ``a -> 'b'``,
+    has no name in its rendering, and takes sqlglot's: stable, where the
+    rendering would vary with the operands."""
     try:
         rendered = node.sql(dialect=_sqlglot_dialect(dialect))
     except Exception:  # noqa: BLE001 - "" is unreadable, which refuses
         return ""
-    name, _paren, _rest = rendered.partition("(")
-    return name.strip()
+    name = rendered.partition("(")[0].strip()
+    return name if _PLAIN_NAME.fullmatch(name) else node.sql_name()
+
+
+def _qualified_non_calls(tree: exp.Expression) -> list[str]:
+    """Classes that carry a qualifier but are neither a name nor a call.
+
+    ``FROM public.mod(5, 2)`` parses as a `Table` in schema ``public`` whose
+    `this` is `Mod`, an operator: no name to judge, and nothing a qualifier
+    means on it but a function the schema holds."""
+    found = set()
+    for node in tree.find_all(exp.Dot, exp.Column, exp.Table):
+        if isinstance(node, exp.Dot):
+            target = node.expression
+        elif _named_parts(node, ("catalog", "db", "table")):
+            target = node.this
+        else:
+            continue
+        while isinstance(target, _CALL_WRAPPERS):
+            target = target.this
+        if target is not None and not isinstance(target, (exp.Identifier, exp.Star, exp.Func)):
+            found.add(type(target).__name__)
+    return sorted(found)
+
+
+#: What sqlglot wraps around a call before it attaches the call's qualifier.
+#: Only these are climbed: through anything else -- `Mod`, the `this` of
+#: ``public.mod(length(a), 2)`` -- the qualifier is not the inner call's.
+_CALL_WRAPPERS: tuple[type[exp.Expression], ...] = tuple(
+    getattr(exp, name)
+    for name in ("Filter", "WithinGroup", "IgnoreNulls", "RespectNulls", "HavingMax")
+    if hasattr(exp, name)
+)
+
+#: A name as a dialect spells a function: what precedes the bracket of a call
+#: rendered ``NAME(...)``, and not what precedes it in an operator's rendering.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 
 
 def _qualifier(node: exp.Func) -> list[str]:
@@ -497,7 +536,7 @@ def _qualifier(node: exp.Func) -> list[str]:
             names = _named_parts(parent, ("catalog", "db", "table"))
         elif isinstance(parent, exp.Table) and parent.this is child:
             names = _named_parts(parent, ("catalog", "db"))
-        elif parent.args.get("this") is child:
+        elif isinstance(parent, _CALL_WRAPPERS) and parent.args.get("this") is child:
             child, parent = parent, parent.parent
             continue
         else:
@@ -549,6 +588,11 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
     refused = [name for name in anonymous if name not in permitted]
     if refused:
         reasons.append(f"calls unrecognised function(s): {', '.join(refused)}")
+    misqualified = _qualified_non_calls(tree)
+    if misqualified:
+        reasons.append(
+            f"puts a qualifier on what is not a name or a function: {', '.join(misqualified)}"
+        )
     # Exempt from the class list below and judged by name, so one whose name
     # cannot be read would otherwise be judged by neither.
     if not all(names):

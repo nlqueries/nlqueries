@@ -345,6 +345,67 @@ def test_a_qualified_call_written_without_brackets_is_named_by_its_rendering() -
     assert "calls a function whose name could not be read" not in reading.reasons
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM public.mod(5, 2)",
+        "SELECT * FROM public.mod(length(a), 2)",
+        "SELECT * FROM t, LATERAL s.mod(t.a, 2) AS m",
+    ],
+)
+def test_a_qualifier_on_an_operator_is_refused_and_not_lent_to_its_operand(
+    monkeypatch, sql: str
+) -> None:
+    """``mod`` here parses as the operator `Mod`. Its qualifier is not
+    ``length``'s, so listing ``public.length`` does not let it through."""
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS,
+        "postgres",
+        sql_policy.ALLOWED_ANONYMOUS["postgres"] | {"public.length"},
+    )
+    decision = evaluate(sql, "postgres")
+    assert not decision.allowed
+    assert "puts a qualifier on what is not a name or a function: Mod" in decision.summary()
+    assert "public.length" not in decision.anonymous_functions
+
+
+def test_an_unqualified_operator_is_not_said_to_carry_a_qualifier() -> None:
+    decision = evaluate("SELECT * FROM mod(5, 2)", "postgres")
+    assert "puts a qualifier" not in decision.summary()
+
+
+def test_a_suffixed_qualified_call_listed_as_written_is_allowed(monkeypatch) -> None:
+    """The suffix wraps the call, not something else the qualifier could be on."""
+    monkeypatch.setitem(
+        sql_policy.ALLOWED_ANONYMOUS,
+        "postgres",
+        sql_policy.ALLOWED_ANONYMOUS["postgres"] | {"some_schema.age"},
+    )
+    for sql in (
+        "SELECT some_schema.age(a, b) FILTER (WHERE a > 0) FROM t",
+        "SELECT some_schema.age(a, b) FILTER (WHERE a > 0) OVER () FROM t",
+    ):
+        decision = evaluate(sql, "postgres")
+        assert decision.allowed, decision.summary()
+
+
+def test_a_qualified_call_rendered_as_an_operator_takes_sqlglots_name() -> None:
+    """Named by its rendering it would be ``s.a -> 'b'``, a name that changes with
+    the operands. Built by hand, as no FROM spelling parses to it on 30.17."""
+    import sqlglot
+    from sqlglot import exp
+
+    extract = sqlglot.parse_one("SELECT a -> 'b' FROM t", read="postgres").selects[0]
+    assert isinstance(extract, exp.JSONExtract)
+    sql = "SELECT * FROM x"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Table).replace(exp.Table(this=extract, db=exp.to_identifier("s")))
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.anonymous == ("s.json_extract",)
+
+
 def test_a_qualified_modelled_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
     monkeypatch.setitem(
         sql_policy.ALLOWED_ANONYMOUS,
