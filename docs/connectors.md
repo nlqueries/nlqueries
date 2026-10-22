@@ -65,7 +65,7 @@ Configuring the server to require TLS (`require_secure_transport=ON`) refuses an
 
 ### MySQL and MariaDB: what the generic connector changes in the URL
 
-Whichever way a MySQL or MariaDB URL arrives, the generic connector opens it with `LOAD DATA LOCAL INFILE` disabled (`local_infile=0`, or `allow_local_infile=False` for `mysql+mysqlconnector`) and drops any `local_infile` or `allow_local_infile` parameter from the URL: with it on, the server can ask the client to upload any file it can read. It also clears the multi-statements bit (`65536`) from a `client_flag` or `client_flags` parameter, so the server will not run a second `;`-separated statement; a flag value that is not an integer is refused. Every other parameter, `init_command` included, is passed on as written. Each query runs in a transaction opened with `START TRANSACTION READ ONLY` and rolled back afterwards.
+Whichever way a MySQL or MariaDB URL arrives, the generic connector opens it with `LOAD DATA LOCAL INFILE` disabled (`local_infile=0` for `mysqldb`, the default for `mysql://`, `pymysql` and `mariadbconnector`, or `allow_local_infile=False` for `mysqlconnector`; a URL naming any other MySQL driver, such as `mysql+pyodbc`, is refused, because the setting cannot be applied to it) and drops any `local_infile` or `allow_local_infile` parameter from the URL: with it on, the server can ask the client to upload any file it can read. It also clears the multi-statements bit (`65536`) from a `client_flag` or `client_flags` parameter, so the server will not run a second `;`-separated statement; a flag value that is not an integer is refused. Every other parameter, `init_command` included, is passed on as written. Each query runs in a transaction opened with `START TRANSACTION READ ONLY` and rolled back afterwards.
 
 ### PostgreSQL — enabling query history capture
 
@@ -101,7 +101,7 @@ With `--dataset-id` set, `process-history` also keeps only the jobs whose `refer
 
 ### BigQuery: cost cap
 
-Set `BIGQUERY_MAX_BYTES_BILLED` to a number of bytes and every query job that answers a question carries it as `maximum_bytes_billed`: BigQuery fails a job that would bill more before running it, and the answer reports that error. Unset, which is the default, there is no cap. Schema and history reads are not capped. See [configuration.md](configuration.md).
+Set `BIGQUERY_MAX_BYTES_BILLED` to a number of bytes and every query job that answers a question carries it as `maximum_bytes_billed`: BigQuery fails a job that would bill more before running it, and the answer reports that error. Unset, which is the default, there is no cap. A value that is not a whole number greater than zero refuses every BigQuery query with an error naming the variable, rather than running it uncapped. Schema and history reads are not capped. See [configuration.md](configuration.md).
 
 ### BigQuery: authentication
 

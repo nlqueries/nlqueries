@@ -24,8 +24,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   line; the file is created at mode `0600`. A symbolic link at that path is
   not followed, and anything but a regular file is refused without blocking.
   A file with more than one hard link, a file owned by another user, or one
-  group or others can still reach after narrowing to `0600` gets no events
-  and one warning on `nlqueries.audit.sink`. See "Audit events" in
+  group or others can still reach after narrowing to `0600` gets no events,
+  with a warning on `nlqueries.audit.sink` at the first, 10th, 100th...
+  event it missed and the total once it can be written again. See "Audit events" in
   `docs/configuration.md`. `SQLAlchemyConnector.dialect_name` is new: the
   backend SQLAlchemy reports for the connection (`postgresql`, `mysql`, ...),
   or `None` before `connect`; the event's dialect for that connector comes
@@ -34,9 +35,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   number of bytes, it is carried on every query job that answers a question as
   `maximum_bytes_billed`, so BigQuery fails a job that would bill more before
   running it and the answer reports the error. Unset, the default, means no
-  cap, as before. A value that is not a whole number greater than zero stops
-  the process at startup with an error naming the variable, rather than
-  leaving the cap off. Schema and query-history reads are not capped. See
+  cap, as before. A value that is not a whole number greater than zero makes
+  every BigQuery query fail with an error naming the variable, rather than
+  run without the cap; other commands, `health` and `doctor` included, still
+  run. Schema and query-history reads are not capped. See
   [docs/connectors.md](docs/connectors.md#bigquery-cost-cap).
 - **SQL Server encryption setting.** The `mssql` connector passes pymssql's
   `encryption` argument on every connection, from a new `encryption` key in
@@ -232,8 +234,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   starts with `START TRANSACTION READ ONLY`, so the server refuses a write to
   any table, MyISAM and MEMORY tables included, where the rollback alone left
   such a write standing. DDL still commits implicitly. `LOAD DATA LOCAL
-  INFILE` is disabled (`local_infile=0`, or `allow_local_infile=False` for
-  `mysql+mysqlconnector`) and any URL parameter enabling it is dropped; the
+  INFILE` is disabled (`local_infile=0` for `mysqldb`, `pymysql` and
+  `mariadbconnector`, or `allow_local_infile=False` for `mysqlconnector`; a
+  URL naming another MySQL driver, such as `mysql+pyodbc`, is refused, since
+  the setting cannot be applied to it) and any URL parameter enabling it is
+  dropped; the
   multi-statements bit is cleared from a `client_flag` or `client_flags`
   parameter, and a non-integer flag is refused. `init_command` and the other
   parameters are unchanged. Measured against MySQL 8.0 and 8.4 and MariaDB
@@ -409,7 +414,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `python -P -m nlqueries.embeddings.embed_server`, so it imports the
   installed package rather than any module of the same name in the directory
   `start` was run from. `--foreground` runs in the CLI's own process, as
-  before.
+  before. `start` now fails at once if the port is already in use, and then
+  watches the daemon for two seconds and fails, pointing at `--foreground`,
+  if it exits in that time, where it used to report success for a daemon
+  that had already died.
 - **Query capsules carry no comments and no literal in any string form.**
   `process-history` already replaced plain `'...'` and number literals with
   typed placeholders. The parameterizer now also replaces `N'...'`, `X'...'`,
@@ -796,7 +804,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   line of the error and a short reference id. The server logs the same first
   line at WARNING with that reference (`[ref …]`), and the full error at DEBUG
   under the same reference only, so a log shipped elsewhere does not carry a
-  DSN or password. The lines a driver adds after the
+  DSN or password. An exception raised anywhere else in the query is logged
+  the same way: its first line at ERROR, the traceback at DEBUG. The lines a
+  driver adds after the
   first, where it quotes the statement, its parameters or a connection
   string, no longer reach the client. The same holds for a hybrid answer: when
   its query fails, the failure note in the SQL table (which is the whole
