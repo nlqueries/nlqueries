@@ -393,7 +393,7 @@ class TestFileReading:
         assert decision.allowed, decision.summary()
 
     def test_the_policy_version_records_the_change(self) -> None:
-        assert POLICY_VERSION == "3"
+        assert int(POLICY_VERSION) >= 3  # later versions keep the change
 
 
 class TestStringTableRuleFailsClosed:
