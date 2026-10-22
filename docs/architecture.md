@@ -143,6 +143,13 @@ then missed indefinitely, which is a collapsed hit rate rather than a leak and
 correspondingly harder to attribute. The context is now part of the id, appended
 only when non-empty so entries written without one keep the id they had.
 
+**The answer point's id also carries the normalisation version.**
+`_answer_point_id` hashes `normalization-v{N}` ahead of the normalised question,
+so when the normalisation changes, an id written under the old one cannot be the
+id a different question now normalises to. Each existing entry is then a
+one-time Tier 0 miss. A test pins one id to a literal value: when it fails, the
+normalisation has changed and `_NORMALIZATION_VERSION` must be bumped with it.
+
 **The collection is swept on write, because the point ID no longer bounds it.**
 Nothing else deletes: the TTL is applied on *read*, in `_payload_to_entry`, and
 `invalidate()` drops the whole collection. That was survivable while a repeated
@@ -200,7 +207,8 @@ once.
 
 The disjunction is on that branch only. A **scoped** read takes the exact-match
 path, so a pre-digest entry carrying a context is no longer reachable through
-Tier 1 or Tier 2 -- only through Tier 0's id retrieval. That costs nothing in
+Tier 1 or Tier 2 -- and, since Tier 0's id now also carries the normalisation
+version, not through Tier 0's id retrieval either. That costs nothing in
 practice: the signature now covers the context and the point id now includes it,
 so an entry written with a context by any released version already fails
 verification. The narrower claim is the true one, and it is worth stating

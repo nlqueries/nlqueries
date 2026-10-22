@@ -650,6 +650,44 @@ The same shape, in each vendor's vocabulary:
 - a statement timeout and a cost or slot cap,
 - and no membership in any role that reads the host filesystem or all data.
 
+### What `nlqueries health` checks on other engines
+
+The identity line described for PostgreSQL in step 6 is also printed for MySQL
+and MariaDB (through the `sqlalchemy` connector), SQL Server and Snowflake. In
+each case it names the login and anything it holds beyond reading; a login that
+holds nothing more is `least privilege`, and a check that could not read the
+grants is a failure, not a pass.
+
+| Engine | Read from | Reported |
+|---|---|---|
+| MySQL, MariaDB | `SHOW GRANTS` | any privilege other than `SELECT`, `SHOW VIEW` and `USAGE`, with the scope it applies to (`INSERT`, `DROP`, `FILE`, `SUPER`, `ALL PRIVILEGES`, a dynamic `*_ADMIN` privilege, `EXECUTE`...); `WITH GRANT OPTION`; and any role granted, since a role's privileges are not expanded |
+| SQL Server | role membership and `fn_my_permissions` for the database and the server | membership of any server role but `public`, and of any database role but `public` and `db_datareader`; any effective database permission beyond `CONNECT`, `SELECT`, `VIEW DEFINITION`, `VIEW DATABASE STATE`, `VIEW DATABASE PERFORMANCE STATE`, `SHOWPLAN` and `REFERENCES`, the two column-key `VIEW` permissions `public` holds in every database, and SQL Server 2022's `VIEW SECURITY DEFINITION`, `VIEW PERFORMANCE DEFINITION`, `VIEW CRYPTOGRAPHICALLY SECURED DEFINITION` and `VIEW DATABASE SECURITY STATE`, which those imply; any server permission beyond `CONNECT SQL`, `VIEW ANY DATABASE`, `VIEW ANY DEFINITION`, `VIEW SERVER STATE`, `VIEW SERVER PERFORMANCE STATE` and `CONNECT ANY DATABASE`, and their server counterparts `VIEW ANY SECURITY DEFINITION`, `VIEW ANY PERFORMANCE DEFINITION`, `VIEW ANY CRYPTOGRAPHICALLY SECURED DEFINITION` and `VIEW SERVER SECURITY STATE`. Effective permissions include what a custom role or a direct grant gives |
+| Snowflake | `SHOW GRANTS TO ROLE` for the current role and every role it inherits, up to 50 | `ACCOUNTADMIN`, `ORGADMIN`, `SECURITYADMIN`, `SYSADMIN` or `USERADMIN` in reach, and any privilege other than `USAGE`, `SELECT`, `REFERENCES`, `MONITOR`, `OPERATE`, `READ` and `IMPORTED PRIVILEGES`, counted by privilege and object type. Secondary roles are not followed |
+
+MySQL and SQL Server are read each time the pool opens a connection, as
+PostgreSQL is. Snowflake is read the first time `health` asks, since walking the
+role hierarchy is one `SHOW GRANTS` per role. As for PostgreSQL, the check reports
+and does not refuse a connection.
+
+On SQL Server the server scope is read apart from the database's. Where it cannot
+be read (Azure SQL may not offer it from a user database), the line reports the
+database and names what it could not read, `(not read: server permissions ...)`,
+as a warning rather than a failure or a pass. A `sysadmin` login is still caught,
+because it is the database owner everywhere and holds `CONTROL` among the
+database's effective permissions; other server roles show only when the server
+scope can be read. Grants on a schema or an object (`GRANT INSERT ON SCHEMA::dbo
+TO app`) are not seen: `fn_my_permissions` is read for the database and the
+server, and those grants are held on the schema or the object. So on SQL Server
+a clean result reads `least privilege at database and server scope`; check
+schema and object grants in `sys.database_permissions`.
+
+On Snowflake the check waits up to 30 seconds for a running query to release the
+session; if the query is still running after that, the check reports that it
+could not be determined, and the next `health` run reads it again. A database
+role granted to the session's role is not expanded, since its grants take
+another statement (`SHOW GRANTS TO DATABASE ROLE`), so it is named as not read
+and the line warns.
+
 ---
 
 ## If you take one thing

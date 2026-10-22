@@ -43,6 +43,8 @@ from nlqueries.connectors.base import (
     TableSpec,
     short_cause,
 )
+from nlqueries.connectors.login_identity import LoginIdentity, watch_engine
+from nlqueries.connectors.mysql_identity import inspect_identity as inspect_mysql_identity
 from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 
 logger = logging.getLogger(__name__)
@@ -148,6 +150,19 @@ _CLIENT_FLAG_PARAMS = ("client_flag", "client_flags")
 #: URL parameters that would switch ``LOAD DATA LOCAL INFILE`` back on.
 _LOCAL_INFILE_PARAMS = ("local_infile", "allow_local_infile")
 
+#: For each MySQL driver whose spelling is known, the connect argument that
+#: turns ``LOAD DATA LOCAL INFILE`` off. The empty name is ``mysqldb``
+#: (mysqlclient), SQLAlchemy's default for ``mysql://``. Another driver -- one
+#: reached through ODBC, say -- takes neither keyword and failed with a
+#: ``TypeError`` at its first connection, so it is refused by name instead.
+_MYSQL_LOCAL_INFILE_OFF: dict[str, dict[str, Any]] = {
+    "": {"local_infile": 0},
+    "mysqldb": {"local_infile": 0},
+    "pymysql": {"local_infile": 0},
+    "mariadbconnector": {"local_infile": 0},
+    "mysqlconnector": {"allow_local_infile": False},
+}
+
 
 def _refuse_dedicated_backend(parsed: URL) -> None:
     """Raise if *parsed* names an engine that has a connector of its own."""
@@ -198,11 +213,15 @@ def _harden_mysql(parsed: URL) -> tuple[URL, dict[str, Any]]:
             ) from None
         query[param] = str(flags & ~_CLIENT_MULTI_STATEMENTS)
 
-    if parsed.get_driver_name() == "mysqlconnector":
-        connect_args: dict[str, Any] = {"allow_local_infile": False}
-    else:
-        connect_args = {"local_infile": 0}
-    return parsed.set(query=query), connect_args
+    connect_args = _MYSQL_LOCAL_INFILE_OFF.get(parsed.get_driver_name())
+    if connect_args is None:
+        known = ", ".join(sorted(d for d in _MYSQL_LOCAL_INFILE_OFF if d))
+        raise ValueError(
+            f"SQLAlchemyConnector cannot turn LOAD DATA LOCAL INFILE off for the "
+            f"{parsed.get_driver_name()!r} MySQL driver, so it does not open it. "
+            f"Use one of: {known}."
+        )
+    return parsed.set(query=query), dict(connect_args)
 
 
 #: Credential keys that configure TLS, mapped to the libpq connection
@@ -342,6 +361,19 @@ class SQLAlchemyConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._engine: Engine | None = None
         self._tls: TlsPosture | None = None
+        self._identity: LoginIdentity | None = None
+
+    @property
+    def identity(self) -> LoginIdentity | None:
+        """What a MySQL or MariaDB login holds beyond reading, or None.
+
+        Read from the most recent connection the pool opened; None before one
+        has opened, and for every other backend, which this does not inspect.
+        """
+        return self._identity
+
+    def _set_identity(self, identity: LoginIdentity) -> None:
+        self._identity = identity
 
     @property
     def tls(self) -> TlsPosture | None:
@@ -414,6 +446,8 @@ class SQLAlchemyConnector(DatabaseConnector):
         # it was given.
         engine_url = hardened if mysql_args else url
         self._engine = create_engine(engine_url, pool_pre_ping=True, connect_args=connect_args)
+        if parsed.get_backend_name() in _MYSQL_BACKENDS:
+            watch_engine(self._engine, inspect_mysql_identity, self._set_identity)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:

@@ -31,6 +31,14 @@ from sqlalchemy.exc import DatabaseError
 from tests.conftest import granted
 
 
+@pytest.fixture(autouse=True)
+def _no_identity_watch(monkeypatch):
+    """These tests stand a mock in for `create_engine`, which SQLAlchemy cannot
+    attach the identity check's pool event to; that check has its own tests
+    in test_login_identity.py."""
+    monkeypatch.setattr(sqlalchemy_connector_module, "watch_engine", lambda *args: None)
+
+
 def _connect(tmp_path: Path) -> SQLAlchemyConnector:
     db = tmp_path / "t.db"
     c = granted(SQLAlchemyConnector())
@@ -508,6 +516,29 @@ def test_mysql_urls_get_local_infile_off(url: str) -> None:
 
     assert connect_args["local_infile"] == 0
     assert "local_infile" not in engine_url.query
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["mysql+mysqldb://u:p@db/shop", "mariadb+mariadbconnector://u:p@db/shop"],
+)
+def test_the_other_known_drivers_get_local_infile_off(url: str) -> None:
+    _, connect_args = _engine_args(url)
+
+    assert connect_args == {"local_infile": 0}
+
+
+@pytest.mark.parametrize("url", ["mysql+pyodbc://u:p@dsn", "mysql+cymysql://u:p@db/shop"])
+def test_a_mysql_driver_it_cannot_harden_is_refused_by_name(url: str) -> None:
+    """Neither keyword is one such a driver takes, so passing one failed with a
+    TypeError at its first connection; it is refused with the reason instead."""
+    driver = url.split("+", 1)[1].split(":", 1)[0]
+    with (
+        patch.object(sqlalchemy_connector_module, "create_engine") as create,
+        pytest.raises(ValueError, match=rf"LOAD DATA LOCAL INFILE off for the '{driver}'"),
+    ):
+        SQLAlchemyConnector().connect({"url": url})
+    create.assert_not_called()
 
 
 def test_mysql_connector_python_gets_its_own_spelling() -> None:

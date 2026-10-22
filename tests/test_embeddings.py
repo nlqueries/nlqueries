@@ -718,3 +718,31 @@ class TestLoneSurrogate:
         assert "text is not valid Unicode" in str(raised.value)
         assert isinstance(raised.value.__cause__, UnicodeEncodeError)
         get_model.assert_not_called()
+
+
+def test_the_client_does_not_import_the_daemon() -> None:
+    """The limits it sizes requests to live in `config`, so embedding a text
+    does not load the daemon module and the HTTP server stack with it."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, nlqueries.embeddings.embedder; "
+        "print('nlqueries.embeddings.embed_server' in sys.modules, 'http.server' in sys.modules)"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["False", "False"]
+
+
+def test_the_daemon_and_the_client_read_one_declaration_of_the_limits() -> None:
+    from nlqueries import config
+    from nlqueries.embeddings import embed_server
+
+    assert embed_server.MAX_BATCH_TEXTS == config.EMBED_MAX_BATCH_TEXTS
+    assert embed_server.MAX_BATCH_CHARS == config.EMBED_MAX_BATCH_CHARS
+    assert embed_server.MAX_BODY_BYTES == config.EMBED_MAX_BODY_BYTES
+    assert embed_server._EmbedHandler.MAX_BODY_BYTES == config.EMBED_MAX_BODY_BYTES
