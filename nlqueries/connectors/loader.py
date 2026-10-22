@@ -14,7 +14,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import re
 import threading
 import time
 from collections import OrderedDict
@@ -32,6 +31,7 @@ from nlqueries.connectors import (
 )
 from nlqueries.connectors.base import PermittedConnector
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
+from nlqueries.state_files import agent_storage_id
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,7 @@ def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) 
     if agent_id in connectors:
         return agent_id
     for key in connectors:
-        if re.sub(r"[^\w.-]", "_", key) == agent_id:
+        if agent_storage_id(key) == agent_id:
             return key
     return None
 

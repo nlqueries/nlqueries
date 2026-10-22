@@ -51,6 +51,7 @@ from starlette.applications import Starlette
 
 from nlqueries import config
 from nlqueries.auth.principal import Principal, Source, local_principal
+from nlqueries.state_files import agent_storage_id
 
 _log = logging.getLogger(__name__)
 
@@ -104,7 +105,6 @@ def get_agent_schema(agent_id: str) -> str:
     Returns:
         Formatted schema string, or an error message if the agent is not found.
     """
-    import re  # noqa: PLC0415
 
     import yaml  # noqa: PLC0415
 
@@ -133,7 +133,7 @@ def get_agent_schema(agent_id: str) -> str:
         _columns_omitted,
     )
 
-    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    safe_id = agent_storage_id(agent_id)
     kb_path = config.KB_PATH / f"{safe_id}.yaml"
     if not kb_path.exists():
         return _agent_not_found(agent_id)

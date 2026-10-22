@@ -45,6 +45,7 @@ from nlqueries.orchestrator.sql_generation import (
     repair_after_execution_error,
     validate_and_repair,
 )
+from nlqueries.state_files import agent_storage_id
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
 _log = logging.getLogger(__name__)
@@ -602,7 +603,7 @@ class Orchestrator:
         Raises:
             FileNotFoundError: When the knowledge base file does not exist.
         """
-        safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+        safe_id = agent_storage_id(agent_id)
         kb_file = config.KB_PATH / f"{safe_id}.yaml"
         if not kb_file.exists():
             raise FileNotFoundError(

@@ -241,14 +241,10 @@ def compute_kb_stats(
         import json as _json  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
-        from nlqueries.cache.semantic_cache import (  # noqa: PLC0415
-            _SAFE_ID_RE,
-            CACHE_COLLECTION_PREFIX,
-        )
+        from nlqueries.cache.semantic_cache import cache_collection_name  # noqa: PLC0415
         from nlqueries.config import QDRANT_URL  # noqa: PLC0415
 
-        safe_id = _SAFE_ID_RE.sub("_", agent_id)
-        collection = f"{CACHE_COLLECTION_PREFIX}{safe_id}"
+        collection = cache_collection_name(agent_id)
         with urllib.request.urlopen(f"{QDRANT_URL}/collections/{collection}", timeout=3) as resp:
             data = _json.loads(resp.read())
             stats.cache_entries = data.get("result", {}).get("vectors_count", 0)
