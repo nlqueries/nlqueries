@@ -729,6 +729,27 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **Every store names an agent the same way, so two agents no longer share
+  a cache.** The semantic cache turned `.` into `_` in the agent ID, so
+  `sales.eu` and `sales_eu` read and wrote one cache collection and could be
+  served each other's answers. The knowledge base, the feedback and session
+  files, and the cache and document collections now all use one storage
+  name (`nlqueries.state_files.agent_storage_id`): letters, digits,
+  `_`, `-` and `.` are kept and anything else becomes `_`. Document
+  collections used the raw ID, so the CLI (`postgres:localhost:mydb`) and the
+  MCP server (`postgres_localhost_mydb`, from the knowledge-base file name)
+  wrote and read different collections for one agent; they now share one.
+  **Upgrading:** knowledge-base, feedback and session files keep their names.
+  A document collection written under the raw ID is still read until one
+  under the new name holds the source's chunks; the next successful
+  `doc-ingest` writes the new name and deletes the raw-ID collection, and
+  `--allow-empty` removes both. The MCP server reaches such a source (an ID
+  with `:`, `/` or a space) only after it is ingested again. A
+  cache collection for an ID containing `.` starts empty under its new name;
+  the old one is not read and can be deleted in Qdrant. The schema
+  (`agent_<id>_schema`) and verified-examples (`agent_<id>_verified`)
+  collections keep their current names for now. See
+  [docs/qdrant-setup.md](docs/qdrant-setup.md).
 - **Cache keys keep operators and numbers, and follow-ups are keyed on what
   they mean.** The Tier 0 exact-match key no longer strips `<`, `>`, `=`, `!`,
   `-`, `.` or `%` from the question, so `orders with total > 100` and
