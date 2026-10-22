@@ -129,6 +129,43 @@ def test_a_lower_hard_limit_is_kept(monkeypatch) -> None:
     assert _child._within_hard_limit(_child.resource.RLIMIT_AS, 2**31) == 2**31
 
 
+def test_an_error_that_does_not_unpickle_is_still_reported(source) -> None:
+    """It pickled in the child; the parent could not rebuild it."""
+    with pytest.raises(RuntimeError, match="_NeedsArguments: /fonts/x.afm: broken glyph") as caught:
+        fake.RaisesWhatDoesNotUnpickle().ingest(source, "s1")
+    assert "_ingest_here" in str(caught.value)  # the child's stack came with it
+
+
+def test_the_parsers_stack_comes_back_with_its_error(source) -> None:
+    with pytest.raises(DocumentTooComplexError) as caught:
+        fake.Refuses().ingest(source, "s1")
+    (note,) = caught.value.__notes__
+    assert note.startswith("Raised in the document-parsing child:")
+    assert "_fake_parsers.py" in note and "_ingest_here" in note
+
+
+def test_a_result_that_cannot_be_read_is_not_reported_as_a_death(source, monkeypatch) -> None:
+    def unreadable(data):
+        raise ValueError("bad pickle data")
+
+    monkeypatch.setattr(_isolation.pickle, "loads", unreadable)
+    with pytest.raises(RuntimeError, match="result could not be read .ValueError: bad pickle"):
+        fake.Returns().ingest(source, "s1")
+
+
+def test_a_result_cut_short_is_reported_by_how_the_child_ended(source, monkeypatch) -> None:
+    """Killed mid-write, a child leaves part of a result: its exit is the news."""
+    real_collected = _isolation._Output.collected
+
+    def cut_short(self):
+        _out, err = real_collected(self)
+        return b"\x80\x05partial", err
+
+    monkeypatch.setattr(_isolation._Output, "collected", cut_short)
+    with pytest.raises(RuntimeError, match="exited with 3"):
+        fake.ChattersThenDies().ingest(source, "s1")
+
+
 def test_a_refusal_reaches_the_caller_as_itself(source) -> None:
     with pytest.raises(DocumentTooComplexError, match="over the 128 MiB limit"):
         fake.Refuses().ingest(source, "s1")

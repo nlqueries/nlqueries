@@ -27,6 +27,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -140,7 +141,15 @@ def parse_in_child(connector: type, source: str | Path, source_id: str) -> list[
     if out:
         try:
             kind, value = pickle.loads(out)  # noqa: S301 - written by our own child
-        except Exception:  # noqa: BLE001 - reported below as a failed parse
+        except Exception as exc:  # noqa: BLE001 - reported as what it is, below
+            if child.returncode == 0:
+                # The child finished and said something this could not read:
+                # not a death, and not to be reported as one.
+                raise RuntimeError(
+                    f"Extracting {name} failed: the parser's result could not be read "
+                    f"({type(exc).__name__}: {exc})."
+                ) from None
+            # Cut short, as a child killed mid-write leaves it: its exit says why.
             kind, value = None, None
         if kind == "chunks":
             return list(value)
@@ -298,8 +307,14 @@ def child_result(connector_path: str, source: str, source_id: str) -> tuple[str,
     except Exception as exc:  # noqa: BLE001 - handed to the parent to raise
         if ran_out_of_memory(exc):
             return "raised", MemoryError(f"{type(exc).__name__}: {exc}")
+        # Pickling keeps neither the traceback nor the cause, so the parser's
+        # stack goes with the exception as a note, where whoever logs it sees it.
+        trace = traceback.format_exc()
+        exc.add_note(f"Raised in the document-parsing child:\n{trace}")
         try:
-            pickle.dumps(exc)
+            # Both ways: a class whose __init__ takes arguments it does not pass
+            # on to Exception pickles, and then fails to unpickle in the parent.
+            pickle.loads(pickle.dumps(exc))  # noqa: S301 - our own bytes
         except Exception:  # noqa: BLE001 - an exception that cannot cross the pipe
-            return "unpicklable", f"{type(exc).__name__}: {exc}"
+            return "unpicklable", f"{type(exc).__name__}: {exc}\n{trace}"
         return "raised", exc

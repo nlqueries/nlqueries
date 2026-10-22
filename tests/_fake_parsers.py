@@ -95,6 +95,20 @@ class _Unpicklable(Exception):
         self.callback = lambda: None
 
 
+class _NeedsArguments(Exception):
+    """Pickles, but does not unpickle: its __init__ wants two arguments and
+    Exception was given one. subprocess.CalledProcessError has this shape."""
+
+    def __init__(self, path: str, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+
+
+class RaisesWhatDoesNotUnpickle(_Fake):
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        raise _NeedsArguments("/fonts/x.afm", "broken glyph table")
+
+
 class RaisesUnpicklable(_Fake):
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         raise _Unpicklable("the parser broke")
