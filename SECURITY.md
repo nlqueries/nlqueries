@@ -18,7 +18,7 @@ We aim to acknowledge reports within 5 business days. Once a fix is available, w
 
 ## The container image
 
-The `nlqueries/core` image is built from this repository and scanned for known vulnerabilities in its OS packages and Python dependencies every week (from `main`) and for each release tag, with results in this repository's Security tab. The scan covers the `linux/amd64` build.
+The `nlqueries/core` image is built from this repository and scanned for known vulnerabilities in its OS packages and Python dependencies every week (from `main`) and for each release tag. High and critical findings that have a fix available are reported in this repository's Security tab. The scan covers the `linux/amd64` build.
 
 ## Hardening the database you point it at
 

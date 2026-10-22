@@ -106,6 +106,20 @@ def test_a_fork_pull_request_scans_but_does_not_upload() -> None:
     assert "if" not in _step("Scan")
 
 
+def test_a_fork_pull_request_gets_the_findings_in_its_log() -> None:
+    """The SARIF holds them only in its file, which is not uploaded there, so
+    the same scan prints a table on exactly the runs the upload skips."""
+    show = _step("Show the findings")
+    assert show["if"] == (
+        "github.event_name == 'pull_request' && "
+        "github.event.pull_request.head.repo.full_name != github.repository"
+    )
+    scan = _step("Scan")["run"]
+    for flag in ("--severity HIGH,CRITICAL", "--ignore-unfixed", "--exit-code 0"):
+        assert flag in scan and flag in show["run"]
+    assert "--format table" in show["run"]
+
+
 def test_the_image_is_built_locally_and_not_pushed() -> None:
     build = _step("Build the image")["run"]
     assert build.startswith("docker build ")
