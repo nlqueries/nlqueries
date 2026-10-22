@@ -48,6 +48,9 @@ class WordConnector(IsolatedIngest, DocumentConnector):
     paragraphs; documents without headings are treated as a single section.
     """
 
+    def _refuse_before_parsing(self, source: Path) -> None:
+        check_archive_expansion(source)
+
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         try:
             import docx  # python-docx

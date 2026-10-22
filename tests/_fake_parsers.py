@@ -128,6 +128,29 @@ class WritesToTheDescriptor(_Fake):
         return [_chunk(source_id, "after the noise")]
 
 
+class ChattersThenDies(_Fake):
+    """Logs far more than the parent keeps, then exits without a result."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import os  # noqa: PLC0415
+
+        for n in range(20_000):
+            os.write(2, b"WARNING: unrecognised operator %d\n" % n)
+        os.write(2, b"the last thing it said\n")
+        os._exit(3)
+
+
+class LeavesAGrandchild(_Fake):
+    """Starts a process that outlives it holding stderr open; returns its pid."""
+
+    def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        return [_chunk(source_id, str(grandchild.pid))]
+
+
 class ReportsLimits(_Fake):
     """Returns the limits it ran under."""
 

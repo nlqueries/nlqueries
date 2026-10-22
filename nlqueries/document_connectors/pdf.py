@@ -57,6 +57,23 @@ def _refuse_page_count(name: str, pages: int) -> None:
         )
 
 
+def _refuse_oversized(source_path: Path) -> None:
+    """Refuse a PDF on its size on disk, before any parser opens it.
+
+    A file that cannot be stat'ed is left for the parser to report, which names
+    the problem better than anything this could.
+    """
+    try:
+        size = source_path.stat().st_size
+    except OSError:
+        return
+    if size > _limits.PDF_BYTES:
+        shown, cap = _size_over(size, _limits.PDF_BYTES)
+        raise DocumentTooComplexError(
+            f"{source_path.name} is {shown}, over the {cap} limit for a PDF."
+        )
+
+
 class PdfConnector(IsolatedIngest, DocumentConnector):
     """Extract and chunk text from PDF files using pdfplumber.
 
@@ -68,6 +85,10 @@ class PdfConnector(IsolatedIngest, DocumentConnector):
     _CHUNK_SIZE = 800
     _CHUNK_OVERLAP = 100
 
+    def _refuse_before_parsing(self, source: Path) -> None:
+        # The page count is not checked here: reading it means parsing the file.
+        _refuse_oversized(source)
+
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         try:
             import pdfplumber
@@ -78,18 +99,7 @@ class PdfConnector(IsolatedIngest, DocumentConnector):
             ) from exc
 
         source_path = Path(source)
-        # Refused on its size on disk before the parser opens it. A file that
-        # cannot be stat'ed is left for the parser to report, which names the
-        # problem better than anything this could.
-        try:
-            size = source_path.stat().st_size
-        except OSError:
-            size = None
-        if size is not None and size > _limits.PDF_BYTES:
-            shown, cap = _size_over(size, _limits.PDF_BYTES)
-            raise DocumentTooComplexError(
-                f"{source_path.name} is {shown}, over the {cap} limit for a PDF."
-            )
+        _refuse_oversized(source_path)
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self._CHUNK_SIZE,

@@ -8,6 +8,7 @@ caller gets the refusal it already handles.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import time
@@ -158,13 +159,11 @@ def test_a_caller_stopped_mid_parse_does_not_leave_the_child_running(source, mon
             super().__init__(*args, **kwargs)
             started.append(self)
 
-        def communicate(self, input=None, timeout=None):
-            if input is not None:
-                self.stdin.write(input)  # the child starts parsing
-                self.stdin.close()
-                time.sleep(1)
+        def wait(self, timeout=None):
+            if timeout is not None:  # the wait for the parse, not the reaping
+                time.sleep(1)  # the child is parsing by now
                 raise KeyboardInterrupt
-            return super().communicate(timeout=timeout)
+            return super().wait()
 
     monkeypatch.setattr(_isolation.subprocess, "Popen", Interrupted)
     with pytest.raises(KeyboardInterrupt):
@@ -173,6 +172,108 @@ def test_a_caller_stopped_mid_parse_does_not_leave_the_child_running(source, mon
     (child,) = started
     assert child.poll() is not None  # killed and reaped, not left behind
     assert child.stdout is not None and child.stdout.closed
+
+
+def test_only_the_end_of_the_childs_stderr_is_kept() -> None:
+    """What a parser logs is unbounded; the parent holds a bounded tail of it."""
+    import os
+    import threading
+    from types import SimpleNamespace
+
+    read_end, write_end = os.pipe()
+
+    def chatter() -> None:
+        with os.fdopen(write_end, "wb") as pipe:
+            for n in range(40_000):
+                pipe.write(b"WARNING: unrecognised operator %d\n" % n)
+            pipe.write(b"the last line\n")
+
+    writer = threading.Thread(target=chatter)
+    writer.start()
+    with os.fdopen(read_end, "rb") as stderr:
+        output = _isolation._Output(SimpleNamespace(stdin=None, stdout=None, stderr=stderr))
+        writer.join()
+        _out, err = output.collected()
+
+    assert len(err) <= _isolation.STDERR_TAIL_BYTES
+    assert err.endswith(b"the last line\n")
+
+
+def test_a_process_left_holding_stderr_does_not_hold_the_caller(source) -> None:
+    import os
+    import signal
+
+    started = time.monotonic()
+    (chunk,) = fake.LeavesAGrandchild().ingest(source, "s1")
+    try:
+        # The drain waits are bounded. On POSIX the grandchild inherits
+        # descriptor 2 and holds the pipe for its 60 seconds.
+        assert time.monotonic() - started < 40
+    finally:
+        with contextlib.suppress(OSError):  # gone already, or not ours to stop
+            os.kill(int(chunk.text), signal.SIGTERM)
+
+
+def test_a_child_that_dies_is_reported_by_its_last_line(source) -> None:
+    with pytest.raises(RuntimeError, match="exited with 3.*the last thing it said"):
+        fake.ChattersThenDies().ingest(source, "s1")
+
+
+def test_a_document_refused_by_its_size_starts_no_child(source, monkeypatch) -> None:
+    """The checks that read only a size or a zip directory run in the parent first."""
+    monkeypatch.setattr(_limits, "PDF_BYTES", 4)
+
+    def no_child(*args, **kwargs):
+        raise AssertionError("a child process was started")
+
+    monkeypatch.setattr(_isolation.subprocess, "Popen", no_child)
+    with pytest.raises(DocumentTooComplexError, match="over the"):
+        PdfConnector().ingest(source, "s1")
+
+
+def test_a_document_refused_by_its_zip_directory_starts_no_child(tmp_path, monkeypatch) -> None:
+    import zipfile
+
+    path = tmp_path / "big.docx"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", "x" * 200_000)
+    monkeypatch.setattr(_limits, "MAX_EXPANDED_BYTES", 1000)
+
+    def no_child(*args, **kwargs):
+        raise AssertionError("a child process was started")
+
+    monkeypatch.setattr(_isolation.subprocess, "Popen", no_child)
+    for connector in (WordConnector(), ExcelConnector()):
+        with pytest.raises(DocumentTooComplexError):
+            connector.ingest(path, "s1")
+
+
+@pytest.mark.parametrize(
+    ("value", "isolated"),
+    [(None, True), ("false", False), ("0", False), ("off", False), ("true", True), ("flase", True)],
+)
+def test_isolation_is_on_unless_turned_off_by_name(tmp_path, value, isolated) -> None:
+    """Read in a fresh interpreter, since `config` reads it at import. A value
+    that is not one of the off spellings leaves it on: it is a safety control."""
+    import os
+
+    env = {k: v for k, v in os.environ.items() if k != "NLQ_DOCUMENT_PARSE_ISOLATION"}
+    if value is not None:
+        env["NLQ_DOCUMENT_PARSE_ISOLATION"] = value
+    env["PYTHONPATH"] = str(ROOT)
+    shown = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from nlqueries import config; print(config.DOCUMENT_PARSE_ISOLATION)",
+        ],
+        cwd=tmp_path,  # no .env from the checkout
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert shown == str(isolated)
 
 
 def test_the_child_runs_under_the_parents_limits(source, monkeypatch) -> None:

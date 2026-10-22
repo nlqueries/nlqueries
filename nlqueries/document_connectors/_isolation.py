@@ -20,10 +20,13 @@ operator or a test set in the parent applies there too.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import pickle  # noqa: S403 - both ends are this package; nothing else writes these pipes
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +53,18 @@ FORWARDED_LIMITS = (
 #: new interpreter importing the parser before the deadline's clock starts there.
 CHILD_START_SECONDS = 15.0
 
+#: How much of the end of the child's stderr is kept. What a parser logs there
+#: is unbounded and depends on the document -- pdfminer warns once per
+#: unrecognised operator -- and only the end is ever read: the last line, or the
+#: traceback of a child that died. Held whole, it would hand the parent back
+#: the memory the child's limit takes away.
+STDERR_TAIL_BYTES = 64 * 1024
+
+#: How long to wait, once the child has exited, for its output to finish
+#: arriving. stdout ends with the child; stderr can be held open by a process
+#: the parser started, and is not waited on past this.
+_DRAIN_SECONDS = 5.0
+
 
 class IsolatedIngest:
     """Gives a document connector an ``ingest`` that parses in a child process.
@@ -62,9 +77,15 @@ class IsolatedIngest:
     def _ingest_here(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         raise NotImplementedError
 
+    def _refuse_before_parsing(self, source: Path) -> None:
+        """The connector's checks that read no more than a file's size or a zip's
+        directory. Run here as well as in :meth:`_ingest_here`, so a document they
+        refuse costs a ``stat`` rather than a child process."""
+
     def ingest(self, source: str | Path, source_id: str) -> list[DocumentChunk]:
         if not config.DOCUMENT_PARSE_ISOLATION:
             return self._ingest_here(source, source_id)
+        self._refuse_before_parsing(Path(source))
         return parse_in_child(type(self), source, source_id)
 
 
@@ -95,20 +116,26 @@ def parse_in_child(connector: type, source: str | Path, source_id: str) -> list[
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    output = _Output(child)
     try:
-        out, err = child.communicate(pickle.dumps(payload), timeout=deadline)
-    except subprocess.TimeoutExpired:
-        _stop(child)
-        raise DocumentExtractionTimeout(
-            f"Extracting {name} did not finish within {deadline:g}s and was stopped."
-        ) from None
-    except BaseException:
-        # The caller was stopped rather than the parse: a task's time limit, a
-        # worker shutting down, an interrupt. The child would otherwise outlive
-        # it holding the file and its memory, and on Windows with no limit on
-        # its time at all, since the deadline above was the only one.
-        _stop(child)
-        raise
+        try:
+            _send(child, pickle.dumps(payload))
+            child.wait(timeout=deadline)
+        except subprocess.TimeoutExpired:
+            _stop(child)
+            raise DocumentExtractionTimeout(
+                f"Extracting {name} did not finish within {deadline:g}s and was stopped."
+            ) from None
+        except BaseException:
+            # The caller was stopped rather than the parse: a task's time limit,
+            # a worker shutting down, an interrupt. The child would otherwise
+            # outlive it holding the file and its memory, and on Windows with no
+            # limit on its time at all, since the deadline above was the only one.
+            _stop(child)
+            raise
+        out, err = output.collected()
+    finally:
+        output.close()
 
     if out:
         try:
@@ -126,10 +153,77 @@ def parse_in_child(connector: type, source: str | Path, source_id: str) -> list[
     raise _death(name, child.returncode, err)
 
 
+class _Output:
+    """The child's stdout, whole, and the end of its stderr, read as they arrive.
+
+    In place of ``communicate``, which holds all of both: stdout carries only
+    the result, but stderr carries whatever the parser and its libraries write.
+    """
+
+    def __init__(self, child: subprocess.Popen[bytes]) -> None:
+        self._child = child
+        self._out = bytearray()
+        self._err = bytearray()
+        self._out_reader = threading.Thread(target=self._read_out, daemon=True)
+        self._err_reader = threading.Thread(target=self._read_err, daemon=True)
+        self._readers = [self._out_reader, self._err_reader]
+        for reader in self._readers:
+            reader.start()
+
+    def _read_out(self) -> None:
+        if self._child.stdout is not None:
+            with contextlib.suppress(OSError, ValueError):
+                self._out += self._child.stdout.read()
+
+    def _read_err(self) -> None:
+        stream = self._child.stderr
+        if stream is None:
+            return
+        with contextlib.suppress(OSError, ValueError):
+            while block := os.read(stream.fileno(), 65536):
+                self._err += block
+                if len(self._err) > STDERR_TAIL_BYTES:
+                    del self._err[:-STDERR_TAIL_BYTES]
+
+    def collected(self) -> tuple[bytes, bytes]:
+        for reader in self._readers:
+            reader.join(_DRAIN_SECONDS)
+        return bytes(self._out), bytes(self._err)
+
+    def close(self) -> None:
+        """Close the pipes, each once its reader has finished with it.
+
+        A pipe still being read is left open: a process the parser started can
+        keep stderr open after the child exits, and on Windows closing a pipe
+        another thread is reading blocks until that read returns.
+        """
+        if self._child.stdin is not None:
+            with contextlib.suppress(OSError):
+                self._child.stdin.close()
+        for stream, reader in (
+            (self._child.stdout, self._out_reader),
+            (self._child.stderr, self._err_reader),
+        ):
+            reader.join(_DRAIN_SECONDS)
+            if stream is not None and not reader.is_alive():
+                with contextlib.suppress(OSError):
+                    stream.close()
+
+
+def _send(child: subprocess.Popen[bytes], payload: bytes) -> None:
+    """Hand the child its instructions. A child that has already gone is
+    reported by its exit, not by the write that found it gone."""
+    if child.stdin is None:
+        return
+    with contextlib.suppress(OSError):
+        child.stdin.write(payload)
+        child.stdin.close()
+
+
 def _stop(child: subprocess.Popen[bytes]) -> None:
-    """Kill *child* and reap it, closing its pipes."""
+    """Kill *child* and reap it."""
     child.kill()
-    child.communicate()
+    child.wait()
 
 
 def _death(name: str, returncode: int | None, stderr: bytes) -> Exception:
