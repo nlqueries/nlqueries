@@ -219,7 +219,8 @@ def compute_kb_stats(
             stats.fk_joins = len(fk_pairs)
             stats.fk_joins_seen = len(fk_pairs & _capsule_join_pairs(capsules))
         except Exception as exc:  # noqa: BLE001
-            # The counts stay at zero, which would otherwise read as measured.
+            # A connector was given, so the comparison was asked for; without
+            # this its sections would just be missing, as if none had been.
             logger.warning("Could not read the live schema for %s's stats: %s", agent_id, exc)
 
     # -------------------------------------------------------------------------

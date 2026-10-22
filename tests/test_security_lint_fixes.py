@@ -296,7 +296,7 @@ def test_the_embed_handler_without_a_model_raises_even_without_asserts() -> None
 
 
 def test_tasklist_is_run_by_its_full_path(monkeypatch) -> None:
-    import os
+    import ntpath
     import subprocess
 
     from nlqueries.embeddings import embed_server
@@ -312,5 +312,7 @@ def test_tasklist_is_run_by_its_full_path(monkeypatch) -> None:
 
     assert embed_server.is_pid_alive(4242)
     ((program, *_rest),) = ran
-    assert os.path.isabs(program)
-    assert program.lower().endswith(os.path.join("system32", "tasklist.exe"))
+    # A Windows path wherever the test runs, so judged as one: on Linux the
+    # module joins it with "/", which Windows accepts and posixpath calls relative.
+    assert ntpath.isabs(program)
+    assert ntpath.normcase(program).endswith(ntpath.join("system32", "tasklist.exe"))
