@@ -31,6 +31,14 @@ from sqlalchemy.exc import DatabaseError
 from tests.conftest import granted
 
 
+@pytest.fixture(autouse=True)
+def _no_identity_watch(monkeypatch):
+    """These tests stand a mock in for `create_engine`, which SQLAlchemy cannot
+    attach the identity check's pool event to; that check has its own tests
+    in test_login_identity.py."""
+    monkeypatch.setattr(sqlalchemy_connector_module, "watch_engine", lambda *args: None)
+
+
 def _connect(tmp_path: Path) -> SQLAlchemyConnector:
     db = tmp_path / "t.db"
     c = granted(SQLAlchemyConnector())

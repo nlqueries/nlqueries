@@ -43,6 +43,8 @@ from nlqueries.connectors.base import (
     TableSpec,
     short_cause,
 )
+from nlqueries.connectors.login_identity import LoginIdentity, watch_engine
+from nlqueries.connectors.mysql_identity import inspect_identity as inspect_mysql_identity
 from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 
 logger = logging.getLogger(__name__)
@@ -359,6 +361,19 @@ class SQLAlchemyConnector(DatabaseConnector):
     def __init__(self) -> None:
         self._engine: Engine | None = None
         self._tls: TlsPosture | None = None
+        self._identity: LoginIdentity | None = None
+
+    @property
+    def identity(self) -> LoginIdentity | None:
+        """What a MySQL or MariaDB login holds beyond reading, or None.
+
+        Read from the most recent connection the pool opened; None before one
+        has opened, and for every other backend, which this does not inspect.
+        """
+        return self._identity
+
+    def _set_identity(self, identity: LoginIdentity) -> None:
+        self._identity = identity
 
     @property
     def tls(self) -> TlsPosture | None:
@@ -431,6 +446,8 @@ class SQLAlchemyConnector(DatabaseConnector):
         # it was given.
         engine_url = hardened if mysql_args else url
         self._engine = create_engine(engine_url, pool_pre_ping=True, connect_args=connect_args)
+        if parsed.get_backend_name() in _MYSQL_BACKENDS:
+            watch_engine(self._engine, inspect_mysql_identity, self._set_identity)
 
     def _require_engine(self) -> Engine:
         if self._engine is None:
