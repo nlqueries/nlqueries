@@ -213,11 +213,20 @@ class TestSQLServer:
                     *_MSSQL_READER["server_permissions"],
                     "VIEW SERVER STATE",
                     "VIEW SERVER SECURITY STATE",
-                    "VIEW ANY ERROR LOG",
                 ],
             }
         )
         assert concerns == ()
+
+    def test_reading_the_server_error_log_is_reported(self) -> None:
+        """Not on the list, since nothing listed is known to imply it."""
+        concerns = mssql_identity.concerns_from(
+            **{
+                **_MSSQL_READER,
+                "server_permissions": [*_MSSQL_READER["server_permissions"], "VIEW ANY ERROR LOG"],
+            }
+        )
+        assert concerns == ("holds VIEW ANY ERROR LOG on the server",)
 
     def test_server_and_database_roles_are_flagged(self) -> None:
         concerns = mssql_identity.concerns_from(

@@ -33,6 +33,9 @@ READ_DATABASE_ROLES = frozenset({"public", "db_datareader"})
 #: SQL Server 2016 and later grant the two column-key ``VIEW`` permissions to
 #: ``public`` in every database; SQL Server 2022 splits ``VIEW DEFINITION`` and
 #: ``VIEW DATABASE STATE`` into the narrower ``VIEW`` permissions below them.
+#: Only those whose place under a listed permission is certain are here: one
+#: wrongly left off shows as a warning that can be explained, one wrongly added
+#: hides a right the login holds.
 READ_DATABASE_PERMISSIONS = frozenset(
     {
         "CONNECT",
@@ -50,12 +53,13 @@ READ_DATABASE_PERMISSIONS = frozenset(
         "VIEW PERFORMANCE DEFINITION",
         "VIEW CRYPTOGRAPHICALLY SECURED DEFINITION",
         "VIEW DATABASE SECURITY STATE",
-        "VIEW DATABASE SECURITY AUDIT",
     }
 )
 
 #: Server permissions every login, or a monitoring one, holds, and the
-#: narrower ``VIEW`` permissions SQL Server 2022 splits those into.
+#: narrower ``VIEW`` permissions SQL Server 2022 splits those into, on the same
+#: terms as the database's. ``VIEW ANY ERROR LOG`` and the two ``... SECURITY
+#: AUDIT`` permissions are left off for that reason.
 READ_SERVER_PERMISSIONS = frozenset(
     {
         "CONNECT SQL",
@@ -69,8 +73,6 @@ READ_SERVER_PERMISSIONS = frozenset(
         "VIEW ANY PERFORMANCE DEFINITION",
         "VIEW ANY CRYPTOGRAPHICALLY SECURED DEFINITION",
         "VIEW SERVER SECURITY STATE",
-        "VIEW SERVER SECURITY AUDIT",
-        "VIEW ANY ERROR LOG",
     }
 )
 
