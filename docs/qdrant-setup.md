@@ -10,7 +10,11 @@ Qdrant is a vector database. NLQueries creates these collections in it:
 | `agent_<id>_verified` | Question/SQL pairs from positively rated feedback | `promote-feedback`, and `export-kb` at the end of its run | the question path, as example queries |
 | `agent_<id>_schema` | Table and column description embeddings | `generate_knowledge_base(..., embed=True)` in the Python API; no `nlqueries` command passes `embed=True` | the question path, for relevant tables; it also searches this collection for example queries, though nothing writes capsules to it |
 
-Each collection is created on first write with 384-dimension vectors (`nlqueries.config.EMBED_DIMENSIONS`, a constant rather than a setting), cosine distance and INT8 scalar quantization. In the names above, `cache_<agent>` and `agent_<id>_verified` replace every character other than letters, digits, `_` and `-` in the agent ID with `_`, so `postgres:localhost:mydb` becomes `agent_postgres_localhost_mydb_verified`; `agent_<id>_schema` uses the ID as given.
+Each collection is created on first write with 384-dimension vectors (`nlqueries.config.EMBED_DIMENSIONS`, a constant rather than a setting), cosine distance and INT8 scalar quantization.
+
+In the names above, `cache_<agent>`, `doc_<source_id>_chunks` and `agent_<id>_schema` use the agent's (or source's) storage name: letters, digits, `_`, `-` and `.` are kept and every other character becomes `_`, so `postgres:localhost:mydb` becomes `cache_postgres_localhost_mydb`. The knowledge-base, feedback and session files use the same name. A connector ID and its sanitised form are therefore one agent on purpose: the CLI uses `postgres:localhost:mydb`, the MCP server knows the agent by its knowledge-base file name, `postgres_localhost_mydb`, and both reach the same files and collections. `agent_<id>_verified` still replaces `.` as well, so `sales.eu` and `sales_eu` share one verified-examples collection.
+
+When upgrading: a document or schema collection written under the raw ID by an earlier release (`doc_postgres:localhost:mydb_chunks`) is still read while no collection exists under the new name, and the next `doc-ingest` for that source writes the new name. A cache collection for an ID containing `.` gets a new name and starts empty; the old one is not read, because under the old rule it was also the cache of the ID with `_` in place of each `.`. Nothing reads the old one after the upgrade; delete it in Qdrant to reclaim the space.
 
 **Current limitation:**
 

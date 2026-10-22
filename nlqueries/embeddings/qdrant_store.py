@@ -51,6 +51,7 @@ from nlqueries import config
 from nlqueries.connectors.base import SchemaSpec
 from nlqueries.document_connectors.base import DocumentChunk
 from nlqueries.processing.parameterizer import QueryCapsule
+from nlqueries.state_files import agent_storage_id
 from nlqueries.telemetry import chunk_search_latency, get_tracer
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,54 @@ def _capsule_id(capsule: QueryCapsule, index: int) -> int:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def agent_collection(prefix: str, agent_id: str, suffix: str) -> str:
+    """The name of *agent_id*'s collection, ``{prefix}{storage name}{suffix}``.
+
+    For writers, always that name (see
+    :func:`~nlqueries.state_files.agent_storage_id`).
+    """
+    return f"{prefix}{agent_storage_id(agent_id)}{suffix}"
+
+
+#: How long a reader's choice between a collection's name and its older name
+#: is reused before Qdrant is asked again.
+_RESOLVED_TTL_SECONDS = 60.0
+_resolved: dict[str, tuple[float, str]] = {}
+
+
+def agent_collection_to_read(prefix: str, agent_id: str, suffix: str) -> str:
+    """The collection to read for *agent_id*: its name, or the one it had before.
+
+    Document and schema collections were named with the raw agent ID until
+    every store took the agent's storage name, so an ID with a character that
+    name replaces -- the ``:`` of a connector ID such as
+    ``postgres:localhost:mydb`` -- was written under the raw ID. When the
+    collection under the new name does not exist and the one under the raw ID
+    does, that one is read, so an agent ingested before the upgrade keeps
+    answering until it is ingested again, which writes the new name.
+
+    Only an ID the storage name changes needs Qdrant asked at all, and the
+    answer is reused for a minute rather than costing a round trip per
+    question. Qdrant out of reach gives the new name, which fails downstream
+    as it would have anyway.
+    """
+    name = agent_collection(prefix, agent_id, suffix)
+    legacy = f"{prefix}{agent_id}{suffix}"
+    if legacy == name:
+        return name
+    now = time.monotonic()
+    cached = _resolved.get(name)
+    if cached is not None and now - cached[0] < _RESOLVED_TTL_SECONDS:
+        return cached[1]
+    try:
+        existing = {c.name for c in _get_client().get_collections().collections}
+    except Exception:  # noqa: BLE001 - the caller reads `name` and reports the failure
+        return name
+    chosen = legacy if name not in existing and legacy in existing else name
+    _resolved[name] = (now, chosen)
+    return chosen
 
 
 def forget_collection_indexes(name: str) -> None:

@@ -659,9 +659,13 @@ def generate_knowledge_base(
     stamp_descriptions(kb, existing_kb)
 
     if embed and schema.tables:
-        from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_schema
+        from nlqueries.embeddings.qdrant_store import (
+            agent_collection,
+            ensure_collection,
+            upsert_schema,
+        )
 
-        collection = f"agent_{agent_name}_schema"
+        collection = agent_collection("agent_", agent_name, "_schema")
         ensure_collection(collection)
         upsert_schema(collection, schema, agent_id=agent_name)
 

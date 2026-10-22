@@ -53,6 +53,7 @@ from typing import Any
 from nlqueries.cache.envelope import binding_for_agent
 from nlqueries.cache.semantic_cache import CacheEntry, SemanticCache
 from nlqueries.connectors.base import QueryResult
+from nlqueries.embeddings.qdrant_store import agent_collection_to_read
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
@@ -330,7 +331,7 @@ async def _run_sql(
 
 async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[Citation] | None]:
     orch = DocumentOrchestrator()
-    collection = f"doc_{agent_id}_chunks"
+    collection = await asyncio.to_thread(agent_collection_to_read, "doc_", agent_id, "_chunks")
     tokens: list[str] = []
     async for token in orch.handle_question(question, collection):
         tokens.append(token)
@@ -350,7 +351,7 @@ async def _run_hybrid(
     """Run SQL and Document agents concurrently via ``asyncio.gather``."""
     sql_orch = Orchestrator()
     doc_orch = DocumentOrchestrator()
-    collection = f"doc_{agent_id}_chunks"
+    collection = await asyncio.to_thread(agent_collection_to_read, "doc_", agent_id, "_chunks")
 
     async def _collect_sql() -> list[str]:
         tokens: list[str] = []
@@ -392,7 +393,7 @@ def _merge_hybrid(
         doc_retrieval = DocumentRetrievalResult(
             chunks=[],
             citations=citations,
-            collection=f"doc_{agent_id}_chunks",
+            collection=agent_collection_to_read("doc_", agent_id, "_chunks"),
         )
 
     return merge_results(
@@ -760,7 +761,9 @@ class MultiAgentOrchestrator:
 
         if intent == IntentType.document:
             doc_orch = DocumentOrchestrator()
-            collection = f"doc_{agent_id}_chunks"
+            collection = await asyncio.to_thread(
+                agent_collection_to_read, "doc_", agent_id, "_chunks"
+            )
             seen = []
             async for token in doc_orch.handle_question(effective_question, collection):
                 seen.append(token)

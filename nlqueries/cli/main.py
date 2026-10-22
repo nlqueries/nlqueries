@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -41,7 +40,7 @@ from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
 from nlqueries.connectors import connector_class_for
 from nlqueries.connectors.base import table_sample_sql
 from nlqueries.connectors.loader import credentials_for
-from nlqueries.state_files import private_dir, restrict, write_private
+from nlqueries.state_files import agent_storage_id, private_dir, restrict, write_private
 
 console = Console()
 err_console = Console(stderr=True)
@@ -185,7 +184,7 @@ def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
 
 
 def _session_path(agent_id: str) -> Path:
-    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    safe_id = agent_storage_id(agent_id)
     return private_dir(STATE_DIR / "sessions") / f"{safe_id}.jsonl"
 
 
@@ -1524,9 +1523,13 @@ def _store_document_chunks(source_id: str, chunks: list[Any], *, allow_empty: bo
     """
     from rich.markup import escape
 
-    from nlqueries.embeddings.qdrant_store import StaleChunksRemain, replace_chunks
+    from nlqueries.embeddings.qdrant_store import (
+        StaleChunksRemain,
+        agent_collection,
+        replace_chunks,
+    )
 
-    collection = f"doc_{source_id}_chunks"
+    collection = agent_collection("doc_", source_id, "_chunks")
     if not chunks and not allow_empty:
         err_console.print(
             "[bold red]✗ The source produced no text, so nothing was stored.[/bold red]"
@@ -1986,7 +1989,7 @@ def export_kb(
 
     # Derive the canonical path used by `ask` and `query` when no --output given.
     if output is None:
-        safe_id = re.sub(r"[^\w.-]", "_", connector_id)
+        safe_id = agent_storage_id(connector_id)
         out_path = KB_PATH / f"{safe_id}.yaml"
         out_path.parent.mkdir(parents=True, exist_ok=True)
     else:
@@ -3057,7 +3060,7 @@ def eval_cmd(
 
     agent_id = _resolve_alias(agent_id)
     resolved_dialect = _resolve_dialect(agent_id, dialect)
-    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    safe_id = agent_storage_id(agent_id)
     kb_path = KB_PATH / f"{safe_id}.yaml"
     if not kb_path.exists():
         err_console.print(
@@ -3589,7 +3592,7 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
     from nlqueries.knowledge.kb_stats import compute_kb_stats  # noqa: PLC0415
 
     agent_id = _resolve_alias(agent_id)
-    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    safe_id = agent_storage_id(agent_id)
     kb_path = KB_PATH / f"{safe_id}.yaml"
 
     # Try to connect to the live DB — best-effort; skip gracefully on failure.

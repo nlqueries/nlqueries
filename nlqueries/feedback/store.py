@@ -15,18 +15,17 @@ written.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
 from nlqueries import config
 from nlqueries.feedback.models import SOURCE_UNKNOWN, QueryFeedback
-from nlqueries.state_files import private_dir, restrict
+from nlqueries.state_files import agent_storage_id, private_dir, restrict
 
 
 def _agent_path(agent_id: str) -> Path:
     """Return the JSONL path for *agent_id*, creating parent dirs if needed."""
-    safe_id = re.sub(r"[^\w.-]", "_", agent_id)
+    safe_id = agent_storage_id(agent_id)
     return private_dir(config.FEEDBACK_DIR) / f"{safe_id}.jsonl"
 
 
