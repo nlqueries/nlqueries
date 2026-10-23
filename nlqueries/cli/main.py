@@ -15,6 +15,7 @@ Commands
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -623,6 +624,56 @@ def _check_config() -> _CheckResult:
     return _CheckResult("Config", "ok", ", ".join(notes))
 
 
+def _print_json(text: str) -> None:
+    """Print a JSON payload in ASCII, non-ASCII escaped as ``\\uXXXX``.
+
+    A payload is read by a program, so it must survive whatever the output's
+    encoding is. Raw, a value cp1252 lacks would be written as a replacement
+    (see :func:`_replace_what_output_cannot_encode`): valid JSON holding the
+    wrong data. Escaped, it is the same data in any encoding."""
+    console.print_json(text, ensure_ascii=True)
+
+
+def _escaped_if_sql_chunk(token: str) -> str:
+    """*token* re-serialised in ASCII if it is `ask`'s final ``{"type": "sql"}``
+    chunk, which a script parses; any other token, prose people read, as it is.
+    See :func:`_print_json` for why a payload is escaped."""
+    if not token.lstrip().startswith("{"):
+        return token
+    import json as _json  # noqa: PLC0415
+
+    try:
+        chunk = _json.loads(token)
+    except ValueError:
+        return token
+    if isinstance(chunk, dict) and chunk.get("type") == "sql":
+        return _json.dumps(chunk, ensure_ascii=True)
+    return token
+
+
+def _replace_what_output_cannot_encode() -> None:
+    """Write a character the output's encoding lacks as a replacement, not an error.
+
+    Redirected or piped on Windows, Python writes stdout and stderr in the
+    locale's code page (cp1252), which has no ✓ or ⚠. Strict, the first one
+    raised UnicodeEncodeError mid-command: `connect` printed its check mark
+    after testing the connection and before saving it, so the connector was
+    lost. The text is still written; only the characters it cannot carry change.
+
+    stdout, read by people, gets a plain replacement. stderr keeps Python's own
+    escapes (``\\u2717``), set explicitly so an encoding named strict
+    cannot take them away: a diagnostic should stay recoverable, and a ``?``
+    in a database's error message loses what it said.
+    """
+    for stream, errors in ((sys.stdout, "replace"), (sys.stderr, "backslashreplace")):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            # A stream that cannot be reconfigured (a test's capture, say)
+            # keeps what it has.
+            with contextlib.suppress(Exception):
+                reconfigure(errors=errors)
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -648,6 +699,8 @@ def cli() -> None:
 
     from nlqueries.audit import Surface, bind_process  # noqa: PLC0415
     from nlqueries.auth.principal import local_principal  # noqa: PLC0415
+
+    _replace_what_output_cannot_encode()
 
     # One invocation is one request, made by whoever runs it. Any failure to
     # name them leaves the principal unknown: attribution must never stop a
@@ -2539,7 +2592,7 @@ def verify_oidc_token(discovery_url: str, client_id: str, id_token: str) -> None
         "email_verified": claims.email_verified,
         "raw": claims.raw,
     }
-    console.print_json(_json.dumps(output, default=str))
+    _print_json(_json.dumps(output, default=str))
     console.print("[bold green]✓ Token verified successfully.[/bold green]")
 
 
@@ -2613,11 +2666,12 @@ def ask(agent_id: str, question: str, dialect: str | None) -> None:
                 if sql:
                     console.print(f"\n[bold]SQL:[/bold] [dim]{sql}[/dim]")
             else:
-                # Pipe / redirected: emit raw tokens including the JSON chunk.
+                # Pipe / redirected: emit raw tokens including the JSON chunk,
+                # which scripts parse, so it goes out escaped like every payload.
                 async for token in orchestrator.handle_question(
                     question, agent_id, dialect=resolved_dialect
                 ):
-                    click.echo(token, nl=False)
+                    click.echo(_escaped_if_sql_chunk(token), nl=False)
                 click.echo()
         except FileNotFoundError as exc:
             err_console.print(f"[bold red]✗ {exc}[/bold red]")
@@ -2992,7 +3046,7 @@ def query(
             output["provenance"] = result.provenance.to_dict()
         if paraphrase_result is not None:
             output["paraphrase"] = paraphrase_result.to_dict()
-        console.print_json(json.dumps(output, default=str))
+        _print_json(json.dumps(output, default=str))
     else:
         if result.resolved_question and result.resolved_question != question:
             console.print(f"[dim]Resolved   : {result.resolved_question}[/dim]")
@@ -3116,7 +3170,7 @@ def eval_cmd(
     failed = len(outcomes) - passed
 
     if output_json:
-        console.print_json(
+        _print_json(
             json.dumps(
                 {
                     "agent_id": agent_id,
@@ -3527,7 +3581,7 @@ def health(connector_filter: str | None, verbose: bool, output_json: bool) -> No
             ],
             "healthy": not any_fail,
         }
-        console.print_json(_json.dumps(payload))
+        _print_json(_json.dumps(payload))
     else:
         _STATUS_ICON = {
             "ok": "[bold green][OK]  [/bold green]",
@@ -3689,7 +3743,7 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
                 }
                 for td in stats.table_details
             ]
-        console.print_json(_json.dumps(payload))
+        _print_json(_json.dumps(payload))
         return
 
     # Human-readable output

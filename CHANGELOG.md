@@ -847,6 +847,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **`embed-server start`, `stop` and `status` on Windows no longer fail with a
   traceback when `tasklist` cannot be run.** A process whose state cannot be
   read is taken to be running, as when `tasklist` times out.
+- **The CLI no longer fails when its output cannot carry a character.** With
+  output redirected or piped on Windows, Python writes in the locale's code
+  page, which has no check mark, and the first one raised `UnicodeEncodeError`.
+  `connect` prints one after testing the connection and before saving it, so
+  the connector was lost. Such characters are now written as a replacement.
+  `--json` output, and the SQL chunk `ask` ends with when piped, is written in
+  ASCII, with non-ASCII escaped (`\u00eb` for `ë`), so a
+  payload carries the same data whatever the output's encoding.
 - **Every store names an agent the same way, so two agents no longer share
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be
