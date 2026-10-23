@@ -158,7 +158,11 @@ class AnthropicClient(LLMClient):
         self._model = model if model is not None else config.LLM_MODEL
         # An explicit key (e.g. a per-tenant key from the host app) overrides the
         # env-derived config default; api_base overrides the endpoint when given.
-        key = api_key if api_key is not None else config.ANTHROPIC_API_KEY
+        # The default is "" when ANTHROPIC_API_KEY is unset, and it goes to the
+        # SDK as None: from anthropic 2.0 an empty key counts as given and is
+        # sent as an empty bearer token, which the HTTP library refuses, so a
+        # missing key surfaced as "Connection error." rather than as missing.
+        key = api_key if api_key is not None else (config.ANTHROPIC_API_KEY or None)
         base_kwargs: dict[str, Any] = {"base_url": api_base} if api_base is not None else {}
         # The SDK reads ANTHROPIC_BASE_URL itself when no base_url is passed.
         if api_base is not None:
