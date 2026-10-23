@@ -634,6 +634,23 @@ def _print_json(text: str) -> None:
     console.print_json(text, ensure_ascii=True)
 
 
+def _escaped_if_sql_chunk(token: str) -> str:
+    """*token* re-serialised in ASCII if it is `ask`'s final ``{"type": "sql"}``
+    chunk, which a script parses; any other token, prose people read, as it is.
+    See :func:`_print_json` for why a payload is escaped."""
+    if not token.lstrip().startswith("{"):
+        return token
+    import json as _json  # noqa: PLC0415
+
+    try:
+        chunk = _json.loads(token)
+    except ValueError:
+        return token
+    if isinstance(chunk, dict) and chunk.get("type") == "sql":
+        return _json.dumps(chunk, ensure_ascii=True)
+    return token
+
+
 def _replace_what_output_cannot_encode() -> None:
     """Write a character the output's encoding lacks as a replacement, not an error.
 
@@ -2649,11 +2666,12 @@ def ask(agent_id: str, question: str, dialect: str | None) -> None:
                 if sql:
                     console.print(f"\n[bold]SQL:[/bold] [dim]{sql}[/dim]")
             else:
-                # Pipe / redirected: emit raw tokens including the JSON chunk.
+                # Pipe / redirected: emit raw tokens including the JSON chunk,
+                # which scripts parse, so it goes out escaped like every payload.
                 async for token in orchestrator.handle_question(
                     question, agent_id, dialect=resolved_dialect
                 ):
-                    click.echo(token, nl=False)
+                    click.echo(_escaped_if_sql_chunk(token), nl=False)
                 click.echo()
         except FileNotFoundError as exc:
             err_console.print(f"[bold red]✗ {exc}[/bold red]")

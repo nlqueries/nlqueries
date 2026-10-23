@@ -95,3 +95,34 @@ def test_a_diagnostic_on_stderr_keeps_what_it_cannot_encode_recoverable(tmp_path
     assert b"Connection failed" in ran.stderr
     assert b"\\u2717" in ran.stderr  # the cross mark, escaped
     assert b"? Connection failed" not in ran.stderr
+
+
+def test_asks_sql_chunk_is_escaped_where_scripts_read_it() -> None:
+    """Piped, `ask` writes its tokens and then the {"type": "sql"} chunk a
+    script takes with `tail -1 | jq .sql`. That chunk is a payload, so it is
+    escaped; the answer's prose is left for people to read."""
+    import json
+    from unittest.mock import patch
+
+    from click.testing import CliRunner
+    from nlqueries.cli.main import cli
+
+    sql = "SELECT año FROM cuentas"
+
+    async def tokens(*args, **kwargs):
+        yield "Cuentas por año. "
+        yield json.dumps({"type": "sql", "sql": sql}, ensure_ascii=False)
+
+    with (
+        patch("nlqueries.cli.main._resolve_alias", side_effect=lambda agent_id: agent_id),
+        patch("nlqueries.cli.main._resolve_dialect", return_value="postgres"),
+        patch("nlqueries.orchestrator.Orchestrator") as orchestrator,
+    ):
+        orchestrator.return_value.handle_question = tokens
+        result = CliRunner().invoke(cli, ["ask", "shop", "accounts by year"])
+
+    assert result.exit_code == 0, result.output
+    chunk = result.output.strip().rsplit("Cuentas por año. ", 1)[1]
+    assert chunk.isascii()
+    assert json.loads(chunk) == {"type": "sql", "sql": sql}
+    assert "Cuentas por año." in result.output  # prose as written
