@@ -80,6 +80,103 @@ advisory fails the job, and a release with it, until the lock is regenerated
 job audits the resolved `.[dev,docs]` environment, which includes the `docs`
 extra the lock leaves out.
 
+## When an audit fails during a release
+
+`release.yml` runs every `ci.yml` job before it builds anything, so a failed
+audit stops a release before PyPI or Docker Hub receive a file. What to do
+depends on which job failed and where the flagged package ends up.
+
+1. **Read the job log.** It names the package, the installed version and the
+   advisory. If it shows a network error instead of a finding, re-run the job
+   once: `lock-audit` downloads the lock's whole closure to check its hashes,
+   and a dropped connection fails it.
+2. **Find out whether the flagged version ships.** An advisory names a range
+   of affected versions, and the two jobs see different ones: `lock-audit`
+   the lock's pins, `security` whatever `pip install -e ".[dev,docs]"`
+   resolves that day.
+   - **In `requirements/core.lock` at an affected version:** it is in the
+     image. That includes everything in the `dev` extra, the test and lint
+     tools among it, and setuptools, because the lock is compiled with
+     `--extra dev` and `--allow-unsafe` (see
+     [What is in the closure](#what-is-in-the-closure)). `lock-audit` fails
+     on it.
+   - **In the lock, but its pin is outside the affected range:** the image is
+     not affected. Only the `security` job's environment holds an affected
+     release. That is what pip users installing today would get only if the
+     declared floors resolve to it: the job also installs pip-audit, which can
+     pull a shared dependency higher, and upgrades setuptools itself, so
+     first confirm the flagged version is one `pip install -e ".[dev,docs]"`
+     alone produces.
+   - **Not in the lock, but required by `nlqueries-core`:** either listed in
+     an extra, or a transitive dependency that a newer release of a
+     dependency pulls in when the floors are resolved afresh. Check extras
+     against `[project.optional-dependencies]` in `pyproject.toml`, not with
+     pip: `pip show` leaves a requirement made only through an extra off its
+     `Required-by` line, so `pip show pdfplumber` names nothing although the
+     `docs` extra requires it. For the transitive case, `pip show <package>`
+     in the job's environment lists what requires it; follow that chain up
+     until it reaches `nlqueries-core` or a package listed in an extra. A
+     package that reaches `nlqueries-core`, or the `docs` extra, reaches
+     everyone who installs that with pip. One whose chain ends only in the
+     `dev` extra reaches developers who install `nlqueries-core[dev]`, not
+     the image or a plain install, and is handled like a tool the job
+     installs for itself.
+   - **In the image outside the lock:** pip, which the `Dockerfile` installs
+     at its own pin (`pip==24.0`) before the lock, and wheel, which the base
+     image brings and nothing removes. Every image carries them, although no
+     extra lists them and nothing in the tree requires them, and neither
+     `lock-audit` nor the image scan (which reports and never fails) stops a
+     release over them. They ship. Compare the advisory with the version in
+     the image, not with the `security` job's: the job sees the pip and wheel
+     of its own environment, which need not be the same releases.
+   - **Required by nothing in `nlqueries-core`'s tree:** listed in no extra,
+     not in the image outside the lock, and with a `Required-by` chain that
+     reaches neither `nlqueries-core` nor an extra's package: a tool the job
+     installs for itself, such as pip-audit and its own dependencies. Only
+     this, and the `dev`-only case above, do not ship, and that is shown by
+     all three checks, not assumed because the package is missing from the
+     lock.
+3. **If a fixed version exists and can be reached, move to it.** If the
+   lock's pin is affected, regenerate the lock (see
+   [Regenerating](#regenerating)). If only a fresh resolution is affected,
+   raise the floor in `pyproject.toml` past the fix, or, when the advisory
+   affects only releases newer than the lock's pin, cap it below the affected
+   range. A transitive dependency has no entry of its own to change: raise
+   the floor of the dependency that pulls it in, to a release that requires a
+   fixed version or no longer requires it at all, or add a constraint for it
+   to `dependencies`. The second makes it a direct dependency of the
+   published package, so it is a choice to make knowingly. Any of these edits
+   means regenerating the lock as well, as every change to `pyproject.toml`
+   does, or the image ships a pin the declared range no longer allows. For
+   pip in the image, move the `Dockerfile`'s pin past the fix; for wheel,
+   move to a base image that carries a fixed one (see
+   [Updating the base image](#updating-the-base-image)). For a tool the
+   job installs for itself, upgrade it in the job; setuptools, which
+   `pyproject.toml` does not list, is one. The
+   `security` job already upgrades setuptools in its own environment before
+   auditing; setuptools is in the lock too, so a setuptools advisory also
+   needs the lock regenerated. A fix that only exists beyond a cap in
+   `pyproject.toml` (`mcp>=1.29,<2`, say, when moving to 2.x is a port of its
+   own) cannot be reached this way: treat it as step 4 until that port is
+   done. Then release from the commit that carries the fix.
+4. **If no reachable fix exists:**
+   - A tool the job installs for itself may be skipped in the `security` job
+     with `pip-audit --ignore-vuln <ID>`. A comment beside it names the
+     package, says why it does not ship, and gives the date; the ignore comes
+     out when a fix is released.
+   - A package that ships is not ignored as a matter of course. Replace or
+     remove the dependency, or hold the release. The one exception is the
+     maintainer's: when the advisory is judged not exploitable in how
+     nlqueries uses the package, a time-limited ignore, in whichever job
+     flags it, added in a pull request that says why and until when, with the
+     release notes saying what is affected and what users can do. A test or
+     lint tool in the lock is no exception to the first rule: the image
+     carries it.
+     Outside that exception, nothing is ignored in `lock-audit`.
+
+Either way, an ignore is the maintainer's decision, made in the pull request
+that adds it.
+
 ## SBOMs
 
 Each release publishes a software bill of materials for both of its artefacts.
