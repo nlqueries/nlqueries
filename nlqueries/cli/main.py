@@ -873,7 +873,8 @@ def connect(
     # for a prompt -- so it is never prompted for. `--password` and
     # `--password-env` are still supported for the type; the sqlalchemy branch
     # below applies them to the parsed URL.
-    _no_auth_types = {"bigquery", "duckdb", "sqlite", "sqlalchemy"}
+    # The generic connector takes its password inside --url.
+    _no_auth_types = _TAKES_NO_PASSWORD | {"sqlalchemy"}
     if db_type_l not in _no_auth_types:
         if password_env is not None:
             password = os.environ.get(password_env) or ""
@@ -1109,7 +1110,10 @@ def connect(
     # SQLite, DuckDB and BigQuery have no place for a password in their URL,
     # so one given is dropped: said, and not kept in the keychain either, where
     # nothing would ever read it.
-    password_unused = bool(password) and db_type_l in _TAKES_NO_PASSWORD
+    # --password-env counts too: for these types it is never even read.
+    password_unused = (bool(password) or password_env is not None) and (
+        db_type_l in _TAKES_NO_PASSWORD
+    )
     stored_in_keychain = False
     if password and not password_unused:
         stored_in_keychain = _save_password(cid, password)

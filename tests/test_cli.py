@@ -311,6 +311,15 @@ class TestConnectSaysWhereAPasswordWentOnlyWhenThereIsOne:
         assert "sqlite takes no password, so the one given was not stored or used" in output
         assert "password stored in the config file" not in output
 
+    def test_a_password_variable_its_url_has_no_place_for_is_said_to_be_unused(
+        self, tmp_path: Path
+    ) -> None:
+        """--password-env is not even read for these types; it was left unmentioned."""
+        output = self._connect(
+            "sqlite", "--database", str(tmp_path / "shop.db"), "--password-env", "DB_PASS"
+        )
+        assert "sqlite takes no password, so the one given was not stored or used" in output
+
     def test_a_password_its_url_has_no_place_for_is_kept_out_of_the_keychain(
         self, tmp_path: Path
     ) -> None:
