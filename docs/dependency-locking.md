@@ -90,28 +90,35 @@ depends on which job failed and where the flagged package ends up.
    advisory. If it shows a network error instead of a finding, re-run the job
    once: `lock-audit` downloads the lock's whole closure to check its hashes,
    and a dropped connection fails it.
-2. **Find out whether the package ships.**
-   - In `requirements/core.lock`: it is in the image, and `lock-audit` fails.
-   - A dependency in `pyproject.toml`'s `[project.dependencies]`, or in any
-     extra other than `dev` (`docs`, `wiki`, or a database or provider extra
-     such as `mssql` or `openai`): it reaches everyone who installs it with
-     pip, whether or not the lock includes it.
-   - Only in the `dev` extra, or build tooling that `pip install -e` brings in
-     (test, lint and type-check tools, setuptools): it never ships. Only the
-     `security` job sees it.
-3. **If a fixed version exists, move to it.** For a locked package, regenerate
-   the lock (see [Regenerating](#regenerating)). For a package pip resolves,
-   raise its floor in `pyproject.toml`. For build tooling, upgrade it in the
-   `security` job, as that job already does for setuptools. Then release from
-   the commit that carries the fix.
+2. **Find out whether the package ships.** The deciding question is whether
+   it is in `requirements/core.lock`.
+   - **In the lock:** it is in the image. That includes everything in the
+     `dev` extra, the test and lint tools among it, and setuptools, because
+     the lock is compiled with `--extra dev` and `--allow-unsafe` (see
+     [What is in the closure](#what-is-in-the-closure)). `lock-audit` fails
+     on it.
+   - **Not in the lock, but in the `docs` extra**, the only other extra the
+     `security` job installs: it is not in the image, but it reaches everyone
+     who installs `nlqueries-core[docs]` with pip.
+   - **Neither:** a tool installed only inside the job, such as pip-audit
+     itself. It does not ship.
+3. **If a fixed version exists, move to it.** For a package in the lock,
+   regenerate the lock (see [Regenerating](#regenerating)). For one in the
+   `docs` extra, raise its floor in `pyproject.toml`. For a tool the job
+   installs for itself, upgrade it in the job. The `security` job already
+   upgrades setuptools in its own environment before auditing; setuptools is
+   in the lock too, so a setuptools advisory also needs the lock regenerated.
+   Then release from the commit that carries the fix.
 4. **If no fixed version exists:**
-   - A package that does not ship may be skipped in the `security` job with
-     `pip-audit --ignore-vuln <ID>`. A comment beside it names the package,
-     says why it does not ship, and gives the date; the ignore comes out when a
-     fix is released. Never add an ignore to `lock-audit`.
-   - A package that ships is not ignored to let a release out. Replace or
-     remove the dependency, or hold the release; if it goes out anyway, the
-     release notes say what is affected and what users can do.
+   - A package that ships, from the lock or from the `docs` extra, is not
+     ignored to let a release out. Replace or remove the dependency, or hold
+     the release; if it goes out anyway, the release notes say what is
+     affected and what users can do. A test or lint tool is no exception:
+     the image carries it.
+   - A tool installed only inside the job may be skipped in the `security`
+     job with `pip-audit --ignore-vuln <ID>`. A comment beside it names the
+     package, says why it does not ship, and gives the date; the ignore comes
+     out when a fix is released. Never add an ignore to `lock-audit`.
 
 Either way, an ignore is the maintainer's decision, made in the pull request
 that adds it.
