@@ -71,6 +71,22 @@ def test_anthropic_override_passes_api_key_to_sdk() -> None:
     assert async_cls.call_args.kwargs["api_key"] == "sk-ant-tenant"
 
 
+def test_an_unset_key_reaches_the_sdk_as_none_not_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """From anthropic 2.0 an empty key is sent as an empty bearer token, which
+    the HTTP library refuses: "Connection error." in place of the SDK's own
+    message that no key is set."""
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+    with (
+        patch("nlqueries.llm.anthropic_client.anthropic.Anthropic") as sync_cls,
+        patch("nlqueries.llm.anthropic_client.anthropic.AsyncAnthropic") as async_cls,
+    ):
+        AnthropicClient(model="claude-x")
+    assert sync_cls.call_args.kwargs["api_key"] is None
+    assert async_cls.call_args.kwargs["api_key"] is None
+
+
 def test_override_is_task_local() -> None:
     """Concurrent tasks must not see each other's override (contextvar isolation)."""
 
