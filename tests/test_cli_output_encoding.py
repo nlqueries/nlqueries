@@ -84,3 +84,14 @@ def test_a_json_payload_survives_any_output_encoding() -> None:
     assert result.output.isascii()
     payload = json.loads(result.output)
     assert detail in [check.get("detail") for check in payload["checks"]]
+
+
+def test_a_diagnostic_on_stderr_keeps_what_it_cannot_encode_recoverable(tmp_path: Path) -> None:
+    """stderr is escaped, not replaced: a database's message with a character
+    the code page lacks should still say what it said."""
+    ran = _run_cli(tmp_path, "connect", "sqlite", "--database", str(tmp_path / "missing.db"))
+
+    assert ran.returncode != 0
+    assert b"Connection failed" in ran.stderr
+    assert b"\\u2717" in ran.stderr  # the cross mark, escaped
+    assert b"? Connection failed" not in ran.stderr

@@ -642,14 +642,19 @@ def _replace_what_output_cannot_encode() -> None:
     raised UnicodeEncodeError mid-command: `connect` printed its check mark
     after testing the connection and before saving it, so the connector was
     lost. The text is still written; only the characters it cannot carry change.
+
+    stdout, read by people, gets a plain replacement. stderr keeps Python's own
+    escapes (``\\u2717``), set explicitly so an encoding named strict
+    cannot take them away: a diagnostic should stay recoverable, and a ``?``
+    in a database's error message loses what it said.
     """
-    for stream in (sys.stdout, sys.stderr):
+    for stream, errors in ((sys.stdout, "replace"), (sys.stderr, "backslashreplace")):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             # A stream that cannot be reconfigured (a test's capture, say)
             # keeps what it has.
             with contextlib.suppress(Exception):
-                reconfigure(errors="replace")
+                reconfigure(errors=errors)
 
 
 # ---------------------------------------------------------------------------
