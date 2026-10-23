@@ -277,27 +277,44 @@ class TestHealthCommand:
 
 
 class TestConnectSaysWhereAPasswordWentOnlyWhenThereIsOne:
-    def _connect(self, tmp_path: Path, *extra: str) -> str:
-        import sqlite3
+    """The note says a password was written to the config file; it is true only
+    when the stored URL holds one, with the keyring unavailable."""
 
-        db = tmp_path / "shop.db"
-        sqlite3.connect(db).close()
+    def _connect(self, *args: str) -> str:
+        class _Reachable:
+            def connect(self, credentials: dict[str, Any]) -> None:
+                pass
+
+            def connection_problem(self) -> None:
+                return None
+
         with (
             patch("nlqueries.cli.main._save_connector"),
             patch("nlqueries.cli.main._save_password", return_value=False),
+            patch("nlqueries.cli.main.connector_class_for", return_value=_Reachable),
         ):
-            result = CliRunner().invoke(
-                cli, ["connect", "sqlite", "--database", str(db), "--alias", "shop", *extra]
-            )
+            result = CliRunner().invoke(cli, ["connect", *args])
         assert result.exit_code == 0, result.output
         return " ".join(result.output.split())
 
     def test_a_database_without_a_password_says_nothing_about_one(self, tmp_path: Path) -> None:
         """SQLite has no password; the note claimed one was stored in the file."""
-        assert "password stored in the config file" not in self._connect(tmp_path)
+        output = self._connect("sqlite", "--database", str(tmp_path / "shop.db"))
+        assert "password stored in the config file" not in output
 
-    def test_a_password_the_keyring_could_not_take_is_still_mentioned(self, tmp_path: Path) -> None:
-        output = self._connect(tmp_path, "--password", "s3cret")
+    def test_a_password_its_url_has_no_place_for_is_not_said_to_be_stored(
+        self, tmp_path: Path
+    ) -> None:
+        """Given to SQLite anyway, it is dropped from the URL, not stored."""
+        output = self._connect(
+            "sqlite", "--database", str(tmp_path / "shop.db"), "--password", "s3cret"
+        )
+        assert "password stored in the config file" not in output
+
+    def test_a_password_the_keyring_could_not_take_is_still_mentioned(self) -> None:
+        output = self._connect(
+            "postgres", "--database", "shop", "--user", "alice", "--password", "s3cret"
+        )
         assert "password stored in the config file" in output
 
 

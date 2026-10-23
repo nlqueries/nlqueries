@@ -335,9 +335,10 @@ def test_tasklist_has_a_full_path_without_a_systemroot(monkeypatch, systemroot) 
     assert ntpath.isabs(embed_server._tasklist_path())
 
 
-def test_a_tasklist_that_cannot_run_is_not_a_traceback(monkeypatch) -> None:
+def test_a_tasklist_that_cannot_run_is_not_a_traceback(monkeypatch, caplog) -> None:
     """Run by its full path, a wrong SYSTEMROOT names a file that is not there.
-    Unknown is read as running, as for a timeout: never as gone."""
+    Unknown is read as running, as for a timeout: never as gone. Unlike a
+    timeout it is not transient, so it is said, with the path tried."""
     from nlqueries.embeddings import embed_server
 
     def run(args, **kwargs):
@@ -346,7 +347,30 @@ def test_a_tasklist_that_cannot_run_is_not_a_traceback(monkeypatch) -> None:
     monkeypatch.setattr(embed_server.sys, "platform", "win32")
     monkeypatch.setattr(embed_server.subprocess, "run", run)
 
-    assert embed_server.is_pid_alive(4242) is True
+    with caplog.at_level(logging.WARNING, logger="nlqueries.embeddings.embed_server"):
+        assert embed_server.is_pid_alive(4242) is True
+
+    (line,) = [r.getMessage() for r in caplog.records if "Could not run" in r.getMessage()]
+    assert embed_server._TASKLIST in line
+    assert "4242" in line and "cannot find the file" in line
+
+
+def test_a_slow_tasklist_is_not_a_warning(monkeypatch, caplog) -> None:
+    """A timeout is transient and asked again; it stays quiet."""
+    import subprocess
+
+    from nlqueries.embeddings import embed_server
+
+    def run(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, 5)
+
+    monkeypatch.setattr(embed_server.sys, "platform", "win32")
+    monkeypatch.setattr(embed_server.subprocess, "run", run)
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.embeddings.embed_server"):
+        assert embed_server.is_pid_alive(4242) is True
+
+    assert not [r for r in caplog.records if "Could not run" in r.getMessage()]
 
 
 def test_tasklist_is_run_by_its_full_path(monkeypatch) -> None:

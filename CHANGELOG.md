@@ -838,15 +838,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the warning that the model was being loaded in-process quoted the message
   written for the required case: "EMBED_SERVER_REQUIRED is set, so this call
   will not load a model in-process".
-- **`nlqueries connect` mentions where a password went only when one was
-  given.** Connecting SQLite, or any database without a password, printed that
-  the password had been stored in the config file.
+- **`nlqueries connect` says a password was stored in the config file only
+  when it was.** Connecting SQLite, or any database without a password, printed
+  that note, and so did a password given to SQLite, DuckDB or BigQuery, whose
+  URL has no place for one and drops it.
 - **A BigQuery dataset location that is not the shape of one is logged.** It
   was replaced by the default region without a word, and the history query then
   read another region's jobs, usually none.
 - **`embed-server start`, `stop` and `status` on Windows no longer fail with a
   traceback when `tasklist` cannot be run.** A process whose state cannot be
-  read is taken to be running, as when `tasklist` times out.
+  read is taken to be running, as when `tasklist` times out, and the failure
+  is logged with the path tried, as it does not pass the way a timeout does.
 - **Every store names an agent the same way, so two agents no longer share
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be
