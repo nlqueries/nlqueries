@@ -624,6 +624,21 @@ def _check_config() -> _CheckResult:
     return _CheckResult("Config", "ok", ", ".join(notes))
 
 
+def _carries_password(url: str) -> bool:
+    """Whether *url*, as it is written to the connectors file, holds a password.
+
+    Not whether one was given: the URL of a file-based database or of BigQuery
+    has no place for one, so a given password is dropped rather than stored. A
+    URL that does not parse is taken to hold one, so the note errs towards
+    saying so."""
+    try:
+        from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+        return bool(make_url(url).password)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _print_json(text: str) -> None:
     """Print a JSON payload in ASCII, non-ASCII escaped as ``\\uXXXX``.
 
@@ -1138,7 +1153,7 @@ def connect(
         console.print(
             "  [green]✓ Password stored in OS keychain[/green] (not written to the config file)."
         )
-    elif password:
+    elif _carries_password(stored_url):
         console.print(
             "  [yellow]Note:[/yellow] keyring unavailable — password stored in the config "
             "file. It is restricted to your account; on a shared host, prefer a "

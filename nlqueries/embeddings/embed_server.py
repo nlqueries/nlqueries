@@ -135,13 +135,22 @@ def is_pid_alive(pid: int) -> bool:
                 text=True,
                 timeout=5,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
             # Unknown, so assumed running: guessing "gone" would let a caller
             # remove the PID file of a live daemon. A slow tasklist is
             # transient, and `embed-server stop` asks again on its next poll.
-            # OSError too: run by its full path, a SYSTEMROOT that is wrong
-            # names a tasklist that is not there, and that is no traceback
-            # for `embed-server start`, `stop` or `status` to show either.
+            return True
+        except OSError as exc:
+            # Unknown in the same way, but not transient: run by its full path,
+            # a SYSTEMROOT that is wrong names a tasklist that is not there, and
+            # every call fails -- `start` then says "already running" for ever.
+            # Said, so the cause is in the log rather than nowhere.
+            logger.warning(
+                "Could not run %s to check process %d (%s); treating it as running",
+                _TASKLIST,
+                pid,
+                exc,
+            )
             return True
         return str(pid) in result.stdout
     try:
