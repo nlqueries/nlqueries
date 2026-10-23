@@ -81,7 +81,7 @@ def _invoke_process_history(
         patch("nlqueries.cli.main.err_console", MagicMock()),
         patch("nlqueries.cli.main._require_connector", return_value=_FAKE_CFG),
         patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
-        patch("nlqueries.cli.main._load_password", return_value=None),
+        patch("nlqueries.connectors.loader._load_password", return_value=None),
         # The registry itself, not a name in `cli.main`: the CLI resolves through
         # `connector_class_for`, which reads this mapping in its own module, so
         # rebinding the name the CLI imported would no longer be seen.
@@ -276,6 +276,31 @@ class TestHealthCommand:
         assert captured == ["dvdrental"]
 
 
+class TestConnectSaysWhereAPasswordWentOnlyWhenThereIsOne:
+    def _connect(self, tmp_path: Path, *extra: str) -> str:
+        import sqlite3
+
+        db = tmp_path / "shop.db"
+        sqlite3.connect(db).close()
+        with (
+            patch("nlqueries.cli.main._save_connector"),
+            patch("nlqueries.cli.main._save_password", return_value=False),
+        ):
+            result = CliRunner().invoke(
+                cli, ["connect", "sqlite", "--database", str(db), "--alias", "shop", *extra]
+            )
+        assert result.exit_code == 0, result.output
+        return " ".join(result.output.split())
+
+    def test_a_database_without_a_password_says_nothing_about_one(self, tmp_path: Path) -> None:
+        """SQLite has no password; the note claimed one was stored in the file."""
+        assert "password stored in the config file" not in self._connect(tmp_path)
+
+    def test_a_password_the_keyring_could_not_take_is_still_mentioned(self, tmp_path: Path) -> None:
+        output = self._connect(tmp_path, "--password", "s3cret")
+        assert "password stored in the config file" in output
+
+
 class TestProcessHistoryWhenHistoryIsUnavailable:
     def test_reports_the_reason_on_stderr_intact_and_exits_non_zero(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -306,7 +331,7 @@ class TestProcessHistoryWhenHistoryIsUnavailable:
             patch("nlqueries.cli.main.err_console", err),
             patch("nlqueries.cli.main._require_connector", return_value=_FAKE_CFG),
             patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
-            patch("nlqueries.cli.main._load_password", return_value=None),
+            patch("nlqueries.connectors.loader._load_password", return_value=None),
             patch.dict(
                 "nlqueries.connectors.CONNECTOR_REGISTRY",
                 {"postgres": lambda: _StubConnector()},

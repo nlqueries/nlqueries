@@ -476,8 +476,34 @@ def _written_name(node: exp.Func, dialect: str) -> str:
         rendered = node.sql(dialect=_sqlglot_dialect(dialect))
     except Exception:  # noqa: BLE001 - "" is unreadable, which refuses
         return ""
-    name = rendered.partition("(")[0].strip()
-    return name if _PLAIN_NAME.fullmatch(name) else node.sql_name()
+    name, paren, rest = rendered.partition("(")
+    name = name.strip()
+    if _PLAIN_NAME.fullmatch(name) and (not paren or _closes_at_the_end(rest)):
+        return name
+    return node.sql_name()
+
+
+def _closes_at_the_end(after_open: str) -> bool:
+    """Whether the bracket just opened closes at the very end of the rendering.
+
+    ``LENGTH(a) @> b``, an operator whose left operand is a call, also starts
+    with a name and a bracket: that bracket closes before the end, and the name
+    is the operand's. Quoted text is skipped, so a bracket inside a string or a
+    quoted name does not count."""
+    depth, quote = 1, ""
+    for i, char in enumerate(after_open):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"`":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return not after_open[i + 1 :].strip()
+    return False
 
 
 def _qualified_non_calls(tree: exp.Expression) -> list[str]:

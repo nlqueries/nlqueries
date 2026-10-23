@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging as _logging
 import os
 import sys
 import time
@@ -40,7 +39,10 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 from nlqueries.config import CONNECTORS_FILE, KB_PATH, QDRANT_URL, STATE_DIR
 from nlqueries.connectors import connector_class_for
 from nlqueries.connectors.base import table_sample_sql
-from nlqueries.connectors.loader import credentials_for
+
+# `_get_full_url` is the loader's, not a copy: the two had to agree, on
+# logging a URL failure by type only among other things.
+from nlqueries.connectors.loader import _get_full_url, credentials_for
 from nlqueries.state_files import agent_storage_id, private_dir, restrict, write_private
 
 console = Console()
@@ -149,47 +151,6 @@ def _save_password(connector_id: str, password: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
-
-
-def _load_password(connector_id: str, cfg: dict[str, Any]) -> str | None:
-    """Return the connector password from the OS keychain or the stored URL (legacy)."""
-    if cfg.get("password_storage") == "keychain":
-        try:
-            import keyring as _kr  # noqa: PLC0415
-
-            return _kr.get_password(_KEYRING_SERVICE, connector_id)
-        except Exception:  # noqa: BLE001
-            return None
-    # Legacy path: password embedded in the SQLAlchemy URL.
-    try:
-        from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
-
-        return _mu(cfg["url"]).password
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _get_full_url(connector_id: str, cfg: dict[str, Any]) -> str:
-    """Return the connection URL with the password injected from the keychain when needed."""
-    url: str = cfg["url"]
-    if cfg.get("password_storage") == "keychain":
-        pwd = _load_password(connector_id, cfg)
-        if pwd is not None:
-            try:
-                from sqlalchemy.engine import make_url as _mu  # noqa: PLC0415
-
-                url = _mu(url).set(password=pwd).render_as_string(hide_password=False)
-            except Exception as exc:  # noqa: BLE001
-                # The connection then goes out without the password, and fails
-                # as an authentication error that says nothing about why. Named
-                # by type only: SQLAlchemy 2.0 quotes the URL it could not
-                # parse, password and all.
-                _logging.getLogger(__name__).warning(
-                    "Could not add the stored password for %s to its URL (%s)",
-                    connector_id,
-                    type(exc).__name__,
-                )
-    return url
 
 
 def _session_path(agent_id: str) -> Path:
@@ -1124,7 +1085,7 @@ def connect(
         console.print(
             "  [green]✓ Password stored in OS keychain[/green] (not written to the config file)."
         )
-    else:
+    elif password:
         console.print(
             "  [yellow]Note:[/yellow] keyring unavailable — password stored in the config "
             "file. It is restricted to your account; on a shared host, prefer a "

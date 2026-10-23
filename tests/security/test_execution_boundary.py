@@ -138,7 +138,7 @@ def _statements_the_cli_executed(sql: str, *, sql_is_valid: bool) -> list[str]:
         patch.dict(
             "nlqueries.connectors.CONNECTOR_REGISTRY", {"postgres": _Connector}, clear=False
         ),
-        patch("nlqueries.cli.main._load_password", return_value=""),
+        patch("nlqueries.connectors.loader._load_password", return_value=""),
     ):
         # `--no-session`: the session branch runs before the connector is built
         # and `_save_turn` writes through `STATE_DIR`, which is bound at import
