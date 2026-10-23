@@ -107,24 +107,38 @@ depends on which job failed and where the flagged package ends up.
      pull a shared dependency higher, and upgrades setuptools itself, so
      first confirm the flagged version is one `pip install -e ".[dev,docs]"`
      alone produces.
-   - **Not in the lock, but required by `nlqueries-core`:** through the `docs`
-     extra, or as a transitive dependency that a newer release of a runtime
-     dependency pulls in when the floors are resolved afresh. In the job's
-     environment, `pip show <package>` lists what requires it on its
-     `Required-by` line; follow that up to `nlqueries-core`. It reaches
-     everyone who installs the package with pip.
-   - **Required by nothing in `nlqueries-core`'s tree:** a tool the job
-     installs for itself, such as pip-audit and its own dependencies. Only
-     this does not ship, and it is shown positively, by that `Required-by`
-     chain, not assumed because the package is missing from the lock.
+   - **Not in the lock, but required by `nlqueries-core`:** either listed in
+     an extra, or a transitive dependency that a newer release of a
+     dependency pulls in when the floors are resolved afresh. Check extras
+     against `[project.optional-dependencies]` in `pyproject.toml`, not with
+     pip: `pip show` leaves a requirement made only through an extra off its
+     `Required-by` line, so `pip show pdfplumber` names nothing although the
+     `docs` extra requires it. For the transitive case, `pip show <package>`
+     in the job's environment lists what requires it; follow that chain up
+     until it reaches `nlqueries-core` or a package listed in an extra. A
+     package that reaches `nlqueries-core`, or the `docs` extra, reaches
+     everyone who installs that with pip. One whose chain ends only in the
+     `dev` extra reaches developers who install `nlqueries-core[dev]`, not
+     the image or a plain install, and is handled like a tool the job
+     installs for itself.
+   - **Required by nothing in `nlqueries-core`'s tree:** listed in no extra,
+     with a `Required-by` chain that reaches neither `nlqueries-core` nor an
+     extra's package: a tool the job installs for itself, such as pip-audit
+     and its own dependencies. Only this, and the `dev`-only case above, do
+     not ship, and that is shown by both checks, not assumed because the
+     package is missing from the lock.
 3. **If a fixed version exists and can be reached, move to it.** If the
    lock's pin is affected, regenerate the lock (see
    [Regenerating](#regenerating)). If only a fresh resolution is affected,
    raise the floor in `pyproject.toml` past the fix, or, when the advisory
    affects only releases newer than the lock's pin, cap it below the affected
-   range; either edit means regenerating the lock as well, as every change to
-   `pyproject.toml` does, or the image ships a pin the declared range no
-   longer allows. For a tool the job installs for itself, upgrade it in the
+   range. A transitive dependency has no entry of its own to change: raise
+   the floor of the dependency that pulls it in, to a release that requires a
+   fixed version or no longer requires it at all, or add a constraint for it
+   to `dependencies`. The second makes it a direct dependency of the
+   published package, so it is a choice to make knowingly. Any of these edits
+   means regenerating the lock as well, as every change to `pyproject.toml`
+   does, or the image ships a pin the declared range no longer allows. For a tool the job installs for itself, upgrade it in the
    job; setuptools, which `pyproject.toml` does not list, is one. The
    `security` job already upgrades setuptools in its own environment before
    auditing; setuptools is in the lock too, so a setuptools advisory also
@@ -143,7 +157,8 @@ depends on which job failed and where the flagged package ends up.
      nlqueries uses the package, a time-limited ignore, in whichever job
      flags it, added in a pull request that says why and until when, with the
      release notes saying what is affected and what users can do. A test or
-     lint tool is no exception to the first rule: the image carries it.
+     lint tool in the lock is no exception to the first rule: the image
+     carries it.
      Outside that exception, nothing is ignored in `lock-audit`.
 
 Either way, an ignore is the maintainer's decision, made in the pull request
