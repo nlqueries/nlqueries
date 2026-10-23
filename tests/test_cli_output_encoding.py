@@ -122,7 +122,8 @@ def test_asks_sql_chunk_is_escaped_where_scripts_read_it() -> None:
         result = CliRunner().invoke(cli, ["ask", "shop", "accounts by year"])
 
     assert result.exit_code == 0, result.output
-    chunk = result.output.strip().rsplit("Cuentas por año. ", 1)[1]
+    # As a script takes it: the last line, though the prose had no line break.
+    *prose, chunk = result.output.strip().splitlines()
     assert chunk.isascii()
     assert json.loads(chunk) == {"type": "sql", "sql": sql}
-    assert "Cuentas por año." in result.output  # prose as written
+    assert "Cuentas por año." in "\n".join(prose)  # prose as written
