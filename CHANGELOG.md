@@ -828,6 +828,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A missing Anthropic key is reported as missing, not as a connection
+  error.** With `ANTHROPIC_API_KEY` unset and anthropic 2.0 or later (which
+  `pip install nlqueries-core` resolves; the lock pins 1.x), every question
+  failed with "Connection error.": the empty key was sent as an empty bearer
+  token, which the HTTP library refuses before any request is made. The SDK
+  now receives no key, and says that none is set.
 - **`nlqueries health` reaches the databases it checks.** Its `SELECT 1` probe
   ran without permission to execute, which every connector requires, so each
   registered database was reported as "connection failed — is the database
