@@ -6,6 +6,7 @@ asserted about storage is read back from the store itself.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import math
@@ -130,7 +131,13 @@ def test_a_sealed_value_opens_with_its_key_and_shows_nothing(monkeypatch) -> Non
     sealed = at_rest.seal(ANSWER, at_rest.CACHE_ANSWER)
 
     assert sealed.startswith(at_rest.MARKER)
-    assert "Acme" not in sealed and "42" not in sealed
+    # Not "42" in the text: random base64 of this length holds those two
+    # characters about one time in fifty. The plaintext, and the name in it,
+    # are looked for in the decoded bytes too, where a mere encoding would
+    # leave them; by chance they turn up there far less than once in a million.
+    payload = base64.urlsafe_b64decode(sealed[len(at_rest.MARKER) :])
+    assert ANSWER not in sealed and "Acme" not in sealed
+    assert ANSWER.encode() not in payload and b"Acme" not in payload
     assert at_rest.seal(ANSWER, at_rest.CACHE_ANSWER) != sealed  # a fresh nonce each time
     assert at_rest.unseal(sealed, at_rest.CACHE_ANSWER) == ANSWER
 
