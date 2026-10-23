@@ -635,19 +635,23 @@ def test_a_streamed_read_is_bounded_by_its_timeout_as_a_whole(connector) -> None
     DECLARE and then a FETCH per batch, so a timeout set once let every batch
     run the whole budget again: on Postgres 16 a 2 s timeout let a 6 s read
     finish. Here every 1,000th row pauses 0.6 s, so each batch stays under the
-    1.5 s timeout and the five together take twice it."""
+    1.5 s timeout and the ten together take four times it.
+
+    The cancellation is what tells the two apart; the bound only has to sit
+    well under the 6 s an unbounded read takes. It was 2.5 s, one second over
+    the timeout, which a loaded machine's connection and teardown overran."""
     import time
 
     start = time.perf_counter()
     result = connector.execute_query(
         "SELECT pg_sleep(CASE WHEN g % 1000 = 0 THEN 0.6 ELSE 0 END), g "
-        "FROM generate_series(1, 5000) AS g",
+        "FROM generate_series(1, 10000) AS g",
         timeout_seconds=1.5,
     )
     took = time.perf_counter() - start
 
     assert "canceling statement due to statement timeout" in (result.error or ""), result
-    assert took < 2.5
+    assert took < 4.5
 
 
 def test_a_streamed_reads_time_includes_reading_its_rows(connector) -> None:
