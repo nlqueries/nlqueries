@@ -101,8 +101,12 @@ depends on which job failed and where the flagged package ends up.
      [What is in the closure](#what-is-in-the-closure)). `lock-audit` fails
      on it.
    - **In the lock, but its pin is outside the affected range:** the image is
-     not affected. Only the `security` job's fresh resolution reached a newer,
-     affected release, and that is what pip users installing today would get.
+     not affected. Only the `security` job's environment holds an affected
+     release. That is what pip users installing today would get only if the
+     declared floors resolve to it: the job also installs pip-audit, which can
+     pull a shared dependency higher, and upgrades setuptools itself, so
+     first confirm the flagged version is one `pip install -e ".[dev,docs]"`
+     alone produces.
    - **Not in the lock, but required by `nlqueries-core`:** through the `docs`
      extra, or as a transitive dependency that a newer release of a runtime
      dependency pulls in when the floors are resolved afresh. In the job's
@@ -118,7 +122,10 @@ depends on which job failed and where the flagged package ends up.
    [Regenerating](#regenerating)). If only a fresh resolution is affected,
    raise the floor in `pyproject.toml` past the fix, or, when the advisory
    affects only releases newer than the lock's pin, cap it below the affected
-   range. For a tool the job installs for itself, upgrade it in the job. The
+   range; either edit means regenerating the lock as well, as every change to
+   `pyproject.toml` does, or the image ships a pin the declared range no
+   longer allows. For a tool the job installs for itself, upgrade it in the
+   job; setuptools, which `pyproject.toml` does not list, is one. The
    `security` job already upgrades setuptools in its own environment before
    auditing; setuptools is in the lock too, so a setuptools advisory also
    needs the lock regenerated. A fix that only exists beyond a cap in
