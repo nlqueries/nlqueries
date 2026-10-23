@@ -828,6 +828,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **`nlqueries update-password` fails when it cannot store the password.**
+  Without a keyring it said the password could not be stored, and exited 0,
+  so a script checking its status took the password for rotated. It now
+  exits 1. `connect` given only `--password-env` for SQLite, DuckDB or
+  BigQuery says the variable was never read, rather than that "the one
+  given" was not used. The help of `extract-schema`, `kb-stats` and the
+  document commands now describes what they do: row counts as the connector
+  reports them, a per-table breakdown, and the collection name as stored.
 - **`nlqueries health` reaches the databases it checks.** Its `SELECT 1` probe
   ran without permission to execute, which every connector requires, so each
   registered database was reported as "connection failed — is the database
