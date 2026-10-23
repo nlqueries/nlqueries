@@ -828,6 +828,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A missing Anthropic key is reported as missing, not as a connection
+  error.** With `ANTHROPIC_API_KEY` unset and anthropic 2.0 or later (which
+  `pip install nlqueries-core` resolves; the lock pins 1.x), every question
+  failed with "Connection error.": the empty key was sent as an empty bearer
+  token, which the HTTP library refuses before any request is made. The SDK
+  now receives no key, and says that none is set.
 - **`nlqueries update-password` fails when it cannot store the password.**
   Without a keyring it said the password could not be stored, and exited 0,
   so a script checking its status took the password for rotated. It now
