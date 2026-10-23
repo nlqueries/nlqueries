@@ -1166,10 +1166,13 @@ def connect(
             "  [green]✓ Password stored in OS keychain[/green] (not written to the config file)."
         )
     elif password_unused:
-        console.print(
-            f"  [yellow]Note:[/yellow] {db_type_l} takes no password, so the one given "
-            "was not stored or used."
+        # A --password-env alone names a variable that is never read, set or not.
+        unused = (
+            "the one given was not stored or used"
+            if password
+            else "the variable named by --password-env was never read"
         )
+        console.print(f"  [yellow]Note:[/yellow] {db_type_l} takes no password, so {unused}.")
     elif _carries_password(stored_url):
         console.print(
             "  [yellow]Note:[/yellow] keyring unavailable — password stored in the config "
@@ -1285,11 +1288,14 @@ def update_password(connector_id: str, password_env: str | None) -> None:
             f"for [cyan]{connector_id}[/cyan]."
         )
     else:
-        console.print(
+        # Nothing was stored, so the command did not do what it was asked: a
+        # script checking its status took this for a rotated password.
+        err_console.print(
             "  [yellow]⚠ keyring unavailable — cannot store password securely.[/yellow]\n"
             "  Set the password manually in the connector URL inside "
             f"[dim]{CONNECTORS_FILE}[/dim]."
         )
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1473,11 +1479,12 @@ def extract_schema(connector_id: str) -> None:
     CONNECTOR_ID  the name used when you ran 'nlqueries connect'
                   (e.g. postgres:localhost:mydb)
 
-    \b
-    Prints:
-      - Number of tables / views discovered
-      - Total column count
-      - Per-table row counts (via COUNT(*), sampled up to 50 tables)
+    Prints the database, the table and column counts, the extraction time,
+    and the first 20 tables with each one's schema, column count and row count.
+    Row counts are what the connector reports: a catalogue figure on most
+    databases (an estimate on PostgreSQL and DuckDB), an exact count on
+    SQLite, and none from the generic SQLAlchemy connector, which MySQL and
+    other databases reached through SQLAlchemy use.
     """
     connector_id = _resolve_alias(connector_id)
     cfg = _require_connector(connector_id)
@@ -1689,7 +1696,9 @@ def doc_ingest(source_id: str, file_path: str, allow_empty: bool) -> None:
     \b
     The chunks are embedded and stored in the Qdrant collection
     doc_<SOURCE_ID>_chunks, replacing what an earlier run stored for the same
-    SOURCE_ID. Ask about them with doc-ask.
+    SOURCE_ID. In that name, any character of SOURCE_ID other than a letter,
+    digit, _, - or . becomes _; the command prints the name, and the doc-ask
+    line to use with it.
 
     \b
     Example:
@@ -2750,7 +2759,8 @@ def doc_ask(collection: str, question: str, source_id: str | None, top_k: int) -
     """Ask a question against an ingested document collection.
 
     \b
-    COLLECTION  Qdrant collection name (convention: doc_{source_id}_chunks)
+    COLLECTION  Qdrant collection name, as the ingest command printed it
+                (doc_<SOURCE_ID>_chunks)
     QUESTION    The natural-language question, in quotes
 
     \b
@@ -2841,8 +2851,9 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
 
     \b
     The Notion API token is read from the NOTION_API_TOKEN environment variable.
-    The chunks are stored in doc_<SOURCE_ID>_chunks, replacing the earlier copy;
-    with --since and an unchanged page, the stored copy is left as it is.
+    The chunks are stored in doc_<SOURCE_ID>_chunks (named as doc-ingest names
+    it, and printed), replacing the earlier copy; with --since and an unchanged
+    page, the stored copy is left as it is.
 
     \b
     Examples:
@@ -3295,10 +3306,11 @@ def doc_sync_confluence(
 
     \b
     The Confluence API token is read from the CONFLUENCE_API_TOKEN environment variable.
-    The chunks are stored in doc_<SOURCE_ID>_chunks, replacing the earlier copy.
-    With --since, one search checks whether any page changed; if one did, the
-    space is re-read in full (a partial read would replace the whole), and if
-    none did, the stored copy is left as it is.
+    The chunks are stored in doc_<SOURCE_ID>_chunks (named as doc-ingest names
+    it, and printed), replacing the earlier copy. With --since, one search
+    checks whether any page changed; if one did, the space is re-read in full
+    (a partial read would replace the whole), and if none did, the stored copy
+    is left as it is.
 
     \b
     Examples:
@@ -3928,7 +3940,7 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
     else:
         console.print(
             f"  [dim]Run [bold]nlqueries kb-stats {agent_id} --verbose[/bold]"
-            " for per-table and per-column breakdowns.[/dim]"
+            " for a per-table breakdown.[/dim]"
         )
 
 
