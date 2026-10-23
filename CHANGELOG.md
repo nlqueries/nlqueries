@@ -841,8 +841,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **`nlqueries connect` says a password was stored in the config file only
   when it was.** Connecting SQLite, or any database without a password, printed
   that note, and so did a password given to SQLite, DuckDB or BigQuery, whose
-  URL has no place for one and drops it. Such a password is now said to be
-  unused, and is not kept in the OS keychain either, where nothing read it.
+  URL has no place for one and drops it. Such a password, or a `--password-env`
+  variable, which those types never read, is now said to be unused, and is not
+  kept in the OS keychain either, where nothing read it.
 - **A BigQuery dataset location that is not the shape of one is logged.** It
   was replaced by the default region without a word, and the history query then
   read another region's jobs, usually none.
