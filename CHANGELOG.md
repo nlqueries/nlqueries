@@ -852,6 +852,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   page, which has no check mark, and the first one raised `UnicodeEncodeError`.
   `connect` prints one after testing the connection and before saving it, so
   the connector was lost. Such characters are now written as a replacement.
+  `--json` output is written in ASCII, with non-ASCII escaped (`ë`), so a
+  payload carries the same data whatever the output's encoding.
 - **Every store names an agent the same way, so two agents no longer share
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be

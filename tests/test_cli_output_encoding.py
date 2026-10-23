@@ -58,3 +58,29 @@ def test_connect_with_output_in_a_code_page_without_its_marks_saves_the_connecto
     assert "alias: shop" in connectors.read_text(encoding="utf-8")
     # Written, with what cp1252 lacks replaced rather than dropped.
     assert b"Connection successful" in ran.stdout
+
+
+def test_a_json_payload_survives_any_output_encoding() -> None:
+    """Replacement suits the text people read; a payload a program parses must
+    not quietly hold `?`. It is written in ASCII, escaped, so nothing is lost."""
+    import json
+    from unittest.mock import patch
+
+    from click.testing import CliRunner
+    from nlqueries.cli.main import _CheckResult, cli
+
+    detail = "Zoë ✓ 東京"
+    ok = _CheckResult("Qdrant", "ok", detail)
+    with (
+        patch("nlqueries.cli.main._check_qdrant", return_value=ok),
+        patch("nlqueries.cli.main._check_connectors", return_value=[]),
+        patch("nlqueries.cli.main._check_llm", return_value=ok),
+        patch("nlqueries.cli.main._check_embedding", return_value=ok),
+        patch("nlqueries.cli.main._check_config", return_value=ok),
+    ):
+        result = CliRunner().invoke(cli, ["health", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.isascii()
+    payload = json.loads(result.output)
+    assert detail in [check.get("detail") for check in payload["checks"]]

@@ -624,6 +624,16 @@ def _check_config() -> _CheckResult:
     return _CheckResult("Config", "ok", ", ".join(notes))
 
 
+def _print_json(text: str) -> None:
+    """Print a JSON payload in ASCII, non-ASCII escaped as ``\\uXXXX``.
+
+    A payload is read by a program, so it must survive whatever the output's
+    encoding is. Raw, a value cp1252 lacks would be written as a replacement
+    (see :func:`_replace_what_output_cannot_encode`): valid JSON holding the
+    wrong data. Escaped, it is the same data in any encoding."""
+    console.print_json(text, ensure_ascii=True)
+
+
 def _replace_what_output_cannot_encode() -> None:
     """Write a character the output's encoding lacks as a replacement, not an error.
 
@@ -2560,7 +2570,7 @@ def verify_oidc_token(discovery_url: str, client_id: str, id_token: str) -> None
         "email_verified": claims.email_verified,
         "raw": claims.raw,
     }
-    console.print_json(_json.dumps(output, default=str))
+    _print_json(_json.dumps(output, default=str))
     console.print("[bold green]✓ Token verified successfully.[/bold green]")
 
 
@@ -3013,7 +3023,7 @@ def query(
             output["provenance"] = result.provenance.to_dict()
         if paraphrase_result is not None:
             output["paraphrase"] = paraphrase_result.to_dict()
-        console.print_json(json.dumps(output, default=str))
+        _print_json(json.dumps(output, default=str))
     else:
         if result.resolved_question and result.resolved_question != question:
             console.print(f"[dim]Resolved   : {result.resolved_question}[/dim]")
@@ -3137,7 +3147,7 @@ def eval_cmd(
     failed = len(outcomes) - passed
 
     if output_json:
-        console.print_json(
+        _print_json(
             json.dumps(
                 {
                     "agent_id": agent_id,
@@ -3548,7 +3558,7 @@ def health(connector_filter: str | None, verbose: bool, output_json: bool) -> No
             ],
             "healthy": not any_fail,
         }
-        console.print_json(_json.dumps(payload))
+        _print_json(_json.dumps(payload))
     else:
         _STATUS_ICON = {
             "ok": "[bold green][OK]  [/bold green]",
@@ -3710,7 +3720,7 @@ def kb_stats(agent_id: str, verbose: bool, output_json: bool) -> None:
                 }
                 for td in stats.table_details
             ]
-        console.print_json(_json.dumps(payload))
+        _print_json(_json.dumps(payload))
         return
 
     # Human-readable output
