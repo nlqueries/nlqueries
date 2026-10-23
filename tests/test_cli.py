@@ -318,7 +318,12 @@ class TestConnectSaysWhereAPasswordWentOnlyWhenThereIsOne:
         output = self._connect(
             "sqlite", "--database", str(tmp_path / "shop.db"), "--password-env", "DB_PASS"
         )
-        assert "sqlite takes no password, so the one given was not stored or used" in output
+        assert (
+            "sqlite takes no password, so the variable named by --password-env was never read"
+            in (output)
+        )
+        # Only a variable was named, so there is no password to speak of.
+        assert "the one given" not in output
 
     def test_a_password_its_url_has_no_place_for_is_kept_out_of_the_keychain(
         self, tmp_path: Path
@@ -405,3 +410,24 @@ class TestProcessHistoryWhenHistoryIsUnavailable:
         assert not any("[2]" in str(c) for c in out.print.call_args_list), (
             "the run carried on past the failure"
         )
+
+
+def test_update_password_without_a_keyring_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing is stored without a keyring; it said so and exited 0, so a script
+    checking the status took the password for rotated."""
+    from nlqueries.cli import main as cli_main
+
+    saved: list[Any] = []
+    monkeypatch.setattr(cli_main, "_resolve_alias", lambda connector_id: connector_id)
+    monkeypatch.setattr(cli_main, "_require_connector", lambda connector_id: {"url": "x"})
+    monkeypatch.setattr(cli_main, "_save_password", lambda connector_id, password: False)
+    monkeypatch.setattr(cli_main, "_save_connector", lambda *args: saved.append(args))
+    monkeypatch.setenv("NEW_DB_PASSWORD", "n3w")
+
+    result = CliRunner().invoke(
+        cli, ["update-password", "sales", "--password-env", "NEW_DB_PASSWORD"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "keyring unavailable" in result.output
+    assert saved == []
