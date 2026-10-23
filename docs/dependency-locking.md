@@ -80,6 +80,42 @@ advisory fails the job, and a release with it, until the lock is regenerated
 job audits the resolved `.[dev,docs]` environment, which includes the `docs`
 extra the lock leaves out.
 
+## When an audit fails during a release
+
+`release.yml` runs every `ci.yml` job before it builds anything, so a failed
+audit stops a release before PyPI or Docker Hub receive a file. What to do
+depends on which job failed and where the flagged package ends up.
+
+1. **Read the job log.** It names the package, the installed version and the
+   advisory. If it shows a network error instead of a finding, re-run the job
+   once: `lock-audit` downloads the lock's whole closure to check its hashes,
+   and a dropped connection fails it.
+2. **Find out whether the package ships.**
+   - In `requirements/core.lock`: it is in the image, and `lock-audit` fails.
+   - A dependency in `pyproject.toml`'s `[project.dependencies]`, or in any
+     extra other than `dev` (`docs`, `wiki`, or a database or provider extra
+     such as `mssql` or `openai`): it reaches everyone who installs it with
+     pip, whether or not the lock includes it.
+   - Only in the `dev` extra, or build tooling that `pip install -e` brings in
+     (test, lint and type-check tools, setuptools): it never ships. Only the
+     `security` job sees it.
+3. **If a fixed version exists, move to it.** For a locked package, regenerate
+   the lock (see [Regenerating](#regenerating)). For a package pip resolves,
+   raise its floor in `pyproject.toml`. For build tooling, upgrade it in the
+   `security` job, as that job already does for setuptools. Then release from
+   the commit that carries the fix.
+4. **If no fixed version exists:**
+   - A package that does not ship may be skipped in the `security` job with
+     `pip-audit --ignore-vuln <ID>`. A comment beside it names the package,
+     says why it does not ship, and gives the date; the ignore comes out when a
+     fix is released. Never add an ignore to `lock-audit`.
+   - A package that ships is not ignored to let a release out. Replace or
+     remove the dependency, or hold the release; if it goes out anyway, the
+     release notes say what is affected and what users can do.
+
+Either way, an ignore is the maintainer's decision, made in the pull request
+that adds it.
+
 ## SBOMs
 
 Each release publishes a software bill of materials for both of its artefacts.
