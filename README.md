@@ -16,7 +16,7 @@
 
 - **Website** — [nlqueries.com](https://nlqueries.com)
 - **Documentation** — [nlqueries.com/docs/](https://nlqueries.com/docs/)
-- **Getting started** — [nlqueries.com/docs/getting-started.html](https://nlqueries.com/docs/getting-started.html)
+- **Getting started** — [nlqueries.com/docs/getting-started](https://nlqueries.com/docs/getting-started)
 - **Supported databases** — [nlqueries.com/databases/](https://nlqueries.com/databases/)
 - **PyPI** — [nlqueries-core](https://pypi.org/project/nlqueries-core/)
 - **Docker Hub** — [nlqueries/core](https://hub.docker.com/r/nlqueries/core)
@@ -42,7 +42,7 @@
 | **MCP server** | Query execution and schema/knowledge lookup exposed as MCP tools for Claude, Cursor, etc. |
 | **CLI** | `nlqueries` (or the shorter `nlq` alias) — connect, build, query, and inspect from your terminal |
 
-See [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture.html)) for how these pieces fit together.
+See [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture)) for how these pieces fit together.
 
 ---
 
@@ -144,7 +144,7 @@ nlqueries query dev "and how many were returned?"   # follow-up — keeps prior 
 Follow-up context is on by default; pass `--new-session` to start fresh or
 `--no-session` to disable it for a one-off question.
 
-Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read online](https://nlqueries.com/docs/getting-started.html)).
+Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read online](https://nlqueries.com/docs/getting-started)).
 
 ---
 
@@ -152,17 +152,17 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read o
 
 | Doc | Covers |
 |---|---|
-| [docs/getting-started.md](docs/getting-started.md) (or [read online](https://nlqueries.com/docs/getting-started.html)) | Step-by-step setup and your first query |
-| [docs/cli-reference.md](docs/cli-reference.md) (or [read online](https://nlqueries.com/docs/cli-reference.html)) | Every command and flag |
-| [docs/connectors.md](docs/connectors.md) (or [read online](https://nlqueries.com/docs/connectors.html)) | Database and document connector setup, per-connector notes and caveats |
-| [docs/configuration.md](docs/configuration.md) (or [read online](https://nlqueries.com/docs/configuration.html)) | Environment variables |
-| [docs/troubleshooting.md](docs/troubleshooting.md) (or [read online](https://nlqueries.com/docs/troubleshooting.html)) | Common warnings and errors explained |
-| [docs/qdrant-setup.md](docs/qdrant-setup.md) (or [read online](https://nlqueries.com/docs/qdrant-setup.html)) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
-| [docs/mcp-authentication.md](docs/mcp-authentication.md) (or [read online](https://nlqueries.com/docs/mcp-authentication.html)) | Authenticating the MCP server — required to serve it over a network |
-| [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture.html)) | Module layout and request flow |
-| [docs/database-hardening.md](docs/database-hardening.md) (or [read online](https://nlqueries.com/docs/database-hardening.html)) | The read-only role to grant per engine, and exactly what each connector does and does not enforce |
-| [docs/dependency-locking.md](docs/dependency-locking.md) (or [read online](https://nlqueries.com/docs/dependency-locking.html)) | The hashed lock file the image builds from, the digest-pinned base image, and how to regenerate both |
-| [docs/contributing.md](docs/contributing.md) (or [read online](https://nlqueries.com/docs/contributing.html)) | What a new connector has to implement, and what to open an issue about first |
+| [docs/getting-started.md](docs/getting-started.md) (or [read online](https://nlqueries.com/docs/getting-started)) | Step-by-step setup and your first query |
+| [docs/cli-reference.md](docs/cli-reference.md) (or [read online](https://nlqueries.com/docs/cli-reference)) | Every command and flag |
+| [docs/connectors.md](docs/connectors.md) (or [read online](https://nlqueries.com/docs/connectors)) | Database and document connector setup, per-connector notes and caveats |
+| [docs/configuration.md](docs/configuration.md) (or [read online](https://nlqueries.com/docs/configuration)) | Environment variables |
+| [docs/troubleshooting.md](docs/troubleshooting.md) (or [read online](https://nlqueries.com/docs/troubleshooting)) | Common warnings and errors explained |
+| [docs/qdrant-setup.md](docs/qdrant-setup.md) (or [read online](https://nlqueries.com/docs/qdrant-setup)) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
+| [docs/mcp-authentication.md](docs/mcp-authentication.md) (or [read online](https://nlqueries.com/docs/mcp-authentication)) | Authenticating the MCP server — required to serve it over a network |
+| [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture)) | Module layout and request flow |
+| [docs/database-hardening.md](docs/database-hardening.md) (or [read online](https://nlqueries.com/docs/database-hardening)) | The read-only role to grant per engine, and exactly what each connector does and does not enforce |
+| [docs/dependency-locking.md](docs/dependency-locking.md) (or [read online](https://nlqueries.com/docs/dependency-locking)) | The hashed lock file the image builds from, the digest-pinned base image, and how to regenerate both |
+| [docs/contributing.md](docs/contributing.md) (or [read online](https://nlqueries.com/docs/contributing)) | What a new connector has to implement, and what to open an issue about first |
 
 ---
 

@@ -102,7 +102,7 @@ nlqueries update-password postgres:localhost:mydb   # prompts for the new passwo
 nlqueries update-password dev --password-env DB_PASSWORD
 ```
 
-`CONNECTOR_ID` accepts an alias. This does not re-test the connection — run `nlqueries extract-schema <connector-or-alias>` afterwards to confirm the new password actually works. If keyring is unavailable, nothing is stored: the command prints a warning saying so and that the password has to be set by hand in the connector's URL in `connectors.yaml`.
+`CONNECTOR_ID` accepts an alias. This does not re-test the connection — run `nlqueries extract-schema <connector-or-alias>` afterwards to confirm the new password actually works. If keyring is unavailable, nothing is stored: the command says so, and that the password has to be set by hand in the connector's URL in `connectors.yaml`, and exits with status 1.
 
 ---
 
