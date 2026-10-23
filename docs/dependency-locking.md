@@ -121,12 +121,21 @@ depends on which job failed and where the flagged package ends up.
      `dev` extra reaches developers who install `nlqueries-core[dev]`, not
      the image or a plain install, and is handled like a tool the job
      installs for itself.
+   - **In the image outside the lock:** pip, which the `Dockerfile` installs
+     at its own pin (`pip==24.0`) before the lock, and wheel, which the base
+     image brings and nothing removes. Every image carries them, although no
+     extra lists them and nothing in the tree requires them, and neither
+     `lock-audit` nor the image scan (which reports and never fails) stops a
+     release over them. They ship. Compare the advisory with the version in
+     the image, not with the `security` job's: the job sees the pip and wheel
+     of its own environment, which need not be the same releases.
    - **Required by nothing in `nlqueries-core`'s tree:** listed in no extra,
-     with a `Required-by` chain that reaches neither `nlqueries-core` nor an
-     extra's package: a tool the job installs for itself, such as pip-audit
-     and its own dependencies. Only this, and the `dev`-only case above, do
-     not ship, and that is shown by both checks, not assumed because the
-     package is missing from the lock.
+     not in the image outside the lock, and with a `Required-by` chain that
+     reaches neither `nlqueries-core` nor an extra's package: a tool the job
+     installs for itself, such as pip-audit and its own dependencies. Only
+     this, and the `dev`-only case above, do not ship, and that is shown by
+     all three checks, not assumed because the package is missing from the
+     lock.
 3. **If a fixed version exists and can be reached, move to it.** If the
    lock's pin is affected, regenerate the lock (see
    [Regenerating](#regenerating)). If only a fresh resolution is affected,
@@ -138,8 +147,12 @@ depends on which job failed and where the flagged package ends up.
    to `dependencies`. The second makes it a direct dependency of the
    published package, so it is a choice to make knowingly. Any of these edits
    means regenerating the lock as well, as every change to `pyproject.toml`
-   does, or the image ships a pin the declared range no longer allows. For a tool the job installs for itself, upgrade it in the
-   job; setuptools, which `pyproject.toml` does not list, is one. The
+   does, or the image ships a pin the declared range no longer allows. For
+   pip in the image, move the `Dockerfile`'s pin past the fix; for wheel,
+   move to a base image that carries a fixed one (see
+   [Updating the base image](#updating-the-base-image)). For a tool the
+   job installs for itself, upgrade it in the job; setuptools, which
+   `pyproject.toml` does not list, is one. The
    `security` job already upgrades setuptools in its own environment before
    auditing; setuptools is in the lock too, so a setuptools advisory also
    needs the lock regenerated. A fix that only exists beyond a cap in
