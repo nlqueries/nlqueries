@@ -841,22 +841,26 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **`nlqueries connect` says a password was stored in the config file only
   when it was.** Connecting SQLite, or any database without a password, printed
   that note, and so did a password given to SQLite, DuckDB or BigQuery, whose
-  URL has no place for one and drops it.
+  URL has no place for one and drops it. Such a password is now said to be
+  unused, and is not kept in the OS keychain either, where nothing read it.
 - **A BigQuery dataset location that is not the shape of one is logged.** It
   was replaced by the default region without a word, and the history query then
   read another region's jobs, usually none.
 - **`embed-server start`, `stop` and `status` on Windows no longer fail with a
   traceback when `tasklist` cannot be run.** A process whose state cannot be
   read is taken to be running, as when `tasklist` times out, and the failure
-  is logged with the path tried, as it does not pass the way a timeout does.
+  is logged, once, with the path tried, as it does not pass the way a timeout
+  does.
 - **The CLI no longer fails when its output cannot carry a character.** With
   output redirected or piped on Windows, Python writes in the locale's code
   page, which has no check mark, and the first one raised `UnicodeEncodeError`.
   `connect` prints one after testing the connection and before saving it, so
   the connector was lost. Such characters are now written as a replacement.
   `--json` output, and the SQL chunk `ask` ends with when piped, is written in
-  ASCII, with non-ASCII escaped (`\u00eb` for `ë`), so a
-  payload carries the same data whatever the output's encoding.
+  ASCII, with non-ASCII escaped (`\u00eb` for `ë`), so a payload carries
+  the same data whatever the output's encoding. The chunk also starts a line
+  of its own, so `| tail -1 | jq .sql` reads it whatever the answer before it
+  ends with.
 - **Every store names an agent the same way, so two agents no longer share
   a cache.** The semantic cache turned `.` into `_` in the agent ID, so
   `sales.eu` and `sales_eu` read and wrote one cache collection and could be

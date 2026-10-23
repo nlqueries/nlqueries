@@ -308,6 +308,10 @@ def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
     return _FALLBACK_DIALECT
 
 
+#: Database types whose URL has no place for a password (see `_build_url`).
+_TAKES_NO_PASSWORD = frozenset({"bigquery", "duckdb", "sqlite"})
+
+
 def _build_url(
     db_type: str,
     host: str,
@@ -649,21 +653,21 @@ def _print_json(text: str) -> None:
     console.print_json(text, ensure_ascii=True)
 
 
-def _escaped_if_sql_chunk(token: str) -> str:
+def _sql_chunk(token: str) -> str | None:
     """*token* re-serialised in ASCII if it is `ask`'s final ``{"type": "sql"}``
-    chunk, which a script parses; any other token, prose people read, as it is.
+    chunk, which a script parses; None for any other token, prose people read.
     See :func:`_print_json` for why a payload is escaped."""
     if not token.lstrip().startswith("{"):
-        return token
+        return None
     import json as _json  # noqa: PLC0415
 
     try:
         chunk = _json.loads(token)
     except ValueError:
-        return token
+        return None
     if isinstance(chunk, dict) and chunk.get("type") == "sql":
         return _json.dumps(chunk, ensure_ascii=True)
-    return token
+    return None
 
 
 def _replace_what_output_cannot_encode() -> None:
@@ -1102,8 +1106,12 @@ def connect(
     # so it never lives in plain text on disk.  Fall back to the old URL-
     # embedded format if keyring is unavailable (e.g. headless CI).
     # ------------------------------------------------------------------
+    # SQLite, DuckDB and BigQuery have no place for a password in their URL,
+    # so one given is dropped: said, and not kept in the keychain either, where
+    # nothing would ever read it.
+    password_unused = bool(password) and db_type_l in _TAKES_NO_PASSWORD
     stored_in_keychain = False
-    if password:
+    if password and not password_unused:
         stored_in_keychain = _save_password(cid, password)
 
     # Build the URL to store — strip the password when keychain is available.
@@ -1152,6 +1160,11 @@ def connect(
     if stored_in_keychain:
         console.print(
             "  [green]✓ Password stored in OS keychain[/green] (not written to the config file)."
+        )
+    elif password_unused:
+        console.print(
+            f"  [yellow]Note:[/yellow] {db_type_l} takes no password, so the one given "
+            "was not stored or used."
         )
     elif _carries_password(stored_url):
         console.print(
@@ -2683,10 +2696,19 @@ def ask(agent_id: str, question: str, dialect: str | None) -> None:
             else:
                 # Pipe / redirected: emit raw tokens including the JSON chunk,
                 # which scripts parse, so it goes out escaped like every payload.
+                # On a line of its own, too: `tail -1 | jq .sql` reads the last
+                # line, and the prose before it need not end with a line break.
+                at_line_start = True
                 async for token in orchestrator.handle_question(
                     question, agent_id, dialect=resolved_dialect
                 ):
-                    click.echo(_escaped_if_sql_chunk(token), nl=False)
+                    chunk = _sql_chunk(token)
+                    if chunk is not None and not at_line_start:
+                        click.echo()
+                    written = token if chunk is None else chunk
+                    click.echo(written, nl=False)
+                    if written:
+                        at_line_start = written.endswith("\n")
                 click.echo()
         except FileNotFoundError as exc:
             err_console.print(f"[bold red]✗ {exc}[/bold red]")

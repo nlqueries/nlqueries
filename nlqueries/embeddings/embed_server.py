@@ -108,6 +108,9 @@ def _tasklist_path() -> str:
 
 _TASKLIST = _tasklist_path()
 
+#: Whether a tasklist that could not be run has been reported in this process.
+_tasklist_failure_reported = False
+
 
 # ---------------------------------------------------------------------------
 # Process-existence helper
@@ -141,16 +144,20 @@ def is_pid_alive(pid: int) -> bool:
             # transient, and `embed-server stop` asks again on its next poll.
             return True
         except OSError as exc:
+            global _tasklist_failure_reported  # noqa: PLW0603 - once per process
             # Unknown in the same way, but not transient: run by its full path,
             # a SYSTEMROOT that is wrong names a tasklist that is not there, and
             # every call fails -- `start` then says "already running" for ever.
-            # Said, so the cause is in the log rather than nowhere.
-            logger.warning(
-                "Could not run %s to check process %d (%s); treating it as running",
-                _TASKLIST,
-                pid,
-                exc,
-            )
+            # Said, so the cause is in the log rather than nowhere -- once, as
+            # `embed-server stop` asks every half second and it would repeat.
+            if not _tasklist_failure_reported:
+                _tasklist_failure_reported = True
+                logger.warning(
+                    "Could not run %s to check process %d (%s); treating it as running",
+                    _TASKLIST,
+                    pid,
+                    exc,
+                )
             return True
         return str(pid) in result.stdout
     try:

@@ -346,8 +346,11 @@ def test_a_tasklist_that_cannot_run_is_not_a_traceback(monkeypatch, caplog) -> N
 
     monkeypatch.setattr(embed_server.sys, "platform", "win32")
     monkeypatch.setattr(embed_server.subprocess, "run", run)
+    monkeypatch.setattr(embed_server, "_tasklist_failure_reported", False)
 
     with caplog.at_level(logging.WARNING, logger="nlqueries.embeddings.embed_server"):
+        assert embed_server.is_pid_alive(4242) is True
+        # `embed-server stop` asks every half second: said once, not each time.
         assert embed_server.is_pid_alive(4242) is True
 
     (line,) = [r.getMessage() for r in caplog.records if "Could not run" in r.getMessage()]

@@ -302,14 +302,43 @@ class TestConnectSaysWhereAPasswordWentOnlyWhenThereIsOne:
         output = self._connect("sqlite", "--database", str(tmp_path / "shop.db"))
         assert "password stored in the config file" not in output
 
-    def test_a_password_its_url_has_no_place_for_is_not_said_to_be_stored(
-        self, tmp_path: Path
-    ) -> None:
-        """Given to SQLite anyway, it is dropped from the URL, not stored."""
+    def test_a_password_its_url_has_no_place_for_is_said_to_be_unused(self, tmp_path: Path) -> None:
+        """Given to SQLite anyway, it is dropped from the URL: said so, rather than
+        said to be stored, or left unmentioned."""
         output = self._connect(
             "sqlite", "--database", str(tmp_path / "shop.db"), "--password", "s3cret"
         )
+        assert "sqlite takes no password, so the one given was not stored or used" in output
         assert "password stored in the config file" not in output
+
+    def test_a_password_its_url_has_no_place_for_is_kept_out_of_the_keychain(
+        self, tmp_path: Path
+    ) -> None:
+        """With a keyring working, it was stored there, where nothing reads it."""
+        saved: list[str] = []
+
+        class _Reachable:
+            def connect(self, credentials: dict[str, Any]) -> None:
+                pass
+
+            def connection_problem(self) -> None:
+                return None
+
+        with (
+            patch("nlqueries.cli.main._save_connector"),
+            patch(
+                "nlqueries.cli.main._save_password",
+                side_effect=lambda cid, pw: saved.append(pw) or True,
+            ),
+            patch("nlqueries.cli.main.connector_class_for", return_value=_Reachable),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["connect", "duckdb", "--database", str(tmp_path / "w.db"), "--password", "x"],
+            )
+        assert result.exit_code == 0, result.output
+        assert saved == []
+        assert "Password stored in OS keychain" not in result.output
 
     def test_a_password_the_keyring_could_not_take_is_still_mentioned(self) -> None:
         output = self._connect(
