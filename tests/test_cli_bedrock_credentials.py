@@ -181,7 +181,7 @@ def _run_process_history(tmp_path: object, *, annotate: bool) -> tuple[int, list
         patch("nlqueries.cli.main.err_console", err_console),
         patch("nlqueries.cli.main._require_connector", return_value=_FAKE_CFG),
         patch("nlqueries.cli.main._resolve_alias", side_effect=lambda x: x),
-        patch("nlqueries.cli.main._load_password", return_value=None),
+        patch("nlqueries.connectors.loader._load_password", return_value=None),
         patch.dict(
             "nlqueries.connectors.CONNECTOR_REGISTRY",
             {"postgres": lambda: _StubConnector()},

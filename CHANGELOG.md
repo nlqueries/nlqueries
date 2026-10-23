@@ -833,6 +833,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   registered database was reported as "connection failed — is the database
   running?" whether it was or not. The probe now runs read-only, as the other
   commands that read from the database do.
+- **The embedding fallback warning no longer says the daemon is required.**
+  When the daemon could not be reached and `EMBED_SERVER_REQUIRED` was not set,
+  the warning that the model was being loaded in-process quoted the message
+  written for the required case: "EMBED_SERVER_REQUIRED is set, so this call
+  will not load a model in-process".
+- **`nlqueries connect` mentions where a password went only when one was
+  given.** Connecting SQLite, or any database without a password, printed that
+  the password had been stored in the config file.
+- **A BigQuery dataset location that is not the shape of one is logged.** It
+  was replaced by the default region without a word, and the history query then
+  read another region's jobs, usually none.
+- **`embed-server start`, `stop` and `status` on Windows no longer fail with a
+  traceback when `tasklist` cannot be run.** A process whose state cannot be
+  read is taken to be running, as when `tasklist` times out.
 - **The CLI no longer fails when its output cannot carry a character.** With
   output redirected or piped on Windows, Python writes in the locale's code
   page, which has no check mark, and the first one raised `UnicodeEncodeError`.

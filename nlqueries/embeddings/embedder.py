@@ -82,6 +82,7 @@ class EmbeddingServiceUnavailable(RuntimeError):
 
     def __init__(self, reason: str, detail: str) -> None:
         self.reason = reason
+        self.detail = detail
         super().__init__(
             f"Embedding daemon {reason}: {detail}. "
             f"EMBED_SERVER_REQUIRED is set, so this call will not load a model "
@@ -208,7 +209,9 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
         "This loads a full model into THIS process — set EMBED_SERVER_REQUIRED "
         "on a server to make it a failure instead.",
         exc.reason,
-        exc,
+        # The detail, not the message: that is written for when the daemon is
+        # required, and says this call will not load a model in-process.
+        exc.detail,
     )
 
 

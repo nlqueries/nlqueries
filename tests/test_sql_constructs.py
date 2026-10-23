@@ -406,6 +406,40 @@ def test_a_qualified_call_rendered_as_an_operator_takes_sqlglots_name() -> None:
     assert reading.anonymous == ("s.json_extract",)
 
 
+def test_an_operator_whose_left_operand_is_a_call_takes_sqlglots_name() -> None:
+    """``LENGTH(a) @> b`` starts with a name and a bracket too, but the bracket
+    closes before the end: the name is the operand's, not the call's."""
+    import sqlglot
+    from sqlglot import exp
+
+    contains = sqlglot.parse_one("SELECT LENGTH(a) @> b FROM t", read="postgres").selects[0]
+    # Whichever class this sqlglot gives `@>`, it is a call rendered as an operator.
+    assert isinstance(contains, exp.Func)
+    assert contains.sql(dialect="postgres") == "LENGTH(a) @> b"
+    sql = "SELECT * FROM x"
+    tree = sqlglot.parse_one(sql, read="postgres")
+    tree.find(exp.Table).replace(exp.Table(this=contains, db=exp.to_identifier("s")))
+
+    reading = sql_policy._read(tree, sql, "postgres")
+
+    assert reading.anonymous == (f"s.{contains.sql_name().lower()}",)
+    assert "s.length" not in reading.anonymous
+
+
+@pytest.mark.parametrize(
+    ("rendered", "closes"),
+    [
+        ("a, b)", True),
+        ("f(a), g(b))", True),
+        ("a) @> b", False),
+        ("')' || a)", True),
+        ("a, b", False),
+    ],
+)
+def test_the_bracket_check_follows_nesting_and_quotes(rendered: str, closes: bool) -> None:
+    assert sql_policy._closes_at_the_end(rendered) is closes
+
+
 def test_a_qualified_modelled_call_is_allowed_when_listed_as_written(monkeypatch) -> None:
     monkeypatch.setitem(
         sql_policy.ALLOWED_ANONYMOUS,

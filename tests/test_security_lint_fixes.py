@@ -116,14 +116,10 @@ def _make_url_quoting_its_input(monkeypatch) -> None:
     monkeypatch.setattr(engine, "make_url", make_url)
 
 
-@pytest.mark.parametrize("module", ["nlqueries.connectors.loader", "nlqueries.cli.main"])
-def test_a_stored_password_that_cannot_go_into_the_url_is_reported(
-    module: str, monkeypatch, caplog
-) -> None:
+def test_a_stored_password_that_cannot_go_into_the_url_is_reported(monkeypatch, caplog) -> None:
     """The connection would go out without it and fail as a bad password."""
-    import importlib
+    from nlqueries.connectors import loader as target
 
-    target = importlib.import_module(module)
     _make_url_quoting_its_input(monkeypatch)
     monkeypatch.setattr(target, "_load_password", lambda connector_id, cfg: "n3w")
     cfg = {"url": _LEGACY_URL, "password_storage": "keychain"}
@@ -284,6 +280,36 @@ def test_a_bigquery_location_is_used_only_in_the_shape_of_one(location: str, qua
     assert resolved == (qualifier or bigquery._DEFAULT_REGION_QUALIFIER)
 
 
+def test_a_rejected_bigquery_location_is_named(caplog) -> None:
+    """The default reads another region's jobs: usually none, and no error."""
+    from nlqueries.connectors import bigquery
+
+    connector = bigquery.BigQueryConnector()
+    connector._dataset_id = "shop"
+    connector._client = MagicMock()
+    connector._client.get_dataset.return_value.location = "us`; DROP x; --"
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.connectors.bigquery"):
+        assert connector._resolve_region_qualifier() == bigquery._DEFAULT_REGION_QUALIFIER
+
+    (line,) = [r.getMessage() for r in caplog.records if "not the shape" in r.getMessage()]
+    assert "shop" in line and "DROP" in line and bigquery._DEFAULT_REGION_QUALIFIER in line
+
+
+def test_an_accepted_bigquery_location_says_nothing(caplog) -> None:
+    from nlqueries.connectors import bigquery
+
+    connector = bigquery.BigQueryConnector()
+    connector._dataset_id = "shop"
+    connector._client = MagicMock()
+    connector._client.get_dataset.return_value.location = "europe-west1"
+
+    with caplog.at_level(logging.WARNING, logger="nlqueries.connectors.bigquery"):
+        connector._resolve_region_qualifier()
+
+    assert not [r for r in caplog.records if "not the shape" in r.getMessage()]
+
+
 def test_the_embed_handler_without_a_model_raises_even_without_asserts() -> None:
     from nlqueries.embeddings.embed_server import _EmbedHandler
 
@@ -307,6 +333,20 @@ def test_tasklist_has_a_full_path_without_a_systemroot(monkeypatch, systemroot) 
         monkeypatch.setenv("SYSTEMROOT", systemroot)
 
     assert ntpath.isabs(embed_server._tasklist_path())
+
+
+def test_a_tasklist_that_cannot_run_is_not_a_traceback(monkeypatch) -> None:
+    """Run by its full path, a wrong SYSTEMROOT names a file that is not there.
+    Unknown is read as running, as for a timeout: never as gone."""
+    from nlqueries.embeddings import embed_server
+
+    def run(args, **kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified", args[0])
+
+    monkeypatch.setattr(embed_server.sys, "platform", "win32")
+    monkeypatch.setattr(embed_server.subprocess, "run", run)
+
+    assert embed_server.is_pid_alive(4242) is True
 
 
 def test_tasklist_is_run_by_its_full_path(monkeypatch) -> None:

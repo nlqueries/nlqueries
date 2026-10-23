@@ -207,6 +207,16 @@ class BigQueryConnector(DatabaseConnector):
                 # only the shape a location has (`us`, `europe-west1`) is used.
                 if location and _LOCATION.fullmatch(location.lower()):
                     return f"region-{location.lower()}"
+                if location:
+                    # The default reads another region's jobs, which for this
+                    # project is usually none: no history, and no error to say so.
+                    logger.warning(
+                        "Dataset %s reports location %.60r, which is not the shape of a "
+                        "BigQuery location; reading query history from %s instead",
+                        self._dataset_id,
+                        location,
+                        _DEFAULT_REGION_QUALIFIER,
+                    )
             except Exception:  # noqa: BLE001 — fall through to the default
                 logger.debug(
                     "Could not resolve dataset location for region qualification; defaulting to %s",
