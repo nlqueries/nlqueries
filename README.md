@@ -16,7 +16,7 @@
 
 - **Website** — [nlqueries.com](https://nlqueries.com)
 - **Documentation** — [nlqueries.com/docs/](https://nlqueries.com/docs/)
-- **Getting started** — [nlqueries.com/docs/getting-started.html](https://nlqueries.com/docs/getting-started)
+- **Getting started** — [nlqueries.com/docs/getting-started](https://nlqueries.com/docs/getting-started)
 - **Supported databases** — [nlqueries.com/databases/](https://nlqueries.com/databases/)
 - **PyPI** — [nlqueries-core](https://pypi.org/project/nlqueries-core/)
 - **Docker Hub** — [nlqueries/core](https://hub.docker.com/r/nlqueries/core)

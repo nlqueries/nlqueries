@@ -1482,8 +1482,9 @@ def extract_schema(connector_id: str) -> None:
     Prints the database, the table and column counts, the extraction time,
     and the first 20 tables with each one's schema, column count and row count.
     Row counts are what the connector reports: a catalogue figure on most
-    databases, an exact count on SQLite. A database with no dedicated
-    connector has each table counted.
+    databases (an estimate on PostgreSQL and DuckDB), an exact count on
+    SQLite, and none from the generic SQLAlchemy connector, which MySQL and
+    other databases reached through SQLAlchemy use.
     """
     connector_id = _resolve_alias(connector_id)
     cfg = _require_connector(connector_id)
