@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from nlqueries import config
+from nlqueries.cache.envelope import sign_pair
 from nlqueries.feedback.promoter import _verified_collection
 from nlqueries.orchestrator.prompt_assembly import _search_verified
 from qdrant_client import QdrantClient
@@ -44,16 +45,27 @@ def qdrant() -> Iterator[QdrantClient]:
             PointStruct(
                 id=1,
                 vector=_unit_vector(),
-                payload={
-                    "question": "How many orders last month?",
-                    "sql": "SELECT COUNT(*) FROM orders",
-                    "agent_id": _AGENT_ID,
-                    "verified": True,
-                },
+                # Signed, as `promote-feedback` writes it.
+                payload=sign_pair(
+                    {
+                        "question": "How many orders last month?",
+                        "sql": "SELECT COUNT(*) FROM orders",
+                        "agent_id": _AGENT_ID,
+                        "verified": True,
+                    }
+                ),
             )
         ],
     )
-    with patch("qdrant_client.QdrantClient", return_value=client):
+    # Each pair's question embeds to the vector it is stored under, as for a
+    # pair `promote-feedback` wrote; the reader re-embeds it to check that.
+    with (
+        patch("qdrant_client.QdrantClient", return_value=client),
+        patch(
+            "nlqueries.embeddings.embedder.embed_batch",
+            side_effect=lambda texts: [_unit_vector() for _ in texts],
+        ),
+    ):
         yield client
     client.close()
 
@@ -87,7 +99,9 @@ def test_an_agent_whose_id_sanitises_the_same_does_not_get_anothers_pairs(
             PointStruct(
                 id=10 + n,
                 vector=_unit_vector(),
-                payload={"question": "q", "sql": sql, "agent_id": agent, "verified": True},
+                payload=sign_pair(
+                    {"question": "q", "sql": sql, "agent_id": agent, "verified": True}
+                ),
             )
             for n, (agent, sql) in enumerate(
                 [(first, "SELECT 1 FROM prod_sales"), (second, "SELECT 1 FROM other_sales")]

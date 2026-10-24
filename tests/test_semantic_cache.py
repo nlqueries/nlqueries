@@ -159,9 +159,11 @@ class TestCacheHitAboveThreshold:
         mock_client.get_collections.return_value.collections = [_coll2]
         mock_client.query_points.return_value = _make_query_response([scored_point])
 
+        # Non-zero: a tier-1 hit re-embeds its stored question and compares it
+        # with the query, and a zero vector is close to nothing.
         with (
             patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
-            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.0] * 384),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
         ):
             cache = SemanticCache("agent1", binding=TEST_BINDING)
             entry = cache.get("How many orders?")
@@ -590,23 +592,32 @@ class TestGetWithPrecomputedVector:
         return client
 
     def test_precomputed_vector_skips_embed_text(self) -> None:
-        """When vector= is supplied, embed_text must NOT be called."""
-        payload = _fresh_payload()
+        """When vector= is supplied, the question is not embedded again.
+
+        The one embed a tier-1 hit makes is of the entry's stored question,
+        checked against the query (`_stored_question_matches`). The stored
+        question differs from the one asked, so the assertion below tells the
+        two apart."""
+        payload = _fresh_payload(question="How many orders were placed?")
         mock_client = self._make_hit_client(payload)
         precomputed = [0.9] * 384
 
         with (
             patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
             patch(
-                "nlqueries.cache.semantic_cache.embed_text",
-                side_effect=AssertionError("embed_text called unexpectedly"),
-            ),
+                "nlqueries.cache.semantic_cache.embed_text", return_value=precomputed
+            ) as mock_embed,
         ):
             entry = SemanticCache("agent1", binding=TEST_BINDING).get(
                 "How many orders?", vector=precomputed
             )
 
         assert entry is not None
+        # One embed, and of the entry's own stored question, not of the query:
+        # the count alone held for an implementation that embedded the query
+        # and skipped the stored-question check.
+        assert mock_embed.call_count == 1
+        assert mock_embed.call_args.args[0] == payload["question"]
 
     def test_precomputed_vector_passed_to_qdrant_query(self) -> None:
         """The pre-computed vector must be forwarded to query_points() as the query."""
@@ -640,7 +651,10 @@ class TestGetWithPrecomputedVector:
         ):
             SemanticCache("agent1", binding=TEST_BINDING).get("How many orders?")
 
-        mock_embed.assert_called_once_with("How many orders?")
+        # First the question, to search with; then, on the hit, the entry's
+        # stored question, to confirm the hit is really for it.
+        assert mock_embed.call_args_list[0].args == ("How many orders?",)
+        assert mock_embed.call_count == 2
         call_kwargs = mock_client.query_points.call_args.kwargs
         assert call_kwargs["query"] == embed_vector
 

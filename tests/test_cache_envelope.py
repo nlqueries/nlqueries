@@ -133,9 +133,9 @@ def test_signing_adds_the_version(monkeypatch) -> None:
 
 class TestTheKey:
     def test_the_environment_is_used_when_set(self, monkeypatch) -> None:
-        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY", "configured-key")
+        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY", "configured-key-0123456789abcdef0123")
 
-        assert signing_key() == b"configured-key"
+        assert signing_key() == b"configured-key-0123456789abcdef0123"
 
     def test_a_key_is_generated_and_reused(self, monkeypatch, tmp_path) -> None:
         monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
@@ -168,18 +168,18 @@ class TestTheKey:
         environment."""
         monkeypatch.delenv("NLQ_CACHE_SIGNING_KEY", raising=False)
         key_file = tmp_path / "cache_key"
-        key_file.write_bytes(b"key-from-a-file\n")
+        key_file.write_bytes(b"key-from-a-file-0123456789abcdef01\n")
         monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY_FILE", str(key_file))
 
-        assert signing_key() == b"key-from-a-file"
+        assert signing_key() == b"key-from-a-file-0123456789abcdef01"
 
     def test_the_environment_wins_over_a_file(self, monkeypatch, tmp_path) -> None:
         key_file = tmp_path / "cache_key"
-        key_file.write_bytes(b"from-file")
-        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY", "from-env")
+        key_file.write_bytes(b"from-file-0123456789abcdef01234567")
+        monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY", "from-env-0123456789abcdef012345678")
         monkeypatch.setenv("NLQ_CACHE_SIGNING_KEY_FILE", str(key_file))
 
-        assert signing_key() == b"from-env"
+        assert signing_key() == b"from-env-0123456789abcdef012345678"
 
     @pytest.mark.parametrize("contents", [None, b"", b"   "])
     def test_a_configured_file_that_cannot_be_used_is_an_error(

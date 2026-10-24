@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -1254,6 +1255,84 @@ async def _build_dynamic_context_async(
     return _format_dynamic_context(knowledge_base, top_k, hit_names, verified_hits, capsule_hits)
 
 
+#: Set once the missing-API-key reason for skipping verified examples has been
+#: logged; it would otherwise repeat on every question.
+_VERIFIED_AUTH_WARNED: list[bool] = []
+
+#: The agents whose skipped unsigned verified pairs have been logged. Per
+#: agent, not once per process: an MCP server serves several, and the upgrade
+#: step this warning asks for (`promote-feedback`) is run per agent.
+_UNSIGNED_PAIRS_WARNED: set[str] = set()
+
+#: How many candidates per wanted pair are read before signatures are checked.
+_VERIFIED_CANDIDATE_FACTOR = 4
+
+#: How far a pair's re-embedded question may fall short of the threshold its
+#: stored vector met; as `semantic_cache._RECHECK_TOLERANCE`.
+_PAIR_RECHECK_TOLERANCE = 0.01
+
+#: The agents for which pairs found by a vector their own question does not
+#: match have been logged.
+_REPOINTED_PAIRS_WARNED: set[str] = set()
+
+#: The agents for which a failure to re-embed their pairs' questions has been
+#: logged; without it, an embedder that fails here reads as no pairs at all.
+_PAIR_RECHECK_FAILED_WARNED: set[str] = set()
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norms = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norms if norms else 0.0
+
+
+def _found_by_their_own_question(
+    pairs: list[dict[str, Any]], vector: list[float], threshold: float, agent_id: str
+) -> list[dict[str, Any]]:
+    """The signed *pairs* whose own question is close to the one asked.
+
+    The signature covers a pair's question and SQL but not the vector it is
+    stored under, so a writer to Qdrant could copy a genuine pair onto another
+    question's vector and have it shown as a confirmed example for that
+    question. Each pair's question is embedded again, in one batch, and must
+    itself be near the query. A batch that cannot be embedded keeps none.
+    """
+    if not pairs:
+        return []
+    from nlqueries.embeddings.embedder import embed_batch  # noqa: PLC0415
+
+    try:
+        stored = embed_batch([str(p.get("question") or "") for p in pairs])
+    except Exception as exc:  # noqa: BLE001 - unconfirmable is left out
+        if agent_id not in _PAIR_RECHECK_FAILED_WARNED:
+            _PAIR_RECHECK_FAILED_WARNED.add(agent_id)
+            logger.warning(
+                "Could not re-embed the questions of %d verified example(s) for agent "
+                "%r to confirm them (%s); leaving them out of the prompt. The "
+                "embedding service may be unavailable.",
+                len(pairs),
+                agent_id,
+                type(exc).__name__,
+            )
+        return []
+    kept = [
+        p
+        for p, own in zip(pairs, stored, strict=False)
+        if _cosine(vector, own) >= threshold - _PAIR_RECHECK_TOLERANCE
+    ]
+    if len(kept) < len(pairs) and agent_id not in _REPOINTED_PAIRS_WARNED:
+        _REPOINTED_PAIRS_WARNED.add(agent_id)
+        logger.warning(
+            "Ignoring %d verified example(s) for agent %r found by a vector their own "
+            "question does not match; this should not happen unless the collection "
+            "has been written to directly, or by a process with a different "
+            "embedding model.",
+            len(pairs) - len(kept),
+            agent_id,
+        )
+    return kept
+
+
 def _search_verified(
     collection: str,
     question: str,
@@ -1283,13 +1362,31 @@ def _search_verified(
     agent_id = collection[len("agent_") : -len("_schema")]
     verified_collection = _verified_collection(agent_id)
 
+    from nlqueries.embeddings.qdrant_client import (  # noqa: PLC0415
+        QdrantAuthenticationRequired,
+        build_qdrant_client,
+    )
+
     try:
-        from qdrant_client import QdrantClient  # noqa: PLC0415
+        # Through the one builder, so the rule that a remote Qdrant needs an
+        # API key applies here too. This lookup built its own client and read
+        # anonymously from a store anyone on the network could write to, then
+        # showed what it found to the model as user-confirmed examples.
+        client = build_qdrant_client()
+    except QdrantAuthenticationRequired as exc:
+        # Not raised: verified examples improve a prompt, and the question is
+        # answered without them. The semantic cache refuses the same
+        # configuration loudly; this says why examples are missing as well.
+        if not _VERIFIED_AUTH_WARNED:
+            _VERIFIED_AUTH_WARNED.append(True)
+            logger.warning("Not reading verified examples: %s", exc)
+        return []
+    except Exception:  # noqa: BLE001 - as below: no examples rather than no answer
+        return []
+
+    try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue  # noqa: PLC0415
 
-        from nlqueries import config as _cfg  # noqa: PLC0415
-
-        client = QdrantClient(url=_cfg.QDRANT_URL, api_key=_cfg.QDRANT_API_KEY or None)
         existing = {c.name for c in client.get_collections().collections}
         if verified_collection not in existing:
             return []
@@ -1311,9 +1408,32 @@ def _search_verified(
                     FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
                 ]
             ),
-            limit=top_k,
+            # More than wanted, so a few pairs that fail the signature check
+            # below (planted, or stale ones never re-signed) do not take the
+            # signed ones' places. It is a bound, not a guarantee: more than
+            # top_k * _VERIFIED_CANDIDATE_FACTOR unsigned pairs nearer the
+            # question still leave the prompt with fewer verified examples --
+            # fewer, never planted ones.
+            limit=top_k * _VERIFIED_CANDIDATE_FACTOR,
         )
-        return [hit.payload for hit in response.points if hit.score >= threshold and hit.payload]
+        from nlqueries.cache.envelope import verify_pair  # noqa: PLC0415
+
+        # Only pairs `promote-feedback` signed. Qdrant is writable by more
+        # than this process, and what is returned here reaches the prompt
+        # labelled "user-confirmed". The agent is checked again after the
+        # signature, because the filter above ran on fields not yet verified.
+        near = [hit.payload for hit in response.points if hit.score >= threshold and hit.payload]
+        signed = [p for p in near if verify_pair(p) and p.get("agent_id") == agent_id]
+        if len(signed) < len(near) and agent_id not in _UNSIGNED_PAIRS_WARNED:
+            _UNSIGNED_PAIRS_WARNED.add(agent_id)
+            logger.warning(
+                "Ignoring %d verified example(s) for agent %r that are not signed "
+                "with this deployment's key. Pairs promoted before signing was "
+                "added are among them: run `nlqueries promote-feedback` again.",
+                len(near) - len(signed),
+                agent_id,
+            )
+        return _found_by_their_own_question(signed, vector, threshold, agent_id)[:top_k]
     except Exception:  # noqa: BLE001
         return []
 
