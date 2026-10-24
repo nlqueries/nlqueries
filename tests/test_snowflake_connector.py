@@ -186,8 +186,8 @@ def test_execute_query_passes_explicit_timeout_to_cursor():
     # Queued and running both, split from the one budget: the queue is
     # unbounded by default.
     assert call.kwargs.get("_statement_params") == {
-        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 7,
-        "STATEMENT_TIMEOUT_IN_SECONDS": 23,
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 1,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 29,
     }
     # The 5.x driver's execute() takes **kwargs and ignores `timeout`.
     assert "timeout" not in call.kwargs
@@ -199,8 +199,8 @@ def test_execute_query_applies_default_timeout(monkeypatch):
     connector.execute_query("SELECT 1")
     call = _query_call(cursor)
     assert call.kwargs.get("_statement_params") == {
-        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 11,
-        "STATEMENT_TIMEOUT_IN_SECONDS": 34,
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 2,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 43,
     }
     assert "timeout" not in call.kwargs
 
@@ -260,7 +260,20 @@ def test_queued_and_running_time_add_up_to_the_budget(budget):
     running = params["STATEMENT_TIMEOUT_IN_SECONDS"]
     assert queued + running == budget
     assert queued >= 1 and running >= 1
-    assert queued == max(1, budget // 4)
+    assert queued == max(1, budget // 20)
+
+
+@pytest.mark.parametrize("budget", [20, 30, 45, 60, 120, 300, 3600])
+def test_a_statement_that_ran_out_of_time_is_recognised_as_timed_out(budget):
+    """The orchestrator takes a failure that used less than _TIMED_OUT_SHARE of
+    the budget for a fixable error and repairs and re-runs it. A statement
+    cancelled for running too long stops at the running share, so that share
+    must reach the threshold, or a timeout is re-run to time out again."""
+    from nlqueries.connectors.snowflake import _timeout_parameters
+    from nlqueries.orchestrator.orchestrator import _TIMED_OUT_SHARE
+
+    running = _timeout_parameters(budget)["STATEMENT_TIMEOUT_IN_SECONDS"]
+    assert running >= budget * _TIMED_OUT_SHARE
 
 
 def test_a_one_second_budget_still_bounds_both():

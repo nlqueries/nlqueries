@@ -69,12 +69,17 @@ def _timeout_parameters(effective_timeout: float) -> dict[str, int]:
 
     Queued and running time are bounded separately, and *timeout_seconds* is a
     total on every connector: the orchestrator clamps a correction to the time
-    left before its caller's deadline. So the budget is split, a quarter for
-    the warehouse queue and the rest for running, and the two add up to it.
-    Each is at least a second, since Snowflake reads 0 as no limit.
+    left before its caller's deadline. So the budget is split and the two add
+    up to it, each at least a second, since Snowflake reads 0 as no limit.
+
+    The queue gets a twentieth, the rest goes to running. The running share
+    has to stay above the orchestrator's ``_TIMED_OUT_SHARE`` (0.9): a failed
+    attempt that used less than that much of the budget is taken for a fixable
+    error and repaired and re-run, so a statement that ran out of time at a
+    quarter's queue allowance, 75% of the budget, was re-run to time out again.
     """
     budget = max(1, int(effective_timeout))
-    queued = max(1, budget // 4)
+    queued = max(1, budget // 20)
     return {_STATEMENT_QUEUED_TIMEOUT: queued, _STATEMENT_TIMEOUT: max(1, budget - queued)}
 
 
@@ -548,7 +553,7 @@ class SnowflakeConnector(DatabaseConnector):
         The query is bounded by *timeout_seconds* when given, else the
         ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — sent with the
         statement as Snowflake's ``STATEMENT_QUEUED_TIMEOUT_IN_SECONDS`` and
-        ``STATEMENT_TIMEOUT_IN_SECONDS`` parameters, a quarter of it for the
+        ``STATEMENT_TIMEOUT_IN_SECONDS`` parameters, a twentieth of it for the
         warehouse queue and the rest for running (:func:`_timeout_parameters`),
         so the server cancels the query rather than letting it queue or run
         indefinitely, and the two together stay within the budget. A budget of
