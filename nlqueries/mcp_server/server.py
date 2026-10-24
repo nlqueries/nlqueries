@@ -216,6 +216,13 @@ def _reference() -> str:
 
 #: How long the MCP `query` tool waits for an answer.
 _QUERY_BUDGET_SECONDS = 45
+#: (agent, dialect) pairs a client asked for that disagreed with the agent's
+#: connector and have already been logged. Both values come from the client, so
+#: the set is capped, and each value is kept only as far as it is logged
+#: (:data:`_DIALECT_LOGGED_CHARS`); once full, further disagreements go unlogged.
+_DIALECT_WARNED: set[tuple[str, str]] = set()
+_DIALECT_WARNED_MAX = 256
+_DIALECT_LOGGED_CHARS = 40
 #: The database's own limit on the statement, at or just under the tool's wait
 #: (as `run_query` asks), so it stops when the tool gives up rather than
 #: running on after the client has been told the query timed out.
@@ -225,7 +232,7 @@ _STATEMENT_BUDGET_SECONDS = 40
 async def query(
     question: str,
     agent_id: str,
-    dialect: str = "postgres",
+    dialect: str | None = None,
     explain: bool = False,
     paraphrase: bool = False,
 ) -> str:
@@ -239,9 +246,9 @@ async def query(
         question:  The natural-language question, e.g. "Total revenue by region
                    last quarter?"
         agent_id:  Agent to query — use list_agents() to discover available IDs.
-        dialect:   SQL dialect for the target database (default: postgres).
-                   Other supported values: snowflake, bigquery, redshift,
-                   mysql, mssql, duckdb.
+        dialect:   Ignored, and kept so clients that send it keep working. The
+                   SQL dialect is the one of the database the agent's
+                   connector points at.
         explain:   When true, append an answer-provenance summary (route,
                    cache hit/miss, knowledge injected, checks, timings).
         paraphrase: When true, append a deterministic plain-English rendering of
@@ -253,8 +260,10 @@ async def query(
         Includes per-query latency and agent-type metadata.
     """
     from nlqueries.connectors.base import short_cause, short_error_text  # noqa: PLC0415
+    from nlqueries.connectors.loader import dialect_for_agent  # noqa: PLC0415
     from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
+    from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
 
     # This tool exists to answer from the database: its action is
     # `query:execute`, and `guard` has authorised that before this body runs.
@@ -269,11 +278,35 @@ async def query(
     # turn the client has already been told timed out.
     deadline = time.monotonic() + _QUERY_BUDGET_SECONDS
     try:
+        # The SQL policy vouches for a statement only when it parses it with
+        # the grammar of the engine that runs it, so that grammar comes from
+        # the agent's connector and never from the caller. A client's `dialect`
+        # is ignored; one that disagrees is logged, since it usually means the
+        # client was configured for a different database. Inside the `try`:
+        # this is the first read of the connectors file, and a hand-edited one
+        # that does not parse must come back as a message like any other fault.
+        engine_dialect = dialect_for_agent(agent_id)
+        asked = _sqlglot_dialect(dialect) if dialect else None
+        # Once per agent and dialect for the life of the process: a client that
+        # always sends `postgres` would otherwise put this on every query.
+        if asked and asked != engine_dialect:
+            # Cut to what is logged: the key is what the line says, and a client
+            # cannot park 256 strings of megabytes each in the set.
+            seen = (agent_id[:_DIALECT_LOGGED_CHARS], asked[:_DIALECT_LOGGED_CHARS])
+            if seen not in _DIALECT_WARNED and len(_DIALECT_WARNED) < _DIALECT_WARNED_MAX:
+                _DIALECT_WARNED.add(seen)
+                _log.warning(
+                    "MCP query for agent %.40r asked for dialect %.40r; using %r, the "
+                    "dialect of the agent's connector",
+                    agent_id,
+                    dialect,
+                    engine_dialect,
+                )
         with anyio.fail_after(_QUERY_BUDGET_SECONDS):
             result = await run_query(
                 question,
                 agent_id,
-                dialect=dialect,
+                dialect=engine_dialect,
                 explain=explain,
                 execution=ExecutionPolicy.execute_read_only(),
                 timeout_seconds=_STATEMENT_BUDGET_SECONDS,
@@ -315,7 +348,7 @@ async def query(
     if paraphrase and result.sql:
         from nlqueries.verbalizer import verbalize  # noqa: PLC0415
 
-        described = verbalize(result.sql, dialect)
+        described = verbalize(result.sql, engine_dialect)
         if described.text:
             hint = "" if described.complete else " *(described in part)*"
             parts.append(f"\n\n**In plain English**\n{described.text}{hint}")

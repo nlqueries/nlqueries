@@ -449,3 +449,56 @@ class TestStringTableRuleFailsClosed:
         self._without_positions(monkeypatch)
 
         assert evaluate(sql, "duckdb").allowed
+
+
+class TestTsqlReservedWords:
+    """SQL Server accepts a reserved word as a name only when it is quoted;
+    sqlglot's T-SQL grammar also reads some unquoted ones as an alias. Where the
+    two readings can differ, the statement is refused."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT a FROM t COMMIT",
+            "SELECT a COMMIT FROM t",
+            "SELECT a FROM t CHECKPOINT",
+            "select a from t commit",
+        ],
+    )
+    def test_an_unquoted_reserved_word_is_refused(self, sql: str) -> None:
+        decision = evaluate(sql, "tsql")
+
+        assert not decision.allowed
+        assert any("COMMIT" in r or "CHECKPOINT" in r for r in decision.reasons)
+
+    def test_mssql_is_the_same_grammar(self) -> None:
+        assert not evaluate("SELECT a FROM t COMMIT", "mssql").allowed
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT a FROM t AS [COMMIT]",
+            'SELECT a FROM t AS "COMMIT"',
+            "SELECT [key], [user] FROM t",
+        ],
+    )
+    def test_a_quoted_reserved_word_is_a_name(self, sql: str) -> None:
+        assert evaluate(sql, "tsql").allowed
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT TOP 10 o.id, c.name FROM sales.orders o "
+            "JOIN sales.customers c ON o.cid = c.id ORDER BY o.id DESC",
+            "SELECT region, COUNT(*) AS n FROM orders GROUP BY region HAVING COUNT(*) > 1",
+            "SELECT DATEADD(day, 1, created_at) AS next_day FROM orders",
+            "WITH totals AS (SELECT cid, SUM(amount) AS total FROM orders GROUP BY cid) "
+            "SELECT * FROM totals",
+        ],
+    )
+    def test_ordinary_sql_server_queries_still_pass(self, sql: str) -> None:
+        assert evaluate(sql, "tsql").allowed
+
+    def test_other_dialects_are_not_affected(self) -> None:
+        """`key` is an ordinary name in PostgreSQL."""
+        assert evaluate("SELECT key FROM t", "postgres").allowed

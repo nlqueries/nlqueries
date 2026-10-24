@@ -329,19 +329,221 @@ class TestQuery:
         assert "query itself is slow" in out
 
     @pytest.mark.anyio
-    async def test_passes_dialect_to_run_query(self) -> None:
+    async def test_the_dialect_is_the_connectors_not_the_callers(self) -> None:
+        """The SQL policy parses a statement with the dialect it is handed, and
+        vouches for it only in that grammar. The client used to choose it, so
+        SQL checked as MySQL could run on SQL Server, where the same text can be
+        several statements. The connector decides now; the client's value is
+        ignored."""
+        from nlqueries.connectors import loader
         from nlqueries.mcp_server.server import query
 
-        result = _make_result()
+        with (
+            patch.object(loader, "_load_connectors", return_value={"sales": {"db_type": "mssql"}}),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ) as mock_run,
+        ):
+            await query("How many orders?", "sales", dialect="mysql")
+
+        assert mock_run.call_args.kwargs.get("dialect") == "tsql"
+
+    @pytest.mark.anyio
+    async def test_without_a_dialect_the_connector_still_decides(self) -> None:
+        """The parameter used to default to postgres, whatever the agent ran on."""
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server.server import query
+
+        with (
+            patch.object(
+                loader, "_load_connectors", return_value={"sales": {"db_type": "snowflake"}}
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ) as mock_run,
+        ):
+            await query("How many orders?", "sales")
+
+        assert mock_run.call_args.kwargs.get("dialect") == "snowflake"
+
+    @pytest.mark.anyio
+    async def test_an_underscored_agent_id_finds_its_connector(self) -> None:
+        """MCP agent ids have the connector id's punctuation replaced by
+        underscores; the lookup has to match them the way the loader that opens
+        the connector does, or the dialect falls back to postgres."""
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server.server import query
+
+        with (
+            patch.object(
+                loader, "_load_connectors", return_value={"mysql:db:shop": {"db_type": "mysql"}}
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ) as mock_run,
+        ):
+            await query("How many orders?", "mysql_db_shop", dialect="postgres")
+
+        assert mock_run.call_args.kwargs.get("dialect") == "mysql"
+
+    @pytest.mark.anyio
+    async def test_an_unreadable_connectors_file_comes_back_as_a_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolving the dialect is now the tool's first read of the connectors
+        file. A hand-edited file that does not parse has to reach the client as
+        the tool's "Query failed" message, as it did when `run_query` made that
+        read, not as an exception out of the tool."""
+        from nlqueries import config
+        from nlqueries.mcp_server.server import query
+
+        broken = tmp_path / "connectors.yaml"
+        broken.write_text("sales: {db_type: mssql\n", encoding="utf-8")
+        monkeypatch.setattr(config, "CONNECTORS_FILE", broken)
+
         with patch(
             "nlqueries.orchestrator.sync_runner.run_query",
             new_callable=AsyncMock,
-            return_value=result,
+            return_value=_make_result(),
         ) as mock_run:
-            await query("How many orders?", "sales", dialect="snowflake")
+            out = await query("How many orders?", "sales")
 
-        _, kwargs = mock_run.call_args
-        assert kwargs.get("dialect") == "snowflake"
+        assert out.startswith("Query failed:")
+        mock_run.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_a_disagreeing_dialect_is_logged(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server import server
+        from nlqueries.mcp_server.server import query
+
+        monkeypatch.setattr(server, "_DIALECT_WARNED", set())
+
+        with (
+            patch.object(loader, "_load_connectors", return_value={"sales": {"db_type": "mssql"}}),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ),
+            caplog.at_level("WARNING", logger="nlqueries.mcp_server.server"),
+        ):
+            await query("How many orders?", "sales", dialect="mysql")
+            await query("How many orders?", "sales", dialect="mssql")
+
+        warned = [r.getMessage() for r in caplog.records if "asked for dialect" in r.getMessage()]
+        # `mssql` is `tsql` under another spelling, so only `mysql` disagrees.
+        assert len(warned) == 1
+        assert "'mysql'" in warned[0] and "'tsql'" in warned[0]
+
+    @pytest.mark.anyio
+    async def test_a_disagreement_is_logged_once_per_agent_and_dialect(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A client that always sends `postgres` would otherwise warn on every query."""
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server import server
+        from nlqueries.mcp_server.server import query
+
+        monkeypatch.setattr(server, "_DIALECT_WARNED", set())
+        connectors = {"sales": {"db_type": "mssql"}, "crm": {"db_type": "mssql"}}
+        with (
+            patch.object(loader, "_load_connectors", return_value=connectors),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ),
+            caplog.at_level("WARNING", logger="nlqueries.mcp_server.server"),
+        ):
+            for _ in range(3):
+                await query("How many orders?", "sales", dialect="postgres")
+            await query("How many orders?", "sales", dialect="mysql")
+            await query("How many orders?", "crm", dialect="postgres")
+
+        warned = [r.getMessage() for r in caplog.records if "asked for dialect" in r.getMessage()]
+        assert len(warned) == 3
+
+    @pytest.mark.anyio
+    async def test_the_record_of_logged_disagreements_is_capped(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Agent and dialect both come from the client, so the set cannot grow
+        without bound."""
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server import server
+        from nlqueries.mcp_server.server import query
+
+        full = {(f"agent-{i}", "mysql") for i in range(server._DIALECT_WARNED_MAX)}
+        monkeypatch.setattr(server, "_DIALECT_WARNED", full)
+        with (
+            patch.object(loader, "_load_connectors", return_value={"sales": {"db_type": "mssql"}}),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ) as mock_run,
+            caplog.at_level("WARNING", logger="nlqueries.mcp_server.server"),
+        ):
+            await query("How many orders?", "sales", dialect="postgres")
+
+        assert len(server._DIALECT_WARNED) == server._DIALECT_WARNED_MAX
+        assert mock_run.call_args.kwargs.get("dialect") == "tsql"
+
+    @pytest.mark.anyio
+    async def test_each_logged_disagreement_is_kept_only_as_far_as_it_is_logged(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cap bounds the count; this bounds each entry. Both values are the
+        client's, up to the size of the request."""
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server import server
+        from nlqueries.mcp_server.server import query
+
+        monkeypatch.setattr(server, "_DIALECT_WARNED", set())
+        agent, asked = "a" * 1_000_000, "x" * 1_000_000
+        with (
+            patch.object(loader, "_load_connectors", return_value={}),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ),
+            caplog.at_level("WARNING", logger="nlqueries.mcp_server.server"),
+        ):
+            await query("How many orders?", agent, dialect=asked)
+
+        ((kept_agent, kept_dialect),) = server._DIALECT_WARNED
+        assert len(kept_agent) == len(kept_dialect) == server._DIALECT_LOGGED_CHARS
+        (line,) = [r.getMessage() for r in caplog.records if "asked for dialect" in r.getMessage()]
+        assert len(line) < 400
+
+    @pytest.mark.anyio
+    async def test_the_paraphrase_reads_the_sql_in_the_engines_dialect(self) -> None:
+        from nlqueries.connectors import loader
+        from nlqueries.mcp_server.server import query
+
+        described = MagicMock(text="Counts the orders.", complete=True)
+        with (
+            patch.object(loader, "_load_connectors", return_value={"sales": {"db_type": "mssql"}}),
+            patch(
+                "nlqueries.orchestrator.sync_runner.run_query",
+                new_callable=AsyncMock,
+                return_value=_make_result(),
+            ),
+            patch("nlqueries.verbalizer.verbalize", return_value=described) as mock_verbalize,
+        ):
+            await query("How many orders?", "sales", dialect="mysql", paraphrase=True)
+
+        assert mock_verbalize.call_args.args[1] == "tsql"
 
 
 # ---------------------------------------------------------------------------

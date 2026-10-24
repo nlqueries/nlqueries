@@ -39,7 +39,7 @@ def test_every_listed_name_is_a_class_in_this_sqlglot() -> None:
 
 
 def test_the_version_records_the_change() -> None:
-    assert POLICY_VERSION == "5"
+    assert POLICY_VERSION == "6"
 
 
 #: Calls that read files, sleep, lock, reach the network, run commands, or read

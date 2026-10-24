@@ -80,10 +80,6 @@ DIALECT_CHOICES: tuple[str, ...] = (
     "sqlite",
 )
 
-#: The dialect when neither ``--dialect`` nor the connector names one: the
-#: option's default before it learned to read the connector.
-_FALLBACK_DIALECT = "postgres"
-
 _DEFAULT_PORTS: dict[str, int] = {
     "postgres": 5432,
     "postgresql": 5432,
@@ -272,40 +268,37 @@ def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
     candidate ranker and ``eval`` hand it to ``sqlglot.parse_one`` as it is, and
     sqlglot has no dialect called ``mssql``.
     """
-    from sqlglot.dialects.dialect import Dialect  # noqa: PLC0415
+    from rich.markup import escape  # noqa: PLC0415
 
-    from nlqueries.connectors.loader import _find_connector_id  # noqa: PLC0415
-    from nlqueries.sql_policy import _sqlglot_dialect, dialect_from_url  # noqa: PLC0415
+    from nlqueries.connectors.loader import dialect_for_agent, engine_dialect  # noqa: PLC0415
+    from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
 
     if explicit:
-        return _sqlglot_dialect(explicit)
+        chosen = _sqlglot_dialect(explicit)
+        # The flag stays authoritative: the operator chose it. But the SQL
+        # policy vouches for a statement only in the grammar it parsed it with,
+        # so a flag that disagrees with the database the connector names is
+        # said out loud rather than weakening that silently.
+        try:
+            engine = engine_dialect(agent_id, _load_connectors())
+        except click.ClickException:
+            # Read only for that warning: a connectors file that does not parse
+            # leaves nothing to compare against, and the operator gave the
+            # dialect, so generating SQL with it does not fail over this.
+            engine = None
+        if engine and engine != chosen:
+            err_console.print(
+                f"  [yellow]⚠ --dialect {escape(explicit)} is not the dialect of "
+                f"{escape(agent_id)}'s database ({engine}). The SQL is generated and "
+                f"checked as {chosen} but runs on {engine}.[/yellow]"
+            )
+        return chosen
     # The entry the loader will open, found the way it finds it: it also
     # matches an id whose punctuation became underscores (`sqlite:/bird/dev`
     # as `sqlite__bird_dev`), which a plain `.get` misses -- and missing it
-    # would generate Postgres for a query that then runs against SQLite.
-    connectors = _load_connectors()
-    connector_id = _find_connector_id(agent_id, connectors)
-    cfg = connectors.get(connector_id) if connector_id else None
-    if not isinstance(cfg, dict):
-        # Absent, or not a mapping: `agent-a: postgresql://host/db` is a
-        # plausible hand-edit, and the loader reports it where it opens the
-        # connector. Here it names no dialect, rather than raising before
-        # that report can be made.
-        cfg = {}
-    db_type = str(cfg.get("db_type") or "").lower()
-    if db_type == "sqlalchemy":
-        derived = dialect_from_url(str(cfg.get("url") or ""))
-    else:
-        derived = _sqlglot_dialect(db_type) if db_type else None
-    if derived:
-        try:
-            Dialect.get_or_raise(derived)
-        except ValueError:
-            # A URL backend sqlglot has no grammar for: generating in one it
-            # does not know would fail at the first parse, so fall back.
-            return _FALLBACK_DIALECT
-        return derived
-    return _FALLBACK_DIALECT
+    # would generate Postgres for a query that then runs against SQLite. The
+    # MCP server resolves through the same function, with no flag to override.
+    return dialect_for_agent(agent_id, _load_connectors())
 
 
 #: Database types whose URL has no place for a password (see `_build_url`).

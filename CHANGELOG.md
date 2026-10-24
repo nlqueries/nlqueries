@@ -4,6 +4,25 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Security
+
+- **The MCP `query` tool checks SQL in the grammar of the agent's own
+  database.** The SQL policy parsed the generated statement in the dialect the
+  MCP client passed (default `postgres`), not the dialect of the engine that ran
+  it, and a statement is only checked when it is parsed the way the engine will
+  read it. The server now takes the dialect from the agent's connector, through
+  the same lookup the CLI's `--dialect` default uses
+  (`connectors.loader.dialect_for_agent`). The tool's `dialect` argument is kept
+  so clients that send it keep working, but it is ignored; a value that
+  disagrees with the connector is logged as a warning.
+- **SQL Server: a reserved word used as an unquoted name is refused.** SQL
+  Server accepts its reserved keywords as identifiers only when quoted, while
+  sqlglot's T-SQL grammar reads some unquoted ones as an alias, so
+  `SELECT a FROM t COMMIT` parsed as one query. Such statements are now refused
+  with a reason naming the word; `[COMMIT]` is still an ordinary name.
+  `POLICY_VERSION` is now `6`, so semantic-cache entries made under version 5
+  miss once.
+
 ### Added
 
 - **Cached answers and document text can be encrypted in Qdrant.** With

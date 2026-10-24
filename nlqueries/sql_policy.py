@@ -58,7 +58,10 @@ from nlqueries.sql_constructs import allowed_constructs
 #: class sqlglot parses it as; a qualifier on what is neither a name nor a
 #: call (``FROM public.mod(5, 2)``, the operator `Mod`) is refused; and an
 #: unmodelled call whose name cannot be read is refused.
-POLICY_VERSION = "5"
+#:
+#: 6: in T-SQL, a reserved word used as an unquoted identifier is refused (see
+#: :data:`TSQL_RESERVED`).
+POLICY_VERSION = "6"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -144,6 +147,55 @@ _DIALECT_ALIASES = {
     "postgresql": "postgres",
     "mariadb": "mysql",
 }
+
+
+#: SQL Server's reserved keywords, from Microsoft's "Reserved keywords
+#: (Transact-SQL)" list: the SQL Server table, less ``WITHIN GROUP``, which is
+#: two words and cannot be one identifier. The ODBC and future keywords on the
+#: same page are not reserved by the engine.
+#:
+#: SQL Server does not accept one of these as an unquoted identifier, but
+#: sqlglot's T-SQL grammar accepts several as an alias after a query's last
+#: clause: ``SELECT a FROM t COMMIT`` parses as one ``SELECT`` with the table
+#: alias ``COMMIT``, where SQL Server, whose statement terminator is optional,
+#: is expected to read a ``SELECT`` followed by ``COMMIT``. A statement whose
+#: parse differs from the engine's has not been checked, so an unquoted
+#: reserved word anywhere is refused. Quoted (``[COMMIT]``, ``"COMMIT"``) it is
+#: an ordinary name in both readings.
+TSQL_RESERVED: frozenset[str] = frozenset(
+    {
+        "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "AUTHORIZATION",
+        "BACKUP", "BEGIN", "BETWEEN", "BREAK", "BROWSE", "BULK", "BY",
+        "CASCADE", "CASE", "CHECK", "CHECKPOINT", "CLOSE", "CLUSTERED",
+        "COALESCE", "COLLATE", "COLUMN", "COMMIT", "COMPUTE", "CONSTRAINT",
+        "CONTAINS", "CONTAINSTABLE", "CONTINUE", "CONVERT", "CREATE", "CROSS",
+        "CURRENT", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
+        "CURRENT_USER", "CURSOR", "DATABASE", "DBCC", "DEALLOCATE", "DECLARE",
+        "DEFAULT", "DELETE", "DENY", "DESC", "DISK", "DISTINCT", "DISTRIBUTED",
+        "DOUBLE", "DROP", "DUMP", "ELSE", "END", "ERRLVL", "ESCAPE", "EXCEPT",
+        "EXEC", "EXECUTE", "EXISTS", "EXIT", "EXTERNAL", "FETCH", "FILE",
+        "FILLFACTOR", "FOR", "FOREIGN", "FREETEXT", "FREETEXTTABLE", "FROM",
+        "FULL", "FUNCTION", "GOTO", "GRANT", "GROUP", "HAVING", "HOLDLOCK",
+        "IDENTITY", "IDENTITY_INSERT", "IDENTITYCOL", "IF", "IN", "INDEX",
+        "INNER", "INSERT", "INTERSECT", "INTO", "IS", "JOIN", "KEY", "KILL",
+        "LEFT", "LIKE", "LINENO", "LOAD", "MERGE", "NATIONAL", "NOCHECK",
+        "NONCLUSTERED", "NOT", "NULL", "NULLIF", "OF", "OFF", "OFFSETS", "ON",
+        "OPEN", "OPENDATASOURCE", "OPENQUERY", "OPENROWSET", "OPENXML",
+        "OPTION", "OR", "ORDER", "OUTER", "OVER", "PERCENT", "PIVOT", "PLAN",
+        "PRECISION", "PRIMARY", "PRINT", "PROC", "PROCEDURE", "PUBLIC",
+        "RAISERROR", "READ", "READTEXT", "RECONFIGURE", "REFERENCES",
+        "REPLICATION", "RESTORE", "RESTRICT", "RETURN", "REVERT", "REVOKE",
+        "RIGHT", "ROLLBACK", "ROWCOUNT", "ROWGUIDCOL", "RULE", "SAVE",
+        "SCHEMA", "SECURITYAUDIT", "SELECT", "SEMANTICKEYPHRASETABLE",
+        "SEMANTICSIMILARITYDETAILSTABLE", "SEMANTICSIMILARITYTABLE",
+        "SESSION_USER", "SET", "SETUSER", "SHUTDOWN", "SOME", "STATISTICS",
+        "SYSTEM_USER", "TABLE", "TABLESAMPLE", "TEXTSIZE", "THEN", "TO", "TOP",
+        "TRAN", "TRANSACTION", "TRIGGER", "TRUNCATE", "TRY_CONVERT", "TSEQUAL",
+        "UNION", "UNIQUE", "UNPIVOT", "UPDATE", "UPDATETEXT", "USE", "USER",
+        "VALUES", "VARYING", "VIEW", "WAITFOR", "WHEN", "WHERE", "WHILE",
+        "WITH", "WRITETEXT",
+    }
+)  # fmt: skip
 
 
 def _sqlglot_dialect(dialect: str) -> str:
@@ -667,6 +719,19 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
             reasons.append(
                 f"gives {', '.join(hinted)} a parenthesised list after its alias, which "
                 "SQL Server reads as a table hint"
+            )
+        # And a reserved word it would read as a keyword: see TSQL_RESERVED.
+        reserved = sorted(
+            {
+                n.name.upper()
+                for n in tree.find_all(exp.Identifier)
+                if not n.quoted and n.name.upper() in TSQL_RESERVED
+            }
+        )
+        if reserved:
+            reasons.append(
+                f"uses the reserved word(s) {', '.join(reserved)} unquoted, "
+                "which SQL Server reads as a keyword"
             )
 
     tables = frozenset(

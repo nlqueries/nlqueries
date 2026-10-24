@@ -91,6 +91,67 @@ def test_an_underscored_id_finds_the_connector_the_loader_opens() -> None:
         assert _resolve_dialect("sqlite__bird_dev.sqlite", None) == "sqlite"
 
 
+@pytest.mark.parametrize(
+    ("connector", "explicit", "warned"),
+    [
+        # The flag wins, but checking as Postgres what runs on SQL Server is said.
+        ({"db_type": "mssql"}, "postgres", True),
+        # `mssql` is `tsql`: the same grammar, nothing to say.
+        ({"db_type": "mssql"}, "mssql", False),
+        # No connector: nothing to disagree with, and nothing will run.
+        (None, "sqlite", False),
+        # A backend sqlglot has no grammar for names no dialect to compare.
+        ({"db_type": "sqlalchemy", "url": "firebird://u@db/shop"}, "mysql", False),
+        # No flag: the connector decides, so there is no disagreement.
+        ({"db_type": "mssql"}, None, False),
+    ],
+)
+def test_a_flag_that_disagrees_with_the_database_is_warned_about(
+    connector: dict[str, Any] | None, explicit: str | None, warned: bool
+) -> None:
+    connectors = {} if connector is None else {AGENT: connector}
+    with (
+        patch.object(cli_main, "_load_connectors", return_value=connectors),
+        patch.object(cli_main, "err_console") as err,
+    ):
+        _resolve_dialect(AGENT, explicit)
+
+    printed = " ".join(str(c.args[0]) for c in err.print.call_args_list)
+    assert ("is not the dialect of" in printed) is warned
+
+
+def test_an_unreadable_connectors_file_does_not_stop_an_explicit_dialect() -> None:
+    """With --dialect given, the file is read only for the disagreement warning;
+    that it does not parse is no reason to refuse to generate SQL."""
+    import click
+
+    def unreadable() -> dict[str, Any]:
+        raise click.ClickException("connectors.yaml does not parse")
+
+    with (
+        patch.object(cli_main, "_load_connectors", side_effect=unreadable),
+        patch.object(cli_main, "err_console") as err,
+    ):
+        assert _resolve_dialect(AGENT, "snowflake") == "snowflake"
+
+    printed = " ".join(str(c.args[0]) for c in err.print.call_args_list)
+    assert "is not the dialect of" not in printed
+
+
+def test_without_a_flag_an_unreadable_connectors_file_is_still_an_error() -> None:
+    """The control: with no flag the file decides the dialect, so it must be read."""
+    import click
+
+    def unreadable() -> dict[str, Any]:
+        raise click.ClickException("connectors.yaml does not parse")
+
+    with (
+        patch.object(cli_main, "_load_connectors", side_effect=unreadable),
+        pytest.raises(click.ClickException),
+    ):
+        _resolve_dialect(AGENT, None)
+
+
 def test_an_entry_that_is_not_a_mapping_names_no_dialect() -> None:
     """`agent-a: postgresql://host/db` is a plausible hand-edit. The loader
     reports it where it opens the connector; choosing a dialect must not raise

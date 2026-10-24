@@ -313,6 +313,65 @@ def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) 
     return None
 
 
+#: The dialect when the connector names none: what ``--dialect`` defaulted to
+#: before it learned to read the connector.
+FALLBACK_DIALECT = "postgres"
+
+
+def dialect_for_agent(agent_id: str, connectors: dict[str, Any] | None = None) -> str:
+    """The SQL dialect of the engine *agent_id*'s connector runs on.
+
+    The connector's own type, as ``nlqueries connect`` saved it -- or, for the
+    generic ``sqlalchemy`` connector, whose type names no grammar, the engine its
+    URL names -- and ``postgres`` when neither says. Returned as sqlglot spells
+    it (``mssql`` is ``tsql``).
+
+    Taken from the connector rather than from whoever asked, because the SQL
+    policy only vouches for a statement parsed with the grammar of the engine
+    that will run it. The CLI and the MCP server both resolve it here.
+
+    *connectors* lets a caller resolve against a copy of the file it already
+    holds; the entry is found the way :func:`open_connector_for_agent` finds it.
+    """
+    return engine_dialect(agent_id, connectors) or FALLBACK_DIALECT
+
+
+def engine_dialect(agent_id: str, connectors: dict[str, Any] | None = None) -> str | None:
+    """The dialect *agent_id*'s connector names, or None when it names none.
+
+    :func:`dialect_for_agent` without the fallback: None when there is no
+    usable entry, no type, or an engine sqlglot has no grammar for. For a
+    caller that must tell "the database is Postgres" from "nothing says".
+    """
+    from sqlglot.dialects.dialect import Dialect  # noqa: PLC0415
+
+    from nlqueries.sql_policy import _sqlglot_dialect, dialect_from_url  # noqa: PLC0415
+
+    if connectors is None:
+        connectors = _load_connectors()
+    connector_id = _find_connector_id(agent_id, connectors)
+    cfg = connectors.get(connector_id) if connector_id else None
+    if not isinstance(cfg, dict):
+        # Absent, or not a mapping: `agent-a: postgresql://host/db` is a
+        # plausible hand-edit, reported where the connector is opened. Here it
+        # names no dialect, rather than raising before that report can be made.
+        return None
+    db_type = str(cfg.get("db_type") or "").lower()
+    if db_type == "sqlalchemy":
+        derived = dialect_from_url(str(cfg.get("url") or ""))
+    else:
+        derived = _sqlglot_dialect(db_type) if db_type else None
+    if not derived:
+        return None
+    try:
+        Dialect.get_or_raise(derived)
+    except ValueError:
+        # A URL backend sqlglot has no grammar for: generating in one it does
+        # not know would fail at the first parse.
+        return None
+    return derived
+
+
 def _load_password(connector_id: str, cfg: dict[str, Any]) -> str | None:
     if cfg.get("password_storage") == "keychain":
         try:
