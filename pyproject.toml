@@ -101,7 +101,7 @@ dev = [
     # Docker-based fixtures for connector integration tests (e.g. PostgresConnector)
     "testcontainers[postgres]>=4.0",
     # Optional connector deps — installed in CI so their tests keep running
-    "snowflake-connector-python>=3.0",
+    "snowflake-connector-python>=5.0",
     "google-cloud-bigquery>=3.0",
     "google-auth>=2.20",
     # DuckDB reads local files through table functions, so the security corpus
@@ -112,7 +112,7 @@ dev = [
 # of the sentence-transformers/PyTorch path, which is a base dependency.
 onnx      = ["optimum[onnxruntime]>=1.17"]
 # Cloud database connectors
-snowflake = ["snowflake-connector-python>=3.0"]
+snowflake = ["snowflake-connector-python>=5.0"]
 # google-auth 2.20 is the first with load_credentials_from_dict, which the
 # connector uses for a Workload Identity Federation configuration given as JSON.
 bigquery  = ["google-cloud-bigquery>=3.0", "google-auth>=2.20"]

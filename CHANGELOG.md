@@ -6,6 +6,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Security
 
+- **filelock 4.2.4 and setuptools 84.2.1 in the image.** The lock pinned
+  filelock 3.32.4 (CVE-2026-112907, CVE-2026-112913, CVE-2026-112940, fixed
+  in 4.2.1) and setuptools 84.0.0 (GHSA-xmj3-9gf7-h52w, fixed in 84.1.0).
+  The Snowflake driver 4.x capped filelock below 4, so the `snowflake` and
+  `dev` extras now require **`snowflake-connector-python` 5.0 or later**;
+  5.x no longer depends on filelock, and it needs protobuf below 7, so the
+  lock moves protobuf from 7.36.0 to 6.33.6. Packages only the 4.x driver
+  used (asn1crypto, platformdirs, pyOpenSSL, sortedcontainers) leave the
+  image. nlqueries uses only `connect`, `DictCursor` and
+  `errors.ProgrammingError` from the driver, all unchanged in 5.x.
 - **The MCP `query` tool checks SQL in the grammar of the agent's own
   database.** The SQL policy parsed the generated statement in the dialect the
   MCP client passed (default `postgres`), not the dialect of the engine that ran
