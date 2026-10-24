@@ -22,6 +22,41 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   with a reason naming the word; `[COMMIT]` is still an ordinary name.
   `POLICY_VERSION` is now `6`, so semantic-cache entries made under version 5
   miss once.
+- **OIDC verification no longer lets a request stall the MCP server.** A
+  token whose key id was not in the cached key set made the verifier refetch
+  the provider's JWKS, on every such request, with a blocking call on the
+  event loop. Those refetches now happen at most once a minute, under a lock,
+  and the MCP verifier runs off the event loop. When the hourly refresh fails,
+  the cached keys stay in use for up to 24 hours and the refresh is retried
+  a minute later instead of on every request. A reply that is not a key set,
+  or a key set with no keys in it, counts as a failed refresh rather than
+  replacing the working keys. With no usable keys, a request waits at most 2
+  seconds for another request's fetch, then is refused rather than queued.
+- **Malformed bearer tokens are rejected, not answered with a 500.** A header
+  PyJWT refuses for any reason (a `kid` that is not a string, say) and a
+  static token containing non-ASCII characters both raised out of the verifier.
+- **Stricter checks on the identity provider and its tokens** (MCP
+  authentication and `verify-oidc-token`):
+  - the discovery URL and `jwks_uri` must be `https`; plain `http` is
+    accepted only for localhost or a loopback address;
+  - the discovery document's `issuer` must be the one its URL belongs to
+    (OpenID Connect Discovery 1.0, section 4.3);
+  - either document over 1 MiB is refused, and a key published for
+    encryption (`use: enc`) is not used to check signatures;
+  - `exp`, `iss` and `aud` must be present; a token whose `azp` names
+    another client is refused, and a token with several audiences must carry
+    `azp`.
+
+  A deployment whose provider is reached over plain `http` on another host, or
+  whose discovery URL is not derived from its issuer, stops verifying tokens
+  until that is corrected. Microsoft Entra ID's v1.0 endpoint, and its v2.0
+  `common` and `organizations` endpoints, are such cases: use the
+  tenant-specific v2.0 discovery URL with the tenant's ID. See
+  `docs/mcp-authentication.md`.
+- **`mcp` 1.30 or later is required.** The server tells it not to apply its own
+  RFC 8707 resource check (`validate_token_resource=False`), which 1.30 added:
+  the verifiers check each token's audience themselves, and OIDC providers put
+  the client id there, not the server's URL.
 
 ### Added
 

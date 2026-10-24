@@ -96,6 +96,23 @@ class TestStaticToken:
         with pytest.raises(McpAuthConfigError, match="shorter than"):
             StaticTokenVerifier("short", "operator", RESOURCE)
 
+    @pytest.mark.anyio
+    async def test_a_token_with_non_ascii_characters_is_declined(self) -> None:
+        """`hmac.compare_digest` raises TypeError on non-ASCII strings, which
+        reached the transport as a 500 instead of a rejection."""
+        verifier = StaticTokenVerifier(GOOD_TOKEN, "operator", RESOURCE)
+
+        assert await verifier.verify_token("é" * MIN_STATIC_TOKEN_LENGTH) is None
+
+    @pytest.mark.anyio
+    async def test_a_non_ascii_configured_token_still_matches_itself(self) -> None:
+        configured = "é" * MIN_STATIC_TOKEN_LENGTH
+        verifier = StaticTokenVerifier(configured, "operator", RESOURCE)
+
+        result = await verifier.verify_token(configured)
+
+        assert result is not None and result.subject == "operator"
+
 
 class _AcceptingOidc:
     def verify(self, token: str, client_id: str) -> OidcClaims:
@@ -128,6 +145,24 @@ class TestOidc:
         assert result is None
         assert "an-expired-token" not in caplog.text
         assert "expired" in caplog.text
+
+    @pytest.mark.anyio
+    async def test_verification_runs_off_the_event_loop(self) -> None:
+        """Verifying can fetch the provider's keys over the network. On the
+        event loop that fetch stalled every other request the server had."""
+        import threading
+
+        seen: list[int] = []
+
+        class _Recording:
+            def verify(self, token: str, client_id: str) -> OidcClaims:
+                seen.append(threading.get_ident())
+                return _claims()
+
+        verifier = OidcAccessTokenVerifier(_Recording(), "client-1", RESOURCE)  # type: ignore[arg-type]
+
+        assert await verifier.verify_token("a-token") is not None
+        assert seen and seen[0] != threading.get_ident()
 
 
 class TestConfiguration:
@@ -176,6 +211,9 @@ class TestConfiguration:
         verifier, settings = built
         assert isinstance(verifier, StaticTokenVerifier)
         assert str(settings.resource_server_url).rstrip("/") == RESOURCE
+        # The verifiers check the audience themselves; mcp's resource check would
+        # refuse tokens whose `aud` is the client id, as OIDC providers issue.
+        assert settings.validate_token_resource is False
 
     def test_a_token_file_is_read(self, monkeypatch, tmp_path) -> None:
         path = tmp_path / "token"

@@ -404,7 +404,7 @@ nlqueries verify-oidc-token \
   eyJhbGci...
 ```
 
-Validates the token signature, expiry, audience, and issuer. Exits 1 on any verification failure.
+Validates the token signature, expiry, audience, and issuer, with the same rules as MCP authentication (see [mcp-authentication.md](mcp-authentication.md#option-1--an-identity-provider)): the discovery URL must be `https` (or `http` to localhost) and must belong to the issuer the document names. Exits 1 on any verification failure.
 
 ---
 
