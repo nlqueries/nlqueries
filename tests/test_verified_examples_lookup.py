@@ -82,11 +82,11 @@ def test_a_promoted_pair_is_found_for_a_connector_id_with_colons(qdrant: QdrantC
 def test_an_agent_whose_id_sanitises_the_same_does_not_get_anothers_pairs(
     qdrant: QdrantClient,
 ) -> None:
-    """`postgres:db.prod:sales` and `postgres:db_prod:sales` both become
-    `agent_postgres_db_prod_sales_verified`, so their pairs share a collection
-    and only the `agent_id` the promoter writes into each payload tells them
-    apart."""
-    first, second = "postgres:db.prod:sales", "postgres:db_prod:sales"
+    """A connector id and its sanitised form, `postgres:db:sales` and
+    `postgres_db_sales`, name the same storage on purpose (`agent_storage_id`),
+    so their pairs share a collection and only the `agent_id` the promoter
+    writes into each payload tells them apart."""
+    first, second = "postgres:db:sales", "postgres_db_sales"
     collection = _verified_collection(first)
     assert collection == _verified_collection(second)
     qdrant.create_collection(

@@ -42,7 +42,18 @@ def _isolated_feedback_dir(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
-def _write(rating: str, source: str, sql: str = "SELECT 1") -> None:
+@pytest.fixture(autouse=True)
+def _a_knowledge_base_with_the_tables_used(monkeypatch) -> None:
+    """Promotion accepts only SQL it can check against a schema, so the gate
+    tests need one: otherwise a refusal could come from the missing schema
+    rather than from the source being tested."""
+    monkeypatch.setattr(
+        "nlqueries.feedback.promoter._load_kb",
+        lambda agent_id: {"schema": {"tables": [{"name": "orders"}, {"name": "payroll"}]}},
+    )
+
+
+def _write(rating: str, source: str, sql: str = "SELECT 1 FROM orders") -> None:
     record_feedback(
         QueryFeedback(
             question=f"question for {source} {sql}",
@@ -105,35 +116,35 @@ class TestPromotionGate:
         assert _promoted() == []
 
     def test_feedback_with_no_recorded_origin_is_not_promoted(self) -> None:
-        _write("up", SOURCE_UNKNOWN, sql="SELECT 1")
+        _write("up", SOURCE_UNKNOWN, sql="SELECT 1 FROM orders")
 
         assert _promoted() == []
 
     def test_attributed_feedback_is_still_promoted(self) -> None:
         """The control. A gate that refused everything would also pass the test
         above."""
-        _write("up", SOURCE_CLI, sql="SELECT 2")
+        _write("up", SOURCE_CLI, sql="SELECT 2 FROM orders")
 
-        assert _promoted() == ["SELECT 2"]
+        assert _promoted() == ["SELECT 2 FROM orders"]
 
     def test_an_operator_can_promote_anonymous_feedback_deliberately(self) -> None:
-        _write("up", SOURCE_MCP, sql="SELECT 3")
+        _write("up", SOURCE_MCP, sql="SELECT 3 FROM orders")
 
         pending = promote_feedback(AGENT, dry_run=True, include_unattributed=True)
 
         assert isinstance(pending, list)
-        assert [p["sql"] for p in pending] == ["SELECT 3"]
+        assert [p["sql"] for p in pending] == ["SELECT 3 FROM orders"]
 
     def test_a_negative_rating_is_still_never_promoted(self) -> None:
-        _write("down", SOURCE_CLI, sql="SELECT 4")
+        _write("down", SOURCE_CLI, sql="SELECT 4 FROM orders")
 
         assert _promoted() == []
 
     def test_the_gate_does_not_change_which_attributed_records_qualify(self) -> None:
         """Mixed input: only the attributed positive one comes through."""
-        _write("up", SOURCE_CLI, sql="SELECT 5")
-        _write("up", SOURCE_MCP, sql="SELECT 6")
-        _write("down", SOURCE_CLI, sql="SELECT 7")
-        _write("up", SOURCE_UNKNOWN, sql="SELECT 8")
+        _write("up", SOURCE_CLI, sql="SELECT 5 FROM orders")
+        _write("up", SOURCE_MCP, sql="SELECT 6 FROM orders")
+        _write("down", SOURCE_CLI, sql="SELECT 7 FROM orders")
+        _write("up", SOURCE_UNKNOWN, sql="SELECT 8 FROM orders")
 
-        assert _promoted() == ["SELECT 5"]
+        assert _promoted() == ["SELECT 5 FROM orders"]

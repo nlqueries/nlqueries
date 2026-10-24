@@ -424,9 +424,10 @@ def submit_feedback(
 ) -> str:
     """Record user feedback for a query result.
 
-    Feedback is stored in ~/.nlqueries/feedback/<agent_id>.jsonl and is used
-    by ``nlqueries promote-feedback`` to improve future query accuracy by
-    seeding verified (question, SQL) examples into retrieval.
+    Feedback is stored in ~/.nlqueries/feedback/<agent_id>.jsonl. A thumbs-up
+    can become a verified example through ``nlqueries promote-feedback``, and a
+    correction an example query through ``nlqueries export-kb``; feedback sent
+    here is used only when an operator includes it with ``--include-anonymous``.
 
     Args:
         question:      The question that was asked.
@@ -461,7 +462,13 @@ def submit_feedback(
 
     msg = f"Feedback recorded: {'👍' if rating == 'up' else '👎'} for agent '{agent_id}'."
     if corrected_sql:
-        msg += " Corrected SQL saved — run 'nlqueries promote-feedback' to apply it."
+        # Not `promote-feedback`: that command handles thumbs-up only, so this
+        # used to send operators to a step that ignores corrections.
+        msg += (
+            " Corrected SQL saved. Feedback sent over MCP does not identify who gave"
+            " it, so an operator has to review it and run"
+            " 'nlqueries export-kb --include-anonymous' to use the correction."
+        )
     return msg
 
 

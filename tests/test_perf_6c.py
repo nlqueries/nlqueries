@@ -161,7 +161,11 @@ class TestPromoterUsesBatchEmbed:
 
         with (
             patch("nlqueries.feedback.store.load_feedback", return_value=records),
-            patch("nlqueries.feedback.promoter._load_kb", return_value={}),
+            # A schema with the table used: promotion refuses SQL it cannot check.
+            patch(
+                "nlqueries.feedback.promoter._load_kb",
+                return_value={"schema": {"tables": [{"name": "orders"}]}},
+            ),
             # patch at the source module, not at the lazy-import site
             patch("nlqueries.embeddings.qdrant_store.ensure_collection", return_value=None),
             patch(

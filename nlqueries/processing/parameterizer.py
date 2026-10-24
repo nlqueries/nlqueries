@@ -149,6 +149,7 @@ def _parameterize_sql(
     schema_type_map: dict[str, str],
     *,
     skip_string_literals: bool = False,
+    dialect: str | None = None,
 ) -> tuple[str, list[Placeholder]]:
     """Replace every literal in *sql* with a typed placeholder string.
 
@@ -163,9 +164,13 @@ def _parameterize_sql(
             templates so implicit filter constants like ``'movie'`` do not
             become placeholder slots that entity binding must fill from the
             question.
+        dialect: The sqlglot dialect *sql* is written in, used to read it and
+            to write the template back; None is sqlglot's default. A statement
+            in an engine's own quoting (backticks, brackets, ``TOP``) does not
+            parse in the default, and comes back unparameterised.
     """
     try:
-        ast = sqlglot.parse_one(sql)
+        ast = sqlglot.parse_one(sql, read=dialect)
     except Exception:  # noqa: BLE001
         return "", []
 
@@ -212,28 +217,36 @@ def _parameterize_sql(
 
     try:
         transformed = ast.transform(_replace)
-        template_sql = transformed.sql(pretty=False, comments=False)
+        template_sql = transformed.sql(dialect=dialect, pretty=False, comments=False)
     except Exception:  # noqa: BLE001
         return "", []
 
     return template_sql, placeholders
 
 
-def _extract_tables(sql: str) -> list[str]:
-    """Return a sorted list of table names referenced in *sql*."""
+def _extract_tables(sql: str, dialect: str | None = None) -> list[str]:
+    """Return a sorted list of table names referenced in *sql*, read in *dialect*."""
     try:
         return sorted(
-            {t.name.lower() for t in sqlglot.parse_one(sql).find_all(exp.Table) if t.name}
+            {
+                t.name.lower()
+                for t in sqlglot.parse_one(sql, read=dialect).find_all(exp.Table)
+                if t.name
+            }
         )
     except Exception:  # noqa: BLE001
         return []
 
 
-def _extract_columns(sql: str) -> list[str]:
-    """Return a sorted list of column names referenced in *sql*."""
+def _extract_columns(sql: str, dialect: str | None = None) -> list[str]:
+    """Return a sorted list of column names referenced in *sql*, read in *dialect*."""
     try:
         return sorted(
-            {col.name.lower() for col in sqlglot.parse_one(sql).find_all(exp.Column) if col.name}
+            {
+                col.name.lower()
+                for col in sqlglot.parse_one(sql, read=dialect).find_all(exp.Column)
+                if col.name
+            }
         )
     except Exception:  # noqa: BLE001
         return []

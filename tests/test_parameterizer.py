@@ -515,20 +515,16 @@ def test_national_string_literal_is_replaced() -> None:
         ("bigquery", "r'Jane Doe'"),
     ],
 )
-def test_every_string_literal_form_is_replaced(
-    monkeypatch: pytest.MonkeyPatch, dialect: str, literal: str
-) -> None:
-    # The default dialect parses only N'...' of these; a capsule built from
-    # another dialect's AST must still come out with every value replaced.
-    import functools
+def test_every_string_literal_form_is_replaced(dialect: str, literal: str) -> None:
+    # The default dialect parses only N'...' of these; read in its own dialect,
+    # each must still come out with its value replaced.
+    from nlqueries.processing.parameterizer import _parameterize_sql
 
-    import sqlglot
-
-    monkeypatch.setattr(sqlglot, "parse_one", functools.partial(sqlglot.parse_one, read=dialect))
-    capsule = parameterize_cluster(_cluster(f"SELECT * FROM t WHERE c = {literal}"))
-    assert capsule is not None
-    assert capsule.template_sql == "SELECT * FROM t WHERE c = '[c:VARCHAR]'"
-    assert capsule.placeholders == [Placeholder(name="c", type="VARCHAR")]
+    template_sql, placeholders = _parameterize_sql(
+        f"SELECT * FROM t WHERE c = {literal}", {}, dialect=dialect
+    )
+    assert template_sql == "SELECT * FROM t WHERE c = '[c:VARCHAR]'"
+    assert placeholders == [Placeholder(name="c", type="VARCHAR")]
 
 
 def test_template_carries_no_comments() -> None:

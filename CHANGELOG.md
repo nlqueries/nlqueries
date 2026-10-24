@@ -133,6 +133,47 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   became `postgreslocalhostshop.yaml`), it fingerprinted a file that does not
   exist, and the entry was bound to no schema. Those agents' cache entries miss
   once after upgrading.
+- **Thumbs-down corrections reach the knowledge base only from known sources,
+  and only as safe examples.** `export-kb` put every correction in the feedback
+  file at the front of the agent's example queries, which the model sees for
+  every question, whoever submitted it over MCP and whatever its SQL. A
+  correction is now used only when it was recorded with `nlqueries feedback`
+  or the Python API (`--include-anonymous` opts in to the rest, as for
+  `promote-feedback`), and only when its SQL is a single read-only query that
+  passes the SQL policy and reads tables in the knowledge base (a table named
+  with a schema must match it where the knowledge base records one, so
+  `other.orders` does not pass for `public.orders`, and one named with a
+  database or project too must name the one the knowledge base was built
+  from). Its question is
+  kept on one line of at most 200 characters, since it is shown as a comment
+  and a line break would end the comment, and its literals become
+  placeholders. `export-kb` reports how many it skipped and why.
+  **After upgrading, run `nlqueries export-kb` again for each agent**: the
+  knowledge base's example queries are rebuilt on every run, so this drops
+  corrections accepted under the old rules.
+- **Promotion refuses SQL it cannot check.** `promote-feedback` treated a
+  pair as valid when the knowledge base had no schema or the SQL did not
+  parse. A pair is now promoted only when its SQL passes the SQL policy and is
+  one read-only query that names at least one table, all of them in the
+  knowledge base (compared with their schema, as for corrections), with no
+  line break left inside a name or value; its question is stored on one line
+  and its SQL without comments. After promoting, `promote-feedback` (and
+  `export-kb`, which promotes too) checks the agent's stored pairs the same
+  way and **deletes** those that fail, including any pair promoted under the
+  old rules that does not pass the new ones and any stored before pairs were
+  normalised, which would otherwise sit beside the normalised copy. Each
+  removed pair is logged, and the count reported. **Nothing is removed when
+  every stored pair fails at once**: that points at the check, not the pairs
+  (a connector whose engine sqlglot cannot parse is read as Postgres, and then
+  no pair parses), so they are kept and a warning says so. A knowledge base that cannot
+  be read is logged as such, rather than reported only as having no schema.
+- **Verified examples are stored under the agent's own name.** Their
+  collection turned `.` into `_` in the agent ID, so `sales.eu` and `sales_eu`
+  shared one set of verified examples. It now uses the rule every other store
+  does. **An agent whose ID contains a `.` starts with an empty collection**:
+  run `nlqueries promote-feedback` for it again.
+- `submit_feedback` no longer tells MCP callers that `promote-feedback`
+  applies a correction; that command handles thumbs-up only.
 
 ### Added
 

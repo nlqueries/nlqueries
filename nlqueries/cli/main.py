@@ -1402,20 +1402,50 @@ def promote_feedback_cmd(agent_id: str, include_anonymous: bool) -> None:
     """
     agent_id = _resolve_alias(agent_id)
 
-    from nlqueries.feedback.promoter import _verified_collection, promote_feedback
+    from nlqueries.feedback.promoter import (
+        _load_kb,
+        _schema_tables,
+        _verified_collection,
+        promote_feedback,
+        prune_verified,
+    )
 
     console.print(f"[bold]Promoting feedback[/bold] for [cyan]{agent_id}[/cyan] …")
     try:
-        count = promote_feedback(agent_id, include_unattributed=include_anonymous)
+        count = promote_feedback(
+            agent_id,
+            include_unattributed=include_anonymous,
+            dialect=_resolve_dialect(agent_id, None),
+        )
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Promotion failed:[/bold red] {exc}")
         sys.exit(1)
+
+    # Pairs promoted under earlier, looser rules are checked again and removed
+    # if they fail; best-effort, like the promotion's own Qdrant writes.
+    try:
+        removed = prune_verified(agent_id, dialect=_resolve_dialect(agent_id, None))
+    except Exception as exc:  # noqa: BLE001
+        err_console.print(f"  [yellow]⚠ Could not re-check stored pairs: {exc}[/yellow]")
+        removed = 0
+    if removed:
+        console.print(
+            f"  [yellow]Removed {removed} stored verified pair(s) that no longer qualify.[/yellow]"
+        )
 
     if count:
         console.print(
             f"  [bold green]✓[/bold green] [bold]{count}[/bold] verified "
             f"pair(s) upserted to Qdrant collection "
             f"[cyan]{_verified_collection(agent_id)}[/cyan]."
+        )
+    elif not _schema_tables(_load_kb(agent_id)):
+        # Every pair is refused without a schema to check it against; say so
+        # rather than suggest there was no qualifying feedback.
+        console.print(
+            "  [yellow]⚠ Nothing promoted: the knowledge base for this agent has no "
+            "schema to check SQL against. Run 'nlqueries export-kb' for it first."
+            "[/yellow]"
         )
     else:
         console.print(
@@ -2061,6 +2091,16 @@ def process_history(
         "Requires an LLM credential: ANTHROPIC_API_KEY, OPENAI_API_KEY, or Bedrock."
     ),
 )
+@click.option(
+    "--include-anonymous",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also use thumbs-down corrections whose origin cannot be established "
+        "(submitted over MCP, or recorded before origins were tracked). Review them "
+        "first: each becomes an example shown to the model for every question."
+    ),
+)
 def export_kb(
     connector_id: str,
     output: str | None,
@@ -2068,6 +2108,7 @@ def export_kb(
     sample_rows: int,
     values_max_rows: int,
     describe_columns: bool,
+    include_anonymous: bool,
 ) -> None:
     """Generate and save the YAML knowledge base for a connector.
 
@@ -2130,35 +2171,44 @@ def export_kb(
                 )
 
             # Inject thumbs-down corrections as high-priority capsules so the
-            # LLM sees the correct pattern before any auto-generated ones.
+            # LLM sees the correct pattern before any auto-generated ones --
+            # only those `select_corrections` accepts: from an attributed
+            # source (unless --include-anonymous), passing the SQL policy over
+            # tables this schema has, with the question on one bounded line.
             try:
+                from nlqueries.feedback.corrections import select_corrections
+                from nlqueries.feedback.promoter import known_tables
                 from nlqueries.feedback.store import load_feedback
-                from nlqueries.processing.parameterizer import QueryCapsule
 
-                feedback_records = load_feedback(connector_id)
-                correction_count = 0
-                for fb in feedback_records:
-                    if fb.rating == "down" and fb.corrected_sql:
-                        capsules.insert(
-                            0,
-                            QueryCapsule(
-                                template_sql=fb.corrected_sql,
-                                placeholders=[],
-                                tables=[],
-                                columns=[],
-                                frequency=999,
-                                auto_description=f"User correction for: {fb.question}",
-                                intent=f"Correction: {fb.question}",
-                            ),
-                        )
-                        correction_count += 1
-                if correction_count:
+                selection = select_corrections(
+                    load_feedback(connector_id),
+                    known_tables(((t.schema, t.name) for t in schema.tables), schema.database),
+                    _resolve_dialect(connector_id, None),
+                    include_unattributed=include_anonymous,
+                )
+                for capsule in reversed(selection.capsules):
+                    capsules.insert(0, capsule)
+                if selection.capsules:
                     console.print(
-                        f"  [dim]Incorporated {correction_count} feedback "
+                        f"  [dim]Incorporated {len(selection.capsules)} feedback "
                         f"correction(s) as high-priority capsules.[/dim]"
                     )
-            except Exception:  # noqa: BLE001, S110 - being reworked separately
-                pass
+                if selection.unattributed:
+                    console.print(
+                        f"  [yellow]⚠ Skipped {selection.unattributed} correction(s) whose "
+                        "origin cannot be established (MCP, or recorded before origins "
+                        "were tracked). Review them and pass --include-anonymous to "
+                        "include them.[/yellow]"
+                    )
+                if selection.refused:
+                    why = "; ".join(
+                        f"{n} because {reason}" for reason, n in selection.reasons.most_common()
+                    )
+                    console.print(
+                        f"  [yellow]⚠ Skipped {selection.refused} correction(s): {why}.[/yellow]"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                err_console.print(f"  [yellow]⚠ Feedback corrections not applied: {exc}[/yellow]")
 
             # Column values, so the prompt shows how they are spelled: every
             # value of a text column that has few of them, and a few samples of
@@ -2295,13 +2345,26 @@ def export_kb(
         try:
             from nlqueries.feedback.promoter import promote_feedback
 
-            promoted = promote_feedback(connector_id)
+            promoted = promote_feedback(connector_id, dialect=_resolve_dialect(connector_id, None))
             if promoted:
                 console.print(
                     f"  [dim]Promoted {promoted} verified feedback pair(s) to Qdrant.[/dim]"
                 )
-        except Exception:  # noqa: BLE001, S110 - being reworked separately
+        except Exception:  # noqa: BLE001, S110 - best-effort, as the comment below says
             pass  # best-effort; never fail export-kb because of this
+        # Apart from promotion, as in promote-feedback: a re-check that fails
+        # after pairs were written must not hide that they were.
+        try:
+            from nlqueries.feedback.promoter import prune_verified
+
+            removed = prune_verified(connector_id, dialect=_resolve_dialect(connector_id, None))
+            if removed:
+                console.print(
+                    f"  [yellow]Removed {removed} stored verified pair(s) that no longer "
+                    "qualify.[/yellow]"
+                )
+        except Exception:  # noqa: BLE001, S110 - best-effort, as the comment above says
+            pass
 
         return
 

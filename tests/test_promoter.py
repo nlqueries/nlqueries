@@ -116,17 +116,21 @@ class TestSqlReferencesKnownTables:
         kb = _make_kb(["orders"])
         assert not _sql_references_known_tables("SELECT * FROM customers", kb)
 
-    def test_empty_kb_schema_returns_true_permissive(self) -> None:
-        assert _sql_references_known_tables("SELECT * FROM anything", {})
+    def test_with_no_schema_nothing_is_promotable(self) -> None:
+        """No schema to check against means the SQL cannot be vouched for.
+        This used to answer True, so a pair naming any table was promoted."""
+        assert not _sql_references_known_tables("SELECT * FROM anything", {})
 
     def test_cte_alias_not_flagged_as_unknown_table(self) -> None:
         kb = _make_kb(["orders"])
         sql = "WITH cte AS (SELECT * FROM orders) SELECT * FROM cte"
         assert _sql_references_known_tables(sql, kb)
 
-    def test_unparseable_sql_returns_true_permissive(self) -> None:
+    def test_unparseable_sql_is_not_promotable(self) -> None:
+        """This used to answer True: SQL the check could not read was shown to
+        the model as a confirmed example."""
         kb = _make_kb(["orders"])
-        assert _sql_references_known_tables("NOT VALID SQL !!!", kb)
+        assert not _sql_references_known_tables("NOT VALID SQL !!!", kb)
 
     def test_multiple_known_tables_returns_true(self) -> None:
         kb = _make_kb(["orders", "customers"])

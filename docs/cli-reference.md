@@ -173,7 +173,7 @@ A fresh or lightly-used database will produce few or zero capsules until it has 
 Reads the capsules saved by `process-history` together with the live schema and writes the KB YAML that `query`/`ask` read. **Required before `query`/`ask` will work**, and must be re-run after every `process-history` run.
 
 ```bash
-nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3] [--no-include-samples] [--values-max-rows 10000000] [--describe-columns]
+nlqueries export-kb <connector-or-alias> [--output kb.yaml] [--sample-rows 3] [--no-include-samples] [--values-max-rows 10000000] [--describe-columns] [--include-anonymous]
 ```
 
 Default output path: `~/.nlqueries/knowledge_base/<connector-id>.yaml` (`:` replaced with `_`).
@@ -187,6 +187,7 @@ The KB holds the schema and sample values, so it is written readable by your acc
 | `--sample-rows` | `3` | Rows sampled per table, and so the most sample values stored per column |
 | `--values-max-rows` | `10000000` | A table the schema records as having more rows than this gets no column values, and none of the queries that collect them. `0` for no cap; a table whose size the connector does not report is collected. The size is the one the connector reports, and the generic SQLAlchemy connector (MySQL, MariaDB, Oracle and the rest) reports none, so on those engines this cap skips nothing; nor do the others report one in every case (a Postgres table never analysed, a Redshift role without access to `SVV_TABLE_INFO`). `export-kb` says how many tables report no row count. |
 | `--describe-columns` | off | Use the LLM to auto-populate column descriptions from sample data (skips surrogate-key columns; requires LLM key) |
+| `--include-anonymous` | off | Also use thumbs-down corrections whose origin cannot be established: submitted over MCP, or recorded before origins were tracked. Review them first. See below |
 
 ---
 
@@ -363,6 +364,13 @@ nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-
 
 `--question` is required; `--generated-sql` is an optional third flag to attach the SQL the agent originally produced (useful context alongside a correction). A thumbs-down with `--corrected-sql` is saved but not applied automatically — re-run `export-kb` to fold it into the knowledge base.
 
+`export-kb` puts each correction it accepts at the front of the knowledge base's example queries, and the model sees the first few of those for every question on the agent, so it accepts a correction only when:
+
+- it was recorded with `nlqueries feedback` or the Python API, which identify who gave it. Corrections submitted over MCP, and records from before origins were tracked, are skipped unless you pass `--include-anonymous` after reviewing them;
+- its SQL is a single read-only query that passes the SQL policy in the agent's dialect and reads only tables in the knowledge base.
+
+The question is stored on one line, at most 200 characters, and literals in the SQL become placeholders, as in examples taken from query history. `export-kb` says how many corrections it skipped, and why.
+
 ## feedback-stats
 
 ```bash
@@ -375,7 +383,9 @@ Prints the total number of entries, the thumbs-up and thumbs-down counts, and, w
 
 ## promote-feedback
 
-Promotes thumbs-up feedback for an agent into the verified Qdrant collection (`agent_{id}_verified`), so future `ask` and `query` calls can blend those (question, SQL) pairs into the prompt as high-confidence examples. Each pair's SQL is validated against the current knowledge base schema first.
+Promotes thumbs-up feedback for an agent into the verified Qdrant collection (`agent_{id}_verified`), so future `ask` and `query` calls can blend those (question, SQL) pairs into the prompt as high-confidence examples. Each pair's SQL must be a single read-only query over tables in the current knowledge base; a pair is skipped when it is not, and also when the knowledge base has no schema to check against or the SQL cannot be parsed. The question is stored on one line of at most 200 characters, and the SQL without comments.
+
+After promoting, the pairs already stored for the agent are checked the same way, and those that fail are **deleted** from the collection: pairs promoted by an earlier release under looser rules, and pairs whose table has since left the knowledge base. A stored question longer than 200 characters or over several lines, or SQL with comments, also counts as failing. The command, and `export-kb`, which runs the same step after its automatic promotion, say how many they removed. Nothing is removed while the knowledge base has no schema, nor when every stored pair fails at once: that points at the check rather than the pairs (a connector whose engine sqlglot has no grammar for is read as Postgres, and then no pair parses), so the pairs are kept and a warning says so. A removed pair comes back the next time its feedback is promoted, if it qualifies by then.
 
 ```bash
 nlqueries promote-feedback <connector-or-alias>
