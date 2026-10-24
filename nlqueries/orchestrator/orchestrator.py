@@ -125,6 +125,19 @@ _NOT_PERMITTED = re.compile(
     re.IGNORECASE,
 )
 
+#: Error text that says the statement was cancelled for time, so it is not a
+#: fixable error whatever the elapsed time says. Elapsed time misses two cases:
+#: Snowflake bounds queueing separately (``SNOWFLAKE_QUEUE_TIMEOUT_SECONDS``),
+#: so a statement cancelled in the queue comes back well short of the budget,
+#: and a budget of a few seconds cannot reach the share. Snowflake reports
+#: error 000630 ("Statement reached its statement or warehouse timeout") with
+#: SQLSTATE 57014, query canceled, which its driver writes as "(57014)";
+#: Postgres and Redshift say "canceling statement due to statement timeout".
+_TIMED_OUT = re.compile(
+    r"\b000630\b|\(57014\)|canceling statement due to statement timeout",
+    re.IGNORECASE,
+)
+
 #: With no statement timeout, elapsed time cannot be measured against one, so
 #: this absolute ceiling stands in. A statement the engine refuses at compile
 #: or bind time comes back in seconds; an attempt that has already cost a
@@ -177,10 +190,11 @@ def _retry_after_error(
     answers a different question and would be reported as the answer.
 
     Not a timeout. Connectors report one as an ordinary error string, in a
-    wording that differs per driver, so it is recognised by what it cost
-    instead: an attempt that used most of the timeout would, re-run, make the
-    user wait the whole timeout again for a statement the model may have
-    changed only to be faster. The budget mirrors the connectors' own default,
+    wording that differs per driver: where the driver names it (`_TIMED_OUT`)
+    it is recognised by that, and otherwise by what it cost: an attempt that
+    used most of the timeout would, re-run, make the user wait the whole
+    timeout again for a statement the model may have changed only to be
+    faster. The budget mirrors the connectors' own default,
     ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, where zero means no timeout; with
     no timeout, `_NO_TIMEOUT_CEILING_SECONDS` stands in for it.
 
@@ -194,7 +208,10 @@ def _retry_after_error(
     the database's error, which it could have returned, becomes a bare timeout,
     and the corrected statement is left running with no one waiting for it.
     """
-    if not qr.error or _NOT_PERMITTED.search(_driver_message(qr.error)):
+    if not qr.error:
+        return False
+    message = _driver_message(qr.error)
+    if _NOT_PERMITTED.search(message) or _TIMED_OUT.search(message):
         return False
     if deadline is not None and started is not None:
         now = time.monotonic()

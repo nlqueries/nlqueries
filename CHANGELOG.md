@@ -6,6 +6,37 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Security
 
+- **filelock 4.2.4 and setuptools 84.2.1 in the image.** The lock pinned
+  filelock 3.32.4 (CVE-2026-112907, CVE-2026-112913, CVE-2026-112940, fixed
+  in 4.2.1) and setuptools 84.0.0 (GHSA-xmj3-9gf7-h52w, fixed in 84.1.0).
+  The Snowflake driver 4.x capped filelock below 4, so the `snowflake` and
+  `dev` extras now require **`snowflake-connector-python` 5.0 or later**;
+  5.x no longer depends on filelock, and it needs protobuf below 7, so the
+  lock moves protobuf from 7.36.0 to 6.33.6. Packages only the 4.x driver
+  used (asn1crypto, platformdirs, pyOpenSSL, sortedcontainers) leave the
+  image. **The Snowflake query timeout is now sent as Snowflake's
+  `STATEMENT_QUEUED_TIMEOUT_IN_SECONDS` and `STATEMENT_TIMEOUT_IN_SECONDS`
+  statement parameters**, so the server cancels the statement. It was the
+  driver's `execute(timeout=...)` keyword, a client-side limit on queued and
+  running time together, which 5.x removed; its `execute()` takes `**kwargs`
+  and ignores it, so with the old call every Snowflake query would have run
+  unbounded. Snowflake bounds queueing and running separately, so the budget
+  is split and `timeout_seconds` stays a total: **`SNOWFLAKE_QUEUE_TIMEOUT_SECONDS`**
+  (new, default 30, at most half the budget) for the warehouse queue and the
+  rest for running, 30 and 90 of the default 120 seconds. Raise it for a
+  warehouse that queues or resumes from suspension. A query cancelled for
+  either reason is reported with Snowflake's timeout error (000630, SQLSTATE
+  57014), which is now recognised as a timeout and not handed back to the
+  model to be rewritten and re-run, however soon it came back. The rest of what
+  nlqueries uses from the driver (`connect`, `DictCursor`, `execute(sql,
+  params)` with `%s` placeholders, `description`, iterating, `fetchone`,
+  `fetchall`, `close` and `errors.ProgrammingError`) is unchanged in 5.x.
+  **`filelock>=4.2.1` is now a dependency of the package**, though nothing
+  in nlqueries imports it: litellm 1.104 and later cap filelock below 4, so
+  without the floor `pip install nlqueries-core` resolves the vulnerable
+  3.x. With it, pip installs litellm 1.103.8, the last release without that
+  cap, until litellm allows filelock 4. The image is not affected; its
+  pinned litellm does not depend on filelock.
 - **The MCP `query` tool checks SQL in the grammar of the agent's own
   database.** The SQL policy parsed the generated statement in the dialect the
   MCP client passed (default `postgres`), not the dialect of the engine that ran

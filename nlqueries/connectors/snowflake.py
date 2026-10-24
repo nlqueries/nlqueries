@@ -56,6 +56,34 @@ _SYSTEM_SCHEMAS = ("INFORMATION_SCHEMA",)
 #: same connector to queue behind it indefinitely on a pool thread.
 _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
 
+#: Snowflake's statement parameters for a per-query timeout, enforced by the
+#: server: one bounds how long the statement runs, the other how long it waits
+#: in the warehouse queue first, which by default is unlimited.
+_STATEMENT_TIMEOUT = "STATEMENT_TIMEOUT_IN_SECONDS"
+_STATEMENT_QUEUED_TIMEOUT = "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS"
+
+
+def _timeout_parameters(effective_timeout: float) -> dict[str, int]:
+    """Snowflake's statement parameters for a budget of *effective_timeout*
+    seconds in all.
+
+    Queued and running time are bounded separately, and *timeout_seconds* is a
+    total on every connector: the orchestrator clamps a correction to the time
+    left before its caller's deadline. So the budget is split and the two add
+    up to it, each at least a second, since Snowflake reads 0 as no limit.
+
+    The queue gets ``SNOWFLAKE_QUEUE_TIMEOUT_SECONDS``, at most half the
+    budget, and running the rest. Its own setting, not a share of the budget,
+    so it can be raised for a warehouse that queues without lengthening how
+    long a statement may run. A statement cancelled either way comes back
+    with Snowflake's timeout error, which the orchestrator recognises as a
+    timeout rather than a fixable error whatever the elapsed time.
+    """
+    budget = max(1, int(effective_timeout))
+    queued = max(1, min(int(config.SNOWFLAKE_QUEUE_TIMEOUT_SECONDS), budget // 2))
+    return {_STATEMENT_QUEUED_TIMEOUT: queued, _STATEMENT_TIMEOUT: max(1, budget - queued)}
+
+
 #: Added to the statement timeout when deriving the lock wait, to cover the row
 #: fetch and the ROLLBACK that happen inside the span after the query returns.
 _LOCK_WAIT_MARGIN_SECONDS = 30.0
@@ -524,9 +552,14 @@ class SnowflakeConnector(DatabaseConnector):
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         The query is bounded by *timeout_seconds* when given, else the
-        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — passed to the driver's
-        ``cursor.execute(timeout=…)`` so Snowflake cancels the query server-side
-        rather than letting it run indefinitely. A budget of 0 disables it.
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — sent with the
+        statement as Snowflake's ``STATEMENT_QUEUED_TIMEOUT_IN_SECONDS`` and
+        ``STATEMENT_TIMEOUT_IN_SECONDS`` parameters, ``SNOWFLAKE_QUEUE_TIMEOUT_SECONDS``
+        of it (at most half) for the warehouse queue and the rest for running
+        (:func:`_timeout_parameters`),
+        so the server cancels the query rather than letting it queue or run
+        indefinitely, and the two together stay within the budget. A budget of
+        0 disables both.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
@@ -548,9 +581,10 @@ class SnowflakeConnector(DatabaseConnector):
             # guard that silently stops holding under load is worth less than the
             # throughput.
             # Bounded, so a wedged session degrades to a failed query rather
-            # than blocking every later query on this connector. The holder
-            # cannot legitimately outlast its own statement timeout by more than
-            # the fetch and the ROLLBACK, so that plus a margin is the wait.
+            # than blocking every later query on this connector. The holder's
+            # queued and running time are split from one budget, so it cannot
+            # legitimately outlast that budget by more than the fetch and the
+            # ROLLBACK: the budget plus a margin is the wait.
             lock_wait = (
                 effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
                 if effective_timeout is not None and effective_timeout > 0
@@ -598,7 +632,14 @@ class SnowflakeConnector(DatabaseConnector):
                     # docs/database-hardening.md.
                     cursor.execute("BEGIN")
                     if effective_timeout is not None and effective_timeout > 0:
-                        cursor.execute(sql, timeout=max(1, int(effective_timeout)))
+                        # Per statement, through the driver's _statement_params,
+                        # which sends parameters with this query only. Not the
+                        # `timeout=` keyword: the 4.x driver had one, but 5.x's
+                        # execute() takes **kwargs and never reads it, so passing
+                        # it left every query unbounded without a word.
+                        cursor.execute(
+                            sql, _statement_params=_timeout_parameters(effective_timeout)
+                        )
                     else:
                         cursor.execute(sql)
                     elapsed_ms = (time.perf_counter() - start) * 1000

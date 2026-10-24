@@ -182,14 +182,39 @@ def _query_call(cursor, sql="SELECT 1"):
 def test_execute_query_passes_explicit_timeout_to_cursor():
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1", timeout_seconds=30)
-    assert _query_call(cursor).kwargs.get("timeout") == 30
+    call = _query_call(cursor)
+    # Queued and running both, split from the one budget: the queue is
+    # unbounded by default.
+    assert call.kwargs.get("_statement_params") == {
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 15,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 15,
+    }
+    # The 5.x driver's execute() takes **kwargs and ignores `timeout`.
+    assert "timeout" not in call.kwargs
 
 
 def test_execute_query_applies_default_timeout(monkeypatch):
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 45)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
-    assert _query_call(cursor).kwargs.get("timeout") == 45
+    call = _query_call(cursor)
+    assert call.kwargs.get("_statement_params") == {
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 22,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 23,
+    }
+    assert "timeout" not in call.kwargs
+
+
+def test_the_installed_driver_takes_per_statement_parameters():
+    """The mock cursor above accepts any keyword, so a driver that renamed or
+    dropped `_statement_params` would leave the tests green and every query
+    unbounded: the real signature is checked here. 5.x's execute() also takes
+    **kwargs, which is why its old `timeout=` vanished without an error."""
+    import inspect
+
+    cursor_module = pytest.importorskip("snowflake.connector.cursor")
+    execute = inspect.signature(cursor_module.SnowflakeCursor.execute)
+    assert "_statement_params" in execute.parameters
 
 
 def test_execution_is_wrapped_in_a_transaction_that_is_rolled_back():
@@ -218,7 +243,75 @@ def test_execute_query_no_timeout_when_disabled(monkeypatch):
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
+    # The timeout travels as statement parameters now; disabled means none.
+    assert "_statement_params" not in _query_call(cursor).kwargs
     assert "timeout" not in _query_call(cursor).kwargs
+
+
+@pytest.mark.parametrize("budget", [2, 3, 4, 5, 7, 30, 45, 120, 3600])
+def test_queued_and_running_time_add_up_to_the_budget(budget):
+    """timeout_seconds is a total on every connector, which the orchestrator's
+    deadline clamp relies on: the two Snowflake bounds are split from it, and
+    neither is 0, which Snowflake reads as no limit."""
+    from nlqueries.connectors.snowflake import _timeout_parameters
+
+    params = _timeout_parameters(budget)
+    queued = params["STATEMENT_QUEUED_TIMEOUT_IN_SECONDS"]
+    running = params["STATEMENT_TIMEOUT_IN_SECONDS"]
+    assert queued + running == budget
+    assert queued >= 1 and running >= 1
+    assert queued == max(1, min(30, budget // 2))
+
+
+def test_the_queue_allowance_is_its_own_setting_not_a_share(monkeypatch):
+    """A long budget does not lengthen the queue, and a longer queue is a
+    setting of its own, not a longer statement."""
+    from nlqueries.connectors.snowflake import _timeout_parameters
+
+    assert _timeout_parameters(3600) == {
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 30,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 3570,
+    }
+    monkeypatch.setattr(config, "SNOWFLAKE_QUEUE_TIMEOUT_SECONDS", 60)
+    assert _timeout_parameters(120) == {
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 60,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 60,
+    }
+    # Never more than half: running keeps the other half.
+    monkeypatch.setattr(config, "SNOWFLAKE_QUEUE_TIMEOUT_SECONDS", 500)
+    assert _timeout_parameters(120)["STATEMENT_TIMEOUT_IN_SECONDS"] == 60
+
+
+def test_a_one_second_budget_still_bounds_both():
+    from nlqueries.connectors.snowflake import _timeout_parameters
+
+    assert _timeout_parameters(1) == {
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 1,
+        "STATEMENT_TIMEOUT_IN_SECONDS": 1,
+    }
+
+
+def test_the_lock_wait_covers_a_holder_that_used_its_whole_budget():
+    """Queued and running time are split from one budget, so the holder cannot
+    outlast it by more than the fetch and the rollback."""
+    from nlqueries.connectors import snowflake as module
+
+    connector, _cursor = _mock_cursor()
+    asked: list[float] = []
+
+    class _Busy:
+        def acquire(self, timeout: float) -> bool:
+            asked.append(timeout)
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("released a lock that was never acquired")
+
+    connector._txn_lock = _Busy()  # noqa: SLF001 - stand in for a query still running
+    result = connector.execute_query("SELECT 1", timeout_seconds=20)
+
+    assert result.error
+    assert asked == [20 + module._LOCK_WAIT_MARGIN_SECONDS]  # noqa: SLF001
 
 
 def test_execute_query_handles_statements_with_no_result_set():
