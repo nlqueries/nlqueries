@@ -171,7 +171,10 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
             "DDL, which is not transactional on Snowflake -- a CREATE or DROP stands "
             "after the rollback"
         ),
-        statement_timeout_mechanism="cursor.execute(timeout=…), cancelled server-side",
+        statement_timeout_mechanism=(
+            "STATEMENT_TIMEOUT_IN_SECONDS and STATEMENT_QUEUED_TIMEOUT_IN_SECONDS "
+            "statement parameters, enforced server-side"
+        ),
         verified_here=False,
         operator_requirement=(
             "The rollback undoes an INSERT and does not undo a CREATE or DROP, so the grant "

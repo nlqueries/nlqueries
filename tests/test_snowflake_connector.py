@@ -183,7 +183,11 @@ def test_execute_query_passes_explicit_timeout_to_cursor():
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1", timeout_seconds=30)
     call = _query_call(cursor)
-    assert call.kwargs.get("_statement_params") == {"STATEMENT_TIMEOUT_IN_SECONDS": 30}
+    # Running and queued time both: the queue is unbounded by default.
+    assert call.kwargs.get("_statement_params") == {
+        "STATEMENT_TIMEOUT_IN_SECONDS": 30,
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 30,
+    }
     # The 5.x driver's execute() takes **kwargs and ignores `timeout`.
     assert "timeout" not in call.kwargs
 
@@ -193,7 +197,10 @@ def test_execute_query_applies_default_timeout(monkeypatch):
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
     call = _query_call(cursor)
-    assert call.kwargs.get("_statement_params") == {"STATEMENT_TIMEOUT_IN_SECONDS": 45}
+    assert call.kwargs.get("_statement_params") == {
+        "STATEMENT_TIMEOUT_IN_SECONDS": 45,
+        "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS": 45,
+    }
     assert "timeout" not in call.kwargs
 
 
@@ -235,7 +242,32 @@ def test_execute_query_no_timeout_when_disabled(monkeypatch):
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
+    # The timeout travels as statement parameters now; disabled means none.
+    assert "_statement_params" not in _query_call(cursor).kwargs
     assert "timeout" not in _query_call(cursor).kwargs
+
+
+def test_the_lock_wait_covers_a_holder_that_queued_and_ran_its_whole_budget():
+    """Queued and running time are bounded separately, so a holder can take up
+    to twice the budget before the fetch and the rollback."""
+    from nlqueries.connectors import snowflake as module
+
+    connector, _cursor = _mock_cursor()
+    asked: list[float] = []
+
+    class _Busy:
+        def acquire(self, timeout: float) -> bool:
+            asked.append(timeout)
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("released a lock that was never acquired")
+
+    connector._txn_lock = _Busy()  # noqa: SLF001 - stand in for a query still running
+    result = connector.execute_query("SELECT 1", timeout_seconds=20)
+
+    assert result.error
+    assert asked == [2 * 20 + module._LOCK_WAIT_MARGIN_SECONDS]  # noqa: SLF001
 
 
 def test_execute_query_handles_statements_with_no_result_set():

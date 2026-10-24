@@ -56,9 +56,12 @@ _SYSTEM_SCHEMAS = ("INFORMATION_SCHEMA",)
 #: same connector to queue behind it indefinitely on a pool thread.
 _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
 
-#: Snowflake's statement parameter for a per-query timeout, enforced by the
-#: server.
+#: Snowflake's statement parameters for a per-query timeout, enforced by the
+#: server: one bounds how long the statement runs, the other how long it waits
+#: in the warehouse queue first, which by default is unlimited. Both are sent
+#: with the budget, so a saturated warehouse cannot hold a query past it.
 _STATEMENT_TIMEOUT = "STATEMENT_TIMEOUT_IN_SECONDS"
+_STATEMENT_QUEUED_TIMEOUT = "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS"
 
 #: Added to the statement timeout when deriving the lock wait, to cover the row
 #: fetch and the ROLLBACK that happen inside the span after the query returns.
@@ -529,9 +532,11 @@ class SnowflakeConnector(DatabaseConnector):
 
         The query is bounded by *timeout_seconds* when given, else the
         ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — sent with the
-        statement as Snowflake's ``STATEMENT_TIMEOUT_IN_SECONDS`` parameter, so
-        the server cancels the query rather than letting it run indefinitely.
-        A budget of 0 disables it.
+        statement as Snowflake's ``STATEMENT_TIMEOUT_IN_SECONDS`` and
+        ``STATEMENT_QUEUED_TIMEOUT_IN_SECONDS`` parameters, so the server
+        cancels it rather than letting it queue or run indefinitely. Queued and
+        running are bounded separately, so a query can take up to twice the
+        budget in all. A budget of 0 disables both.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
@@ -553,11 +558,12 @@ class SnowflakeConnector(DatabaseConnector):
             # guard that silently stops holding under load is worth less than the
             # throughput.
             # Bounded, so a wedged session degrades to a failed query rather
-            # than blocking every later query on this connector. The holder
-            # cannot legitimately outlast its own statement timeout by more than
-            # the fetch and the ROLLBACK, so that plus a margin is the wait.
+            # than blocking every later query on this connector. The holder can
+            # spend its budget queued and its budget again running, and then the
+            # fetch and the ROLLBACK, so twice the budget plus a margin is the
+            # wait.
             lock_wait = (
-                effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
+                2 * effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
                 if effective_timeout is not None and effective_timeout > 0
                 else _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS
             )
@@ -608,9 +614,13 @@ class SnowflakeConnector(DatabaseConnector):
                         # `timeout=` keyword: the 4.x driver had one, but 5.x's
                         # execute() takes **kwargs and never reads it, so passing
                         # it left every query unbounded without a word.
+                        budget = max(1, int(effective_timeout))
                         cursor.execute(
                             sql,
-                            _statement_params={_STATEMENT_TIMEOUT: max(1, int(effective_timeout))},
+                            _statement_params={
+                                _STATEMENT_TIMEOUT: budget,
+                                _STATEMENT_QUEUED_TIMEOUT: budget,
+                            },
                         )
                     else:
                         cursor.execute(sql)
