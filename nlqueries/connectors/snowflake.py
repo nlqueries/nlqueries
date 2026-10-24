@@ -58,10 +58,25 @@ _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
 
 #: Snowflake's statement parameters for a per-query timeout, enforced by the
 #: server: one bounds how long the statement runs, the other how long it waits
-#: in the warehouse queue first, which by default is unlimited. Both are sent
-#: with the budget, so a saturated warehouse cannot hold a query past it.
+#: in the warehouse queue first, which by default is unlimited.
 _STATEMENT_TIMEOUT = "STATEMENT_TIMEOUT_IN_SECONDS"
 _STATEMENT_QUEUED_TIMEOUT = "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS"
+
+
+def _timeout_parameters(effective_timeout: float) -> dict[str, int]:
+    """Snowflake's statement parameters for a budget of *effective_timeout*
+    seconds in all.
+
+    Queued and running time are bounded separately, and *timeout_seconds* is a
+    total on every connector: the orchestrator clamps a correction to the time
+    left before its caller's deadline. So the budget is split, a quarter for
+    the warehouse queue and the rest for running, and the two add up to it.
+    Each is at least a second, since Snowflake reads 0 as no limit.
+    """
+    budget = max(1, int(effective_timeout))
+    queued = max(1, budget // 4)
+    return {_STATEMENT_QUEUED_TIMEOUT: queued, _STATEMENT_TIMEOUT: max(1, budget - queued)}
+
 
 #: Added to the statement timeout when deriving the lock wait, to cover the row
 #: fetch and the ROLLBACK that happen inside the span after the query returns.
@@ -532,11 +547,12 @@ class SnowflakeConnector(DatabaseConnector):
 
         The query is bounded by *timeout_seconds* when given, else the
         ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — sent with the
-        statement as Snowflake's ``STATEMENT_TIMEOUT_IN_SECONDS`` and
-        ``STATEMENT_QUEUED_TIMEOUT_IN_SECONDS`` parameters, so the server
-        cancels it rather than letting it queue or run indefinitely. Queued and
-        running are bounded separately, so a query can take up to twice the
-        budget in all. A budget of 0 disables both.
+        statement as Snowflake's ``STATEMENT_QUEUED_TIMEOUT_IN_SECONDS`` and
+        ``STATEMENT_TIMEOUT_IN_SECONDS`` parameters, a quarter of it for the
+        warehouse queue and the rest for running (:func:`_timeout_parameters`),
+        so the server cancels the query rather than letting it queue or run
+        indefinitely, and the two together stay within the budget. A budget of
+        0 disables both.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
@@ -558,12 +574,12 @@ class SnowflakeConnector(DatabaseConnector):
             # guard that silently stops holding under load is worth less than the
             # throughput.
             # Bounded, so a wedged session degrades to a failed query rather
-            # than blocking every later query on this connector. The holder can
-            # spend its budget queued and its budget again running, and then the
-            # fetch and the ROLLBACK, so twice the budget plus a margin is the
-            # wait.
+            # than blocking every later query on this connector. The holder's
+            # queued and running time are split from one budget, so it cannot
+            # legitimately outlast that budget by more than the fetch and the
+            # ROLLBACK: the budget plus a margin is the wait.
             lock_wait = (
-                2 * effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
+                effective_timeout + _LOCK_WAIT_MARGIN_SECONDS
                 if effective_timeout is not None and effective_timeout > 0
                 else _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS
             )
@@ -614,13 +630,8 @@ class SnowflakeConnector(DatabaseConnector):
                         # `timeout=` keyword: the 4.x driver had one, but 5.x's
                         # execute() takes **kwargs and never reads it, so passing
                         # it left every query unbounded without a word.
-                        budget = max(1, int(effective_timeout))
                         cursor.execute(
-                            sql,
-                            _statement_params={
-                                _STATEMENT_TIMEOUT: budget,
-                                _STATEMENT_QUEUED_TIMEOUT: budget,
-                            },
+                            sql, _statement_params=_timeout_parameters(effective_timeout)
                         )
                     else:
                         cursor.execute(sql)

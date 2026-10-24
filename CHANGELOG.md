@@ -15,10 +15,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   lock moves protobuf from 7.36.0 to 6.33.6. Packages only the 4.x driver
   used (asn1crypto, platformdirs, pyOpenSSL, sortedcontainers) leave the
   image. **The Snowflake query timeout is now sent as Snowflake's
-  `STATEMENT_TIMEOUT_IN_SECONDS` statement parameter**, so the server cancels
-  the statement. It was the driver's `execute(timeout=...)` keyword, which 5.x
-  removed; its `execute()` takes `**kwargs` and ignores it, so with the old
-  call every Snowflake query would have run unbounded. The rest of what
+  `STATEMENT_QUEUED_TIMEOUT_IN_SECONDS` and `STATEMENT_TIMEOUT_IN_SECONDS`
+  statement parameters**, so the server cancels the statement. It was the
+  driver's `execute(timeout=...)` keyword, a client-side limit on queued and
+  running time together, which 5.x removed; its `execute()` takes `**kwargs`
+  and ignores it, so with the old call every Snowflake query would have run
+  unbounded. Snowflake bounds queueing and running separately, so the budget
+  is split, a quarter for the warehouse queue and the rest for running, and
+  `timeout_seconds` stays a total: 120 seconds by default is at most 30
+  queued and 90 running. A heavy query therefore has 90 seconds to run where
+  it had 120; raise `CONNECTOR_STATEMENT_TIMEOUT_SECONDS` if it needs more. The rest of what
   nlqueries uses from the driver (`connect`, `DictCursor`, `execute(sql,
   params)` with `%s` placeholders, `description`, iterating, `fetchone`,
   `fetchall`, `close` and `errors.ProgrammingError`) is unchanged in 5.x.

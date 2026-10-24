@@ -172,8 +172,9 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
             "after the rollback"
         ),
         statement_timeout_mechanism=(
-            "STATEMENT_TIMEOUT_IN_SECONDS and STATEMENT_QUEUED_TIMEOUT_IN_SECONDS "
-            "statement parameters, enforced server-side"
+            "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS (a quarter of the budget) and "
+            "STATEMENT_TIMEOUT_IN_SECONDS (the rest) statement parameters, enforced "
+            "server-side"
         ),
         verified_here=False,
         operator_requirement=(
