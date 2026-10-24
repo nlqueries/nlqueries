@@ -67,11 +67,15 @@ dependencies = [
     # LLM
     "anthropic>=0.28",
     "litellm>=1.0",
-    # Not imported here: a security floor. filelock before 4.2.1 has advisories
-    # (CVE-2026-112907, CVE-2026-112913, CVE-2026-112940), and litellm 1.104
-    # and later cap it below 4, so without this a fresh install resolves the
-    # vulnerable 3.x. With it, pip picks the last litellm without that cap
-    # (1.103.8). Remove it once a litellm release allows filelock 4.
+    # Not imported here: a security floor, added knowingly as a direct
+    # constraint (docs/dependency-locking.md). filelock before 4.2.1 has
+    # advisories (CVE-2026-112907, CVE-2026-112913, CVE-2026-112940), and
+    # litellm 1.104 and later cap it below 4, so without this a fresh install
+    # resolves the vulnerable 3.x. The consequence: pip holds litellm at
+    # 1.103.8, the last release without that cap, and an environment that
+    # needs litellm 1.104+ (or anything else capping filelock below 4) cannot
+    # install nlqueries until litellm allows filelock 4. No explicit litellm
+    # cap: this floor lifts itself the moment litellm does. Remove it then.
     "filelock>=4.2.1",
 
     # Credential storage
