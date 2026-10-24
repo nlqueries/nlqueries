@@ -4,7 +4,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
-## [0.3.1] — 2026-10-24
+## [0.4.0] — 2026-10-24
 
 Mostly security fixes: see *Security* below, and the steps to take first.
 
@@ -1977,6 +1977,7 @@ First public release of NLQueries Core.
 - Python 3.14+ is not supported for document ingestion (`doc-ingest`, `doc-sync-notion`, `doc-sync-confluence`) — see [docs/troubleshooting.md](docs/troubleshooting.md#w6--pydantic-v1-incompatibility-python-314)
 - `--days` has no effect on PostgreSQL query history (`pg_stat_statements` doesn't record per-query timestamps) — see [docs/connectors.md](docs/connectors.md#postgresql--enabling-query-history-capture)
 
+[0.4.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.4.0
 [0.3.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.1.0
