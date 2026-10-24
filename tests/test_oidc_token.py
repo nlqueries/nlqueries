@@ -139,7 +139,7 @@ class TestVerifyValidToken:
 
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=side_effect):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             claims = verifier.verify(token, CLIENT_ID)
 
@@ -161,7 +161,7 @@ class TestVerifyValidToken:
 
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=side_effect):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             claims = verifier.verify(token, CLIENT_ID)
 
@@ -190,7 +190,7 @@ class TestVerifyValidToken:
         jwks = _make_jwks(public_key)
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=side_effect):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             claims = verifier.verify(token, CLIENT_ID)
 
@@ -215,7 +215,7 @@ class TestVerifyExpiredToken:
 
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=side_effect):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             with pytest.raises(OidcVerificationError, match="expired"):
                 verifier.verify(token, CLIENT_ID)
@@ -235,7 +235,7 @@ class TestVerifyWrongAudience:
 
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=side_effect):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             with pytest.raises(OidcVerificationError, match="audience"):
                 verifier.verify(token, CLIENT_ID)
@@ -281,7 +281,7 @@ class TestJwksCacheRefresh:
                 return _mock_http_response(wrong_jwks)
             return _mock_http_response(correct_jwks)
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=_get):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=_get):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             claims = verifier.verify(token, CLIENT_ID)
 
@@ -305,7 +305,7 @@ class TestJwksCacheRefresh:
                 return _mock_http_response(DISCOVERY_DOC)
             return _mock_http_response(jwks)
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=_get):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=_get):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             verifier.verify(token, CLIENT_ID)
             verifier.verify(token, CLIENT_ID)  # second call — cache should be used
@@ -329,7 +329,7 @@ class TestJwksCacheRefresh:
                 return _mock_http_response(DISCOVERY_DOC)
             return _mock_http_response(wrong_jwks)
 
-        with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=_get):
+        with patch("nlqueries.auth.oidc_token._get", side_effect=_get):
             verifier = OidcTokenVerifier(DISCOVERY_URL)
             with pytest.raises(OidcVerificationError, match="No JWKS key found"):
                 verifier.verify(token, CLIENT_ID)
@@ -347,7 +347,7 @@ class TestDiscoveryErrors:
 
         with (
             patch(
-                "nlqueries.auth.oidc_token.httpx.get",
+                "nlqueries.auth.oidc_token._get",
                 return_value=_mock_http_response(bad_doc),
             ),
             pytest.raises(OidcVerificationError, match="jwks_uri"),
@@ -360,7 +360,7 @@ class TestDiscoveryErrors:
 
         with (
             patch(
-                "nlqueries.auth.oidc_token.httpx.get",
+                "nlqueries.auth.oidc_token._get",
                 side_effect=_httpx.ConnectError("connection refused"),
             ),
             pytest.raises(OidcVerificationError, match="discovery"),
@@ -397,7 +397,7 @@ class TestSec15:
         side_effect = _make_url_router(without_issuer, [jwks])
 
         with (
-            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            patch("nlqueries.auth.oidc_token._get", side_effect=side_effect),
             pytest.raises(OidcVerificationError, match="issuer"),
         ):
             OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
@@ -411,7 +411,7 @@ class TestSec15:
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
         with (
-            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            patch("nlqueries.auth.oidc_token._get", side_effect=side_effect),
             pytest.raises(OidcVerificationError, match="issuer"),
         ):
             OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
@@ -443,7 +443,7 @@ class TestSec15:
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
         with (
-            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            patch("nlqueries.auth.oidc_token._get", side_effect=side_effect),
             pytest.raises(OidcVerificationError, match="subject"),
         ):
             OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
@@ -457,7 +457,7 @@ class TestSec15:
         side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
 
         with (
-            patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect),
+            patch("nlqueries.auth.oidc_token._get", side_effect=side_effect),
             pytest.raises(OidcVerificationError, match="subject"),
         ):
             OidcTokenVerifier(DISCOVERY_URL).verify(token, CLIENT_ID)
@@ -475,7 +475,7 @@ class TestSec15:
 
 def _verify(token: str, jwks: dict[str, Any], **verifier_kwargs: Any) -> OidcClaims:
     side_effect = _make_url_router(DISCOVERY_DOC, [jwks])
-    with patch("nlqueries.auth.oidc_token.httpx.get", side_effect=side_effect):
+    with patch("nlqueries.auth.oidc_token._get", side_effect=side_effect):
         return OidcTokenVerifier(DISCOVERY_URL, **verifier_kwargs).verify(token, CLIENT_ID)
 
 

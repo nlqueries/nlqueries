@@ -386,6 +386,8 @@ Feedback submitted over the MCP transport, and feedback recorded before origins 
 
 This is also called automatically at the end of every `export-kb` run, without `--include-anonymous`. Run it manually after submitting a batch of thumbs-up ratings between KB exports.
 
+Each pair is signed with the semantic-cache signing key (`NLQ_CACHE_SIGNING_KEY`, see [configuration.md](configuration.md)), and a pair whose signature does not verify is never shown to the model: one written straight into Qdrant, one promoted under another key, and one promoted before signing was introduced. After upgrading from 0.3.0, run `promote-feedback` (or `export-kb`) once per agent so its existing pairs are signed; until then they are ignored and a warning says so. Every process that reads the pairs must share the key that signed them.
+
 ---
 
 ## verify-oidc-token
@@ -404,7 +406,7 @@ nlqueries verify-oidc-token \
   eyJhbGci...
 ```
 
-Validates the token signature, expiry, audience, and issuer. Exits 1 on any verification failure.
+Validates the token signature, expiry, audience, and issuer, with the same rules as MCP authentication (see [mcp-authentication.md](mcp-authentication.md#option-1--an-identity-provider)): the discovery URL must be `https` (or `http` to localhost) and must belong to the issuer the document names. Exits 1 on any verification failure.
 
 ---
 

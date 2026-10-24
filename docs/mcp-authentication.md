@@ -97,10 +97,39 @@ export NLQ_MCP_RESOURCE_URL=https://mcp.internal.example.com
 ```
 
 Tokens are verified against the provider's JWKS: signature, expiry, audience
-(`aud` must equal the client id) and issuer. A provider whose discovery document
-omits `issuer` is refused rather than accepted with the issuer check disabled,
-and a token carrying no `sub` is refused rather than becoming an identity of
-empty string.
+(`aud` must contain the client id) and issuer. `exp`, `iss` and `aud` must be
+present. A token that names an authorized party (`azp`) must name this client
+id there, and a token addressed to several audiences must carry one: a token
+issued to another client is not accepted because its audience includes this
+one. A token carrying no `sub` is refused rather than becoming an identity
+of empty string. The token is bound to this server through that audience:
+`NLQ_MCP_RESOURCE_URL` is what the server advertises to clients, not something
+checked in the token, so give the MCP server a client registration of its own.
+
+What the provider publishes is checked too:
+
+- the discovery URL and the `jwks_uri` it names must be `https`. Plain `http`
+  is accepted only for `localhost` or a loopback address, for a provider run on
+  the same machine;
+- the discovery document's `issuer` must be the one the URL belongs to: the
+  URL has to be the issuer followed by `/.well-known/openid-configuration`. A
+  document that omits `issuer` is refused rather than accepted with the issuer
+  check disabled. OpenID Connect Discovery requires this, but not every
+  provider meets it: Microsoft Entra ID's v1.0 endpoint serves
+  `https://login.microsoftonline.com/<tenant>/.well-known/openid-configuration`
+  and names `https://sts.windows.net/<tenant>/` as its issuer, and the v2.0
+  `common` and `organizations` endpoints name a templated `{tenantid}`. With
+  Entra ID, use the tenant-specific v2.0 URL with the tenant's ID (a GUID, not
+  its domain name):
+  `https://login.microsoftonline.com/<tenant-id>/v2.0/.well-known/openid-configuration`;
+- either document larger than 1 MiB is refused, and a key published for
+  encryption (`use: enc`) is never used to check a signature.
+
+Signing keys are cached for an hour. A token naming a key id that is not in
+the cache causes at most one refetch a minute, so a provider's key rotation is
+picked up within a minute. If an hourly refresh fails, the cached keys stay in
+use and the refresh is retried a minute later; after 24 hours without a
+successful refresh, tokens are refused until one succeeds.
 
 The shipped `docker-compose.yml` requires `NLQ_MCP_STATIC_TOKEN` for its
 quickstart. To use an identity provider with it instead:

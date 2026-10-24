@@ -96,7 +96,7 @@ dependencies = [
     # module load. The authentication it builds on (`FastMCP(token_verifier=...,
     # auth=...)`, `RequireAuthMiddleware`) dates from 1.27. An older floor would
     # resolve to a release where the import fails at start-up.
-    "mcp>=1.29,<2",
+    "mcp>=1.30,<2",  # 1.30 added AuthSettings.validate_token_resource
 
     # Validation
     "pydantic>=2.0",
@@ -178,8 +178,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID", "S", "T20"]
 "nlqueries/cli/**" = ["T20"]
 "scripts/**" = ["T20"]
 "benchmarks/**" = ["T20"]
-# being reworked separately; remove when that lands
-"nlqueries/auth/mcp_verifier.py" = ["S101", "S105"]
 # being reworked separately; remove when that lands
 "nlqueries/feedback/promoter.py" = ["S110"]
 

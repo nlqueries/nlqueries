@@ -23,6 +23,7 @@ store but not to the key cannot produce a tag that verifies.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -81,6 +82,28 @@ _KEY_FILE_ENV = "NLQ_CACHE_SIGNING_KEY_FILE"
 #: that a payload signed by this process still verifies in it.
 _ephemeral_key: bytes | None = None
 
+#: The shortest key accepted, in bytes. The generated key is 64 hex characters.
+#: An empty key file (a full disk, a crash between creating and writing it, an
+#: operator's `touch`) used to be accepted, and every entry signed with it
+#: verified for anyone who knew the algorithm.
+MIN_KEY_BYTES = 32
+
+#: Set once a key problem has been logged on the read path.
+_KEY_ERROR_LOGGED: list[bool] = []
+
+
+class SigningKeyError(RuntimeError):
+    """The configured or stored signing key is unusable."""
+
+
+def _checked(material: bytes, where: str) -> bytes:
+    if len(material) < MIN_KEY_BYTES:
+        raise SigningKeyError(
+            f"The semantic-cache signing key from {where} is {len(material)} bytes; at "
+            f"least {MIN_KEY_BYTES} are required. Generate one with: openssl rand -hex 32"
+        )
+    return material
+
 
 @dataclass(frozen=True)
 class CacheBinding:
@@ -124,6 +147,63 @@ def _key_path() -> Path:
     return config.STATE_DIR / "cache_signing_key"
 
 
+def _publish_key(path: Path, key: bytes) -> bytes | None:
+    """Write *key* to *path* atomically; the key already there if one won the race.
+
+    Written whole to a private temporary file first (created with ``O_EXCL`` and
+    mode 0600, so it is never readable by others, not even briefly), then linked
+    into place, which fails rather than overwrites if another process got there
+    first. A reader therefore sees either no file or a complete key, never the
+    empty or half-written one a crash between create and write used to leave.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(key)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return path.read_bytes().strip()
+        except OSError:
+            # No hard links on this filesystem (FAT and exFAT, some SMB and
+            # FUSE mounts, all valid places for the state directory). A rename
+            # is atomic too, so a reader still never sees a partial key; it
+            # can replace a key another process published between this check
+            # and the rename, a narrower window than linking leaves.
+            if path.exists():
+                return path.read_bytes().strip()
+            os.replace(tmp, path)
+        return None
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def report_key_error(exc: SigningKeyError) -> None:
+    """Log, once per process, that the cache is off because of *exc*.
+
+    For the query path, where a bad key skips the cache rather than failing the
+    question: reads miss and writes are skipped, and saying so on every one of
+    them would bury the message it repeats.
+    """
+    if not _KEY_ERROR_LOGGED:
+        _KEY_ERROR_LOGGED.append(True)
+        logger.error("Semantic cache disabled: %s", exc)
+
+
+def check_signing_key() -> None:
+    """Raise :class:`SigningKeyError` now if the signing key is unusable.
+
+    For startup. On the read path a bad key turns every cache lookup into a
+    miss, which keeps queries working but hides the problem; a server that
+    refuses to start says what is wrong.
+    """
+    signing_key()
+
+
 def signing_key() -> bytes:
     """The HMAC key: from the environment, a mounted file, or the state directory.
 
@@ -136,10 +216,14 @@ def signing_key() -> bytes:
     share, so a deployment running more than one process must set
     :data:`_KEY_ENV` or :data:`_KEY_FILE_ENV`. Where it does not, entries
     written by one process do not verify in another and are treated as misses.
+
+    Raises :class:`SigningKeyError` for a key shorter than :data:`MIN_KEY_BYTES`,
+    wherever it came from. :func:`check_signing_key` raises it at startup;
+    :func:`verify` turns it into a miss so a query is still answered.
     """
     configured = os.getenv(_KEY_ENV, "").strip()
     if configured:
-        return configured.encode("utf-8")
+        return _checked(configured.encode("utf-8"), _KEY_ENV)
 
     key_file = os.getenv(_KEY_FILE_ENV, "").strip()
     if key_file:
@@ -149,16 +233,25 @@ def signing_key() -> bytes:
         try:
             material = Path(key_file).read_bytes().strip()
         except OSError as exc:
-            raise RuntimeError(
+            raise SigningKeyError(
                 f"{_KEY_FILE_ENV} is set to {key_file}, which cannot be read"
             ) from exc
         if not material:
-            raise RuntimeError(f"{_KEY_FILE_ENV} is set to {key_file}, which is empty")
-        return material
+            raise SigningKeyError(f"{_KEY_FILE_ENV} is set to {key_file}, which is empty")
+        return _checked(material, key_file)
 
     path = _key_path()
     if path.exists():
-        return path.read_bytes().strip()
+        try:
+            stored = path.read_bytes().strip()
+        except OSError as exc:
+            # A file another user wrote, typically: a container that created
+            # it as root and now runs as someone else. The same condition as
+            # an unreadable mounted key, and handled the same way.
+            raise SigningKeyError(
+                f"The semantic-cache signing key at {path} cannot be read"
+            ) from exc
+        return _checked(stored, f"{path} (delete it to generate a new one)")
 
     global _ephemeral_key  # noqa: PLW0603 - one key per process, by design
     if _ephemeral_key is not None:
@@ -167,9 +260,10 @@ def signing_key() -> bytes:
     key = secrets.token_hex(32).encode("ascii")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(key)
-        # Readable only by the owner. The key is the whole of the protection.
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        existing = _publish_key(path, key)
+        if existing is not None:
+            # Another process created it first; every process must share one.
+            return _checked(existing, str(path))
     except OSError as exc:
         # A read-only root filesystem reaches here. Signing still works, but
         # only within this process and only until it restarts.
@@ -252,8 +346,79 @@ def verify(payload: dict[str, Any], binding: CacheBinding, key: bytes | None = N
     if str(payload.get(VERSION_KEY, "")) != ENVELOPE_VERSION:
         return False
 
-    material = key if key is not None else signing_key()
+    if key is not None:
+        material = key
+    else:
+        try:
+            material = signing_key()
+        except SigningKeyError as exc:
+            # A miss, not an error: the question is answered without the
+            # cache. `check_signing_key` refuses the same key at startup.
+            report_key_error(exc)
+            return False
     expected = hmac.new(material, _message(payload, binding), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, tag)
+
+
+# ---------------------------------------------------------------------------
+# Verified question/SQL pairs
+# ---------------------------------------------------------------------------
+
+#: Incremented when the signed form of a verified pair changes.
+PAIR_VERSION = "1"
+
+#: Payload key holding a pair's signature version. The tag itself goes under
+#: :data:`SIGNATURE_KEY`, as for cache entries.
+PAIR_VERSION_KEY = "pair_version"
+
+#: The parts of a verified pair its signature covers: everything the prompt
+#: shows or the reader filters on.
+PAIR_SIGNED_FIELDS = ("agent_id", "question", "sql", "verified")
+
+
+def _pair_message(payload: dict[str, Any]) -> bytes:
+    fields = {name: payload.get(name) for name in PAIR_SIGNED_FIELDS}
+    body = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+    # The leading label keeps a pair's tag from ever being valid as a cache
+    # entry's, whose message starts with the envelope version, or the reverse.
+    return f"verified-pair\n{PAIR_VERSION}\n{body}".encode()
+
+
+def sign_pair(payload: dict[str, Any], key: bytes | None = None) -> dict[str, Any]:
+    """Return a verified pair's *payload* with a signature added.
+
+    Verified pairs are shown to the model as user-confirmed examples, and they
+    live in Qdrant, which is an input rather than a store this process controls.
+    The tag is made with the cache's signing key, held outside Qdrant, so a
+    writer to Qdrant cannot add a pair the reader will accept. Raises
+    :class:`SigningKeyError` when the key is unusable.
+    """
+    material = key if key is not None else signing_key()
+    tag = hmac.new(material, _pair_message(payload), hashlib.sha256).hexdigest()
+    return {**payload, SIGNATURE_KEY: tag, PAIR_VERSION_KEY: PAIR_VERSION}
+
+
+def verify_pair(payload: dict[str, Any], key: bytes | None = None) -> bool:
+    """Whether *payload* is a verified pair signed with this key.
+
+    False for an unsigned pair (one promoted before pairs were signed), one of
+    a different version, one whose signed fields have changed, and, with an
+    unusable key, every pair.
+    """
+    tag = payload.get(SIGNATURE_KEY)
+    if not isinstance(tag, str) or not tag:
+        return False
+    if str(payload.get(PAIR_VERSION_KEY, "")) != PAIR_VERSION:
+        return False
+    if key is not None:
+        material = key
+    else:
+        try:
+            material = signing_key()
+        except SigningKeyError as exc:
+            report_key_error(exc)
+            return False
+    expected = hmac.new(material, _pair_message(payload), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, tag)
 
 
@@ -299,9 +464,13 @@ def binding_for_agent(agent_id: str, dialect: str) -> CacheBinding:
     """
     from nlqueries import config  # noqa: PLC0415
     from nlqueries.sql_policy import POLICY_VERSION  # noqa: PLC0415
+    from nlqueries.state_files import agent_storage_id  # noqa: PLC0415
 
-    safe_id = "".join(c for c in agent_id if c.isalnum() or c in "-_")
-    schema_fp = _file_fingerprint(config.KB_PATH / f"{safe_id}.yaml")
+    # The file name `export-kb` writes, by the rule it uses rather than a copy
+    # of it. A copy once dropped dots instead, so for any agent id containing
+    # one (the shape `connect` produces for a hostname) it fingerprinted a file
+    # that does not exist, and the binding to the schema was empty.
+    schema_fp = _file_fingerprint(config.KB_PATH / f"{agent_storage_id(agent_id)}.yaml")
 
     connector_fp = ""
     try:

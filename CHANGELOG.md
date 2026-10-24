@@ -53,6 +53,86 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   with a reason naming the word; `[COMMIT]` is still an ordinary name.
   `POLICY_VERSION` is now `6`, so semantic-cache entries made under version 5
   miss once.
+- **OIDC verification no longer lets a request stall the MCP server.** A
+  token whose key id was not in the cached key set made the verifier refetch
+  the provider's JWKS, on every such request, with a blocking call on the
+  event loop. Those refetches now happen at most once a minute, under a lock,
+  and the MCP verifier runs off the event loop. When the hourly refresh fails,
+  the cached keys stay in use for up to 24 hours and the refresh is retried
+  a minute later instead of on every request. A reply that is not a key set,
+  or a key set with no keys in it, counts as a failed refresh rather than
+  replacing the working keys. With no usable keys, a request waits at most 2
+  seconds for another request's fetch, then is refused rather than queued.
+- **Malformed bearer tokens are rejected, not answered with a 500.** A header
+  PyJWT refuses for any reason (a `kid` that is not a string, say) and a
+  static token containing non-ASCII characters both raised out of the verifier.
+- **Stricter checks on the identity provider and its tokens** (MCP
+  authentication and `verify-oidc-token`):
+  - the discovery URL and `jwks_uri` must be `https`; plain `http` is
+    accepted only for localhost or a loopback address;
+  - the discovery document's `issuer` must be the one its URL belongs to
+    (OpenID Connect Discovery 1.0, section 4.3);
+  - either document over 1 MiB is refused, and a key published for
+    encryption (`use: enc`) is not used to check signatures;
+  - `exp`, `iss` and `aud` must be present; a token whose `azp` names
+    another client is refused, and a token with several audiences must carry
+    `azp`.
+
+  A deployment whose provider is reached over plain `http` on another host, or
+  whose discovery URL is not derived from its issuer, stops verifying tokens
+  until that is corrected. Microsoft Entra ID's v1.0 endpoint, and its v2.0
+  `common` and `organizations` endpoints, are such cases: use the
+  tenant-specific v2.0 discovery URL with the tenant's ID. See
+  `docs/mcp-authentication.md`.
+- **`mcp` 1.30 or later is required.** The server tells it not to apply its own
+  RFC 8707 resource check (`validate_token_resource=False`), which 1.30 added:
+  the verifiers check each token's audience themselves, and OIDC providers put
+  the client id there, not the server's URL.
+- **Verified question/SQL pairs are signed, and unsigned ones are ignored.**
+  Pairs reach the prompt as user-confirmed examples, and anyone able to write
+  to Qdrant could add one. `promote-feedback` now signs each pair with the
+  semantic-cache signing key, and the reader uses only pairs whose signature
+  verifies for the agent asking. It reads four times as many candidates as it
+  needs, so a few unsigned pairs (planted, or stale ones never re-signed) do
+  not take the real ones' places; more than that nearer the question leave
+  the prompt with fewer verified examples, never with planted ones. **After
+  upgrading, run
+  `nlqueries promote-feedback` (or `export-kb`) once per agent**: pairs
+  promoted before this release are unsigned and are ignored, with a warning,
+  until then.
+- **A cache entry is served only for the question it was made for.** Tier 1
+  and tier 2 hits are found by vector, and the vector is not signed, so a
+  writer to Qdrant could move a genuine signed entry onto another question's
+  vector and have it served for that question. The entry's stored question,
+  which is signed, is now embedded again and must itself be close to the
+  question asked. This costs one embedding per cache hit.
+- **Verified examples are read from Qdrant under the same API-key rule as
+  everything else.** The lookup that adds user-confirmed question-and-SQL
+  pairs to the prompt built its own Qdrant client, so it read anonymously from
+  a remote Qdrant that every other path refused to use without a key. It now
+  goes through `build_qdrant_client`; without a key it adds no examples and
+  logs why once. A test fails if any other module constructs a `QdrantClient`.
+- **"On this machine" means on this machine.** `is_loopback` treated a URL
+  without a scheme (`qdrant:6333`, `10.0.0.5:6333`) and any host name starting
+  with `127.` as local, so those reached a remote Qdrant without a key. Only
+  `localhost` and loopback addresses count now; a host that cannot be read
+  counts as remote. A key sent over plain `http` to another host is logged as
+  a warning.
+- **The semantic-cache signing key must be at least 32 bytes.** An empty or
+  short key, from the environment, a mounted file or the state directory, was
+  accepted, and an empty key file is what a crash during first use left behind.
+  A short key now stops the MCP server at startup; elsewhere the cache is
+  disabled and the reason logged. A generated key is written to a private
+  temporary file and linked into place, so no other process ever reads it
+  half-written, and two processes starting together end up sharing one key.
+- **Cache entries are bound to their agent's schema again for almost every
+  agent.** The binding named the knowledge-base file by dropping every
+  character other than letters, digits, `-` and `_`, where `export-kb` replaces
+  them with `_` (and keeps dots). For any id containing such a character,
+  which includes every id `nlqueries connect` produces (`postgres:localhost:shop`
+  became `postgreslocalhostshop.yaml`), it fingerprinted a file that does not
+  exist, and the entry was bound to no schema. Those agents' cache entries miss
+  once after upgrading.
 
 ### Added
 

@@ -204,6 +204,8 @@ def promote_feedback(
         _log.warning("promote_feedback: embed_batch failed — %s", exc)
         return 0
 
+    from nlqueries.cache.envelope import sign_pair  # noqa: PLC0415
+
     points: list[PointStruct] = []
     for (question, sql), vector in zip(candidates, vectors, strict=True):
         point_id = _pair_point_id(question, sql)
@@ -211,12 +213,16 @@ def promote_feedback(
             PointStruct(
                 id=point_id,
                 vector=vector,
-                payload={
-                    "question": question,
-                    "sql": sql,
-                    "agent_id": agent_id,
-                    "verified": True,
-                },
+                # Signed, so the reader can tell a pair promoted here from one
+                # written straight into Qdrant. Unsigned pairs are ignored.
+                payload=sign_pair(
+                    {
+                        "question": question,
+                        "sql": sql,
+                        "agent_id": agent_id,
+                        "verified": True,
+                    }
+                ),
             )
         )
 

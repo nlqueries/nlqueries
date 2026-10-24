@@ -32,6 +32,7 @@ import logging
 import os
 from typing import Any
 
+import anyio
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl, ValidationError
@@ -44,15 +45,16 @@ logger = logging.getLogger(__name__)
 # --- configuration -----------------------------------------------------------
 
 #: Where clients reach this server. Required whenever authentication is on: the
-#: SDK advertises it, and a token issued for a different resource should not be
-#: accepted here.
+#: SDK advertises it to clients as this resource's address. It does not bind a
+#: token to this server: an OIDC token is accepted when it is addressed to the
+#: configured client id (its audience), whatever resource it was requested for.
 RESOURCE_URL_ENV = "NLQ_MCP_RESOURCE_URL"
 
 OIDC_DISCOVERY_ENV = "NLQ_MCP_OIDC_DISCOVERY_URL"
 OIDC_CLIENT_ID_ENV = "NLQ_MCP_OIDC_CLIENT_ID"
 
-STATIC_TOKEN_ENV = "NLQ_MCP_STATIC_TOKEN"
-STATIC_TOKEN_FILE_ENV = "NLQ_MCP_STATIC_TOKEN_FILE"
+STATIC_TOKEN_ENV = "NLQ_MCP_STATIC_TOKEN"  # noqa: S105 - a variable's name, not a token
+STATIC_TOKEN_FILE_ENV = "NLQ_MCP_STATIC_TOKEN_FILE"  # noqa: S105 - a variable's name
 STATIC_SUBJECT_ENV = "NLQ_MCP_STATIC_SUBJECT"
 
 #: The shortest token worth calling one. A static token is the only thing
@@ -78,8 +80,11 @@ class OidcAccessTokenVerifier(TokenVerifier):
         self._resource_url = resource_url
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        # In a worker thread: verifying can fetch the provider's keys over the
+        # network, and on the event loop that fetch stalled every other request
+        # this server was handling until it returned.
         try:
-            claims = self._verifier.verify(token, self._client_id)
+            claims = await anyio.to_thread.run_sync(self._verifier.verify, token, self._client_id)
         except OidcVerificationError as exc:
             # The reason, never the token. A rejected token is still a
             # credential and still reaches logs.
@@ -112,8 +117,10 @@ class StaticTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
         # compare_digest, so a wrong token takes the same time as a right one
-        # regardless of how much of the prefix matched.
-        if not hmac.compare_digest(token, self._token):
+        # regardless of how much of the prefix matched. On bytes: given two
+        # strings it raises TypeError for any non-ASCII character, which turned
+        # such a token into a 500 rather than a rejection.
+        if not hmac.compare_digest(token.encode("utf-8"), self._token.encode("utf-8")):
             logger.warning("MCP token rejected: does not match the configured static token")
             return None
 
@@ -174,8 +181,8 @@ def build_verifier() -> tuple[TokenVerifier, AuthSettings] | None:
     if not resource_url:
         raise McpAuthConfigError(
             f"{RESOURCE_URL_ENV} must be set when MCP authentication is configured. "
-            "It is the URL clients reach this server at, and it is what stops a "
-            "token issued for somewhere else being accepted here."
+            "It is the URL clients reach this server at, which the server "
+            "advertises to them."
         )
 
     # Validated here rather than at the point of use: the static path derives
@@ -196,13 +203,20 @@ def build_verifier() -> tuple[TokenVerifier, AuthSettings] | None:
         # provider's, not the operator's.
         issuer_url = _url(oidc.issuer, f"the issuer in {discovery}")
     else:
-        assert static is not None
+        assert static is not None  # noqa: S101 - narrows the type; refused above when missing
         subject = os.getenv(STATIC_SUBJECT_ENV, "").strip() or "static-token"
         verifier = StaticTokenVerifier(static, subject, resource_url)
         # The deployment issued this token to itself; there is no third party.
         issuer_url = resource
 
-    return verifier, AuthSettings(issuer_url=issuer_url, resource_server_url=resource)
+    # False, explicitly: both verifiers check the token's audience themselves
+    # (the OIDC one `aud` and `azp`, the static one the token), and the
+    # providers this serves put the client id in `aud`, not this server's URL,
+    # so mcp's RFC 8707 resource check would refuse every token. Unset, mcp
+    # warns, and 3.0 makes it True.
+    return verifier, AuthSettings(
+        issuer_url=issuer_url, resource_server_url=resource, validate_token_resource=False
+    )
 
 
 def principal_from(access_token: Any) -> Principal:

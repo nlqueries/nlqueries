@@ -41,6 +41,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import re
 import string
 import time
@@ -57,6 +58,8 @@ from nlqueries.cache.envelope import (
     SIGNATURE_KEY,
     VERSION_KEY,
     CacheBinding,
+    SigningKeyError,
+    report_key_error,
     sign,
     verify,
 )
@@ -303,6 +306,50 @@ def _sqlglot_name(dialect: str | None) -> str | None:
 #: Search failures already reported, so an unreachable or too-old Qdrant costs
 #: one line rather than one per lookup.
 _SEARCH_FAILURES_LOGGED: set[str] = set()
+
+
+#: How far a re-embedded stored question may fall short of the threshold its
+#: stored vector met. The same text embeds the same way, up to float noise far
+#: smaller than this; an entry moved onto another question's vector falls short
+#: by far more.
+_RECHECK_TOLERANCE = 0.01
+
+
+def _stored_question_matches(
+    stored: Any, query_vector: list[float], threshold: float, tier: str = ""
+) -> bool | None:
+    """Whether the stored, signed question is itself close to the query.
+
+    A hit is found by its vector, and the vector is not signed: a writer to
+    Qdrant can copy a genuine signed entry onto another question's vector, and
+    it is then served for that other question. The stored question is signed,
+    so it is embedded again and compared with the query, which such an entry
+    fails. Tier 0 needs no such check; it compares the stored question itself.
+
+    None when it could not be checked because the question could not be
+    embedded: a miss, but not evidence of tampering, and reported as an
+    embedding failure (once per *tier*) rather than as a repointed entry.
+    """
+    if not isinstance(stored, str) or not stored:
+        return False
+    try:
+        stored_vector = embed_text(stored)
+    except Exception as exc:  # noqa: BLE001 - unconfirmable is a miss
+        if tier not in _RECHECK_EMBED_FAILED_LOGGED:
+            _RECHECK_EMBED_FAILED_LOGGED.add(tier)
+            logger.warning(
+                "SemanticCache: could not re-embed a cached entry's question to "
+                "confirm a %s hit (%s); treating it as a miss. The embedding "
+                "service may be unavailable.",
+                tier or "cache",
+                type(exc).__name__,
+            )
+        return None
+    dot = sum(a * b for a, b in zip(query_vector, stored_vector, strict=False))
+    norms = math.sqrt(sum(a * a for a in query_vector)) * math.sqrt(
+        sum(b * b for b in stored_vector)
+    )
+    return bool(norms) and dot / norms >= threshold - _RECHECK_TOLERANCE
 
 
 def _report_search_failure(collection: str, tier: str, exc: BaseException) -> None:
@@ -698,6 +745,31 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
 #: fires once per request, for as long as the entry survives, each time carrying
 #: the asker's question text into the log.
 _MISMATCHED_POINTS_LOGGED: set[int] = set()
+
+#: Point ids already reported as found by a vector their signed question does
+#: not match (`_stored_question_matches`). The tier-1 and tier-2 counterpart of
+#: the above: a signed entry moved onto another question's vector, or entries
+#: written by a process whose embeddings differ from this one's.
+_REPOINTED_POINTS_LOGGED: set[Any] = set()
+
+
+#: Tiers for which a failure to re-embed a stored question has been logged.
+_RECHECK_EMBED_FAILED_LOGGED: set[str] = set()
+
+
+def _report_repointed(point_id: Any, tier: str) -> None:
+    if point_id in _REPOINTED_POINTS_LOGGED:
+        return
+    _REPOINTED_POINTS_LOGGED.add(point_id)
+    logger.warning(
+        "Cache point %s (%s) was found by a vector its own signed question does "
+        "not match. Ignoring it; this should not happen unless the collection "
+        "has been written to directly, or by a process with a different "
+        "embedding model.",
+        point_id,
+        tier,
+    )
+
 
 #: Contexts already reported as unusable, so a caller with an unfortunate key
 #: name costs one line rather than one per lookup.
@@ -1279,6 +1351,14 @@ class SemanticCache:
                     continue
                 entry = self._verified_entry(payload)
                 if entry is not None:
+                    matches = _stored_question_matches(
+                        payload.get("question"), v, config.CACHE_ANSWER_THRESHOLD, "tier 1"
+                    )
+                    if matches is False:
+                        _report_repointed(hit.id, "tier 1")
+                    if not matches:
+                        entry = None
+                if entry is not None:
                     entry.hit_count = self._increment_hit_count(client, hit.id, payload)
                     record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
                     return entry
@@ -1337,6 +1417,13 @@ class SemanticCache:
             candidate_entry = self._verified_entry(payload)
             if candidate_entry is None:
                 continue  # expired or unverifiable: try the next candidate
+            matches = _stored_question_matches(
+                payload.get("question"), masked_vector, config.CACHE_TEMPLATE_THRESHOLD, "tier 2"
+            )
+            if matches is False:
+                _report_repointed(candidate.id, "tier 2")
+            if not matches:
+                continue  # unconfirmed, or found by a vector that is not its own
 
             template_sql = str(payload.get("sql") or "")
             if not template_sql:
@@ -1450,7 +1537,13 @@ class SemanticCache:
             "kind": "answer",
         }
 
-        answer_payload = sign(answer_payload, self._binding)
+        try:
+            answer_payload = sign(answer_payload, self._binding)
+        except SigningKeyError as exc:
+            # The cache is off, as `verify` treats it on the read path: the
+            # write is skipped and said once, rather than raised on every query.
+            report_key_error(exc)
+            return
 
         points: list[PointStruct] = [
             PointStruct(id=answer_id, vector=answer_vector, payload=answer_payload)

@@ -1250,6 +1250,16 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
         host:      Bind host for the networked transports (ignored for stdio).
         port:      Port for the networked transports (ignored for stdio).
     """
+    # A signing key too short to protect the cache stops the server here, with
+    # the reason. Found later, on a query, it can only turn the cache off.
+    from nlqueries.cache.envelope import SigningKeyError, check_signing_key  # noqa: PLC0415
+
+    try:
+        check_signing_key()
+    except SigningKeyError as exc:
+        # As the other startup refusals here: the reason, not a traceback.
+        raise SystemExit(str(exc)) from exc
+
     from nlqueries.audit import Surface, bind_process  # noqa: PLC0415
 
     # For work a tool call starts on a thread that does not inherit its
