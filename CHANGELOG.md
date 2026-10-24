@@ -4,6 +4,43 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-24
+
+Mostly security fixes: see *Security* below, and the steps to take first.
+
+### Upgrading from 0.3.0
+
+- **Run `nlqueries export-kb` again for each agent.** The knowledge base's
+  example queries are rebuilt on every run, and corrections accepted under
+  0.3.0's rules are dropped; corrections recorded over MCP are used only with
+  `--include-anonymous`.
+- **Run `nlqueries promote-feedback` (or `export-kb`) once per agent.**
+  Verified question/SQL pairs are now signed, and pairs promoted by 0.3.0 are
+  unsigned and ignored, with a warning, until then. An agent whose ID contains
+  a `.` starts with an empty verified-examples collection and needs this too.
+  Stored pairs that would not be promoted today are removed, unless every
+  pair fails at once. A deployment whose embedding model has changed since its
+  pairs were promoted drops them all, with a log line per agent saying so;
+  promoting again restores them.
+- **`nlqueries health` works again.** In 0.3.0 its `SELECT 1` probe could not
+  run, so every registered database was reported as "connection failed".
+- **The Snowflake driver is now 5.x** (`snowflake-connector-python>=5.0` in the
+  `snowflake` extra), and a Snowflake query's timeout is split between waiting
+  in the warehouse queue, set by the new `SNOWFLAKE_QUEUE_TIMEOUT_SECONDS`
+  (default 30, at most half the budget), and running.
+- **`mcp` 1.30 or later and `filelock` 4.2.1 or later are required.** The
+  filelock floor holds a fresh `pip install` on litellm 1.103.8 until litellm
+  allows filelock 4; the image is not affected.
+- **`.env` is read from the working directory only**, not from parent
+  directories.
+- **OIDC providers must be reached over `https`** (loopback excepted), and a
+  discovery URL must belong to the issuer it names. Microsoft Entra ID needs its
+  tenant-specific v2.0 URL; see `docs/mcp-authentication.md`.
+- **`nlqueries update-password` exits 1** when no keyring can store the
+  password, instead of 0.
+- **Cache entries miss once** after upgrading, as the SQL policy version and
+  the cache's schema binding have changed.
+
 ### Security
 
 - **filelock 4.2.4 and setuptools 84.2.1 in the image.** The lock pinned
