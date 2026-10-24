@@ -182,14 +182,31 @@ def _query_call(cursor, sql="SELECT 1"):
 def test_execute_query_passes_explicit_timeout_to_cursor():
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1", timeout_seconds=30)
-    assert _query_call(cursor).kwargs.get("timeout") == 30
+    call = _query_call(cursor)
+    assert call.kwargs.get("_statement_params") == {"STATEMENT_TIMEOUT_IN_SECONDS": 30}
+    # The 5.x driver's execute() takes **kwargs and ignores `timeout`.
+    assert "timeout" not in call.kwargs
 
 
 def test_execute_query_applies_default_timeout(monkeypatch):
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 45)
     connector, cursor = _mock_cursor()
     connector.execute_query("SELECT 1")
-    assert _query_call(cursor).kwargs.get("timeout") == 45
+    call = _query_call(cursor)
+    assert call.kwargs.get("_statement_params") == {"STATEMENT_TIMEOUT_IN_SECONDS": 45}
+    assert "timeout" not in call.kwargs
+
+
+def test_the_installed_driver_takes_per_statement_parameters():
+    """The mock cursor above accepts any keyword, so a driver that renamed or
+    dropped `_statement_params` would leave the tests green and every query
+    unbounded: the real signature is checked here. 5.x's execute() also takes
+    **kwargs, which is why its old `timeout=` vanished without an error."""
+    import inspect
+
+    cursor_module = pytest.importorskip("snowflake.connector.cursor")
+    execute = inspect.signature(cursor_module.SnowflakeCursor.execute)
+    assert "_statement_params" in execute.parameters
 
 
 def test_execution_is_wrapped_in_a_transaction_that_is_rolled_back():

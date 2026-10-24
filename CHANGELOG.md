@@ -14,8 +14,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   5.x no longer depends on filelock, and it needs protobuf below 7, so the
   lock moves protobuf from 7.36.0 to 6.33.6. Packages only the 4.x driver
   used (asn1crypto, platformdirs, pyOpenSSL, sortedcontainers) leave the
-  image. nlqueries uses only `connect`, `DictCursor` and
-  `errors.ProgrammingError` from the driver, all unchanged in 5.x.
+  image. **The Snowflake query timeout is now sent as Snowflake's
+  `STATEMENT_TIMEOUT_IN_SECONDS` statement parameter**, so the server cancels
+  the statement. It was the driver's `execute(timeout=...)` keyword, which 5.x
+  removed; its `execute()` takes `**kwargs` and ignores it, so with the old
+  call every Snowflake query would have run unbounded. The rest of what
+  nlqueries uses from the driver (`connect`, `DictCursor`, `execute(sql,
+  params)` with `%s` placeholders, `description`, iterating, `fetchone`,
+  `fetchall`, `close` and `errors.ProgrammingError`) is unchanged in 5.x.
   **`filelock>=4.2.1` is now a dependency of the package**, though nothing
   in nlqueries imports it: litellm 1.104 and later cap filelock below 4, so
   without the floor `pip install nlqueries-core` resolves the vulnerable

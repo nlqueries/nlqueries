@@ -56,6 +56,10 @@ _SYSTEM_SCHEMAS = ("INFORMATION_SCHEMA",)
 #: same connector to queue behind it indefinitely on a pool thread.
 _LOCK_WAIT_WITHOUT_TIMEOUT_SECONDS = 300.0
 
+#: Snowflake's statement parameter for a per-query timeout, enforced by the
+#: server.
+_STATEMENT_TIMEOUT = "STATEMENT_TIMEOUT_IN_SECONDS"
+
 #: Added to the statement timeout when deriving the lock wait, to cover the row
 #: fetch and the ROLLBACK that happen inside the span after the query returns.
 _LOCK_WAIT_MARGIN_SECONDS = 30.0
@@ -524,9 +528,10 @@ class SnowflakeConnector(DatabaseConnector):
         """Execute ``sql`` and return a :class:`QueryResult`.
 
         The query is bounded by *timeout_seconds* when given, else the
-        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — passed to the driver's
-        ``cursor.execute(timeout=…)`` so Snowflake cancels the query server-side
-        rather than letting it run indefinitely. A budget of 0 disables it.
+        ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — sent with the
+        statement as Snowflake's ``STATEMENT_TIMEOUT_IN_SECONDS`` parameter, so
+        the server cancels the query rather than letting it run indefinitely.
+        A budget of 0 disables it.
 
         Any exception raised during execution is caught and surfaced via
         ``QueryResult.error`` rather than propagating, so callers can treat
@@ -598,7 +603,15 @@ class SnowflakeConnector(DatabaseConnector):
                     # docs/database-hardening.md.
                     cursor.execute("BEGIN")
                     if effective_timeout is not None and effective_timeout > 0:
-                        cursor.execute(sql, timeout=max(1, int(effective_timeout)))
+                        # Per statement, through the driver's _statement_params,
+                        # which sends parameters with this query only. Not the
+                        # `timeout=` keyword: the 4.x driver had one, but 5.x's
+                        # execute() takes **kwargs and never reads it, so passing
+                        # it left every query unbounded without a word.
+                        cursor.execute(
+                            sql,
+                            _statement_params={_STATEMENT_TIMEOUT: max(1, int(effective_timeout))},
+                        )
                     else:
                         cursor.execute(sql)
                     elapsed_ms = (time.perf_counter() - start) * 1000
