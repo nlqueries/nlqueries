@@ -530,7 +530,7 @@ statement, and anything it did outside the transaction stands.
 | `duckdb` | `read_only=True` + locked sandbox | watchdog | yes |
 | `mssql` | never committed; rolled back either way. T-SQL DDL is transactional, so a `DROP` is undone too | **none per query** | no — asserted against a fake driver |
 | `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
-| `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `STATEMENT_QUEUED_TIMEOUT_IN_SECONDS` (a twentieth of the budget) and `STATEMENT_TIMEOUT_IN_SECONDS` (the rest) statement parameters | no — asserted against a fake driver |
+| `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `STATEMENT_QUEUED_TIMEOUT_IN_SECONDS` (`SNOWFLAKE_QUEUE_TIMEOUT_SECONDS`, at most half the budget) and `STATEMENT_TIMEOUT_IN_SECONDS` (the rest) statement parameters | no — asserted against a fake driver |
 | `bigquery` | **none** | `job_timeout_ms` | no |
 | `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift` and `START TRANSACTION READ ONLY` where it is `mysql` or `mariadb`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it, so a `CREATE` or `DROP` stands | best-effort per dialect | MySQL and MariaDB measured by hand (MySQL 8.0 and 8.4, MariaDB 10.11); otherwise asserted against a fake driver |
 

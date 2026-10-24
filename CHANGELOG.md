@@ -21,13 +21,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   running time together, which 5.x removed; its `execute()` takes `**kwargs`
   and ignores it, so with the old call every Snowflake query would have run
   unbounded. Snowflake bounds queueing and running separately, so the budget
-  is split, a twentieth for the warehouse queue and the rest for running, and
-  `timeout_seconds` stays a total: 120 seconds by default is at most 6
-  queued and 114 running. The running share stays above the 90% at which a
-  failed attempt counts as timed out rather than fixable, so a statement that
-  ran out of time is not repaired and re-run. On a saturated warehouse a query
-  is cancelled after about 6 seconds in the queue; raise
-  `CONNECTOR_STATEMENT_TIMEOUT_SECONDS` to give it longer. The rest of what
+  is split and `timeout_seconds` stays a total: **`SNOWFLAKE_QUEUE_TIMEOUT_SECONDS`**
+  (new, default 30, at most half the budget) for the warehouse queue and the
+  rest for running, 30 and 90 of the default 120 seconds. Raise it for a
+  warehouse that queues or resumes from suspension. A query cancelled for
+  either reason is reported with Snowflake's timeout error (000630, SQLSTATE
+  57014), which is now recognised as a timeout and not handed back to the
+  model to be rewritten and re-run, however soon it came back. The rest of what
   nlqueries uses from the driver (`connect`, `DictCursor`, `execute(sql,
   params)` with `%s` placeholders, `description`, iterating, `fetchone`,
   `fetchall`, `close` and `errors.ProgrammingError`) is unchanged in 5.x.

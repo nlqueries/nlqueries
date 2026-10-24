@@ -912,6 +912,13 @@ CONNECTOR_MAX_OVERFLOW) — worth computing before raising either against a
 customer's database, which has its own max_connections.
 """
 
+#: Most of a Snowflake query's statement timeout it may spend waiting in the
+#: warehouse queue before Snowflake cancels it; capped at half the timeout,
+#: and the rest bounds running, so the two stay within the timeout. Its own
+#: setting so a warehouse that queues can be given longer without multiplying
+#: how long a statement may run.
+SNOWFLAKE_QUEUE_TIMEOUT_SECONDS: float = float(os.getenv("SNOWFLAKE_QUEUE_TIMEOUT_SECONDS", "30"))
+
 CONNECTOR_STATEMENT_TIMEOUT_SECONDS: float = float(
     os.getenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", "120")
 )

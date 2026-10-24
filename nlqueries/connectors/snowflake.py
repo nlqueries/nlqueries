@@ -72,14 +72,15 @@ def _timeout_parameters(effective_timeout: float) -> dict[str, int]:
     left before its caller's deadline. So the budget is split and the two add
     up to it, each at least a second, since Snowflake reads 0 as no limit.
 
-    The queue gets a twentieth, the rest goes to running. The running share
-    has to stay above the orchestrator's ``_TIMED_OUT_SHARE`` (0.9): a failed
-    attempt that used less than that much of the budget is taken for a fixable
-    error and repaired and re-run, so a statement that ran out of time at a
-    quarter's queue allowance, 75% of the budget, was re-run to time out again.
+    The queue gets ``SNOWFLAKE_QUEUE_TIMEOUT_SECONDS``, at most half the
+    budget, and running the rest. Its own setting, not a share of the budget,
+    so it can be raised for a warehouse that queues without lengthening how
+    long a statement may run. A statement cancelled either way comes back
+    with Snowflake's timeout error, which the orchestrator recognises as a
+    timeout rather than a fixable error whatever the elapsed time.
     """
     budget = max(1, int(effective_timeout))
-    queued = max(1, budget // 20)
+    queued = max(1, min(int(config.SNOWFLAKE_QUEUE_TIMEOUT_SECONDS), budget // 2))
     return {_STATEMENT_QUEUED_TIMEOUT: queued, _STATEMENT_TIMEOUT: max(1, budget - queued)}
 
 
@@ -553,8 +554,9 @@ class SnowflakeConnector(DatabaseConnector):
         The query is bounded by *timeout_seconds* when given, else the
         ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — sent with the
         statement as Snowflake's ``STATEMENT_QUEUED_TIMEOUT_IN_SECONDS`` and
-        ``STATEMENT_TIMEOUT_IN_SECONDS`` parameters, a twentieth of it for the
-        warehouse queue and the rest for running (:func:`_timeout_parameters`),
+        ``STATEMENT_TIMEOUT_IN_SECONDS`` parameters, ``SNOWFLAKE_QUEUE_TIMEOUT_SECONDS``
+        of it (at most half) for the warehouse queue and the rest for running
+        (:func:`_timeout_parameters`),
         so the server cancels the query rather than letting it queue or run
         indefinitely, and the two together stay within the budget. A budget of
         0 disables both.

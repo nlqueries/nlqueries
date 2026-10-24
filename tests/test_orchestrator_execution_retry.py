@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import yaml
 from nlqueries.connectors.base import QueryResult
 from nlqueries.execution import ExecutionPolicy
@@ -334,6 +335,29 @@ def test_the_timeout_falls_back_to_the_connector_default() -> None:
     llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
     _, connector = _run(llm, [_failed(ms=19_000.0), _ok([[1]])], default_timeout=120.0)
     assert connector.execute_query.call_count == 2, "a fast failure under a long default"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "000630 (57014): Statement reached its statement or warehouse timeout of 6 second(s)"
+        " and was canceled.",
+        "000604 (57014): SQL execution canceled",
+        "canceling statement due to statement timeout",
+    ],
+    ids=["snowflake-timeout", "snowflake-cancelled", "postgres"],
+)
+def test_a_timeout_the_driver_names_is_not_retried_however_soon(error: str) -> None:
+    """Snowflake bounds its queue separately, so a statement cancelled there
+    comes back in a few seconds, far short of the share; so does any statement
+    under a budget of a few seconds. The driver's own wording settles it."""
+    assert _retry_after_error(_failed(error, ms=6_000.0), 120.0) is False
+    assert _retry_after_error(_failed(error, ms=900.0), 2.0) is False
+
+
+def test_an_ordinary_error_is_still_retried() -> None:
+    """The control: the timeout wording, not any quick failure, is what stops it."""
+    assert _retry_after_error(_failed("000904 (42000): invalid identifier 'X'", ms=6_000.0), 120.0)
 
 
 def test_the_share_boundary() -> None:

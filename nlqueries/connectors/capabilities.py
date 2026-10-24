@@ -172,7 +172,8 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
             "after the rollback"
         ),
         statement_timeout_mechanism=(
-            "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS (a twentieth of the budget) and "
+            "STATEMENT_QUEUED_TIMEOUT_IN_SECONDS (SNOWFLAKE_QUEUE_TIMEOUT_SECONDS, at "
+            "most half the budget) and "
             "STATEMENT_TIMEOUT_IN_SECONDS (the rest) statement parameters, enforced "
             "server-side"
         ),
