@@ -67,6 +67,12 @@ dependencies = [
     # LLM
     "anthropic>=0.28",
     "litellm>=1.0",
+    # Not imported here: a security floor. filelock before 4.2.1 has advisories
+    # (CVE-2026-112907, CVE-2026-112913, CVE-2026-112940), and litellm 1.104
+    # and later cap it below 4, so without this a fresh install resolves the
+    # vulnerable 3.x. With it, pip picks the last litellm without that cap
+    # (1.103.8). Remove it once a litellm release allows filelock 4.
+    "filelock>=4.2.1",
 
     # Credential storage
     "keyring>=24.0",

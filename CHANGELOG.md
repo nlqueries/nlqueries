@@ -16,6 +16,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   used (asn1crypto, platformdirs, pyOpenSSL, sortedcontainers) leave the
   image. nlqueries uses only `connect`, `DictCursor` and
   `errors.ProgrammingError` from the driver, all unchanged in 5.x.
+  **`filelock>=4.2.1` is now a dependency of the package**, though nothing
+  in nlqueries imports it: litellm 1.104 and later cap filelock below 4, so
+  without the floor `pip install nlqueries-core` resolves the vulnerable
+  3.x. With it, pip installs litellm 1.103.8, the last release without that
+  cap, until litellm allows filelock 4. The image is not affected; its
+  pinned litellm does not depend on filelock.
 - **The MCP `query` tool checks SQL in the grammar of the agent's own
   database.** The SQL policy parsed the generated statement in the dialect the
   MCP client passed (default `postgres`), not the dialect of the engine that ran
