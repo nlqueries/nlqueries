@@ -81,7 +81,7 @@ Then start the stack:
 docker compose up
 ```
 
-This pulls `nlqueries/core:0.3.0` and starts it alongside Qdrant (`:6333`), with the MCP server on `:8080`. Run CLI commands against the running stack from a second terminal:
+This pulls `nlqueries/core:0.4.0` and starts it alongside Qdrant (`:6333`), with the MCP server on `:8080`. Run CLI commands against the running stack from a second terminal:
 
 ```bash
 docker exec -it nlqueries-core nlqueries health
