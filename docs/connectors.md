@@ -154,7 +154,7 @@ The connector does not read table or column comments (`COMMENT ON`), so descript
 
 Query history comes from `STL_QUERY`, which only provisioned clusters have. On a **Serverless** workgroup `process-history` stops with an error; build the knowledge base from the schema with `export-kb`.
 
-Every login can read `STL_QUERY`, but Redshift shows a regular user only the statements it ran itself, so the history then holds that login's queries alone, with no error. A superuser sees everyone's. To include everyone's queries for a regular login, a superuser runs `ALTER USER <login> SYSLOG ACCESS UNRESTRICTED;`. That lets the login see other users' rows in every user-visible system table, and `STL_QUERY` holds the full text of their statements, `INSERT` and `UPDATE` values included.
+`STL_QUERY` is cluster-wide; `process-history` reads only the rows of the database the connector is registered for. Every login can read `STL_QUERY`, but Redshift shows a regular user only the statements it ran itself, so the history then holds that login's queries alone, with no error. A superuser sees everyone's. To include everyone's queries for a regular login, a superuser runs `ALTER USER <login> SYSLOG ACCESS UNRESTRICTED;`. That lets the login see other users' rows in every user-visible system table, and `STL_QUERY` holds the full text of their statements, `INSERT` and `UPDATE` values included.
 
 `REDSHIFT_SOCKET_TIMEOUT_SECONDS` bounds the whole connection, not just the
 handshake: the driver sets it on the socket before connecting and never clears
