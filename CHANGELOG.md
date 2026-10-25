@@ -20,7 +20,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   --embed` now signs each capsule with the cache's signing key
   (`NLQ_CACHE_SIGNING_KEY`), and questions use only capsules whose signature
   verifies, of their own agent; others are skipped, with one warning per
-  collection.
+  collection. The signature does not cover the vector a capsule is found by,
+  so each one's text is embedded again and must score against the question
+  as its stored vector did; a capsule moved onto another question's vector
+  is left out.
 
 - **pip 26.2 in the image.** The `Dockerfile` pinned pip 24.0, which the
   image keeps after installing the lock (CVE-2025-8869, fixed in 25.3;

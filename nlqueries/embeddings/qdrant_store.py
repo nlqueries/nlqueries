@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -343,6 +344,69 @@ _CAPSULE_CANDIDATE_FACTOR = 3
 #: Collections whose unsigned capsules have been reported, once each.
 _UNSIGNED_CAPSULES_WARNED: set[str] = set()
 
+#: Collections whose re-pointed capsules, or whose failure to re-embed them,
+#: have been reported, once each.
+_REPOINTED_CAPSULES_WARNED: set[str] = set()
+
+#: How far a capsule's re-embedded text may score below the score Qdrant gave
+#: its stored vector; as ``semantic_cache._RECHECK_TOLERANCE``.
+_CAPSULE_RECHECK_TOLERANCE = 0.01
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norms = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norms if norms else 0.0
+
+
+def _found_by_their_own_text(
+    hits: list[tuple[dict[str, Any], float]], vector: list[float], collection: str
+) -> list[dict[str, Any]]:
+    """The capsules in *hits* whose own text is as near the query as their vector.
+
+    The signature covers a capsule's text but not the vector it is stored
+    under, so a writer to Qdrant could copy a genuine capsule onto another
+    question's vector and have it ranked first for that question. Each
+    capsule's text -- its intent, else its description, which is what was
+    embedded -- is embedded again in one batch, and must score against the
+    query no lower than its stored vector did, within a tolerance for
+    quantization. A batch that cannot be embedded keeps none.
+    """
+    if not hits:
+        return []
+    from nlqueries.embeddings.embedder import embed_batch  # noqa: PLC0415
+
+    texts = [str(p.get("intent") or p.get("auto_description") or "") for p, _ in hits]
+    try:
+        own = embed_batch(texts)
+    except Exception as exc:  # noqa: BLE001 - unconfirmable is left out
+        if collection not in _REPOINTED_CAPSULES_WARNED:
+            _REPOINTED_CAPSULES_WARNED.add(collection)
+            logger.warning(
+                "Could not re-embed %d query capsule(s) in %r to confirm them (%s); "
+                "leaving them out of the prompt. The embedding service may be "
+                "unavailable.",
+                len(hits),
+                collection,
+                type(exc).__name__,
+            )
+        return []
+    kept = [
+        payload
+        for (payload, score), mine in zip(hits, own, strict=False)
+        if _cosine(vector, mine) >= score - _CAPSULE_RECHECK_TOLERANCE
+    ]
+    if len(kept) < len(hits) and collection not in _REPOINTED_CAPSULES_WARNED:
+        _REPOINTED_CAPSULES_WARNED.add(collection)
+        logger.warning(
+            "Ignoring %d query capsule(s) in %r found by a vector their own text "
+            "does not match; this should not happen unless the collection has been "
+            "written to directly, or by a process with a different embedding model.",
+            len(hits) - len(kept),
+            collection,
+        )
+    return kept
+
 
 def _capsule_payload(capsule: QueryCapsule, point_id: int, agent_id: str) -> dict[str, Any]:
     from nlqueries.cache.envelope import sign_capsule  # noqa: PLC0415
@@ -461,7 +525,9 @@ def search(
     returned: what this returns is shown to the model as example queries, and
     Qdrant can be written by more than this process. Unsigned ones -- written
     before capsules were signed, or by something else -- are skipped, and
-    reported once per collection.
+    reported once per collection. So is a signed capsule whose own text does
+    not score as its stored vector did (:func:`_found_by_their_own_text`),
+    since the signature does not cover the vector a capsule is ranked by.
 
     Args:
         collection: Qdrant collection to search.
@@ -494,25 +560,27 @@ def search(
         limit=top_k * _CAPSULE_CANDIDATE_FACTOR,
     )
 
-    payloads = [hit.payload for hit in response.points if hit.payload]
+    hits = [(hit.payload, float(hit.score)) for hit in response.points if hit.payload]
+    payloads = [p for p, _ in hits]
     # The type and agent are checked again after the signature: the filter
     # above ran on fields not yet verified.
-    signed = [
-        p
-        for p in payloads
+    signed_hits = [
+        (p, score)
+        for p, score in hits
         if verify_capsule(p)
         and p.get("type") == CAPSULE_TYPE
         and (agent_id is None or p.get("agent_id") == agent_id)
     ]
-    if len(signed) < len(payloads) and collection not in _UNSIGNED_CAPSULES_WARNED:
+    if len(signed_hits) < len(payloads) and collection not in _UNSIGNED_CAPSULES_WARNED:
         _UNSIGNED_CAPSULES_WARNED.add(collection)
         logger.warning(
             "Ignoring %d query capsule(s) in %r that are not signed with this "
             "deployment's key. Capsules embedded before signing was added are "
             "among them: run `nlqueries process-history --embed` again.",
-            len(payloads) - len(signed),
+            len(payloads) - len(signed_hits),
             collection,
         )
+    signed = _found_by_their_own_text(signed_hits, vector, collection)
     return [
         QueryCapsule(
             template_sql=str(p.get("template_sql", "")),

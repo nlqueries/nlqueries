@@ -492,6 +492,7 @@ class TestSearch:
                     "agent_id": "",
                 }
             )
+            hit.score = 1.0
             hits.append(hit)
         return hits
 
@@ -512,6 +513,10 @@ class TestSearch:
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
             ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
+            ),
         ):
             from nlqueries.embeddings.qdrant_store import search
 
@@ -531,6 +536,10 @@ class TestSearch:
             patch(
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
+            ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
             ),
         ):
             from nlqueries.embeddings.qdrant_store import search
@@ -562,6 +571,7 @@ class TestSearch:
                 "agent_id": "ag",
             }
         )
+        hit.score = 1.0
         response = MagicMock()
         response.points = [hit]
         mock_client = MagicMock()
@@ -573,6 +583,10 @@ class TestSearch:
             patch(
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
+            ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
             ),
         ):
             from nlqueries.embeddings.qdrant_store import search
@@ -600,6 +614,10 @@ class TestSearch:
             patch(
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
+            ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
             ),
         ):
             from nlqueries.embeddings.qdrant_store import search

@@ -66,6 +66,7 @@ def qdrant(monkeypatch: pytest.MonkeyPatch) -> _FakeQdrant:
         "nlqueries.embeddings.embedder.embed_batch", lambda texts: [_VECTOR for _ in texts]
     )
     qdrant_store._UNSIGNED_CAPSULES_WARNED.clear()
+    qdrant_store._REPOINTED_CAPSULES_WARNED.clear()
     return fake
 
 
@@ -192,6 +193,39 @@ def test_another_agents_signed_capsule_is_not_shown(qdrant: _FakeQdrant) -> None
     )
 
     assert "other agent" not in _prompt_examples("shop")
+
+
+def test_a_signed_capsule_moved_onto_another_questions_vector_is_not_shown(
+    qdrant: _FakeQdrant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The signature does not cover the vector, so a genuine capsule copied
+    onto another question's vector would rank first for that question. Its own
+    text, embedded again, is far from the query, and it is left out."""
+    collection = qdrant_store.schema_collection("shop")
+    qdrant_store.upsert_capsules(collection, [_capsule("refund totals", "SELECT 7")], "shop")
+    far = [0.0] * 383 + [1.0]
+    monkeypatch.setattr(
+        "nlqueries.embeddings.embedder.embed_batch",
+        lambda texts: [far if t == "refund totals" else _VECTOR for t in texts],
+    )
+
+    assert "refund totals" not in _prompt_examples("shop")
+    assert "found by a vector their own text does not match" in caplog.text
+
+
+def test_capsules_that_cannot_be_reembedded_are_left_out(
+    qdrant: _FakeQdrant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    collection = qdrant_store.schema_collection("shop")
+    qdrant_store.upsert_capsules(collection, [_capsule("unconfirmed", "SELECT 8")], "shop")
+
+    def unavailable(texts: list[str]) -> list[list[float]]:
+        raise ConnectionError("the embedding daemon went away")
+
+    monkeypatch.setattr("nlqueries.embeddings.embedder.embed_batch", unavailable)
+
+    assert "unconfirmed" not in _prompt_examples("shop")
+    assert "Could not re-embed 1 query capsule(s)" in caplog.text
 
 
 def test_table_and_column_points_do_not_take_capsule_places(qdrant: _FakeQdrant) -> None:
