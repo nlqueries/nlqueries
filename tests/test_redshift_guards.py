@@ -375,3 +375,32 @@ class TestTheSocketBudget:
         """The control: the connect call carries more than the timeout, and this
         is the part of it that matters most."""
         assert self._connect(monkeypatch)["ssl"] is True
+
+
+class _NoStlQuery(_Connection):
+    """A Serverless workgroup: STL_QUERY does not exist there."""
+
+    def cursor(self) -> _Cursor:
+        cur = _Cursor(self.statements)
+
+        def execute(sql: str, params: object = None) -> None:
+            raise RuntimeError('relation "stl_query" does not exist')
+
+        cur.execute = execute  # type: ignore[method-assign]
+        return cur
+
+
+def test_unreadable_history_points_at_serverless_not_at_a_postgres_role() -> None:
+    """The message named `pg_read_all_stats`, a PostgreSQL role Redshift does not
+    have. Every user can read STL_QUERY; it fails where the view is absent."""
+    from nlqueries.connectors.base import QueryHistoryUnavailable  # noqa: PLC0415
+
+    c = granted(RedshiftConnector())
+    c._conn = _NoStlQuery()
+
+    with pytest.raises(QueryHistoryUnavailable) as excinfo:
+        c.extract_query_history(days=7)
+
+    message = str(excinfo.value)
+    assert "pg_read_all_stats" not in message
+    assert "provisioned clusters" in message and "export-kb" in message

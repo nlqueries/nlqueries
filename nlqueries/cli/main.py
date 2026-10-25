@@ -686,6 +686,41 @@ def _replace_what_output_cannot_encode() -> None:
                 reconfigure(errors=errors)
 
 
+def _configure_logging() -> None:
+    """Send log records at ``LOG_LEVEL`` and above to stderr, when it is set.
+
+    Unset, the CLI configures nothing, as before: Python's last-resort handler
+    prints warnings and errors only. A handler is added rather than calling
+    ``logging.basicConfig``, which does nothing once any handler is on the root
+    logger, and it is added once however often the group runs in one process,
+    writing to whatever stderr is at the time.
+    """
+    import logging  # noqa: PLC0415
+
+    from nlqueries import config  # noqa: PLC0415
+
+    unknown = config.unknown_log_level()
+    if unknown:
+        logging.getLogger(__name__).warning(
+            "LOG_LEVEL=%s is not one of %s; it is ignored.", unknown, ", ".join(config.LOG_LEVELS)
+        )
+    level = config.log_level(None)
+    if level is None:
+        return
+    root = logging.getLogger()
+    root.setLevel(level)
+    for existing in root.handlers:
+        if getattr(existing, "nlqueries_cli", False) and isinstance(
+            existing, logging.StreamHandler
+        ):
+            existing.setStream(sys.stderr)
+            return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    handler.nlqueries_cli = True  # type: ignore[attr-defined]
+    root.addHandler(handler)
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -713,6 +748,7 @@ def cli() -> None:
     from nlqueries.auth.principal import local_principal  # noqa: PLC0415
 
     _replace_what_output_cannot_encode()
+    _configure_logging()
 
     # One invocation is one request, made by whoever runs it. Any failure to
     # name them leaves the principal unknown: attribution must never stop a
@@ -4338,9 +4374,15 @@ def mcp_server_start(sse: bool, host: str, port: int) -> None:
     from nlqueries.mcp_server.server import main  # noqa: PLC0415
 
     if sse:
-        console.print(
-            f"  [green]✓[/green] NLQueries MCP server (SSE) listening on http://{host}:{port}/sse"
+        # Printed by `main` once its checks pass, so a refused start does not
+        # announce a server first. "Starting": the port is bound after this.
+        main(
+            transport="sse",
+            host=host,
+            port=port,
+            on_ready=lambda: console.print(
+                f"  [green]✓[/green] NLQueries MCP server (SSE) starting on http://{host}:{port}/sse"
+            ),
         )
-        main(transport="sse", host=host, port=port)
     else:
         main(transport="stdio")

@@ -43,7 +43,7 @@ why the role matters more than the transaction does.
 | MySQL | `pip install "nlqueries-core[mysql]"` | None yet: `connect mysql` runs on the generic SQLAlchemy connector, so the knowledge base comes from the schema alone. It sets no TLS; see below |
 | Snowflake | `pip install "nlqueries-core[snowflake]"` | `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` (requires `IMPORTED PRIVILEGES` on the `SNOWFLAKE` database); if that cannot be read, the `INFORMATION_SCHEMA.QUERY_HISTORY()` table function, which covers the last 7 days only. If neither can be read, `process-history` stops with an error |
 | BigQuery | `pip install "nlqueries-core[bigquery]"` | `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (requires `bigquery.jobs.listAll`, for example through `roles/bigquery.resourceViewer`), completed `SELECT` jobs only, read from one region, and only jobs that read a table in the `--dataset-id` dataset when one is set: see below |
-| Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (requires superuser or `pg_read_all_stats`; provisioned clusters only, see below) |
+| Amazon Redshift | `pip install "nlqueries-core[redshift]"` | `STL_QUERY` (a login sees only its own queries unless it is a superuser or has `SYSLOG ACCESS UNRESTRICTED`; provisioned clusters only, see below) |
 | SQL Server / Azure SQL | `pip install "nlqueries-core[mssql]"` | `sys.dm_exec_query_stats` + `sys.dm_exec_sql_text` (requires `VIEW SERVER STATE` / `VIEW DATABASE STATE`), limited to plans compiled in the connected database |
 | DuckDB | `pip install "nlqueries-core[duckdb]"` | None — file-based, no persisted history |
 | SQLite | included (stdlib `sqlite3`) | None — file-based, no persisted history |
@@ -153,6 +153,8 @@ the same connector rewrites its whole entry, so add the key back afterwards.
 The connector does not read table or column comments (`COMMENT ON`), so descriptions come from `import-dbt` or from editing the knowledge base. Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).
 
 Query history comes from `STL_QUERY`, which only provisioned clusters have. On a **Serverless** workgroup `process-history` stops with an error; build the knowledge base from the schema with `export-kb`.
+
+Every login can read `STL_QUERY`, but Redshift shows a regular user only the statements it ran itself, so the history then holds that login's queries alone, with no error. A superuser sees everyone's. To include everyone's queries for a regular login, a superuser runs `ALTER USER <login> SYSLOG ACCESS UNRESTRICTED;`. That lets the login see other users' rows in every user-visible system table, and `STL_QUERY` holds the full text of their statements, `INSERT` and `UPDATE` values included.
 
 `REDSHIFT_SOCKET_TIMEOUT_SECONDS` bounds the whole connection, not just the
 handshake: the driver sets it on the socket before connecting and never clears
