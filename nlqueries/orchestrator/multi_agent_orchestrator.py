@@ -790,9 +790,10 @@ class MultiAgentOrchestrator:
 
         if intent == IntentType.document:
             doc_orch = DocumentOrchestrator()
-            collection = await asyncio.to_thread(
-                agent_collection_to_read, "doc_", agent_id, "_chunks"
-            )
+            # The agent's listed sources, as the hybrid path reads them; this
+            # branch named the agent's own collection, so a question routed to
+            # documents alone never reached the sources the agent lists.
+            collection = await asyncio.to_thread(_document_collections, agent_id)
             seen = []
             async for token in doc_orch.handle_question(effective_question, collection):
                 seen.append(token)

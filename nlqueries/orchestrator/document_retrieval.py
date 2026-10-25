@@ -104,9 +104,11 @@ def retrieve_across(
 
     For an agent that answers from several document sources. The question is
     embedded once. A collection that cannot be searched -- a listed source not
-    ingested yet, or Qdrant refusing -- is skipped with a warning, once per
-    collection, so the others still answer. The result's ``collection`` names
-    them all.
+    ingested yet -- is skipped with a warning, once per collection, so the
+    others still answer. When none can be searched, which is also what Qdrant
+    out of reach looks like, it raises, as :func:`retrieve_for_question` does
+    for its one collection: an empty result would be answered as though the
+    documents held nothing relevant. The result's ``collection`` names them all.
     """
     from nlqueries.embeddings.embedder import embed_text
     from nlqueries.embeddings.qdrant_store import _get_client, chunk_from_payload  # noqa: PLC2701
@@ -114,10 +116,13 @@ def retrieve_across(
     vector = embed_text(question)
     client = _get_client()
     pairs: list[tuple[DocumentChunk, Citation]] = []
+    searched = 0
+    last_error: Exception | None = None
     for collection in collections:
         try:
             response = client.query_points(collection_name=collection, query=vector, limit=top_k)
         except Exception as exc:  # noqa: BLE001 - one source's failure leaves the others
+            last_error = exc
             if collection not in _UNSEARCHABLE_WARNED:
                 _UNSEARCHABLE_WARNED.add(collection)
                 logger.warning(
@@ -127,7 +132,13 @@ def retrieve_across(
                     type(exc).__name__,
                 )
             continue
+        searched += 1
         pairs.extend(_cited(response.points, chunk_from_payload))
+    if collections and not searched:
+        raise RuntimeError(
+            f"none of the agent's {len(collections)} document source(s) could be searched; "
+            f"the last error: {type(last_error).__name__}: {last_error}"
+        ) from last_error
     return _result(pairs, ", ".join(collections), top_k)
 
 

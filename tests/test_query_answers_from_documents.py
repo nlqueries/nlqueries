@@ -299,3 +299,56 @@ def test_the_mcp_tool_keeps_an_agent_without_sources_to_its_database(
         asyncio.run(query("How many?", "postgres_localhost_plain"))
 
     assert seen["available_types"] == ("sql",)
+
+
+# ---------------------------------------------------------------------------
+# Through the router, as a question takes it
+# ---------------------------------------------------------------------------
+
+
+def test_a_question_routed_to_documents_searches_the_listed_sources(
+    connectors_file: Path,
+) -> None:
+    """The document branch of `handle_question` named the agent's own
+    collection, so only hybrid answers reached the listed sources."""
+    from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+
+    searched: list[Any] = []
+
+    class _DocAgent:
+        async def handle_question(self, question: str, collection: Any, **_: Any) -> Any:
+            searched.append(collection)
+            yield "From the report."
+            yield '{"type": "citations", "citations": []}'
+
+    cache = MagicMock()
+    cache.get.return_value = None
+    m = "nlqueries.orchestrator.multi_agent_orchestrator"
+
+    async def drain() -> None:
+        async for _ in MultiAgentOrchestrator().handle_question(
+            "What does the report say?",
+            _AGENT,
+            available_types=answer_types_for(_AGENT),
+            intent_override="document",
+        ):
+            pass
+
+    with (
+        patch(f"{m}.SemanticCache", return_value=cache),
+        patch(f"{m}.DocumentOrchestrator", _DocAgent),
+        # The cache lookup embeds the question; no model is needed for routing.
+        patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.1] * 384),
+    ):
+        asyncio.run(drain())
+
+    assert searched == [["doc_q1-report_chunks", "doc_eng-wiki_chunks"]]
+
+
+def test_when_no_source_can_be_searched_it_is_an_error_not_an_empty_answer(
+    collections: _Collections,
+) -> None:
+    """Qdrant out of reach, or nothing ingested: an empty result would be
+    answered as though the documents held nothing relevant."""
+    with pytest.raises(RuntimeError, match="none of the agent's 2 document source"):
+        document_retrieval.retrieve_across("q", ["doc_x_chunks", "doc_y_chunks"])
