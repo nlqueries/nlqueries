@@ -1168,6 +1168,12 @@ def connect(
         config["password_storage"] = "keychain"  # noqa: S105 - where it is, not what it is
     if alias:
         config["alias"] = alias
+    # Registering a connector again (a new password, a moved host) rebuilds its
+    # entry; the document sources set with `agent docs add` are not connection
+    # settings, so they carry over rather than disappear with it.
+    previous = _load_connectors().get(cid)
+    if isinstance(previous, dict) and isinstance(previous.get("document_sources"), list):
+        config["document_sources"] = previous["document_sources"]
     if db_type_l == "snowflake":
         config["account"] = account
         config["warehouse"] = warehouse
@@ -1242,6 +1248,116 @@ def set_alias(connector_id: str, alias_name: str) -> None:
         f"  [bold green]✓[/bold green] Alias [bold]{alias_name!r}[/bold] "
         f"→ [dim]{connector_id}[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# agent docs
+# ---------------------------------------------------------------------------
+
+
+@cli.group("agent")
+def agent_group() -> None:
+    """Settings of an agent (a registered connector)."""
+
+
+@agent_group.group("docs")
+def agent_docs_group() -> None:
+    """The document sources an agent may answer from.
+
+    \b
+    A source is the SOURCE_ID given to doc-ingest, doc-sync-notion or
+    doc-sync-confluence. The list is kept on the agent's entry in the
+    connectors file.
+    """
+
+
+def _listed_sources(cfg: dict[str, Any]) -> list[str]:
+    raw = cfg.get("document_sources")
+    return [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else []
+
+
+def _source_is_stored(source_id: str) -> bool | None:
+    """Whether *source_id* has a stored collection; None when Qdrant cannot say."""
+    from nlqueries.embeddings.qdrant_store import _get_client, agent_collection_to_read
+
+    try:
+        collection = agent_collection_to_read("doc_", source_id, "_chunks")
+        return collection in {c.name for c in _get_client().get_collections().collections}
+    except Exception:  # noqa: BLE001 - a check that cannot run says so, below
+        return None
+
+
+@agent_docs_group.command("add")
+@click.argument("agent_id")
+@click.argument("source_ids", nargs=-1, required=True)
+def agent_docs_add(agent_id: str, source_ids: tuple[str, ...]) -> None:
+    """Let AGENT_ID answer from SOURCE_IDS (alias accepted).
+
+    \b
+    A source not ingested yet is added with a warning, so the list can be set
+    up before the documents are; ingest it under the same SOURCE_ID.
+
+    \b
+    Example:
+      nlqueries agent docs add dvdrental q1-report eng-wiki
+    """
+    agent_id = _resolve_alias(agent_id)
+    cfg = _require_connector(agent_id)
+    sources = _listed_sources(cfg)
+    for source_id in (s.strip() for s in source_ids):
+        if not source_id:
+            raise click.ClickException("A source ID cannot be empty.")
+        if source_id in sources:
+            console.print(f"  [dim]{source_id} is already listed[/dim]")
+            continue
+        sources.append(source_id)
+        stored = _source_is_stored(source_id)
+        note = ""
+        if stored is False:
+            note = " [yellow](not ingested yet: nothing to answer from until it is)[/yellow]"
+        elif stored is None:
+            note = " [yellow](Qdrant could not be asked whether it is ingested)[/yellow]"
+        console.print(f"  [bold green]✓[/bold green] {source_id}{note}")
+    cfg["document_sources"] = sources
+    _save_connector(agent_id, cfg)
+
+
+@agent_docs_group.command("remove")
+@click.argument("agent_id")
+@click.argument("source_ids", nargs=-1, required=True)
+def agent_docs_remove(agent_id: str, source_ids: tuple[str, ...]) -> None:
+    """Stop AGENT_ID answering from SOURCE_IDS (alias accepted).
+
+    The sources' stored chunks are kept; other agents, and doc-ask, can still
+    use them.
+    """
+    agent_id = _resolve_alias(agent_id)
+    cfg = _require_connector(agent_id)
+    sources = _listed_sources(cfg)
+    missing = [s for s in source_ids if s not in sources]
+    if missing:
+        raise click.ClickException(
+            f"Not listed for {agent_id}: {', '.join(missing)}. "
+            f"See: nlqueries agent docs list {agent_id}"
+        )
+    cfg["document_sources"] = [s for s in sources if s not in source_ids]
+    _save_connector(agent_id, cfg)
+    for source_id in source_ids:
+        console.print(f"  [bold green]✓[/bold green] removed {source_id}")
+
+
+@agent_docs_group.command("list")
+@click.argument("agent_id")
+def agent_docs_list(agent_id: str) -> None:
+    """The document sources AGENT_ID may answer from (alias accepted)."""
+    agent_id = _resolve_alias(agent_id)
+    cfg = _require_connector(agent_id)
+    sources = _listed_sources(cfg)
+    if not sources:
+        console.print(f"  {agent_id} has no document sources.")
+        return
+    for source_id in sources:
+        console.print(f"  {source_id}")
 
 
 # ---------------------------------------------------------------------------

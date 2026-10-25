@@ -97,6 +97,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   relevant-tables hint alone left the prompt with no example queries. An
   "Example Queries" heading with nothing under it is no longer added.
 
+### Added
+
+- **`nlqueries agent docs add|remove|list`: the document sources an agent may
+  use.** The list is kept as `document_sources` on the agent's entry in the
+  connectors file, under either form of its ID or its alias, and survives
+  registering the connector again. `add` warns about a source not ingested
+  yet; `remove` keeps the source's stored chunks.
+
 ### Changed
 
 - **One agent per storage name, for verified examples and capsules too.** The
