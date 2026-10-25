@@ -404,3 +404,33 @@ def test_unreadable_history_points_at_serverless_not_at_a_postgres_role() -> Non
     message = str(excinfo.value)
     assert "pg_read_all_stats" not in message
     assert "provisioned clusters" in message and "export-kb" in message
+
+
+class _HistoryCursor(_Cursor):
+    """Records the history statement and its parameters."""
+
+    def __init__(self, log: list[str]) -> None:
+        super().__init__(log)
+        self.params: object = None
+
+    def execute(self, sql: str, params: object = None) -> None:  # type: ignore[override]
+        self._log.append(sql)
+        self.params = params
+
+
+class _HistoryConnection(_Connection):
+    def cursor(self) -> _Cursor:
+        return _HistoryCursor(self.statements)
+
+
+def test_history_keeps_to_this_database() -> None:
+    """STL_QUERY is cluster-wide: a login that sees every user's rows saw every
+    database's statements, and the knowledge base was built from them."""
+    c = granted(RedshiftConnector())
+    conn = _HistoryConnection()
+    c._conn = conn
+
+    c.extract_query_history(days=7)
+
+    (history,) = [s for s in conn.statements if "STL_QUERY" in s]
+    assert "TRIM(database) = current_database()" in " ".join(history.split())

@@ -410,7 +410,11 @@ class RedshiftConnector(DatabaseConnector):
 
         Every user can read ``STL_QUERY``, which only provisioned clusters
         have, but a regular user sees only its own rows unless it is a superuser
-        or has ``SYSLOG ACCESS UNRESTRICTED``. Raises
+        or has ``SYSLOG ACCESS UNRESTRICTED``. ``STL_QUERY`` is cluster-wide,
+        so only this database's statements are read: such a login sees every
+        database's, which are both noise and somebody else's queries, as with
+        PostgreSQL's ``pg_stat_statements``. ``database`` is ``CHAR(32)``,
+        padded, hence the ``TRIM``. Raises
         :class:`QueryHistoryUnavailable` when the view cannot be read, as on a
         Serverless workgroup.
         """
@@ -426,6 +430,7 @@ class RedshiftConnector(DatabaseConnector):
                     MAX(starttime)::text                        AS last_executed
                 FROM STL_QUERY
                 WHERE userid > 1
+                  AND TRIM(database) = current_database()
                   AND aborted = 0
                   AND starttime >= DATEADD(day, %s, GETDATE())
                   AND querytxt NOT LIKE 'PADB%%'

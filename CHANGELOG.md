@@ -68,6 +68,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `process_query_history(..., embed=True)` needs `agent_id=` for the same
   reason, and raises `ValueError` without it. The capsules file is now saved
   before the embed, so a Qdrant failure there no longer discards them.
+- **Redshift query history reads only the connector's database.**
+  `STL_QUERY` is cluster-wide, and the history query had no `database`
+  filter, so a superuser or `SYSLOG ACCESS UNRESTRICTED` login built the
+  knowledge base from every database's statements on the cluster. It now
+  keeps to `current_database()`, as the PostgreSQL connector does.
 - **`doc-sync-confluence --since` notices pages that are gone.** It re-read
   the space only when a page had been modified since the timestamp, so a page
   deleted, moved to another space or hidden by a permission change kept its
