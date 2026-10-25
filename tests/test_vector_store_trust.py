@@ -288,6 +288,29 @@ class TestSigningKey:
         assert envelope._ephemeral_key is None
         assert [p.name for p in state_dir.iterdir()] == ["cache_signing_key"]
 
+    def test_without_hard_links_a_key_published_meanwhile_is_kept_and_used(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows, renaming onto a key another process has just published,
+        and still holds, is refused. Retrying the rename would replace a key that
+        process already signs with; the winner's key is the one to use."""
+        stored = state_dir / "cache_signing_key"
+        theirs = b"t" * 64
+
+        def no_links(src: str, dst: str) -> None:
+            raise PermissionError(1, "Operation not permitted")
+
+        def published_meanwhile(src: str, dst: str) -> None:
+            Path(dst).write_bytes(theirs)
+            raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(envelope.os, "link", no_links)
+        monkeypatch.setattr(envelope.os, "replace", published_meanwhile)
+
+        assert envelope._publish_key(stored, b"m" * 64) == theirs
+        assert stored.read_bytes() == theirs
+        assert [p.name for p in state_dir.iterdir()] == ["cache_signing_key"]
+
     def test_check_signing_key_refuses_a_bad_key_at_startup(
         self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

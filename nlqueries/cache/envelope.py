@@ -175,9 +175,17 @@ def _publish_key(path: Path, key: bytes) -> bytes | None:
             # and the rename, a narrower window than linking leaves.
             if path.exists():
                 return path.read_bytes().strip()
-            from nlqueries.state_files import replace_file  # noqa: PLC0415
-
-            replace_file(tmp, path)
+            # Not `state_files.replace_file`, which retries a refused rename
+            # until it succeeds. Here the key was absent a moment ago, so a
+            # refusal means another process has just published its key and still
+            # holds it; retrying would replace a key that process already signs
+            # with. Its key is the one to use, as when the link finds one.
+            try:
+                os.replace(tmp, path)
+            except PermissionError:
+                if path.exists():
+                    return path.read_bytes().strip()
+                raise
         return None
     finally:
         with contextlib.suppress(OSError):
