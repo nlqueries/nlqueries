@@ -1272,8 +1272,10 @@ def agent_docs_group() -> None:
 
 
 def _listed_sources(cfg: dict[str, Any]) -> list[str]:
-    raw = cfg.get("document_sources")
-    return [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else []
+    # Read as questions read it, so `list` shows and `remove` finds what is used.
+    from nlqueries.connectors.loader import normalise_sources  # noqa: PLC0415
+
+    return normalise_sources(cfg.get("document_sources"))
 
 
 def _source_is_stored(source_id: str) -> bool | None:
@@ -1301,6 +1303,8 @@ def agent_docs_add(agent_id: str, source_ids: tuple[str, ...]) -> None:
     Example:
       nlqueries agent docs add dvdrental q1-report eng-wiki
     """
+    from rich.markup import escape  # noqa: PLC0415
+
     agent_id = _resolve_alias(agent_id)
     cfg = _require_connector(agent_id)
     sources = _listed_sources(cfg)
@@ -1308,7 +1312,7 @@ def agent_docs_add(agent_id: str, source_ids: tuple[str, ...]) -> None:
         if not source_id:
             raise click.ClickException("A source ID cannot be empty.")
         if source_id in sources:
-            console.print(f"  [dim]{source_id} is already listed[/dim]")
+            console.print(f"  [dim]{escape(source_id)} is already listed[/dim]")
             continue
         sources.append(source_id)
         stored = _source_is_stored(source_id)
@@ -1317,7 +1321,7 @@ def agent_docs_add(agent_id: str, source_ids: tuple[str, ...]) -> None:
             note = " [yellow](not ingested yet: nothing to answer from until it is)[/yellow]"
         elif stored is None:
             note = " [yellow](Qdrant could not be asked whether it is ingested)[/yellow]"
-        console.print(f"  [bold green]✓[/bold green] {source_id}{note}")
+        console.print(f"  [bold green]✓[/bold green] {escape(source_id)}{note}")
     cfg["document_sources"] = sources
     _save_connector(agent_id, cfg)
 
@@ -1331,9 +1335,12 @@ def agent_docs_remove(agent_id: str, source_ids: tuple[str, ...]) -> None:
     The sources' stored chunks are kept; other agents, and doc-ask, can still
     use them.
     """
+    from rich.markup import escape  # noqa: PLC0415
+
     agent_id = _resolve_alias(agent_id)
     cfg = _require_connector(agent_id)
     sources = _listed_sources(cfg)
+    source_ids = tuple(s.strip() for s in source_ids)
     missing = [s for s in source_ids if s not in sources]
     if missing:
         raise click.ClickException(
@@ -1343,21 +1350,23 @@ def agent_docs_remove(agent_id: str, source_ids: tuple[str, ...]) -> None:
     cfg["document_sources"] = [s for s in sources if s not in source_ids]
     _save_connector(agent_id, cfg)
     for source_id in source_ids:
-        console.print(f"  [bold green]✓[/bold green] removed {source_id}")
+        console.print(f"  [bold green]✓[/bold green] removed {escape(source_id)}")
 
 
 @agent_docs_group.command("list")
 @click.argument("agent_id")
 def agent_docs_list(agent_id: str) -> None:
     """The document sources AGENT_ID may answer from (alias accepted)."""
+    from rich.markup import escape  # noqa: PLC0415
+
     agent_id = _resolve_alias(agent_id)
     cfg = _require_connector(agent_id)
     sources = _listed_sources(cfg)
     if not sources:
-        console.print(f"  {agent_id} has no document sources.")
+        console.print(f"  {escape(agent_id)} has no document sources.")
         return
     for source_id in sources:
-        console.print(f"  {source_id}")
+        console.print(f"  {escape(source_id)}")
 
 
 # ---------------------------------------------------------------------------

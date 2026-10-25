@@ -143,6 +143,40 @@ def test_a_hand_edited_list_reads_as_what_it_validly_holds(
     assert document_sources_for(_AGENT) == expected
 
 
+def test_the_cli_reads_a_hand_edited_list_as_questions_do(
+    connectors_file: Path, stored: set[str]
+) -> None:
+    """`list` showed and `remove` matched items as written, while questions use
+    them trimmed: `" eng-wiki"` was used, looked listed, and could not be removed."""
+    data = yaml.safe_load(connectors_file.read_text(encoding="utf-8"))
+    data[_AGENT]["document_sources"] = [" eng-wiki", "eng-wiki", 7]
+    connectors_file.write_text(yaml.dump(data), encoding="utf-8")
+    runner = CliRunner()
+
+    listed = runner.invoke(cli, ["agent", "docs", "list", "shop"])
+    removed = runner.invoke(cli, ["agent", "docs", "remove", "shop", " eng-wiki "])
+
+    assert listed.output.split() == ["eng-wiki"]
+    assert removed.exit_code == 0, removed.output
+    assert document_sources_for(_AGENT) == []
+
+
+def test_a_source_id_is_printed_as_text_not_markup(connectors_file: Path, stored: set[str]) -> None:
+    """Rich reads `[...]` as markup: `report[/x]` raised before the list was
+    saved, and made `list` fail."""
+    runner = CliRunner()
+
+    added = runner.invoke(cli, ["agent", "docs", "add", "shop", "report[/x]"])
+    listed = runner.invoke(cli, ["agent", "docs", "list", "shop"])
+    again = runner.invoke(cli, ["agent", "docs", "add", "shop", "report[/x]"])
+    removed = runner.invoke(cli, ["agent", "docs", "remove", "shop", "report[/x]"])
+
+    for result in (added, listed, again, removed):
+        assert result.exit_code == 0, result.output
+    assert "report[/x]" in listed.output
+    assert document_sources_for(_AGENT) == []
+
+
 def test_an_agent_with_no_entry_has_no_sources(connectors_file: Path) -> None:
     assert document_sources_for("someone-else") == []
 
