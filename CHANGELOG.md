@@ -4,7 +4,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
-## [0.4.0] — 2026-10-24
+## [0.4.0] — 2026-10-25
 
 Mostly security fixes: see *Security* below, and the steps to take first.
 
