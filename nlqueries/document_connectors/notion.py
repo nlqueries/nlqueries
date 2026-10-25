@@ -80,6 +80,28 @@ class NotionConnector(DocumentConnector):
     def __init__(self, api_token: str) -> None:
         self._api_token = api_token
 
+    def has_changes_since(self, page_id: str, since: datetime) -> bool:
+        """Whether the page was edited after *since*: one page lookup, no blocks read.
+
+        :meth:`ingest` with *since* returns ``[]`` both for an unchanged page
+        and for one with no text left, which an incremental sync cannot tell
+        apart; this answers the first question alone. A page with no
+        ``last_edited_time`` counts as changed.
+        """
+        try:
+            from notion_client import Client
+        except ImportError as exc:
+            raise ImportError(
+                "notion-client is required for NotionConnector. "
+                "Install it with: pip install 'nlqueries-core[wiki]'"
+            ) from exc
+
+        page: dict[str, Any] = Client(auth=self._api_token).pages.retrieve(page_id=page_id)
+        edited = str(page.get("last_edited_time", ""))
+        if not edited:
+            return True
+        return datetime.fromisoformat(edited.replace("Z", "+00:00")) > since
+
     def ingest(
         self,
         source: str | Path,

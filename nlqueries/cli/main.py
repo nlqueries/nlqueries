@@ -1658,6 +1658,28 @@ def extract_schema(connector_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _confluence_pages_gone(connector: Any, space_key: str, source_id: str) -> bool:
+    """Whether a page stored for *source_id* is no longer in *space_key*.
+
+    Only stored pages are compared, not the other way: a page with no text
+    stores no chunks, so a page in the space but not stored is not news, and
+    counting it would re-read the space on every sync. A stored copy that
+    cannot be read counts as gone, so the sync reads rather than guesses.
+    """
+    from nlqueries.embeddings.qdrant_store import (
+        agent_collection_to_read,
+        chunk_metadata_values,
+    )
+
+    present = connector.page_ids(space_key)
+    try:
+        collection = agent_collection_to_read("doc_", source_id, "_chunks")
+        stored = chunk_metadata_values(collection, source_id, "page_id")
+    except Exception:  # noqa: BLE001 - not knowing what is stored means reading again
+        return True
+    return bool(stored - present)
+
+
 def _store_document_chunks(source_id: str, chunks: list[Any], *, allow_empty: bool) -> None:
     """Store *chunks* as the whole of *source_id* so ``doc-ask`` can search them.
 
@@ -2951,8 +2973,10 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
     \b
     The Notion API token is read from the NOTION_API_TOKEN environment variable.
     The chunks are stored in doc_<SOURCE_ID>_chunks (named as doc-ingest names
-    it, and printed), replacing the earlier copy; with --since and an unchanged
-    page, the stored copy is left as it is.
+    it, and printed), replacing the earlier copy. With --since, one lookup
+    checks whether the page was edited since then; if it was, it is read and
+    stored as without --since (so a page with no text left is refused unless
+    --allow-empty), and if not, the stored copy is left as it is.
 
     \b
     Examples:
@@ -2986,8 +3010,17 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
         f"(source_id=[bold]{source_id}[/bold]) …"
     )
 
+    # --since asks whether the page changed and nothing more. Reading it with
+    # --since returned no chunks both for an unchanged page and for one edited
+    # down to no text, and the second kept serving the old text; a changed
+    # page is now read and stored like a full sync, empty or not.
+    chunks: list[Any] = []
+    changed = True
     try:
-        chunks = connector.ingest(page_id, source_id, since=since)
+        if since is not None:
+            changed = connector.has_changes_since(page_id, since)
+        if changed:
+            chunks = connector.ingest(page_id, source_id)
     except ImportError as exc:
         err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")
         sys.exit(1)
@@ -2995,17 +3028,14 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
         err_console.print(f"[bold red]✗ Sync failed:[/bold red] {exc}")
         sys.exit(1)
 
-    # The connector reads the one page whole or not at all, so with --since an
-    # empty result means "unchanged", and the stored copy is left alone.
-    if chunks or since is None:
+    if changed:
         _store_document_chunks(source_id, chunks, allow_empty=allow_empty)
     console.print("[bold green]✓ Sync complete.[/bold green]")
     console.print(f"  Chunks produced : [bold]{len(chunks)}[/bold]")
-    if not chunks and since is not None:
+    if not changed:
         console.print(
-            "  [yellow]⚠ No chunks: the page was not modified after the given timestamp, "
-            "or no text could be read from it. The stored copy is unchanged; a full sync "
-            "(without --since) re-reads it.[/yellow]"
+            "  [yellow]⚠ Not modified after the given timestamp; "
+            "the stored copy is unchanged.[/yellow]"
         )
 
 
@@ -3407,9 +3437,10 @@ def doc_sync_confluence(
     The Confluence API token is read from the CONFLUENCE_API_TOKEN environment variable.
     The chunks are stored in doc_<SOURCE_ID>_chunks (named as doc-ingest names
     it, and printed), replacing the earlier copy. With --since, one search
-    checks whether any page changed; if one did, the space is re-read in full
-    (a partial read would replace the whole), and if none did, the stored copy
-    is left as it is.
+    checks whether any page changed, and the space's page IDs are compared with
+    the stored ones to notice a page deleted, moved out or hidden; if either
+    found something, the space is re-read in full (a partial read would replace
+    the whole), and if neither did, the stored copy is left as it is.
 
     \b
     Examples:
@@ -3453,9 +3484,15 @@ def doc_sync_confluence(
     changed = False
     try:
         changed = since is None or connector.has_changes_since(space_key, since)
+        if changed and since is not None:
+            console.print("  Pages changed; reading the whole space to store it whole …")
+        if not changed and _confluence_pages_gone(connector, space_key, source_id):
+            # No lastModified search returns a deleted, moved or hidden page.
+            changed = True
+            console.print(
+                "  Pages were removed from the space; reading the whole space to store it whole …"
+            )
         if changed:
-            if since is not None:
-                console.print("  Pages changed; reading the whole space to store it whole …")
             chunks = connector.ingest(space_key, source_id)
     except ImportError as exc:
         err_console.print(f"[bold red]✗ Missing dependency:[/bold red] {exc}")

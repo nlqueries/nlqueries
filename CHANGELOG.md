@@ -68,6 +68,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `process_query_history(..., embed=True)` needs `agent_id=` for the same
   reason, and raises `ValueError` without it. The capsules file is now saved
   before the embed, so a Qdrant failure there no longer discards them.
+- **`doc-sync-confluence --since` notices pages that are gone.** It re-read
+  the space only when a page had been modified since the timestamp, so a page
+  deleted, moved to another space or hidden by a permission change kept its
+  chunks, and `doc-ask` kept citing it, until a full sync. The space's page IDs
+  are now compared with the stored ones, and a stored page that is no longer
+  there re-reads the space. Listing the IDs fetches no page bodies.
+- **`doc-sync-notion --since` no longer keeps a page whose text was removed.**
+  An empty read was taken to mean "unchanged", so a page edited down to no
+  text kept its old chunks. The sync now asks whether the page was edited
+  (`NotionConnector.has_changes_since`), and an edited page is read and stored
+  as without `--since`: an empty one is refused unless `--allow-empty`.
 - **The knowledge base's own capsules are shown whenever no example was
   found.** They were used only when nothing at all had been found, so a
   relevant-tables hint alone left the prompt with no example queries. An

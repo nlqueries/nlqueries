@@ -861,6 +861,38 @@ def search_chunks(
         return result
 
 
+def chunk_metadata_values(collection: str, source_id: str, field: str) -> set[str]:
+    """The values of ``metadata[field]`` across *source_id*'s chunks in *collection*.
+
+    Read from the chunks' metadata, which is stored as written even when chunk
+    text is sealed. An absent collection gives an empty set; any other Qdrant
+    failure is raised, for the caller to decide what not knowing means.
+    """
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    client = _get_client()
+    if collection not in {c.name for c in client.get_collections().collections}:
+        return set()
+    filter_ = Filter(must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))])
+    values: set[str] = set()
+    offset: Any = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            scroll_filter=filter_,
+            with_payload=["metadata"],
+            with_vectors=False,
+            limit=1024,
+            offset=offset,
+        )
+        for point in points:
+            value = ((point.payload or {}).get("metadata") or {}).get(field)
+            if value not in (None, ""):
+                values.add(str(value))
+        if offset is None:
+            return values
+
+
 def delete_chunks(collection: str, source_id: str) -> None:
     """Delete all chunks belonging to *source_id* from *collection*.
 
