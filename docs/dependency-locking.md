@@ -122,7 +122,7 @@ depends on which job failed and where the flagged package ends up.
      the image or a plain install, and is handled like a tool the job
      installs for itself.
    - **In the image outside the lock:** pip, which the `Dockerfile` installs
-     at its own pin (`pip==24.0`) before the lock, and wheel, which the base
+     at its own pin (`pip==26.2`) before the lock, and wheel, which the base
      image brings and nothing removes. Every image carries them, although no
      extra lists them and nothing in the tree requires them, and neither
      `lock-audit` nor the image scan (which reports and never fails) stops a

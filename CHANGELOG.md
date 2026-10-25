@@ -4,6 +4,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Security
+
+- **pip 26.2 in the image.** The `Dockerfile` pinned pip 24.0, which the
+  image keeps after installing the lock (CVE-2025-8869, fixed in 25.3;
+  CVE-2026-1703, fixed in 26.0; CVE-2026-3219 and CVE-2026-6357, fixed in
+  26.1; CVE-2026-8643, fixed in 26.1.2; CVE-2026-13346, fixed in 26.2). The
+  application never runs pip, so only installing packages inside a running
+  container was exposed. Images up to 0.4.0 carry pip 24.0.
+
 ## [0.4.0] — 2026-10-25
 
 Mostly security fixes: see *Security* below, and the steps to take first.

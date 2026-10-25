@@ -43,7 +43,7 @@ RUN useradd --system --create-home --uid 10001 nlqueries \
 # pip is pinned too: the tool doing the verifying should not be the one thing
 # left floating.
 COPY requirements/core.lock ./requirements/
-RUN pip install --no-cache-dir "pip==24.0" \
+RUN pip install --no-cache-dir "pip==26.2" \
  && pip install --no-cache-dir --require-hashes -r requirements/core.lock
 
 # The package itself. --no-deps because the closure above already satisfies it;
