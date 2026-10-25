@@ -155,20 +155,26 @@ def schema_collection_to_read(agent_id: str, point_types: tuple[str, ...]) -> st
 
         client = _get_client()
         existing = {c.name for c in client.get_collections().collections}
-        # Exact: `type` has no payload index, and an approximate count with a
-        # filter on it is an estimate from the collection's size, not the
-        # matches -- 25 tables in a collection of 50 capsules on Qdrant 1.18 --
-        # which would move the tables hint to a name holding no tables.
-        holds = name in existing and bool(
-            client.count(
-                collection_name=name,
-                count_filter=Filter(
-                    must=[FieldCondition(key="type", match=MatchAny(any=list(point_types)))]
-                ),
-                exact=True,
-            ).count
-        )
-        chosen = legacy if legacy in existing and not holds else name
+        if legacy not in existing:
+            # No changeover to make, which is every ID with `:` (Qdrant never
+            # accepted that name), so the count below is not needed.
+            chosen = name
+        else:
+            # Exact: `type` has no payload index, and an approximate count with
+            # a filter on it is an estimate from the collection's size, not the
+            # matches -- 25 tables in a collection of 50 capsules on Qdrant 1.18
+            # -- which would move the tables hint to a name holding no tables.
+            # Being a scan, it is made only while a raw-ID collection exists.
+            holds = name in existing and bool(
+                client.count(
+                    collection_name=name,
+                    count_filter=Filter(
+                        must=[FieldCondition(key="type", match=MatchAny(any=list(point_types)))]
+                    ),
+                    exact=True,
+                ).count
+            )
+            chosen = name if holds else legacy
     except Exception:  # noqa: BLE001 - the caller reads `name` and reports the failure
         return name
     _resolved[key] = (now, chosen)

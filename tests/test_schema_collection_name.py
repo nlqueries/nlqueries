@@ -39,6 +39,7 @@ class _Store:
         self.points: dict[str, dict[int, dict[str, Any]]] = {}
         self.deleted: list[str] = []
         self.asked = 0
+        self.counted = 0
 
     def add(self, collection: str, *payloads: dict[str, Any]) -> None:
         stored = self.points.setdefault(collection, {})
@@ -55,6 +56,7 @@ class _Store:
         # capsules counted as tables on 1.18), so this fake refuses one
         # rather than counting it exactly and hiding that.
         assert exact, "a filtered count on `type` must be exact"
+        self.counted += 1
         (condition,) = count_filter.must
         n = sum(
             p.get("type") in condition.match.any
@@ -147,6 +149,18 @@ def test_the_new_name_is_read_once_it_holds_the_kind(store: _Store) -> None:
     found = qdrant_store.schema_collection_to_read(_CLI_ID, qdrant_store.SCHEMA_POINT_TYPES)
 
     assert found == "agent_pg_h_db_schema"
+
+
+def test_with_no_raw_id_collection_nothing_is_counted(store: _Store) -> None:
+    """The exact count is a scan of the collection, and there is nothing to
+    choose between when the raw-ID collection does not exist -- every ID with
+    `:`, which Qdrant never accepted in a name."""
+    store.add("agent_pg_h_db_schema", {"type": "capsule"})
+
+    found = qdrant_store.schema_collection_to_read(_CLI_ID, qdrant_store.SCHEMA_POINT_TYPES)
+
+    assert found == "agent_pg_h_db_schema"
+    assert store.counted == 0
 
 
 def test_qdrant_out_of_reach_gives_the_new_name(monkeypatch: pytest.MonkeyPatch) -> None:
