@@ -12,6 +12,7 @@ new name holds that kind.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -49,6 +50,11 @@ class _Store:
         return SimpleNamespace(collections=[SimpleNamespace(name=n) for n in self.points])
 
     def count(self, collection_name: str, count_filter: Any, exact: bool) -> Any:
+        # Qdrant answers an approximate count with a filter on an unindexed
+        # field from the collection's size, not the matches (25 of 50
+        # capsules counted as tables on 1.18), so this fake refuses one
+        # rather than counting it exactly and hiding that.
+        assert exact, "a filtered count on `type` must be exact"
         (condition,) = count_filter.must
         n = sum(
             p.get("type") in condition.match.any
@@ -270,3 +276,61 @@ def test_the_question_path_reads_each_kind_from_where_it_is(store: _Store) -> No
 
     assert searched == ["agent_pg:h:db_schema"]
     assert "orders" in text and "Intent: monthly orders" in text
+
+
+def _qdrant() -> Any:
+    """A client for a Qdrant at QDRANT_URL, or None when there is none."""
+    import os  # noqa: PLC0415
+
+    try:
+        from qdrant_client import QdrantClient  # noqa: PLC0415
+
+        client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"), timeout=2)
+        client.get_collections()
+        return client
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@pytest.mark.skipif(_qdrant() is None, reason="no Qdrant at QDRANT_URL")
+def test_against_qdrant_capsules_alone_do_not_count_as_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The upgrade case on a real Qdrant: the new name holds only capsules, the
+    raw-ID one the tables. An approximate count on the unindexed `type` read
+    25 tables among 50 capsules on Qdrant 1.18, so the tables were looked for
+    where there are none."""
+    import uuid  # noqa: PLC0415
+
+    from qdrant_client.models import Distance, PointStruct, VectorParams  # noqa: PLC0415
+
+    client = _qdrant()
+    # `@`: replaced by the storage name and accepted by Qdrant in a collection
+    # name. Qdrant refuses `:` (and `/`, `\\`, `*`, `<`, `>`, `|`, `"`), so no
+    # raw-ID collection was ever stored for a connector ID with `:`.
+    agent = f"probe@{uuid.uuid4().hex[:8]}"
+    new, legacy = qdrant_store.schema_collection(agent), f"agent_{agent}_schema"
+    monkeypatch.setattr(qdrant_store, "_client", client)
+    qdrant_store._resolved.clear()
+    try:
+        for name, kind, n in ((new, "capsule", 50), (legacy, "table", 3)):
+            client.create_collection(
+                name, vectors_config=VectorParams(size=4, distance=Distance.COSINE)
+            )
+            client.upsert(
+                name,
+                points=[
+                    PointStruct(id=i, vector=[0.1, 0.2, 0.3, 0.4], payload={"type": kind})
+                    for i in range(1, n + 1)
+                ],
+                wait=True,
+            )
+
+        tables = qdrant_store.schema_collection_to_read(agent, qdrant_store.SCHEMA_POINT_TYPES)
+        capsules = qdrant_store.schema_collection_to_read(agent, (qdrant_store.CAPSULE_TYPE,))
+
+        assert (tables, capsules) == (legacy, new)
+    finally:
+        for name in (new, legacy):
+            with contextlib.suppress(Exception):  # cleanup after the test, best effort
+                client.delete_collection(name)
