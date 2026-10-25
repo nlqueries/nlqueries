@@ -180,7 +180,10 @@ def retire_legacy_schema_collection(agent_id: str) -> str | None:
     """
     deleted = retire_legacy_collection("agent_", agent_id, "_schema")
     name = schema_collection(agent_id)
-    for key in [k for k in _resolved if k.startswith(f"{name}|")]:
+    # A snapshot, as `forget_collection_indexes` takes of `_indexed_fields`:
+    # question threads write `_resolved` while this may run, and iterating it
+    # live could raise after the collection was already deleted.
+    for key in [k for k in list(_resolved) if k.startswith(f"{name}|")]:
         _resolved.pop(key, None)
     return deleted
 
