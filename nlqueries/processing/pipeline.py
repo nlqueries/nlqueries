@@ -43,6 +43,8 @@ def process_query_history(
     annotate: bool = False,
     embed: bool = False,
     _filter_stats: dict[str, int] | None = None,
+    *,
+    agent_id: str | None = None,
 ) -> list[QueryCapsule]:
     """Run the full Query History Processor pipeline.
 
@@ -53,7 +55,8 @@ def process_query_history(
     3. **Cluster** — ``cluster_queries(normalized)``
     4. **Parameterize** — ``parameterize_clusters(clusters, schema)``
     5. **Annotate** (optional) — fill ``QueryCapsule.intent`` via LLM
-    6. **Embed** (optional) — upsert capsules into Qdrant vector store
+    6. **Embed** (optional) — make them *agent_id*'s signed capsules in its
+       schema collection, where its questions search
 
     Args:
         connector:       A connected ``DatabaseConnector`` instance.
@@ -64,11 +67,16 @@ def process_query_history(
         limit:           Maximum number of useful queries to return after filtering.
         annotate:        When ``True``, call the LLM annotator (via ``get_llm_client()``)
                          to fill ``capsule.intent`` for every capsule before returning.
-        embed:           When ``True``, upsert capsules into the Qdrant vector store
-                         after the annotation step (Qdrant is optional; defaults to
-                         ``False``).
+        embed:           When ``True``, replace *agent_id*'s capsules in its schema
+                         collection (``agent_{id}_schema``) with these, signed, after
+                         the annotation step (Qdrant is optional; defaults to
+                         ``False``). Requires *agent_id*.
         _filter_stats:   Optional dict populated in-place with per-reason drop counts
                          from the filter stage (see ``filter_and_deduplicate``).
+        agent_id:        The agent the capsules are for; required with *embed*.
+
+    Raises:
+        ValueError: *embed* without *agent_id*.
 
     Returns:
         ``list[QueryCapsule]`` sorted by frequency descending, capped at 1 000.
@@ -76,6 +84,10 @@ def process_query_history(
     # Fetch more rows than needed so the cap can be applied *after* filtering
     # out DDL/system statements (SET, ALTER, pg_* queries, etc.).  A 3× factor
     # gives the filter stage enough headroom without fetching excessive data.
+    if embed and not agent_id:
+        # Capsules embedded for no agent went to a collection no question
+        # searches; refusing is better than doing that silently.
+        raise ValueError("embed=True needs agent_id: capsules are stored for one agent")
     raw_limit = min(limit * 3, 10_000)
     records = connector.extract_query_history(days=days, limit=raw_limit)
     normalized = filter_and_deduplicate(
@@ -92,12 +104,13 @@ def process_query_history(
 
         llm = get_llm_client()
         annotate_capsules(capsules, llm)
-    if embed and capsules:
-        from nlqueries.config import QDRANT_COLLECTION  # deferred — Qdrant optional
-        from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_capsules
+    if embed and capsules and agent_id:
+        from nlqueries.embeddings.qdrant_store import (  # deferred — Qdrant optional
+            replace_capsules,
+            schema_collection,
+        )
 
-        ensure_collection(QDRANT_COLLECTION)
-        upsert_capsules(QDRANT_COLLECTION, capsules)
+        replace_capsules(schema_collection(agent_id), capsules, agent_id)
     return capsules
 
 

@@ -1101,13 +1101,15 @@ def _format_dynamic_context(
         ]
         parts.append("## Most relevant tables for this question\n" + ", ".join(qualified))
 
+    examples_header = [
+        "## Example Queries",
+        "",
+        "The following queries represent common patterns in this database:",
+        "",
+    ]
+    shown = False
     if verified_hits or capsule_hits:
-        cap_lines: list[str] = [
-            "## Example Queries",
-            "",
-            "The following queries represent common patterns in this database:",
-            "",
-        ]
+        cap_lines: list[str] = list(examples_header)
         idx = 1
         for v in verified_hits:
             q = v.get("question", "")
@@ -1132,31 +1134,47 @@ def _format_dynamic_context(
             # provenance (SYL-1.1): capsules carry no persisted id in the Qdrant
             # payload, so the intent/description label is the stable handle we have.
             record_capsule(intent or template[:60], intent)
-        parts.append("\n".join(cap_lines))
+        # Hits with neither text nor SQL are skipped above; with nothing left,
+        # an "Example Queries" heading over no examples is not added.
+        if idx > 1:
+            parts.append("\n".join(cap_lines))
+            shown = True
 
-    if not parts:
-        # Fall back to raw KB capsules when Qdrant is unavailable
+    if not shown:
+        # The knowledge base's own capsules, most frequent first, whenever the
+        # searches gave no example: Qdrant out of reach, nothing embedded for
+        # this agent, or nothing near the question. It used to run only when
+        # nothing at all had been added, so a relevant-tables hint alone left
+        # the prompt with no examples.
         raw_capsules: list[dict[str, Any]] = knowledge_base.get("query_capsules", [])
-        if raw_capsules:
-            cap_lines = [
-                "## Example Queries",
-                "",
-                "The following queries represent common patterns in this database:",
-                "",
-            ]
-            for i, cap in enumerate(raw_capsules[:top_k], 1):
-                intent = cap.get("intent", "")
-                template = cap.get("template", "")
-                if not intent and not template:
-                    continue
-                cap_lines.append(f"{i}. Intent: {_one_line(intent)}")
-                if template:
-                    cap_lines.append(f"   SQL Template: {template}")
-                cap_lines.append("")
-                record_capsule(intent or str(template)[:60], intent)  # provenance (SYL-1.1)
+        cap_lines = list(examples_header)
+        n = 0
+        for cap in raw_capsules[:top_k]:
+            intent = cap.get("intent", "")
+            template = cap.get("template", "")
+            if not intent and not template:
+                continue
+            n += 1
+            cap_lines.append(f"{n}. Intent: {_one_line(intent)}")
+            if template:
+                cap_lines.append(f"   SQL Template: {template}")
+            cap_lines.append("")
+            record_capsule(intent or str(template)[:60], intent)  # provenance (SYL-1.1)
+        if n:
             parts.append("\n".join(cap_lines))
 
     return "\n\n".join(parts)
+
+
+def _agent_of(collection: str) -> str | None:
+    """The agent a schema collection ``agent_{id}_schema`` belongs to, else None.
+
+    Capsules are written with the ID the collection is named by, so the search
+    can keep to that agent's points.
+    """
+    if collection.startswith("agent_") and collection.endswith("_schema"):
+        return collection[len("agent_") : -len("_schema")]
+    return None
 
 
 def _build_dynamic_context(
@@ -1199,7 +1217,11 @@ def _build_dynamic_context(
             from nlqueries.embeddings.qdrant_store import search
 
             capsule_hits = search(
-                collection, question, top_k=max(1, remaining_slots), vector=question_vector
+                collection,
+                question,
+                top_k=max(1, remaining_slots),
+                vector=question_vector,
+                agent_id=_agent_of(collection),
             )
         except Exception:  # noqa: BLE001, S110 - the prompt is built without the examples
             pass
@@ -1240,7 +1262,14 @@ async def _build_dynamic_context_async(
             asyncio.to_thread(
                 _search_verified, collection, question, top_k=3, vector=question_vector
             ),
-            asyncio.to_thread(search, collection, question, top_k=top_k, vector=question_vector),
+            asyncio.to_thread(
+                search,
+                collection,
+                question,
+                top_k=top_k,
+                vector=question_vector,
+                agent_id=_agent_of(collection),
+            ),
             return_exceptions=True,
         )
 

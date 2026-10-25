@@ -1846,7 +1846,10 @@ def doc_ingest(source_id: str, file_path: str, allow_empty: bool) -> None:
     "--embed/--no-embed",
     default=False,
     show_default=True,
-    help="Upsert capsules into the Qdrant vector store after processing (requires Qdrant).",
+    help=(
+        "Replace the agent's capsules in Qdrant, signed, so its questions find them as "
+        "example queries (requires Qdrant and the cache signing key)."
+    ),
 )
 @click.option(
     "--verbose/--no-verbose",
@@ -2005,17 +2008,21 @@ def process_history(
                 _task = _prog.add_task("", total=len(capsules))
                 annotate_capsules(capsules, _llm, on_capsule_done=lambda: _prog.advance(_task))
 
-        # Stage 5 — Embed (optional)
+        # Saved before the embed, so a Qdrant or signing-key failure there does
+        # not throw away capsules the annotator was just paid to describe.
+        out_path = save_capsules(capsules, connector_id)
+
+        # Stage 5 — Embed (optional), into the collection this agent's
+        # questions search, replacing the capsules an earlier run embedded.
         if embed and capsules:
-            from nlqueries.config import QDRANT_COLLECTION
-            from nlqueries.embeddings.qdrant_store import ensure_collection, upsert_capsules
+            from nlqueries.embeddings.qdrant_store import replace_capsules, schema_collection
 
             with console.status("  [5] Embedding capsules into Qdrant …"):
-                ensure_collection(QDRANT_COLLECTION)
-                upsert_capsules(QDRANT_COLLECTION, capsules)
-            console.print(f"  [5] [bold]{len(capsules)}[/bold] capsules embedded into Qdrant")
-
-        out_path = save_capsules(capsules, connector_id)
+                replace_capsules(schema_collection(connector_id), capsules, connector_id)
+            console.print(
+                f"  [5] [bold]{len(capsules)}[/bold] capsules embedded into Qdrant "
+                f"for {connector_id}"
+            )
 
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Pipeline failed:[/bold red] {exc}")

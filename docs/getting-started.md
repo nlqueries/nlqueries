@@ -164,7 +164,7 @@ nlqueries process-history dev --days 30 --annotate
 
 > **Getting zero or very few capsules?** The default `--min-executions 3` drops any query executed fewer than 3 times. On a fresh or lightly-used database, lower it to `--min-executions 1`. Also make sure you've actually run some representative business queries against the database first — see [cli-reference.md](cli-reference.md#process-history) for why a brand-new database often produces nothing useful on the first pass.
 
-> Add `--embed` to immediately upload the capsules to Qdrant for semantic search (requires Qdrant running — see [qdrant-setup.md](qdrant-setup.md)):
+> Add `--embed` to store the capsules in Qdrant, so each question is given the ones nearest to it as examples rather than the knowledge base's most frequent ones (requires Qdrant running — see [qdrant-setup.md](qdrant-setup.md)):
 > ```bash
 > nlqueries process-history dev --days 30 --annotate --embed
 > ```

@@ -343,7 +343,9 @@ class Orchestrator:
             span.set_attribute("dialect", dialect)
 
             kb = self._load_knowledge_base(agent_id)
-            collection = f"agent_{agent_id}_schema"
+            from nlqueries.embeddings.qdrant_store import schema_collection  # noqa: PLC0415
+
+            collection = schema_collection(agent_id)
             prompt = await assemble_prompt_async(
                 question,
                 kb,

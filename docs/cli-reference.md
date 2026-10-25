@@ -155,7 +155,7 @@ nlqueries process-history <connector-or-alias> --days 30 --annotate --embed
 |---|---|---|
 | `--days` | `90` | How far back to read query history |
 | `--annotate` | on | Generate LLM intent descriptions per cluster |
-| `--embed` | off | Upload embeddings to Qdrant (requires Qdrant running) |
+| `--embed` | off | Replace the agent's capsules in its `agent_<id>_schema` Qdrant collection, signed with `NLQ_CACHE_SIGNING_KEY`, so `query` finds them as example queries nearest the question (requires Qdrant running; see [qdrant-setup.md](qdrant-setup.md#check-if-its-already-running)) |
 | `--min-executions` | `3` | Minimum executions for a query cluster to be kept |
 | `--max-queries` | `500` (env: `QUERY_HISTORY_LIMIT`) | Cap on useful queries to process after filtering |
 | `--verbose` | off | Print sqlglot parse warnings and LLM provider log lines |

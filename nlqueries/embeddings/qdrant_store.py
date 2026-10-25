@@ -11,11 +11,14 @@ Public API
 
 ``upsert_capsules(collection, capsules, agent_id)``
     Embed each capsule's intent (falling back to ``auto_description``) and
-    upsert into Qdrant with a structured payload.
+    upsert into Qdrant with a signed payload of ``type`` ``"capsule"``.
 
-``search(collection, query, top_k)``
-    Embed *query*, run a nearest-neighbour search, and return the top-k
-    ``QueryCapsule`` objects reconstructed from the stored payload.
+``replace_capsules(collection, capsules, agent_id)``
+    Make *capsules* the whole of an agent's capsules in the collection.
+
+``search(collection, query, top_k, agent_id)``
+    Embed *query*, search the collection's signed capsules, and return the
+    top-k ``QueryCapsule`` objects reconstructed from the stored payload.
 
 ``upsert_schema(collection, schema, agent_id)``
     Embed table and column descriptions from a ``SchemaSpec`` and upsert
@@ -44,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -107,6 +111,17 @@ def _capsule_id(capsule: QueryCapsule, index: int) -> int:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def schema_collection(agent_id: str) -> str:
+    """The collection holding *agent_id*'s table, column and capsule points.
+
+    The one place the name is made, for the knowledge-base generator and
+    ``process-history --embed``, which write it, and the question path, which
+    reads it. It still uses the raw ID, unlike the document and cache
+    collections (see :func:`agent_collection`).
+    """
+    return f"agent_{agent_id}_schema"
 
 
 def agent_collection(prefix: str, agent_id: str, suffix: str) -> str:
@@ -318,29 +333,131 @@ def ensure_collection(
                 )
 
 
+#: The ``type`` payload of a capsule point. A schema collection also holds the
+#: ``"table"`` and ``"column"`` points :func:`upsert_schema` writes.
+CAPSULE_TYPE = "capsule"
+
+#: Candidates fetched per capsule wanted, so a few unsigned points nearer the
+#: question do not take the signed capsules' places.
+_CAPSULE_CANDIDATE_FACTOR = 3
+
+#: Collections whose unsigned capsules have been reported, once each.
+_UNSIGNED_CAPSULES_WARNED: set[str] = set()
+
+#: Collections whose re-pointed capsules, or whose failure to re-embed them,
+#: have been reported, once each.
+_REPOINTED_CAPSULES_WARNED: set[str] = set()
+
+#: How far a capsule's re-embedded text may score below the score Qdrant gave
+#: its stored vector; as ``semantic_cache._RECHECK_TOLERANCE``.
+_CAPSULE_RECHECK_TOLERANCE = 0.01
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norms = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norms if norms else 0.0
+
+
+def _found_by_their_own_text(
+    hits: list[tuple[dict[str, Any], float]], vector: list[float], collection: str
+) -> list[dict[str, Any]] | None:
+    """The capsules in *hits* whose own text is as near the query as their vector.
+
+    The signature covers a capsule's text but not the vector it is stored
+    under, so a writer to Qdrant could copy a genuine capsule onto another
+    question's vector and have it ranked first for that question. Each
+    capsule's text -- its intent, else its description, which is what was
+    embedded -- is embedded again in one batch, and must score against the
+    query no lower than its stored vector did, within a tolerance for
+    quantization. Returns None when the batch cannot be embedded: none is kept.
+    """
+    if not hits:
+        return []
+    from nlqueries.embeddings.embedder import embed_batch  # noqa: PLC0415
+
+    texts = [str(p.get("intent") or p.get("auto_description") or "") for p, _ in hits]
+    try:
+        own = embed_batch(texts)
+    except Exception as exc:  # noqa: BLE001 - unconfirmable is left out
+        if collection not in _REPOINTED_CAPSULES_WARNED:
+            _REPOINTED_CAPSULES_WARNED.add(collection)
+            logger.warning(
+                "Could not re-embed %d query capsule(s) in %r to confirm them (%s); "
+                "leaving them out of the prompt. The embedding service may be "
+                "unavailable.",
+                len(hits),
+                collection,
+                type(exc).__name__,
+            )
+        return None
+    kept = [
+        payload
+        for (payload, score), mine in zip(hits, own, strict=False)
+        if _cosine(vector, mine) >= score - _CAPSULE_RECHECK_TOLERANCE
+    ]
+    if len(kept) < len(hits) and collection not in _REPOINTED_CAPSULES_WARNED:
+        _REPOINTED_CAPSULES_WARNED.add(collection)
+        logger.warning(
+            "Ignoring %d query capsule(s) in %r found by a vector their own text "
+            "does not match; this should not happen unless the collection has been "
+            "written to directly, or by a process with a different embedding model.",
+            len(hits) - len(kept),
+            collection,
+        )
+    return kept
+
+
+def _capsule_payload(capsule: QueryCapsule, point_id: int, agent_id: str) -> dict[str, Any]:
+    from nlqueries.cache.envelope import sign_capsule  # noqa: PLC0415
+
+    return sign_capsule(
+        {
+            "type": CAPSULE_TYPE,
+            "capsule_id": point_id,
+            "template_sql": capsule.template_sql,
+            "intent": capsule.intent,
+            "auto_description": capsule.auto_description,
+            "tables": capsule.tables,
+            "frequency": capsule.frequency,
+            "agent_id": agent_id,
+        }
+    )
+
+
 def upsert_capsules(
     collection: str,
     capsules: list[QueryCapsule],
     agent_id: str = "",
 ) -> None:
-    """Embed and upsert *capsules* into *collection*.
+    """Embed and upsert *capsules* into *collection*, signed.
 
     Each capsule's ``intent`` is embedded when non-empty; otherwise
-    ``auto_description`` is used as the fallback text.  The full payload
-    stored alongside each vector is::
+    ``auto_description`` is used as the fallback text.  The payload stored
+    alongside each vector is::
 
         {
+            "type": "capsule",
             "capsule_id": <int>,
             "template_sql": <str>,
+            "intent": <str>,
+            "auto_description": <str>,
             "tables": <list[str]>,
             "frequency": <int>,
             "agent_id": <str>,
+            "signature": <str>,
+            "capsule_version": <str>,
         }
+
+    The signature (:func:`~nlqueries.cache.envelope.sign_capsule`) is made
+    with the cache's signing key, and :func:`search` returns only capsules it
+    verifies. Raises :class:`~nlqueries.cache.envelope.SigningKeyError` when
+    the key is unusable, before anything is written.
 
     Args:
         collection: Target Qdrant collection name.
         capsules:   Capsules to upsert.
-        agent_id:   Optional agent / connector identifier stored in payload.
+        agent_id:   The agent the capsules belong to, stored in the payload.
     """
     if not capsules:
         return
@@ -349,25 +466,48 @@ def upsert_capsules(
 
     from nlqueries.embeddings.embedder import embed_batch
 
+    payloads = [
+        _capsule_payload(capsule, _capsule_id(capsule, idx), agent_id)
+        for idx, capsule in enumerate(capsules)
+    ]
     texts = [c.intent if c.intent else c.auto_description for c in capsules]
     vectors = embed_batch(texts)
 
     client = _get_client()
     points = [
-        PointStruct(
-            id=_capsule_id(capsule, idx),
-            vector=vectors[idx],
-            payload={
-                "capsule_id": _capsule_id(capsule, idx),
-                "template_sql": capsule.template_sql,
-                "tables": capsule.tables,
-                "frequency": capsule.frequency,
-                "agent_id": agent_id,
-            },
-        )
-        for idx, capsule in enumerate(capsules)
+        PointStruct(id=payload["capsule_id"], vector=vectors[idx], payload=payload)
+        for idx, payload in enumerate(payloads)
     ]
     client.upsert(collection_name=collection, points=points)
+
+
+def replace_capsules(collection: str, capsules: list[QueryCapsule], agent_id: str) -> None:
+    """Make *capsules* the whole of *agent_id*'s capsules in *collection*.
+
+    The new capsules are stored first and the agent's other capsule points
+    deleted after, as :func:`replace_chunks` does, so a failure before the
+    store leaves the previous set in place. The collection's table and column
+    points are untouched.
+    """
+    from qdrant_client.models import (
+        FieldCondition,
+        Filter,
+        FilterSelector,
+        HasIdCondition,
+        MatchValue,
+    )
+
+    ensure_collection(collection)
+    upsert_capsules(collection, capsules, agent_id=agent_id)
+    keep: list[Any] = [_capsule_id(c, idx) for idx, c in enumerate(capsules)]
+    filter_ = Filter(
+        must=[
+            FieldCondition(key="type", match=MatchValue(value=CAPSULE_TYPE)),
+            FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
+        ],
+        must_not=[HasIdCondition(has_id=keep)] if keep else None,
+    )
+    _get_client().delete(collection_name=collection, points_selector=FilterSelector(filter=filter_))
 
 
 def search(
@@ -376,12 +516,18 @@ def search(
     top_k: int = 5,
     *,
     vector: list[float] | None = None,
+    agent_id: str | None = None,
 ) -> list[QueryCapsule]:
-    """Embed *query*, search *collection*, and return ``QueryCapsule`` objects.
+    """Embed *query*, search *collection*'s capsules, and return ``QueryCapsule`` objects.
 
-    Capsules are reconstructed from the payload stored alongside each vector.
-    Fields not persisted in the payload (``placeholders``, ``columns``,
-    ``auto_description``, ``intent``) are given sensible defaults.
+    Only capsule points are searched (``type == "capsule"``), and with
+    *agent_id* only that agent's. Only capsules whose signature verifies are
+    returned: what this returns is shown to the model as example queries, and
+    Qdrant can be written by more than this process. Unsigned ones -- written
+    before capsules were signed, or by something else -- are skipped, and
+    reported once per collection. So is a signed capsule whose own text does
+    not score as its stored vector did (:func:`_found_by_their_own_text`),
+    since the signature does not cover the vector a capsule is ranked by.
 
     Args:
         collection: Qdrant collection to search.
@@ -390,32 +536,74 @@ def search(
         top_k:      Maximum number of results to return.
         vector:     Pre-computed embedding vector.  When provided, *query* is
                     not embedded again, saving one embed_text() call per request.
+        agent_id:   Return only capsules stored for this agent.
 
     Returns:
-        ``list[QueryCapsule]`` of length ≤ *top_k*, ordered by relevance.
+        ``list[QueryCapsule]`` of length <= *top_k*, ordered by relevance.
     """
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    from nlqueries.cache.envelope import verify_capsule  # noqa: PLC0415
+
     if vector is None:
         from nlqueries.embeddings.embedder import embed_text
 
         vector = embed_text(query)
+    must: list[Any] = [FieldCondition(key="type", match=MatchValue(value=CAPSULE_TYPE))]
+    if agent_id is not None:
+        must.append(FieldCondition(key="agent_id", match=MatchValue(value=agent_id)))
     client = _get_client()
-    response = client.query_points(collection_name=collection, query=vector, limit=top_k)
+    response = client.query_points(
+        collection_name=collection,
+        query=vector,
+        query_filter=Filter(must=must),
+        limit=top_k * _CAPSULE_CANDIDATE_FACTOR,
+    )
 
-    capsules: list[QueryCapsule] = []
-    for hit in response.points:
-        payload = hit.payload or {}
-        capsules.append(
-            QueryCapsule(
-                template_sql=str(payload.get("template_sql", "")),
-                placeholders=[],
-                tables=list(payload.get("tables", [])),
-                columns=[],
-                frequency=int(payload.get("frequency", 0)),
-                auto_description="",
-                intent="",
-            )
+    hits = [(hit.payload, float(hit.score)) for hit in response.points if hit.payload]
+    payloads = [p for p, _ in hits]
+    # The type and agent are checked again after the signature: the filter
+    # above ran on fields not yet verified.
+    signed_hits = [
+        (p, score)
+        for p, score in hits
+        if verify_capsule(p)
+        and p.get("type") == CAPSULE_TYPE
+        and (agent_id is None or p.get("agent_id") == agent_id)
+    ]
+    if len(signed_hits) < len(payloads) and collection not in _UNSIGNED_CAPSULES_WARNED:
+        _UNSIGNED_CAPSULES_WARNED.add(collection)
+        logger.warning(
+            "Ignoring %d query capsule(s) in %r that are not signed with this "
+            "deployment's key. Capsules embedded before signing was added are "
+            "among them: run `nlqueries process-history --embed` again.",
+            len(payloads) - len(signed_hits),
+            collection,
         )
-    return capsules
+    # Confirmed top_k at a time, nearest first, and only as far as needed: one
+    # batch of top_k texts on an ordinary question, not every candidate, and a
+    # capsule left out has its place taken by the next.
+    signed: list[dict[str, Any]] = []
+    step = max(1, top_k)
+    for start in range(0, len(signed_hits), step):
+        confirmed = _found_by_their_own_text(signed_hits[start : start + step], vector, collection)
+        if confirmed is None:
+            break  # the embedder failed; asking again for the next batch would too
+        signed.extend(confirmed)
+        if len(signed) >= top_k:
+            break
+    return [
+        QueryCapsule(
+            template_sql=str(p.get("template_sql", "")),
+            placeholders=[],
+            tables=list(p.get("tables", [])),
+            columns=[],
+            frequency=int(p.get("frequency", 0)),
+            auto_description=str(p.get("auto_description", "")),
+            intent=str(p.get("intent", "")),
+        )
+        for p in signed[:top_k]
+    ]
 
 
 def upsert_schema(

@@ -4,7 +4,26 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Upgrading from 0.4.0
+
+- **Run `nlqueries process-history <agent> --embed` again for each agent
+  whose capsules you embedded.** Capsules embedded by earlier releases sit in
+  the collection named by `QDRANT_COLLECTION` (default `nlqueries`), which no
+  question ever read, and are unsigned. The new run writes them where the
+  agent's questions search. The old collection can then be deleted in Qdrant.
+
 ### Security
+
+- **Query capsules from Qdrant are signed and checked.** Capsule SQL templates
+  are shown to the model as example queries, like verified examples, and
+  anything written into an agent's schema collection was shown. `process-history
+  --embed` now signs each capsule with the cache's signing key
+  (`NLQ_CACHE_SIGNING_KEY`), and questions use only capsules whose signature
+  verifies, of their own agent; others are skipped, with one warning per
+  collection. The signature does not cover the vector a capsule is found by,
+  so each one's text is embedded again and must score against the question
+  as its stored vector did; a capsule moved onto another question's vector
+  is left out.
 
 - **pip 26.2 in the image.** The `Dockerfile` pinned pip 24.0, which the
   image keeps after installing the lock (CVE-2025-8869, fixed in 25.3;
@@ -39,8 +58,25 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   statements unless it is a superuser or has `SYSLOG ACCESS UNRESTRICTED`;
   the error now says what it usually means, a Serverless workgroup, which
   has no `STL_QUERY`.
+- **`process-history --embed` capsules are used.** They were written to
+  `QDRANT_COLLECTION`, which nothing read, while questions searched the
+  agent's `agent_<id>_schema` collection for example queries. They now go
+  there, replacing the agent's earlier capsules on each run, with their
+  intent and description, which were not stored, so a capsule found by a
+  search was shown as a bare SQL template. The search keeps to capsule points,
+  where the collection's table and column points used to take its places.
+  `process_query_history(..., embed=True)` needs `agent_id=` for the same
+  reason, and raises `ValueError` without it. The capsules file is now saved
+  before the embed, so a Qdrant failure there no longer discards them.
+- **The knowledge base's own capsules are shown whenever no example was
+  found.** They were used only when nothing at all had been found, so a
+  relevant-tables hint alone left the prompt with no example queries. An
+  "Example Queries" heading with nothing under it is no longer added.
 
 ### Removed
+
+- **`QDRANT_COLLECTION`.** It named only the collection `--embed` wrote and
+  nothing read; capsules now go to the agent's schema collection.
 
 - **`NLQ_EXPLAIN_VALIDATION` and `KB_REFRESH_INTERVAL`.** Both were
   documented up to 0.3.0 and read by nothing, so setting them never changed

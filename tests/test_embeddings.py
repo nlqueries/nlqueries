@@ -475,16 +475,24 @@ class TestSearch:
     """search embeds the query and reconstructs QueryCapsule objects from payload."""
 
     def _make_hits(self, n: int) -> list[Any]:
+        from nlqueries.cache.envelope import sign_capsule  # noqa: PLC0415
+
         hits = []
         for i in range(n):
             hit = MagicMock()
-            hit.payload = {
-                "capsule_id": i,
-                "template_sql": f"SELECT * FROM t WHERE id = {i}",
-                "tables": ["t"],
-                "frequency": i + 1,
-                "agent_id": "",
-            }
+            hit.payload = sign_capsule(
+                {
+                    "type": "capsule",
+                    "capsule_id": i,
+                    "template_sql": f"SELECT * FROM t WHERE id = {i}",
+                    "intent": "",
+                    "auto_description": "",
+                    "tables": ["t"],
+                    "frequency": i + 1,
+                    "agent_id": "",
+                }
+            )
+            hit.score = 1.0
             hits.append(hit)
         return hits
 
@@ -504,6 +512,10 @@ class TestSearch:
             patch(
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
+            ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
             ),
         ):
             from nlqueries.embeddings.qdrant_store import search
@@ -525,26 +537,41 @@ class TestSearch:
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
             ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
+            ),
         ):
             from nlqueries.embeddings.qdrant_store import search
 
             search("col", "query text", top_k=7)
 
-        mock_client.query_points.assert_called_once_with(
-            collection_name="col",
-            query=fake_vec,
-            limit=7,
-        )
+        # Capsule points only, and more candidates than wanted, so unsigned
+        # ones nearer the question do not take the signed ones' places.
+        kwargs = mock_client.query_points.call_args.kwargs
+        assert kwargs["collection_name"] == "col"
+        assert kwargs["query"] == fake_vec
+        assert kwargs["limit"] == 21
+        (condition,) = kwargs["query_filter"].must
+        assert condition.key == "type" and condition.match.value == "capsule"
 
     def test_capsule_fields_populated_from_payload(self) -> None:
+        from nlqueries.cache.envelope import sign_capsule  # noqa: PLC0415
+
         hit = MagicMock()
-        hit.payload = {
-            "capsule_id": 99,
-            "template_sql": "SELECT count(*) FROM sales",
-            "tables": ["sales"],
-            "frequency": 42,
-            "agent_id": "ag",
-        }
+        hit.payload = sign_capsule(
+            {
+                "type": "capsule",
+                "capsule_id": 99,
+                "template_sql": "SELECT count(*) FROM sales",
+                "intent": "total sales",
+                "auto_description": "count of sales rows",
+                "tables": ["sales"],
+                "frequency": 42,
+                "agent_id": "ag",
+            }
+        )
+        hit.score = 1.0
         response = MagicMock()
         response.points = [hit]
         mock_client = MagicMock()
@@ -557,6 +584,10 @@ class TestSearch:
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
             ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
+            ),
         ):
             from nlqueries.embeddings.qdrant_store import search
 
@@ -566,6 +597,10 @@ class TestSearch:
         assert c.template_sql == "SELECT count(*) FROM sales"
         assert c.tables == ["sales"]
         assert c.frequency == 42
+        # Stored since capsules were embedded where questions read them; the
+        # prompt shows the intent, so a capsule without it was a bare template.
+        assert c.intent == "total sales"
+        assert c.auto_description == "count of sales rows"
 
     def test_empty_search_results_returns_empty_list(self) -> None:
         response = MagicMock()
@@ -579,6 +614,10 @@ class TestSearch:
             patch(
                 "nlqueries.embeddings.embedder.embed_text",
                 return_value=fake_vec,
+            ),
+            patch(
+                "nlqueries.embeddings.embedder.embed_batch",
+                side_effect=lambda texts: [fake_vec for _ in texts],
             ),
         ):
             from nlqueries.embeddings.qdrant_store import search
