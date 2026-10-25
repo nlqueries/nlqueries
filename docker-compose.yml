@@ -88,7 +88,7 @@ services:
     # A version, not :latest, so `docker compose up` starts the release this
     # file was written for, and a pull never moves it on to a different one.
     # The release process bumps this tag to each new final version.
-    image: nlqueries/core:0.3.0
+    image: nlqueries/core:0.4.0
     # To build from source instead of pulling: docker compose build
     container_name: nlqueries-core
     restart: unless-stopped

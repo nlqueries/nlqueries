@@ -44,7 +44,7 @@ Start the stack:
 docker compose up -d
 ```
 
-This reads `docker-compose.yml` in the current directory automatically — no `-f` flag needed — and pulls `nlqueries/core:0.3.0` alongside Qdrant. The compose file pins the image to a release rather than `:latest`, so a later `docker compose pull` does not move you to a different version; to run another release, change the tag on its `image:` line. Open a shell into the container for the steps below:
+This reads `docker-compose.yml` in the current directory automatically — no `-f` flag needed — and pulls `nlqueries/core:0.4.0` alongside Qdrant. The compose file pins the image to a release rather than `:latest`, so a later `docker compose pull` does not move you to a different version; to run another release, change the tag on its `image:` line. Open a shell into the container for the steps below:
 
 ```bash
 docker exec -it nlqueries-core bash
