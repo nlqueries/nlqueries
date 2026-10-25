@@ -98,8 +98,12 @@ services:
       QDRANT_URL: "http://qdrant:6333"
       # The server binds 0.0.0.0 *inside the container*; the ports mapping below
       # publishes it on the host's loopback only, and that is the actual
-      # boundary. Setting this here rather than in the image means one
-      # deployment's decision, not every `docker run`'s.
+      # boundary. MCP_HOST is set here, not left to the image, because env_file
+      # passes .env in too: MCP_HOST=127.0.0.1 there would bind the container's
+      # own loopback, which the mapping cannot reach, and the healthcheck would
+      # still pass. Setting NLQ_ALLOW_INSECURE_BIND here rather than in the
+      # image means one deployment's decision, not every `docker run`'s.
+      MCP_HOST: "0.0.0.0"
       NLQ_ALLOW_INSECURE_BIND: "1"
       # The port inside the container, fixed to the one the ports mapping
       # below targets. MCP_PORT in .env picks the host port only: env_file

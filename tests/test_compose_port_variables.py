@@ -10,7 +10,8 @@ the new port inside the container, behind a mapping to 8080 that nothing
 answered, while the container still reported healthy.
 
 The rule checked here is that every such variable is pinned in the service's
-own `environment:`, which takes precedence over `env_file`.
+own `environment:`, which takes precedence over `env_file`. MCP_HOST reaches
+the server the same way without naming a host port, so it is checked by name.
 """
 
 from __future__ import annotations
@@ -78,3 +79,9 @@ def test_the_server_listens_on_the_port_the_mapping_targets(services: dict) -> N
     service = services["nlqueries-core"]
     (entry,) = [str(e) for e in service["ports"] if "MCP_PORT" in str(e)]
     assert str(service["environment"]["MCP_PORT"]) == _container_port(entry)
+
+
+def test_the_server_binds_every_interface_in_the_container(services: dict) -> None:
+    # On the container's own loopback the published port is refused, while the
+    # healthcheck, which connects from inside, still passes.
+    assert services["nlqueries-core"]["environment"].get("MCP_HOST") == "0.0.0.0"
