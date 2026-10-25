@@ -175,7 +175,9 @@ def _publish_key(path: Path, key: bytes) -> bytes | None:
             # and the rename, a narrower window than linking leaves.
             if path.exists():
                 return path.read_bytes().strip()
-            os.replace(tmp, path)
+            from nlqueries.state_files import replace_file  # noqa: PLC0415
+
+            replace_file(tmp, path)
         return None
     finally:
         with contextlib.suppress(OSError):

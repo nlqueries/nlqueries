@@ -25,7 +25,9 @@ import contextlib
 import os
 import re
 import stat
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 #: Characters an agent's storage name does not keep.
@@ -79,14 +81,48 @@ def restrict(path: Path) -> Path:
     return path
 
 
+#: Whether a refused rename is retried: on Windows, where another process
+#: reading the destination holds it against replacement.
+_RETRY_REFUSED_REPLACE = sys.platform == "win32"
+
+#: How many times a refused rename is tried, and the wait after the first
+#: refusal; each later wait is one step longer, about half a second in all.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_WAIT_SECONDS = 0.05
+
+
+def replace_file(source: Path, destination: Path) -> None:
+    """``os.replace(source, destination)``, retried while Windows briefly refuses it.
+
+    On Windows a rename onto a file another process has open -- an antivirus
+    scanner or the search indexer reading a file that was just written --
+    fails with ``PermissionError`` (access denied) until that process lets go,
+    usually within milliseconds. A command that rewrites a file twice in quick
+    succession, as ``agent docs add`` and ``import-dbt`` do, then failed now
+    and then for no reason the user could act on; the test suite saw it in two
+    of five runs of three such test files. The rename is retried a few times
+    with a short, growing wait. Anywhere else, for any other error, and once
+    the attempts are spent, the error is raised as before.
+    """
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if not _RETRY_REFUSED_REPLACE or attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_WAIT_SECONDS * attempt)
+
+
 def write_private(path: Path, text: str) -> Path:
     """Write *text* to *path* readable by its owner only, atomically, and return it.
 
     The text goes to a temporary file in the same directory, created at mode
     0600 so it is never readable by others, not even briefly. It is flushed to
-    disk and then renamed over *path*. The rename replaces whatever is at
-    *path*: an interrupted write leaves the previous file as it was, and a
-    symlink there is replaced by the new file rather than written through.
+    disk and then renamed over *path* (:func:`replace_file`). The rename
+    replaces whatever is at *path*: an interrupted write leaves the previous
+    file as it was, and a symlink there is replaced by the new file rather
+    than written through.
 
     A missing parent directory is created with :func:`private_dir`. One that
     already exists is left as it is: *path* may be an output the operator chose,
@@ -101,7 +137,7 @@ def write_private(path: Path, text: str) -> Path:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             tmp.unlink()
