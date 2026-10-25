@@ -113,15 +113,89 @@ def _capsule_id(capsule: QueryCapsule, index: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: The ``type`` payloads of the points :func:`upsert_schema` writes.
+SCHEMA_POINT_TYPES = ("table", "column")
+
+
 def schema_collection(agent_id: str) -> str:
     """The collection holding *agent_id*'s table, column and capsule points.
 
-    The one place the name is made, for the knowledge-base generator and
-    ``process-history --embed``, which write it, and the question path, which
-    reads it. It still uses the raw ID, unlike the document and cache
-    collections (see :func:`agent_collection`).
+    Named with the agent's storage name, as the document, cache and verified
+    collections are (:func:`agent_collection`), so the CLI's
+    ``postgres:localhost:mydb`` and the MCP server's ``postgres_localhost_mydb``
+    are one collection. Writers use this name; readers use
+    :func:`schema_collection_to_read`.
     """
-    return f"agent_{agent_id}_schema"
+    return agent_collection("agent_", agent_id, "_schema")
+
+
+def schema_collection_to_read(agent_id: str, point_types: tuple[str, ...]) -> str:
+    """The collection to read *agent_id*'s points of *point_types* from.
+
+    Releases before the storage name wrote this collection under the raw ID.
+    Its two kinds of point are written by different commands -- tables and
+    columns by ``generate_knowledge_base(embed=True)``, capsules by
+    ``process-history --embed`` -- so one may have moved to the new name while
+    the other has not. Each kind is read from the new name once it holds points
+    of that kind there, and from the raw-ID collection until then. An ID the
+    storage name does not change needs no lookup; otherwise the answer is kept
+    for a minute, and Qdrant out of reach gives the new name.
+    """
+    name = schema_collection(agent_id)
+    legacy = f"agent_{agent_id}_schema"
+    if legacy == name:
+        return name
+    key = f"{name}|{','.join(point_types)}"
+    now = time.monotonic()
+    cached = _resolved.get(key)
+    if cached is not None and now - cached[0] < _RESOLVED_TTL_SECONDS:
+        return cached[1]
+    try:
+        from qdrant_client.models import FieldCondition, Filter, MatchAny
+
+        client = _get_client()
+        existing = {c.name for c in client.get_collections().collections}
+        if legacy not in existing:
+            # No changeover to make, which is every ID with `:` (Qdrant never
+            # accepted that name), so the count below is not needed.
+            chosen = name
+        else:
+            # Exact: `type` has no payload index, and an approximate count with
+            # a filter on it is an estimate from the collection's size, not the
+            # matches -- 25 tables in a collection of 50 capsules on Qdrant 1.18
+            # -- which would move the tables hint to a name holding no tables.
+            # Being a scan, it is made only while a raw-ID collection exists.
+            holds = name in existing and bool(
+                client.count(
+                    collection_name=name,
+                    count_filter=Filter(
+                        must=[FieldCondition(key="type", match=MatchAny(any=list(point_types)))]
+                    ),
+                    exact=True,
+                ).count
+            )
+            chosen = name if holds else legacy
+    except Exception:  # noqa: BLE001 - the caller reads `name` and reports the failure
+        return name
+    _resolved[key] = (now, chosen)
+    return chosen
+
+
+def retire_legacy_schema_collection(agent_id: str) -> str | None:
+    """Delete *agent_id*'s raw-ID schema collection, once its tables are rewritten.
+
+    Call it after the table and column points are written under the new name:
+    they are all the raw-ID collection held for a release, which wrote capsules
+    elsewhere. Returns the name deleted, or None.
+    """
+    deleted = retire_legacy_collection("agent_", agent_id, "_schema")
+    name = schema_collection(agent_id)
+    # A snapshot, as `forget_collection_indexes` takes of `_indexed_fields`:
+    # question threads write `_resolved` while this may run, and iterating it
+    # live could raise after the collection was already deleted.
+    for key in [k for k in list(_resolved) if k.startswith(f"{name}|")]:
+        _resolved.pop(key, None)
+    return deleted
 
 
 def agent_collection(prefix: str, agent_id: str, suffix: str) -> str:
@@ -484,10 +558,11 @@ def upsert_capsules(
 def replace_capsules(collection: str, capsules: list[QueryCapsule], agent_id: str) -> None:
     """Make *capsules* the whole of *agent_id*'s capsules in *collection*.
 
-    The new capsules are stored first and the agent's other capsule points
-    deleted after, as :func:`replace_chunks` does, so a failure before the
-    store leaves the previous set in place. The collection's table and column
-    points are untouched.
+    The new capsules are stored first and the collection's other capsule
+    points deleted after, as :func:`replace_chunks` does, so a failure before
+    the store leaves the previous set in place. The collection is the agent's,
+    under its storage name, so every capsule in it is this agent's, whichever
+    form of its ID embedded it. The table and column points are untouched.
     """
     from qdrant_client.models import (
         FieldCondition,
@@ -501,10 +576,7 @@ def replace_capsules(collection: str, capsules: list[QueryCapsule], agent_id: st
     upsert_capsules(collection, capsules, agent_id=agent_id)
     keep: list[Any] = [_capsule_id(c, idx) for idx, c in enumerate(capsules)]
     filter_ = Filter(
-        must=[
-            FieldCondition(key="type", match=MatchValue(value=CAPSULE_TYPE)),
-            FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
-        ],
+        must=[FieldCondition(key="type", match=MatchValue(value=CAPSULE_TYPE))],
         must_not=[HasIdCondition(has_id=keep)] if keep else None,
     )
     _get_client().delete(collection_name=collection, points_selector=FilterSelector(filter=filter_))
@@ -521,7 +593,8 @@ def search(
     """Embed *query*, search *collection*'s capsules, and return ``QueryCapsule`` objects.
 
     Only capsule points are searched (``type == "capsule"``), and with
-    *agent_id* only that agent's. Only capsules whose signature verifies are
+    *agent_id* only that agent's, compared by storage name, so the CLI's and
+    the MCP server's forms of one ID are one agent. Only capsules whose signature verifies are
     returned: what this returns is shown to the model as example queries, and
     Qdrant can be written by more than this process. Unsigned ones -- written
     before capsules were signed, or by something else -- are skipped, and
@@ -550,8 +623,7 @@ def search(
 
         vector = embed_text(query)
     must: list[Any] = [FieldCondition(key="type", match=MatchValue(value=CAPSULE_TYPE))]
-    if agent_id is not None:
-        must.append(FieldCondition(key="agent_id", match=MatchValue(value=agent_id)))
+    wanted = agent_storage_id(agent_id) if agent_id is not None else None
     client = _get_client()
     response = client.query_points(
         collection_name=collection,
@@ -562,14 +634,14 @@ def search(
 
     hits = [(hit.payload, float(hit.score)) for hit in response.points if hit.payload]
     payloads = [p for p, _ in hits]
-    # The type and agent are checked again after the signature: the filter
-    # above ran on fields not yet verified.
+    # The type is checked again after the signature, since the filter above
+    # ran on fields not yet verified; the agent is checked there by storage name.
     signed_hits = [
         (p, score)
         for p, score in hits
         if verify_capsule(p)
         and p.get("type") == CAPSULE_TYPE
-        and (agent_id is None or p.get("agent_id") == agent_id)
+        and (wanted is None or agent_storage_id(str(p.get("agent_id", ""))) == wanted)
     ]
     if len(signed_hits) < len(payloads) and collection not in _UNSIGNED_CAPSULES_WARNED:
         _UNSIGNED_CAPSULES_WARNED.add(collection)

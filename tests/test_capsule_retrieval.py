@@ -251,10 +251,9 @@ def test_replacing_keeps_only_the_new_set_and_the_schema_points(qdrant: _FakeQdr
         qdrant_store.replace_capsules(collection, [_capsule("new", "SELECT 4")], "shop")
 
     (filter_,) = deleted
-    assert {(c.key, c.match.value) for c in filter_.must} == {
-        ("type", "capsule"),
-        ("agent_id", "shop"),
-    }
+    # Every capsule in the agent's collection is the agent's, whichever form
+    # of its ID embedded it, so the earlier set goes whatever ID it carries.
+    assert {(c.key, c.match.value) for c in filter_.must} == {("type", "capsule")}
     (keep,) = filter_.must_not
     assert keep.has_id == [qdrant_store._capsule_id(_capsule("new", "SELECT 4"), 0)]
 

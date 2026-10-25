@@ -79,13 +79,11 @@ def test_a_promoted_pair_is_found_for_a_connector_id_with_colons(qdrant: QdrantC
     assert [h["sql"] for h in hits] == ["SELECT COUNT(*) FROM orders"]
 
 
-def test_an_agent_whose_id_sanitises_the_same_does_not_get_anothers_pairs(
-    qdrant: QdrantClient,
-) -> None:
+def test_an_id_and_its_sanitised_form_share_their_pairs(qdrant: QdrantClient) -> None:
     """A connector id and its sanitised form, `postgres:db:sales` and
-    `postgres_db_sales`, name the same storage on purpose (`agent_storage_id`),
-    so their pairs share a collection and only the `agent_id` the promoter
-    writes into each payload tells them apart."""
+    `postgres_db_sales`, are one agent (`agent_storage_id`): the CLI uses the
+    first and the MCP server the second. Pairs promoted under either are found
+    whichever form asks, so the MCP server sees what the CLI promoted."""
     first, second = "postgres:db:sales", "postgres_db_sales"
     collection = _verified_collection(first)
     assert collection == _verified_collection(second)
@@ -109,6 +107,9 @@ def test_an_agent_whose_id_sanitises_the_same_does_not_get_anothers_pairs(
         ],
     )
 
-    hits = _search_verified(f"agent_{first}_schema", "q", vector=_unit_vector())
-
-    assert [h["sql"] for h in hits] == ["SELECT 1 FROM prod_sales"]
+    for asking in (first, second):
+        hits = _search_verified("unused", "q", vector=_unit_vector(), agent_id=asking)
+        assert sorted(h["sql"] for h in hits) == [
+            "SELECT 1 FROM other_sales",
+            "SELECT 1 FROM prod_sales",
+        ]

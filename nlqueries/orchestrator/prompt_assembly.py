@@ -33,6 +33,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import re
@@ -572,6 +573,7 @@ def assemble_prompt(
     collection: str | None = None,
     vector: list[float] | None = None,
     extra_dynamic_context: str | None = None,
+    agent_id: str | None = None,
 ) -> AssembledPrompt:
     """Assemble an :class:`AssembledPrompt` for *question*.
 
@@ -595,6 +597,7 @@ def assemble_prompt(
         extra_dynamic_context: Optional caller-supplied guidance appended to the
                         dynamic block (e.g. an enterprise Nexus join-paths /
                         Beacons section). Core stays agnostic to its content.
+        agent_id:       The agent asked; see :func:`assemble_prompt_async`.
 
     Returns:
         :class:`AssembledPrompt`
@@ -614,7 +617,7 @@ def assemble_prompt(
             pass
 
     dynamic_context = _build_dynamic_context(
-        question, knowledge_base, top_k_capsules, collection, question_vector
+        question, knowledge_base, top_k_capsules, collection, question_vector, agent_id
     )
     dynamic_context = _append_question_glossary(dynamic_context, question, knowledge_base)
     dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
@@ -634,6 +637,7 @@ async def assemble_prompt_async(
     collection: str | None = None,
     vector: list[float] | None = None,
     extra_dynamic_context: str | None = None,
+    agent_id: str | None = None,
 ) -> AssembledPrompt:
     """Concurrent variant of :func:`assemble_prompt` (Phase 6C).
 
@@ -654,6 +658,9 @@ async def assemble_prompt_async(
         collection:     Optional Qdrant collection name for semantic ranking.
         vector:         Pre-computed question embedding, reused instead of
                         embedding again.
+        agent_id:       The agent asked. With it, each search reads the
+                        collection that holds that kind of point for the agent,
+                        and agents are matched by storage name.
         extra_dynamic_context: Optional caller-supplied guidance appended to the
                         dynamic block (e.g. an enterprise Nexus join-paths /
                         Beacons section). Core stays agnostic to its content.
@@ -673,7 +680,7 @@ async def assemble_prompt_async(
             pass
 
     dynamic_context = await _build_dynamic_context_async(
-        question, knowledge_base, top_k_capsules, collection, question_vector
+        question, knowledge_base, top_k_capsules, collection, question_vector, agent_id
     )
     dynamic_context = _append_question_glossary(dynamic_context, question, knowledge_base)
     dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
@@ -1177,17 +1184,55 @@ def _agent_of(collection: str) -> str | None:
     return None
 
 
+def _schema_hits(
+    collection: str, agent_id: str | None, question: str, vector: list[float] | None
+) -> list[dict[str, Any]]:
+    """The relevant-tables search, in the collection that holds the agent's tables.
+
+    With *agent_id*, the table and column points are read from the collection
+    under the agent's storage name once they are there, and from the one an
+    earlier release named with the raw ID until then
+    (:func:`~nlqueries.embeddings.qdrant_store.schema_collection_to_read`).
+    """
+    from nlqueries.embeddings import qdrant_store  # noqa: PLC0415
+
+    if agent_id is not None:
+        collection = qdrant_store.schema_collection_to_read(
+            agent_id, qdrant_store.SCHEMA_POINT_TYPES
+        )
+    return qdrant_store.search_schema(collection, question, top_k=10, vector=vector)
+
+
+def _capsule_hits(
+    collection: str,
+    agent_id: str | None,
+    question: str,
+    top_k: int,
+    vector: list[float] | None,
+) -> list[Any]:
+    """The capsule search, in the collection that holds the agent's capsules (as above)."""
+    from nlqueries.embeddings import qdrant_store  # noqa: PLC0415
+
+    agent = agent_id if agent_id is not None else _agent_of(collection)
+    if agent_id is not None:
+        collection = qdrant_store.schema_collection_to_read(agent_id, (qdrant_store.CAPSULE_TYPE,))
+    return qdrant_store.search(collection, question, top_k=top_k, vector=vector, agent_id=agent)
+
+
 def _build_dynamic_context(
     question: str,
     knowledge_base: dict[str, Any],
     top_k: int,
     collection: str | None,
     question_vector: list[float] | None,
+    agent_id: str | None = None,
 ) -> str:
     """Build the per-question dynamic context block.
 
     Contains a relevant-tables hint (if Qdrant available), verified examples
     from user-confirmed feedback (Phase 5B), and top-k capsule examples.
+    *agent_id* is the agent asked; without it, it is read from *collection*'s
+    name, which is all a caller passing a collection alone gives.
 
     Verified examples are searched first and consume slots from *top_k* so the
     total number of examples presented to the LLM stays bounded. Searches run
@@ -1201,30 +1246,23 @@ def _build_dynamic_context(
     if collection:
         # Relevant-tables hint (short list, not full schema)
         try:
-            from nlqueries.embeddings.qdrant_store import search_schema
-
-            hits = search_schema(collection, question, top_k=10, vector=question_vector)
+            hits = _schema_hits(collection, agent_id, question, question_vector)
             hit_names = sorted({str(h["table_name"]) for h in hits if h.get("table_name")})
         except Exception:  # noqa: BLE001, S110 - the prompt is built without the hint
             pass
 
         # Phase 5B: Verified examples (user-confirmed correct SQL, threshold 0.75)
-        verified_hits = _search_verified(collection, question, top_k=3, vector=question_vector)
+        verified_hits = _search_verified(
+            collection, question, top_k=3, vector=question_vector, agent_id=agent_id
+        )
         remaining_slots = top_k - len(verified_hits)
 
-        # Capsule examples (fill remaining slots after verified ones)
-        try:
-            from nlqueries.embeddings.qdrant_store import search
-
-            capsule_hits = search(
-                collection,
-                question,
-                top_k=max(1, remaining_slots),
-                vector=question_vector,
-                agent_id=_agent_of(collection),
+        # Capsule examples (fill remaining slots after verified ones); without
+        # them the prompt is built from the knowledge base's capsules.
+        with contextlib.suppress(Exception):
+            capsule_hits = _capsule_hits(
+                collection, agent_id, question, max(1, remaining_slots), question_vector
             )
-        except Exception:  # noqa: BLE001, S110 - the prompt is built without the examples
-            pass
 
     return _format_dynamic_context(knowledge_base, top_k, hit_names, verified_hits, capsule_hits)
 
@@ -1235,6 +1273,7 @@ async def _build_dynamic_context_async(
     top_k: int,
     collection: str | None,
     question_vector: list[float] | None,
+    agent_id: str | None = None,
 ) -> str:
     """Concurrent variant of :func:`_build_dynamic_context` (Phase 6C).
 
@@ -1253,22 +1292,18 @@ async def _build_dynamic_context_async(
     capsule_hits: list[Any] = []
 
     if collection:
-        from nlqueries.embeddings.qdrant_store import search, search_schema
-
         schema_result, verified_result, capsule_result = await asyncio.gather(
+            asyncio.to_thread(_schema_hits, collection, agent_id, question, question_vector),
             asyncio.to_thread(
-                search_schema, collection, question, top_k=10, vector=question_vector
-            ),
-            asyncio.to_thread(
-                _search_verified, collection, question, top_k=3, vector=question_vector
-            ),
-            asyncio.to_thread(
-                search,
+                _search_verified,
                 collection,
                 question,
-                top_k=top_k,
+                top_k=3,
                 vector=question_vector,
-                agent_id=_agent_of(collection),
+                agent_id=agent_id,
+            ),
+            asyncio.to_thread(
+                _capsule_hits, collection, agent_id, question, top_k, question_vector
             ),
             return_exceptions=True,
         )
@@ -1369,11 +1404,16 @@ def _search_verified(
     *,
     vector: list[float] | None = None,
     threshold: float = 0.75,
+    agent_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search the ``agent_{id}_verified`` collection for similar confirmed examples.
 
-    Derives the verified collection name from *collection* (expected to be
-    ``agent_{id}_schema``; verified collection is ``agent_{id}_verified``).
+    The agent is *agent_id*, or without it is read from *collection*'s name
+    (``agent_{id}_schema``). The verified collection is the one
+    ``promote-feedback`` writes for it, ``agent_{storage name}_verified``, and a
+    pair belongs to the agent when its ``agent_id`` has the same storage name:
+    the CLI's ``postgres:localhost:mydb`` and the MCP server's
+    ``postgres_localhost_mydb`` are one agent.
 
     Returns a list of payload dicts for hits above *threshold*, or ``[]`` when
     the collection does not exist or Qdrant is unreachable.
@@ -1384,12 +1424,15 @@ def _search_verified(
     # promoter writes `agent_postgres_localhost_mydb_verified`; swapping the
     # suffix alone looked for a collection that never exists, so promoted
     # examples were never used.
-    if not (collection.startswith("agent_") and collection.endswith("_schema")):
-        return []
+    if agent_id is None:
+        if not (collection.startswith("agent_") and collection.endswith("_schema")):
+            return []
+        agent_id = collection[len("agent_") : -len("_schema")]
     from nlqueries.feedback.promoter import _verified_collection  # noqa: PLC0415
+    from nlqueries.state_files import agent_storage_id  # noqa: PLC0415
 
-    agent_id = collection[len("agent_") : -len("_schema")]
     verified_collection = _verified_collection(agent_id)
+    storage_name = agent_storage_id(agent_id)
 
     from nlqueries.embeddings.qdrant_client import (  # noqa: PLC0415
         QdrantAuthenticationRequired,
@@ -1428,14 +1471,11 @@ def _search_verified(
         response = client.query_points(
             collection_name=verified_collection,
             query=vector,
-            # Two IDs that differ only in characters the name replaces share a
-            # collection; the agent_id the promoter writes into every payload is
-            # what keeps one agent's confirmed pairs out of the other's prompt.
+            # The agent is checked after the signature, by storage name: an
+            # ID and its sanitised form are one agent, and a pair promoted
+            # under either is stored with the form it was promoted under.
             query_filter=Filter(
-                must=[
-                    FieldCondition(key="verified", match=MatchValue(value=True)),
-                    FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
-                ]
+                must=[FieldCondition(key="verified", match=MatchValue(value=True))]
             ),
             # More than wanted, so a few pairs that fail the signature check
             # below (planted, or stale ones never re-signed) do not take the
@@ -1452,7 +1492,11 @@ def _search_verified(
         # labelled "user-confirmed". The agent is checked again after the
         # signature, because the filter above ran on fields not yet verified.
         near = [hit.payload for hit in response.points if hit.score >= threshold and hit.payload]
-        signed = [p for p in near if verify_pair(p) and p.get("agent_id") == agent_id]
+        signed = [
+            p
+            for p in near
+            if verify_pair(p) and agent_storage_id(str(p.get("agent_id", ""))) == storage_name
+        ]
         if len(signed) < len(near) and agent_id not in _UNSIGNED_PAIRS_WARNED:
             _UNSIGNED_PAIRS_WARNED.add(agent_id)
             logger.warning(
