@@ -369,3 +369,116 @@ def test_the_pipeline_embeds_for_its_agent() -> None:
 
     assert capsules
     replace.assert_called_once_with("agent_shop_schema", capsules, "shop")
+
+
+# ---------------------------------------------------------------------------
+# The path `query` takes, and what confirming costs
+# ---------------------------------------------------------------------------
+
+
+def _async_prompt_examples(agent: str) -> str:
+    """The dynamic context through `assemble_prompt_async`, which the orchestrator uses."""
+    import asyncio  # noqa: PLC0415
+
+    with (
+        patch.object(qdrant_store, "search_schema", return_value=[]),
+        patch.object(prompt_assembly, "_search_verified", return_value=[]),
+    ):
+        prompt = asyncio.run(
+            prompt_assembly.assemble_prompt_async(
+                "orders last month",
+                {},
+                5,
+                collection=qdrant_store.schema_collection(agent),
+                vector=_VECTOR,
+            )
+        )
+    return prompt.dynamic_context
+
+
+def test_the_async_path_shows_this_agents_capsule(qdrant: _FakeQdrant) -> None:
+    qdrant_store.upsert_capsules(
+        qdrant_store.schema_collection("shop"), [_capsule("monthly orders", "SELECT 9")], "shop"
+    )
+
+    assert "Intent: monthly orders" in _async_prompt_examples("shop")
+
+
+def test_the_async_path_keeps_out_another_agents_capsule(qdrant: _FakeQdrant) -> None:
+    qdrant_store.upsert_capsules(
+        qdrant_store.schema_collection("shop"), [_capsule("billing's", "SELECT 10")], "billing"
+    )
+
+    assert "billing's" not in _async_prompt_examples("shop")
+
+
+def test_the_async_path_keeps_out_an_unsigned_capsule(qdrant: _FakeQdrant) -> None:
+    collection = qdrant_store.schema_collection("shop")
+    qdrant.points[collection] = {
+        1: {"type": "capsule", "agent_id": "shop", "template_sql": "x", "intent": "planted"}
+    }
+
+    assert "planted" not in _async_prompt_examples("shop")
+
+
+def _counting_embedder(
+    monkeypatch: pytest.MonkeyPatch, far: set[str] | None = None
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+    away = [0.0] * 383 + [1.0]
+
+    def embed_batch(texts: list[str]) -> list[list[float]]:
+        calls.append(list(texts))
+        return [away if t in (far or set()) else _VECTOR for t in texts]
+
+    monkeypatch.setattr("nlqueries.embeddings.embedder.embed_batch", embed_batch)
+    return calls
+
+
+def test_an_ordinary_question_re_embeds_only_the_capsules_it_shows(
+    qdrant: _FakeQdrant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = qdrant_store.schema_collection("shop")
+    qdrant_store.upsert_capsules(
+        collection, [_capsule(f"c{i}", f"SELECT {i}") for i in range(12)], "shop"
+    )
+    calls = _counting_embedder(monkeypatch)
+
+    found = qdrant_store.search(collection, "q", top_k=5, vector=_VECTOR, agent_id="shop")
+
+    assert len(found) == 5
+    assert [len(c) for c in calls] == [5]
+
+
+def test_a_capsule_left_out_has_its_place_taken_by_the_next(
+    qdrant: _FakeQdrant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = qdrant_store.schema_collection("shop")
+    qdrant_store.upsert_capsules(
+        collection, [_capsule(f"c{i}", f"SELECT {i}") for i in range(12)], "shop"
+    )
+    calls = _counting_embedder(monkeypatch, far={"c1"})
+
+    found = qdrant_store.search(collection, "q", top_k=5, vector=_VECTOR, agent_id="shop")
+
+    assert [c.intent for c in found] == ["c0", "c2", "c3", "c4", "c5"]
+    assert [len(c) for c in calls] == [5, 5]
+
+
+def test_an_embedder_failure_is_not_retried_for_each_batch(
+    qdrant: _FakeQdrant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = qdrant_store.schema_collection("shop")
+    qdrant_store.upsert_capsules(
+        collection, [_capsule(f"c{i}", f"SELECT {i}") for i in range(12)], "shop"
+    )
+    calls: list[int] = []
+
+    def unavailable(texts: list[str]) -> list[list[float]]:
+        calls.append(len(texts))
+        raise ConnectionError("the embedding daemon went away")
+
+    monkeypatch.setattr("nlqueries.embeddings.embedder.embed_batch", unavailable)
+
+    assert qdrant_store.search(collection, "q", top_k=5, vector=_VECTOR, agent_id="shop") == []
+    assert calls == [5]

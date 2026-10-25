@@ -361,7 +361,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def _found_by_their_own_text(
     hits: list[tuple[dict[str, Any], float]], vector: list[float], collection: str
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
     """The capsules in *hits* whose own text is as near the query as their vector.
 
     The signature covers a capsule's text but not the vector it is stored
@@ -370,7 +370,7 @@ def _found_by_their_own_text(
     capsule's text -- its intent, else its description, which is what was
     embedded -- is embedded again in one batch, and must score against the
     query no lower than its stored vector did, within a tolerance for
-    quantization. A batch that cannot be embedded keeps none.
+    quantization. Returns None when the batch cannot be embedded: none is kept.
     """
     if not hits:
         return []
@@ -390,7 +390,7 @@ def _found_by_their_own_text(
                 collection,
                 type(exc).__name__,
             )
-        return []
+        return None
     kept = [
         payload
         for (payload, score), mine in zip(hits, own, strict=False)
@@ -580,7 +580,18 @@ def search(
             len(payloads) - len(signed_hits),
             collection,
         )
-    signed = _found_by_their_own_text(signed_hits, vector, collection)
+    # Confirmed top_k at a time, nearest first, and only as far as needed: one
+    # batch of top_k texts on an ordinary question, not every candidate, and a
+    # capsule left out has its place taken by the next.
+    signed: list[dict[str, Any]] = []
+    step = max(1, top_k)
+    for start in range(0, len(signed_hits), step):
+        confirmed = _found_by_their_own_text(signed_hits[start : start + step], vector, collection)
+        if confirmed is None:
+            break  # the embedder failed; asking again for the next batch would too
+        signed.extend(confirmed)
+        if len(signed) >= top_k:
+            break
     return [
         QueryCapsule(
             template_sql=str(p.get("template_sql", "")),
