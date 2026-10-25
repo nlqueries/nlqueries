@@ -52,7 +52,7 @@ jobs:
       contents: read
       security-events: write # upload the SARIF report, and nothing else
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The image carries torch and its CUDA libraries, several GB, which the
       # runner's free space does not always cover alongside the build layers.
@@ -93,7 +93,7 @@ jobs:
       # printed to the log instead: the SARIF above holds them only in its file.
       - name: Upload to the Security tab
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
