@@ -329,9 +329,29 @@ async def _run_sql(
     return tokens
 
 
+def _document_collections(agent_id: str) -> str | list[str]:
+    """The collections *agent_id*'s document answers search.
+
+    The agent's listed document sources (``nlqueries agent docs add``), one
+    collection each. An agent that lists none reads the collection named after
+    itself, as it always has -- which is also what an embedder whose agents are
+    not in the connectors file gets. A connectors file that cannot be read
+    lists nothing here; the SQL side reports it.
+    """
+    from nlqueries.connectors.loader import document_sources_for  # noqa: PLC0415
+
+    try:
+        sources = document_sources_for(agent_id)
+    except Exception:  # noqa: BLE001 - no list rather than no answer
+        sources = []
+    if sources:
+        return [agent_collection_to_read("doc_", source, "_chunks") for source in sources]
+    return agent_collection_to_read("doc_", agent_id, "_chunks")
+
+
 async def _run_document(question: str, agent_id: str) -> tuple[list[str], list[Citation] | None]:
     orch = DocumentOrchestrator()
-    collection = await asyncio.to_thread(agent_collection_to_read, "doc_", agent_id, "_chunks")
+    collection = await asyncio.to_thread(_document_collections, agent_id)
     tokens: list[str] = []
     async for token in orch.handle_question(question, collection):
         tokens.append(token)
@@ -356,7 +376,7 @@ async def _run_hybrid(
     """
     sql_orch = Orchestrator()
     doc_orch = DocumentOrchestrator()
-    collection = await asyncio.to_thread(agent_collection_to_read, "doc_", agent_id, "_chunks")
+    collection = await asyncio.to_thread(_document_collections, agent_id)
 
     async def _collect_sql() -> list[str]:
         tokens: list[str] = []
@@ -380,7 +400,8 @@ async def _run_hybrid(
 
     sql_tokens, doc_tokens = await asyncio.gather(_collect_sql(), _collect_doc())
     citations = _extract_citations_from_tokens(doc_tokens)
-    return sql_tokens, doc_tokens, citations, collection
+    label = collection if isinstance(collection, str) else ", ".join(collection)
+    return sql_tokens, doc_tokens, citations, label
 
 
 def _merge_hybrid(

@@ -11,13 +11,25 @@ Public API
 ``retrieve_for_question(question, collection, top_k, source_id_filter)``
     Search the Qdrant collection and return a :class:`DocumentRetrievalResult`
     with chunks and citations sorted by relevance score descending.
+
+``retrieve_across(question, collections, top_k)``
+    The same over several collections -- an agent's listed document sources --
+    keeping the *top_k* nearest overall.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from nlqueries.document_connectors.base import DocumentChunk
+
+logger = logging.getLogger(__name__)
+
+#: Collections that could not be searched, reported once each per process.
+_UNSEARCHABLE_WARNED: set[str] = set()
 
 
 @dataclass
@@ -82,37 +94,73 @@ def retrieve_for_question(
         query_filter=query_filter,
         limit=top_k,
     )
+    return _result(_cited(response.points, chunk_from_payload), collection, top_k)
 
-    chunks: list[DocumentChunk] = []
-    citations: list[Citation] = []
 
-    for hit in response.points:
+def retrieve_across(
+    question: str, collections: Sequence[str], top_k: int = 5
+) -> DocumentRetrievalResult:
+    """Search every collection in *collections* and keep the *top_k* nearest overall.
+
+    For an agent that answers from several document sources. The question is
+    embedded once. A collection that cannot be searched -- a listed source not
+    ingested yet, or Qdrant refusing -- is skipped with a warning, once per
+    collection, so the others still answer. The result's ``collection`` names
+    them all.
+    """
+    from nlqueries.embeddings.embedder import embed_text
+    from nlqueries.embeddings.qdrant_store import _get_client, chunk_from_payload  # noqa: PLC2701
+
+    vector = embed_text(question)
+    client = _get_client()
+    pairs: list[tuple[DocumentChunk, Citation]] = []
+    for collection in collections:
+        try:
+            response = client.query_points(collection_name=collection, query=vector, limit=top_k)
+        except Exception as exc:  # noqa: BLE001 - one source's failure leaves the others
+            if collection not in _UNSEARCHABLE_WARNED:
+                _UNSEARCHABLE_WARNED.add(collection)
+                logger.warning(
+                    "Could not search %r (%s); answering from the other document sources. "
+                    "A listed source that was never ingested has no collection.",
+                    collection,
+                    type(exc).__name__,
+                )
+            continue
+        pairs.extend(_cited(response.points, chunk_from_payload))
+    return _result(pairs, ", ".join(collections), top_k)
+
+
+def _cited(points: Any, chunk_from_payload: Any) -> list[tuple[DocumentChunk, Citation]]:
+    """Each readable hit as its chunk and the citation that names it."""
+    pairs: list[tuple[DocumentChunk, Citation]] = []
+    for hit in points:
         chunk = chunk_from_payload(hit.payload or {})
         if chunk is None:
             continue
-        chunks.append(chunk)
-        citations.append(
-            Citation(
-                chunk_id=chunk.chunk_id,
-                source_name=chunk.source_name,
-                page_number=chunk.page_number,
-                chunk_index=chunk.chunk_index,
-                excerpt=chunk.text[:200],
-                relevance_score=float(hit.score),
+        pairs.append(
+            (
+                chunk,
+                Citation(
+                    chunk_id=chunk.chunk_id,
+                    source_name=chunk.source_name,
+                    page_number=chunk.page_number,
+                    chunk_index=chunk.chunk_index,
+                    excerpt=chunk.text[:200],
+                    relevance_score=float(hit.score),
+                ),
             )
         )
+    return pairs
 
-    # Sort by relevance score descending
-    paired = sorted(
-        zip(chunks, citations, strict=True),
-        key=lambda x: x[1].relevance_score,
-        reverse=True,
+
+def _result(
+    pairs: list[tuple[DocumentChunk, Citation]], collection: str, top_k: int
+) -> DocumentRetrievalResult:
+    """*pairs* nearest first, at most *top_k* of them."""
+    ranked = sorted(pairs, key=lambda pair: pair[1].relevance_score, reverse=True)[:top_k]
+    return DocumentRetrievalResult(
+        chunks=[chunk for chunk, _ in ranked],
+        citations=[citation for _, citation in ranked],
+        collection=collection,
     )
-    if paired:
-        sorted_chunks, sorted_citations = zip(*paired, strict=True)
-        return DocumentRetrievalResult(
-            chunks=list(sorted_chunks),
-            citations=list(sorted_citations),
-            collection=collection,
-        )
-    return DocumentRetrievalResult(chunks=[], citations=[], collection=collection)

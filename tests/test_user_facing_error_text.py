@@ -277,7 +277,10 @@ async def test_a_hybrid_answer_from_a_failed_query_is_shown_without_the_driver_t
     real_run_query = sync_runner.run_query
 
     async def _hybrid_run_query(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        return await real_run_query(*args, available_types=("sql", "document", "hybrid"), **kwargs)
+        # The tool passes the agent's answer types itself now; this agent lists
+        # no document sources, so they are set here as if it did.
+        kwargs["available_types"] = ("sql", "document", "hybrid")
+        return await real_run_query(*args, **kwargs)
 
     m = "nlqueries.orchestrator.multi_agent_orchestrator"
     with (

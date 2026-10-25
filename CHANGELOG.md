@@ -104,6 +104,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   connectors file, under either form of its ID or its alias, and survives
   registering the connector again. `add` warns about a source not ingested
   yet; `remove` keeps the source's stored chunks.
+- **`query` and the MCP `query` tool answer from an agent's documents.** For
+  an agent that lists document sources, each question is answered from the
+  database, the listed sources, or both (a hybrid answer), as the router
+  judges it, with citations naming the source; routing to documents was
+  reachable only from the Python API. The document agent searches every
+  listed source and keeps the nearest chunks overall, skipping one not
+  ingested. An agent that lists none answers from its database only, as
+  before. On the MCP server, `query:execute` covers document answers. `query`
+  now prints a hybrid answer's text, which it showed only when no rows came
+  back, and names each source.
 
 ### Changed
 

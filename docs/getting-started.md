@@ -273,7 +273,7 @@ nlq doc-ingest q1-report ./report.pdf
 nlq doc-ask doc_q1-report_chunks "What did the Q1 report say about churn?"
 ```
 
-`doc-ingest` stores the report's chunks in Qdrant under `doc_q1-report_chunks`, and `doc-ask` answers from them with citations. PDF, Word and Excel need the `[docs]` extra; Markdown and plain text work on a base install. Questions to `nlqueries query` are answered from the database. See [connectors.md](connectors.md#document-connectors).
+`doc-ingest` stores the report's chunks in Qdrant under `doc_q1-report_chunks`, and `doc-ask` answers from them with citations. PDF, Word and Excel need the `[docs]` extra; Markdown and plain text work on a base install. Questions to `nlqueries query` are answered from the database, unless the agent lists document sources: after `nlqueries agent docs add dev q1-report`, `query dev` answers from the report too, or from both, as the question needs. See [connectors.md](connectors.md#document-connectors).
 
 ### Connect an AI assistant via MCP
 

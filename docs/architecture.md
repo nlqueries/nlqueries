@@ -7,7 +7,7 @@ graph TD
     CLI["CLI (nlqueries / nlq)"]
     MCP["MCP Server"]
     ORCH["MultiAgentOrchestrator"]
-    IC["Intent Classifier\n(sql / document / hybrid)\nPython API only"]
+    IC["Intent Classifier\n(sql / document / hybrid)\nagents with document sources"]
     SQLA["SQL Agent\n(Orchestrator)"]
     DOCA["Document Agent\n(DocumentOrchestrator)"]
     RM["Result Merger"]
@@ -47,7 +47,7 @@ graph TD
     CLI --> FB
 ```
 
-A question from `nlqueries query` or the MCP `query` tool reaches the `MultiAgentOrchestrator` (`nlqueries eval` generates its SQL through it too); `nlqueries ask` uses the single-agent `Orchestrator` directly, with no cache. The `MultiAgentOrchestrator` first checks the semantic cache; on a miss it dispatches to an agent. `query` and the MCP `query` tool enable only the SQL agent, so their questions go straight to it without classification. The intent classifier and the result merger, which can send a question to the document agent or to both in parallel (hybrid), apply only when a caller of the Python API enables more than one agent type. Questions about documents are asked with `doc-ask`, which searches the chunks `doc-ingest` stored.
+A question from `nlqueries query` or the MCP `query` tool reaches the `MultiAgentOrchestrator` (`nlqueries eval` generates its SQL through it too); `nlqueries ask` uses the single-agent `Orchestrator` directly, with no cache. The `MultiAgentOrchestrator` first checks the semantic cache; on a miss it dispatches to an agent. For an agent that lists no document sources, `query` and the MCP `query` tool enable only the SQL agent, so its questions go straight to it without classification. For an agent that lists some (`nlqueries agent docs add`), they enable the document agent and hybrid answers too: the intent classifier sends each question to the SQL agent, to the document agent, or to both in parallel, whose results the merger combines, and the document agent searches every listed source and keeps the nearest chunks overall. A caller of the Python API chooses the agent types itself. `doc-ask` searches one stored source directly.
 
 ## Module layout
 

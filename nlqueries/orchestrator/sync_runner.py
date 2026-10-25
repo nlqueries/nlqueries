@@ -195,6 +195,24 @@ def _parse_final_chunk(
     )
 
 
+def answer_types_for(agent_id: str) -> tuple[str, ...]:
+    """The kinds of answer *agent_id* gives from ``query`` and the MCP ``query`` tool.
+
+    An agent that lists document sources (``nlqueries agent docs add``) answers
+    from its database, its documents, or both, as the router judges each
+    question; ``hybrid`` is listed because the router downgrades it to ``sql``
+    otherwise. An agent that lists none answers from its database only, as
+    before. Library callers pass ``available_types`` themselves.
+    """
+    from nlqueries.connectors.loader import document_sources_for  # noqa: PLC0415
+
+    try:
+        has_documents = bool(document_sources_for(agent_id))
+    except Exception:  # noqa: BLE001 - the SQL path reports an unreadable file
+        has_documents = False
+    return ("sql", "document", "hybrid") if has_documents else ("sql",)
+
+
 async def run_query(
     question: str,
     agent_id: str,

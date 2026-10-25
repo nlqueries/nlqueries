@@ -124,7 +124,7 @@ nlqueries agent docs remove prod eng-wiki            # stop using one; its chunk
 nlqueries agent docs list prod                       # the sources it may use
 ```
 
-A source is the `SOURCE_ID` given to `doc-ingest`, `doc-sync-notion` or `doc-sync-confluence`. The list is kept as `document_sources` on the agent's entry in the connectors file, and registering the connector again with `connect` keeps it. `add` warns about a source that has not been ingested yet, and adds it anyway, so the list can be set up before the documents are. Either form of the agent's ID, or its alias, names the same list.
+A source is the `SOURCE_ID` given to `doc-ingest`, `doc-sync-notion` or `doc-sync-confluence`. The list is kept as `document_sources` on the agent's entry in the connectors file, and registering the connector again with `connect` keeps it. `add` warns about a source that has not been ingested yet, and adds it anyway, so the list can be set up before the documents are. Either form of the agent's ID, or its alias, names the same list. With at least one source listed, `query` and the MCP `query` tool answer from the database, the listed sources, or both, as each question needs; a source that has not been ingested is skipped, with a warning.
 
 ---
 
@@ -276,7 +276,7 @@ nlqueries query <connector-or-alias> "..." --new-session # discard prior convers
 nlqueries query <connector-or-alias> "..." --paraphrase  # also print the SQL as one English sentence
 ```
 
-Plain output shows the agent type, the generated SQL, the result rows as a table with their count and execution time, and the latency (plus the resolved question when a follow-up was rewritten). The natural-language answer text is printed only when the question was not answered with SQL and there are no rows to show; `--json` always includes it. `query` answers from the database; to ask about ingested documents, use [`doc-ask`](#document-connectors).
+Plain output shows the agent type, the generated SQL, the result rows as a table with their count and execution time, and the latency (plus the resolved question when a follow-up was rewritten). For a document or hybrid answer it also shows the answer text and its sources, numbered, with the page when known; `--json` always includes the answer and the citations. `query` answers from the database, and, for an agent that lists document sources ([below](#agent-document-sources)), from those sources or both, as each question needs. To ask one stored source directly, use [`doc-ask`](#document-connectors).
 
 | Flag | Default | Description |
 |---|---|---|

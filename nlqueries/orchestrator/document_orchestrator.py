@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 
 from nlqueries.llm import get_llm_client
-from nlqueries.orchestrator.document_retrieval import retrieve_for_question
+from nlqueries.orchestrator.document_retrieval import retrieve_across, retrieve_for_question
 from nlqueries.orchestrator.prompt_assembly import assemble_document_prompt
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
@@ -47,7 +47,7 @@ class DocumentOrchestrator:
     async def handle_question(
         self,
         question: str,
-        collection: str,
+        collection: str | Sequence[str],
         source_id: str | None = None,
         top_k: int = 5,
     ) -> AsyncGenerator[str, None]:
@@ -64,7 +64,9 @@ class DocumentOrchestrator:
         Args:
             question:   The natural-language question from the user.
             collection: Qdrant collection name (convention:
-                        ``doc_{source_id}_chunks``).
+                        ``doc_{source_id}_chunks``), or several -- an agent's
+                        document sources -- searched together for the
+                        *top_k* nearest chunks overall.
             source_id:  When set, restricts retrieval to this source only.
             top_k:      Maximum number of chunks to retrieve (default 5).
 
@@ -75,18 +77,22 @@ class DocumentOrchestrator:
         tracer = get_tracer()
         start_ms = time.perf_counter() * 1000
         with tracer.start_as_current_span("document_orchestrator.handle_question") as span:
-            span.set_attribute("collection", collection)
+            label = collection if isinstance(collection, str) else ", ".join(collection)
+            span.set_attribute("collection", label)
             span.set_attribute("intent_type", "document")
             span.set_attribute("top_k", top_k)
             if source_id is not None:
                 span.set_attribute("source_id", source_id)
 
-            retrieval_result = retrieve_for_question(
-                question,
-                collection,
-                top_k=top_k,
-                source_id_filter=source_id,
-            )
+            if isinstance(collection, str):
+                retrieval_result = retrieve_for_question(
+                    question,
+                    collection,
+                    top_k=top_k,
+                    source_id_filter=source_id,
+                )
+            else:
+                retrieval_result = retrieve_across(question, list(collection), top_k=top_k)
 
             system_prompt, user_prompt = assemble_document_prompt(question, retrieval_result)
 

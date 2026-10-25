@@ -238,9 +238,10 @@ async def query(
 ) -> str:
     """Ask a natural-language question to an NLQueries agent.
 
-    The agent translates the question into SQL (or searches indexed documents),
-    and returns a natural-language answer together with the generated SQL and
-    any source citations.
+    The agent translates the question into SQL and runs it. An agent that lists
+    document sources (`nlqueries agent docs add`) may instead answer from those
+    documents, or from both, as the question needs. The answer comes with the
+    generated SQL and any source citations.
 
     Args:
         question:  The natural-language question, e.g. "Total revenue by region
@@ -262,11 +263,15 @@ async def query(
     from nlqueries.connectors.base import short_cause, short_error_text  # noqa: PLC0415
     from nlqueries.connectors.loader import dialect_for_agent  # noqa: PLC0415
     from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
-    from nlqueries.orchestrator.sync_runner import run_query  # noqa: PLC0415
+    from nlqueries.orchestrator.sync_runner import (  # noqa: PLC0415
+        answer_types_for,
+        run_query,
+    )
     from nlqueries.sql_policy import _sqlglot_dialect  # noqa: PLC0415
 
-    # This tool exists to answer from the database: its action is
-    # `query:execute`, and `guard` has authorised that before this body runs.
+    # This tool answers from the agent's database, and from its listed document
+    # sources when it has any: its action is `query:execute`, which covers both,
+    # and `guard` has authorised that before this body runs.
     # Permission to execute is minted here, at the entry point, as the CLI's
     # `query` does. Without it the run fell back to the generate-only default
     # and every caller got SQL with no rows (the default makes a forgotten
@@ -306,6 +311,9 @@ async def query(
             result = await run_query(
                 question,
                 agent_id,
+                # Documents too, for an agent that lists document sources;
+                # `query:execute` covers both, as the owner of the agent decided.
+                available_types=answer_types_for(agent_id),
                 dialect=engine_dialect,
                 explain=explain,
                 execution=ExecutionPolicy.execute_read_only(),
