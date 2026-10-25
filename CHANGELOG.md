@@ -75,6 +75,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `process_query_history(..., embed=True)` needs `agent_id=` for the same
   reason, and raises `ValueError` without it. The capsules file is now saved
   before the embed, so a Qdrant failure there no longer discards them.
+- **Writing a state file on Windows no longer fails now and then with "Access is
+  denied".** Every connectors, knowledge-base and feedback file is written to a
+  temporary file and renamed into place, and Windows refuses the rename while
+  another process, typically an antivirus scanner or the indexer, is reading a
+  file just written. A command that writes the same file twice in quick
+  succession (`agent docs add`, `import-dbt`) hit it. The rename is now retried
+  a few times over about half a second, on Windows only.
 - **Redshift query history reads only the connector's database.**
   `STL_QUERY` is cluster-wide, and the history query had no `database`
   filter, so a superuser or `SYSLOG ACCESS UNRESTRICTED` login built the
