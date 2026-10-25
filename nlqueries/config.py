@@ -501,14 +501,6 @@ def _detect_fast_model(provider: str) -> str:
 LLM_MODEL_FAST: str = _detect_fast_model(LLM_PROVIDER)
 """Fast/cheap LLM model for short-output auxiliary calls (classifier, resolver)."""
 
-EXPLAIN_VALIDATION: bool = os.getenv("NLQ_EXPLAIN_VALIDATION", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-"""When True, validate_and_repair() runs EXPLAIN on the final SQL via the caller-supplied
-connector. Off by default (set NLQ_EXPLAIN_VALIDATION=true to enable)."""
-
 LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
     "1",
     "true",
@@ -614,9 +606,6 @@ Set to 0 to leave torch's own default alone.
 # ---------------------------------------------------------------------------
 KB_PATH: Path = Path(os.getenv("KB_PATH", str(STATE_DIR / "knowledge_base")))
 """Directory where generated YAML knowledge-base files are stored."""
-
-KB_REFRESH_INTERVAL: int = int(os.getenv("KB_REFRESH_INTERVAL", "3600"))
-"""How often (seconds) the knowledge base is refreshed from the source DB."""
 
 GLOSSARY_QUESTION_SCOPED: bool = os.getenv("NLQ_GLOSSARY_QUESTION_SCOPED", "false").lower() in (
     "1",
@@ -1158,7 +1147,25 @@ by itself. Vectors, questions and SQL are stored as before.
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "").strip().upper()
+"""Log level for the CLI, the MCP server and the embedding daemon, one of
+:data:`LOG_LEVELS`. Unset, each keeps its own default: the MCP server and the
+daemon log at INFO, and the CLI sets up no logging, so only warnings and errors
+reach stderr. Any other value is ignored, with a warning that says so; read it
+through :func:`log_level`."""
+
+
+def log_level(default: str | None) -> str | None:
+    """:data:`LOG_LEVEL` when it names a level, else *default*."""
+    return LOG_LEVEL if LOG_LEVEL in LOG_LEVELS else default
+
+
+def unknown_log_level() -> str | None:
+    """:data:`LOG_LEVEL` when it is set but names no level, for the warning."""
+    return LOG_LEVEL if LOG_LEVEL and LOG_LEVEL not in LOG_LEVELS else None
+
 
 AUDIT_LOG: str = os.getenv("NLQ_AUDIT_LOG", "").strip()
 """A file that receives every audit event as one JSON line. Empty: none.

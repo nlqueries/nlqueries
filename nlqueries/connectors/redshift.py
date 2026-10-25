@@ -408,9 +408,11 @@ class RedshiftConnector(DatabaseConnector):
     def extract_query_history(self, days: int = 30, limit: int = 500) -> list[QueryRecord]:
         """Return top queries from ``STL_QUERY``, grouped by query text.
 
-        Requires access to ``STL_QUERY`` (superuser or granted via
-        ``pg_read_all_stats``).  Raises :class:`QueryHistoryUnavailable` if
-        the view is inaccessible or the user lacks permission.
+        Every user can read ``STL_QUERY``, which only provisioned clusters
+        have, but a regular user sees only its own rows unless it is a superuser
+        or has ``SYSLOG ACCESS UNRESTRICTED``. Raises
+        :class:`QueryHistoryUnavailable` when the view cannot be read, as on a
+        Serverless workgroup.
         """
         conn = self._require_conn()
         cur = conn.cursor()
@@ -442,8 +444,9 @@ class RedshiftConnector(DatabaseConnector):
             # Raised from inside the try, so the `finally` below still ends the
             # transaction the failed statement left behind.
             raise QueryHistoryUnavailable(
-                f"Could not read STL_QUERY ({short_cause(exc)}). The user needs "
-                "superuser or the pg_read_all_stats role."
+                f"Could not read STL_QUERY ({short_cause(exc)}). It exists only on "
+                "provisioned clusters; on Redshift Serverless, build the knowledge "
+                "base from the schema with export-kb."
             ) from exc
         finally:
             cur.close()

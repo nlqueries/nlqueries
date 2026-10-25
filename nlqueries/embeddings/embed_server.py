@@ -928,16 +928,21 @@ def configure_logging(log_format: str | None = None) -> None:
     *log_format* is ``text`` or ``json``; when it is not given,
     ``NLQ_LOG_FORMAT`` decides, and text is the default. Plain text is what
     ``logging.basicConfig`` writes. Any other value is text, with a warning
-    that says so.
+    that says so. The level is ``LOG_LEVEL``, INFO when it is unset.
     """
     chosen = (log_format or os.environ.get(LOG_FORMAT_ENV) or "text").strip().lower()
     handler = logging.StreamHandler()
     handler.setFormatter(
         JsonLogFormatter() if chosen == "json" else logging.Formatter(logging.BASIC_FORMAT)
     )
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    logging.basicConfig(level=config.log_level("INFO"), handlers=[handler], force=True)
     if chosen not in ("text", "json"):
         logger.warning("Unknown log format %r; writing plain text.", chosen)
+    unknown = config.unknown_log_level()
+    if unknown:
+        logger.warning(
+            "LOG_LEVEL=%s is not one of %s; it is ignored.", unknown, ", ".join(config.LOG_LEVELS)
+        )
 
 
 def main(argv: list[str] | None = None) -> None:

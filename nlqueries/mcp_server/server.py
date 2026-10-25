@@ -901,6 +901,8 @@ def _build_server(
         host=host,
         port=port,
         transport_security=_transport_security(host) if networked else None,
+        # The SDK sets up logging from this; INFO is its own default.
+        log_level=config.log_level("INFO"),  # type: ignore[arg-type]
         **auth_args,
     )
 
@@ -1248,7 +1250,12 @@ def _require_authentication(transport: str) -> bool:
     )
 
 
-def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
+def main(
+    transport: _Transport = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
     """Start the MCP server.
 
     Args:
@@ -1256,7 +1263,15 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
                    ``"streamable-http"`` (both for network clients).
         host:      Bind host for the networked transports (ignored for stdio).
         port:      Port for the networked transports (ignored for stdio).
+        on_ready:  Called once every startup check has passed, just before the
+                   server starts, so a caller's "starting" message is never
+                   printed for a server that then refuses to start.
     """
+    unknown = config.unknown_log_level()
+    if unknown:
+        _log.warning(
+            "LOG_LEVEL=%s is not one of %s; it is ignored.", unknown, ", ".join(config.LOG_LEVELS)
+        )
     # A signing key too short to protect the cache stops the server here, with
     # the reason. Found later, on a query, it can only turn the cache off.
     from nlqueries.cache.envelope import SigningKeyError, check_signing_key  # noqa: PLC0415
@@ -1283,4 +1298,6 @@ def main(transport: _Transport = "stdio", host: str = "127.0.0.1", port: int = 8
         if transport in _NETWORK_TRANSPORTS
         else mcp
     )
+    if on_ready is not None:
+        on_ready()
     server.run(transport=transport)

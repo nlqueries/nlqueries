@@ -18,10 +18,34 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **Setting `MCP_PORT` in `.env` no longer makes the Docker Compose MCP
   server unreachable.** It was passed into the container as well, so the
   server listened on the new port behind a mapping to 8080 and nothing
-  answered, while the container still reported healthy. The service now keeps the server on 8080 inside the
-  container, and `MCP_PORT` picks only the host port. `MCP_HOST` is fixed to
-  `0.0.0.0` the same way: `MCP_HOST=127.0.0.1` in `.env` bound the
-  container's own loopback, with the same result.
+  answered, while the container still reported healthy. The service now
+  keeps the server on 8080 inside the container, and `MCP_PORT` picks only
+  the host port. `MCP_HOST` is fixed to `0.0.0.0` the same way:
+  `MCP_HOST=127.0.0.1` in `.env` bound the container's own loopback, with
+  the same result.
+- **`LOG_LEVEL` sets the log level.** It was documented up to 0.3.0 and read
+  by nothing. It now applies to the CLI, the MCP server and the embedding
+  daemon. Unset, nothing changes: the MCP server and the daemon log at INFO,
+  and the CLI sets up no logging, so only warnings and errors reach stderr.
+  An unrecognised value is ignored, with a warning.
+- **`mcp-server start --sse` no longer announces a server that then refuses
+  to start.** The green "listening on" line was printed before the startup
+  checks (the cache signing key, authentication, the wildcard-bind guard).
+  It is now printed once they pass, and says "starting on", since the port
+  is bound after it.
+- **Redshift query history: the permission advice was wrong.** The error and
+  `docs/connectors.md` named `pg_read_all_stats`, a PostgreSQL role Redshift
+  does not have. Every login can read `STL_QUERY` but sees only its own
+  statements unless it is a superuser or has `SYSLOG ACCESS UNRESTRICTED`;
+  the error now says what it usually means, a Serverless workgroup, which
+  has no `STL_QUERY`.
+
+### Removed
+
+- **`NLQ_EXPLAIN_VALIDATION` and `KB_REFRESH_INTERVAL`.** Both were
+  documented up to 0.3.0 and read by nothing, so setting them never changed
+  anything. The EXPLAIN check is still available to library callers as
+  `validate_and_repair(..., explain_check=True)`.
 
 ## [0.4.0] — 2026-10-25
 
