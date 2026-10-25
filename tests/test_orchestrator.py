@@ -279,7 +279,8 @@ def test_orchestrator_passes_non_empty_prompts_to_llm() -> None:
 
 
 def test_orchestrator_uses_agent_id_schema_collection() -> None:
-    """Collection name passed to assemble_prompt must be agent_{agent_id}_schema."""
+    """The collection passed to assemble_prompt is agent_{storage name}_schema,
+    and the agent asked is passed with it."""
     from nlqueries.orchestrator.prompt_assembly import AssembledPrompt
 
     mock_llm = _MockLLM(["ok"])
@@ -293,8 +294,10 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
         collection: str | None = None,
         vector: list[float] | None = None,
         extra_dynamic_context: str | None = None,
+        agent_id: str | None = None,
     ) -> AssembledPrompt:
         captured["collection"] = collection
+        captured["agent_id"] = agent_id
         return AssembledPrompt(static_system="sys", dynamic_context="", user_question=question)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -318,6 +321,7 @@ def test_orchestrator_uses_agent_id_schema_collection() -> None:
             asyncio.run(_collect_tokens(orch.handle_question("question", "my_agent")))
 
     assert captured["collection"] == "agent_my_agent_schema"
+    assert captured["agent_id"] == "my_agent"
 
 
 # ---------------------------------------------------------------------------

@@ -256,11 +256,11 @@ class TestWhereTheNamesAreUsed:
 
         assert seen == ["doc_pg_h_db_chunks"]
 
-    def test_the_sql_agent_keeps_the_raw_id_in_its_schema_collection(self) -> None:
-        """Deliberately unchanged: `_search_verified` takes the agent ID back out
-        of this name and filters the verified examples on it, and
-        `promote-feedback` stores them under the ID as given. A storage name
-        here would hand it `pg_h_db` and match no promoted example."""
+    def test_the_sql_agent_reads_its_schema_collection_under_the_storage_name(self) -> None:
+        """Like every other store, so the CLI's `pg:h:db` and the MCP server's
+        `pg_h_db` read one collection. The agent is passed alongside as asked,
+        rather than read back out of the name, and verified examples and
+        capsules are matched to it by storage name."""
         from nlqueries.orchestrator import orchestrator as orch_module
 
         seen: list[str] = []
@@ -268,8 +268,9 @@ class TestWhereTheNamesAreUsed:
         class _Stop(Exception):
             pass
 
-        async def assemble(*args: Any, collection: str, **kwargs: Any) -> Any:
+        async def assemble(*args: Any, collection: str, agent_id: str, **kwargs: Any) -> Any:
             seen.append(collection)
+            seen.append(agent_id)
             raise _Stop
 
         async def drain() -> None:
@@ -284,7 +285,7 @@ class TestWhereTheNamesAreUsed:
         ):
             asyncio.run(drain())
 
-        assert seen == ["agent_pg:h:db_schema"]
+        assert seen == ["agent_pg_h_db_schema", "pg:h:db"]
 
     def test_the_hybrid_merge_records_the_collection_read_without_asking_again(self) -> None:
         """`_merge_hybrid` runs on the event loop; the collection `_run_hybrid`

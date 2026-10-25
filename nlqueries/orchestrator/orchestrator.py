@@ -351,6 +351,7 @@ class Orchestrator:
                 kb,
                 top_k_capsules=5,
                 collection=collection,
+                agent_id=agent_id,
                 vector=question_vector,
                 extra_dynamic_context=extra_dynamic_context,
             )

@@ -661,6 +661,7 @@ def generate_knowledge_base(
     if embed and schema.tables:
         from nlqueries.embeddings.qdrant_store import (
             ensure_collection,
+            retire_legacy_schema_collection,
             schema_collection,
             upsert_schema,
         )
@@ -668,6 +669,18 @@ def generate_knowledge_base(
         collection = schema_collection(agent_name)
         ensure_collection(collection)
         upsert_schema(collection, schema, agent_id=agent_name)
+        # Its tables are under the storage name now, and they were all an
+        # earlier release's raw-ID collection held, so that one goes. Not
+        # fatal: the questions read the new name from here on regardless.
+        try:
+            retire_legacy_schema_collection(agent_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not delete the earlier schema collection for %r (%s); "
+                "it is no longer read and can be deleted in Qdrant.",
+                agent_name,
+                exc,
+            )
 
     return kb
 

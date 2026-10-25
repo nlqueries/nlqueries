@@ -11,6 +11,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   the collection named by `QDRANT_COLLECTION` (default `nlqueries`), which no
   question ever read, and are unsigned. The new run writes them where the
   agent's questions search. The old collection can then be deleted in Qdrant.
+- **The schema collection is renamed for an agent ID with a character the
+  storage name replaces** (`postgres:localhost:mydb` becomes
+  `agent_postgres_localhost_mydb_schema`). Nothing to do: the raw-ID
+  collection is still read until the new name holds its tables, and calling
+  `generate_knowledge_base(..., embed=True)` again moves them and deletes it.
 
 ### Security
 
@@ -89,6 +94,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   found.** They were used only when nothing at all had been found, so a
   relevant-tables hint alone left the prompt with no example queries. An
   "Example Queries" heading with nothing under it is no longer added.
+
+### Changed
+
+- **One agent per storage name, for verified examples and capsules too.** The
+  schema collection (`agent_<id>_schema`) used the raw agent ID while every
+  other store used the storage name, and verified examples were matched on the
+  raw ID. So for an ID with `:` the CLI (`postgres:localhost:mydb`) and the MCP
+  server (`postgres_localhost_mydb`, from the knowledge-base file name) read
+  different schema collections, and the MCP server never saw a pair promoted
+  from the CLI. The schema collection now uses the storage name, and pairs and
+  capsules are matched by it, so both see the same ones. The agent is passed
+  to `assemble_prompt` and `assemble_prompt_async` as `agent_id=` rather than
+  read back out of the collection name; a caller passing `collection=` alone
+  works as before.
 
 ### Removed
 
