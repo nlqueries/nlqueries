@@ -3243,6 +3243,8 @@ def query(
     Generates SQL via the MultiAgentOrchestrator, then executes it against
     the registered connector and displays the result rows as a table.
     Use --no-execute to skip execution and see only the generated SQL.
+    An agent with document sources (`nlqueries agent docs add`) may answer
+    from them instead, or from both, and lists the sources it used.
 
     \b
     Examples:
@@ -3253,10 +3255,15 @@ def query(
     agent_id = _resolve_alias(agent_id)
     resolved_dialect = _resolve_dialect(agent_id, dialect)
 
+    from rich.markup import escape  # noqa: PLC0415
     from rich.table import Table
 
     from nlqueries.connectors.base import QueryResult
-    from nlqueries.orchestrator.sync_runner import AgentQueryResult, run_query_sync
+    from nlqueries.orchestrator.sync_runner import (  # noqa: PLC0415
+        AgentQueryResult,
+        answer_types_for,
+        run_query_sync,
+    )
 
     # Session / conversational context
     history: list[Any] = []
@@ -3279,6 +3286,8 @@ def query(
         result: AgentQueryResult = run_query_sync(
             question,
             agent_id,
+            # Documents too, for an agent that lists document sources.
+            available_types=answer_types_for(agent_id),
             dialect=resolved_dialect,
             history=history,
             explain=explain,
@@ -3375,10 +3384,15 @@ def query(
                     f"[dim]{sql_result.row_count} row(s) "
                     f"in {sql_result.execution_time_ms:.1f} ms[/dim]"
                 )
-        elif result.agent_type != "sql":
-            console.print(f"[bold]Answer     :[/bold] {result.answer}")
+        # A hybrid answer has SQL and rows and a merged answer: the answer was
+        # printed only when there were no rows, so it was never shown.
+        if result.agent_type != "sql" and result.answer:
+            console.print(f"[bold]Answer     :[/bold] {escape(result.answer)}")
         if result.citations:
-            console.print(f"[bold]Citations  :[/bold] {len(result.citations)} source(s)")
+            console.print(f"[bold]Sources    :[/bold] {len(result.citations)}")
+            for n, c in enumerate(result.citations, 1):
+                page = f", page {c.page_number}" if c.page_number is not None else ""
+                console.print(f"  {escape(f'[{n}]')} {escape(c.source_name)}{escape(page)}")
         console.print(f"[bold]Latency    :[/bold] {result.latency_ms} ms")
 
 
