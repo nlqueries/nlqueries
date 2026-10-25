@@ -116,6 +116,16 @@ nlqueries connectors                                       # list connectors and
 
 Once set, `prod` works anywhere `postgres:db.example.com:prod` would.
 
+## Agent document sources
+
+```bash
+nlqueries agent docs add prod q1-report eng-wiki     # let the agent use these sources
+nlqueries agent docs remove prod eng-wiki            # stop using one; its chunks are kept
+nlqueries agent docs list prod                       # the sources it may use
+```
+
+A source is the `SOURCE_ID` given to `doc-ingest`, `doc-sync-notion` or `doc-sync-confluence`. The list is kept as `document_sources` on the agent's entry in the connectors file, and registering the connector again with `connect` keeps it. `add` warns about a source that has not been ingested yet, and adds it anyway, so the list can be set up before the documents are. Either form of the agent's ID, or its alias, names the same list.
+
 ---
 
 ## extract-schema

@@ -313,6 +313,39 @@ def _find_connector_id(agent_id: str, connectors: dict[str, Any] | None = None) 
     return None
 
 
+def normalise_sources(raw: object) -> list[str]:
+    """The source IDs a ``document_sources`` value validly holds, in order.
+
+    The one reading of the list, for the loader and for ``agent docs``, so what
+    the CLI shows and edits is what questions use: strings only, trimmed, no
+    blanks, each once. Anything but a list -- a hand-edit -- holds none.
+    """
+    if not isinstance(raw, list):
+        return []
+    sources: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip() and item.strip() not in sources:
+            sources.append(item.strip())
+    return sources
+
+
+def document_sources_for(agent_id: str, connectors: dict[str, Any] | None = None) -> list[str]:
+    """The document source IDs *agent_id* may answer from, in the order listed.
+
+    Read from the ``document_sources`` list on the agent's connector entry, set
+    with ``nlqueries agent docs add``. The entry is found as
+    :func:`open_connector_for_agent` finds it, so the CLI's connector ID and the
+    MCP server's sanitised form give the same list. No entry, no list, or a list
+    a hand-edit has made something else gives ``[]``: the agent answers from its
+    database alone, as it always has.
+    """
+    if connectors is None:
+        connectors = _load_connectors()
+    connector_id = _find_connector_id(agent_id, connectors)
+    cfg = connectors.get(connector_id) if connector_id is not None else None
+    return normalise_sources(cfg.get("document_sources") if isinstance(cfg, dict) else None)
+
+
 #: The dialect when the connector names none: what ``--dialect`` defaulted to
 #: before it learned to read the connector.
 FALLBACK_DIALECT = "postgres"
