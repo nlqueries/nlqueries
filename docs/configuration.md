@@ -80,7 +80,7 @@ All settings are read from environment variables, or a `.env` file in the workin
 | `BIGQUERY_MAX_BYTES_BILLED` | No | unset (no cap) | Most bytes one BigQuery query job may bill, set on every job that answers a question as `maximum_bytes_billed`. BigQuery fails a job that would bill more before it runs, and the answer reports the error. Schema and query-history reads are not capped. A value that is not a whole number greater than zero makes every BigQuery query fail with an error naming the variable, rather than run without the cap; other commands, `health` and `doctor` included, still run; see [connectors.md](connectors.md#bigquery-cost-cap) |
 | `MCP_TRANSPORT` | No | `stdio` (the Docker image: `sse`) | Transport for `python -m nlqueries.mcp_server` and the Docker image: `stdio`, `sse` or `streamable-http`. `nlqueries mcp-server start` takes `--sse` instead |
 | `MCP_HOST` | No | `127.0.0.1` (the Docker image: `0.0.0.0`) | Bind address for a networked transport, for `python -m nlqueries.mcp_server` and the Docker image. A wildcard address is refused unless `NLQ_ALLOW_INSECURE_BIND=1`; `mcp-server start` takes `--host` |
-| `MCP_PORT` | No | `8000` (the Docker image: `8080`) | Port for a networked transport, for `python -m nlqueries.mcp_server` and the Docker image; `mcp-server start` takes `--port` |
+| `MCP_PORT` | No | `8000` (the Docker image: `8080`) | Port for a networked transport, for `python -m nlqueries.mcp_server` and the Docker image; `mcp-server start` takes `--port`. In `docker-compose.yml` it is the host port the server is published on, and the container keeps 8080 |
 | `NLQ_MCP_MAX_QUESTION_CHARS` | No | `4000` | Longest `question` an MCP tool accepts, in characters. A longer one is refused before the tool runs. Not a positive whole number: the default, with a warning. Applies on every MCP transport; see [mcp-authentication.md](mcp-authentication.md#input-size) |
 | `NLQ_MCP_MAX_SQL_CHARS` | No | `8000` | Longest SQL an MCP tool accepts (`submit_feedback`'s `generated_sql` and `corrected_sql`), in characters, with the same rules |
 | `NLQ_MCP_*`, `NLQ_ALLOW_UNAUTHENTICATED_MCP`, `NLQ_ALLOW_INSECURE_BIND` | For a networked MCP transport | — | Authentication, grants, limits and the bind override for the MCP server; a networked transport will not start without authentication. See [mcp-authentication.md](mcp-authentication.md) |
@@ -272,7 +272,7 @@ Running `docker compose up` from the repository root starts:
 | `qdrant` | 6333 (REST), 6334 (gRPC) | Vector store for embeddings, semantic cache, document search |
 | `nlqueries-core` | 8080 | MCP server (requires `NLQ_MCP_STATIC_TOKEN`, sent as a bearer token) + CLI engine |
 
-Both services also require `QDRANT_API_KEY` in `.env`: Qdrant is started with it as its API key and the app uses it to connect, and `docker compose up` refuses to start while it or `NLQ_MCP_STATIC_TOKEN` is unset. The ports are published on `127.0.0.1` unless `BIND_ADDR` says otherwise.
+Both services also require `QDRANT_API_KEY` in `.env`: Qdrant is started with it as its API key and the app uses it to connect, and `docker compose up` refuses to start while it or `NLQ_MCP_STATIC_TOKEN` is unset. The ports are published on `127.0.0.1` unless `BIND_ADDR` says otherwise. `QDRANT_HTTP_PORT`, `QDRANT_GRPC_PORT` and `MCP_PORT` in `.env` move the host side of each mapping; inside the compose network the services keep the ports above.
 
 | Volume | Persists |
 |---|---|

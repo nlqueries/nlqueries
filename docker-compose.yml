@@ -101,6 +101,11 @@ services:
       # boundary. Setting this here rather than in the image means one
       # deployment's decision, not every `docker run`'s.
       NLQ_ALLOW_INSECURE_BIND: "1"
+      # The port inside the container, fixed to the one the ports mapping
+      # below targets. MCP_PORT in .env picks the host port only: env_file
+      # passes .env in as well, and without this line the server would listen
+      # on that port instead, behind a mapping to 8080 that nothing answers.
+      MCP_PORT: "8080"
       QDRANT_API_KEY: "${QDRANT_API_KEY:?set QDRANT_API_KEY in .env, generate one with openssl rand -hex 32}"
       # The MCP server is served over SSE here, and a networked transport will
       # not start without authentication (docs/mcp-authentication.md). The
@@ -157,7 +162,8 @@ services:
     ports:
       # Loopback, like the Qdrant ports above. The MCP server requires the
       # token set above, but it is still a database-query API: keep it off
-      # other interfaces unless you mean to serve it to them.
+      # other interfaces unless you mean to serve it to them. MCP_PORT moves
+      # the host side; the container side stays 8080 (see environment above).
       - "${BIND_ADDR:-127.0.0.1}:${MCP_PORT:-8080}:8080"
     networks:
       - nlqueries

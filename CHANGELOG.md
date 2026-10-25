@@ -13,6 +13,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   application never runs pip, so only installing packages inside a running
   container was exposed. Images up to 0.4.0 carry pip 24.0.
 
+### Fixed
+
+- **Setting `MCP_PORT` in `.env` no longer makes the Docker Compose MCP
+  server unreachable.** It was passed into the container as well, so the
+  server listened on the new port behind a mapping to 8080 and nothing
+  answered, while the container still reported healthy. The service now keeps the server on 8080 inside the
+  container, and `MCP_PORT` picks only the host port.
+
 ## [0.4.0] — 2026-10-25
 
 Mostly security fixes: see *Security* below, and the steps to take first.
