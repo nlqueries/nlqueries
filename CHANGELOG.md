@@ -72,7 +72,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `STL_QUERY` is cluster-wide, and the history query had no `database`
   filter, so a superuser or `SYSLOG ACCESS UNRESTRICTED` login built the
   knowledge base from every database's statements on the cluster. It now
-  keeps to `current_database()`, as the PostgreSQL connector does.
+  keeps to `current_database()`, as the PostgreSQL connector does, compared
+  on its first 32 characters, which is all `STL_QUERY` stores of the name.
 - **`doc-sync-confluence --since` notices pages that are gone.** It re-read
   the space only when a page had been modified since the timestamp, so a page
   deleted, moved to another space or hidden by a permission change kept its

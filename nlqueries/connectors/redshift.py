@@ -413,8 +413,12 @@ class RedshiftConnector(DatabaseConnector):
         or has ``SYSLOG ACCESS UNRESTRICTED``. ``STL_QUERY`` is cluster-wide,
         so only this database's statements are read: such a login sees every
         database's, which are both noise and somebody else's queries, as with
-        PostgreSQL's ``pg_stat_statements``. ``database`` is ``CHAR(32)``,
-        padded, hence the ``TRIM``. Raises
+        PostgreSQL's ``pg_stat_statements``. ``database`` is ``CHAR(32)``:
+        padded, hence the ``TRIM``, and cut at 32 characters, while a database
+        name may run to 127 bytes, hence comparing with the name's first 32.
+        A longer name compared whole would match nothing, and an empty history
+        reads as "no queries" rather than as an error. Another database whose
+        name shares those 32 characters is read too, the smaller harm. Raises
         :class:`QueryHistoryUnavailable` when the view cannot be read, as on a
         Serverless workgroup.
         """
@@ -430,7 +434,7 @@ class RedshiftConnector(DatabaseConnector):
                     MAX(starttime)::text                        AS last_executed
                 FROM STL_QUERY
                 WHERE userid > 1
-                  AND TRIM(database) = current_database()
+                  AND TRIM(database) = LEFT(current_database(), 32)
                   AND aborted = 0
                   AND starttime >= DATEADD(day, %s, GETDATE())
                   AND querytxt NOT LIKE 'PADB%%'

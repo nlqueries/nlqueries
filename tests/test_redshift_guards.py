@@ -433,4 +433,6 @@ def test_history_keeps_to_this_database() -> None:
     c.extract_query_history(days=7)
 
     (history,) = [s for s in conn.statements if "STL_QUERY" in s]
-    assert "TRIM(database) = current_database()" in " ".join(history.split())
+    # CHAR(32) holds the name cut at 32 characters; a longer name compared
+    # whole would match no rows and read as an empty history.
+    assert "TRIM(database) = LEFT(current_database(), 32)" in " ".join(history.split())
