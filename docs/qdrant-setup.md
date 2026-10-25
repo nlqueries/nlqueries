@@ -4,11 +4,10 @@ Qdrant is a vector database. NLQueries creates these collections in it:
 
 | Collection | What's stored | Written by | Read by |
 |---|---|---|---|
-| `QDRANT_COLLECTION` (default `nlqueries`) | Query capsule embeddings | `process-history --embed` | nothing (see below) |
 | `cache_<agent>` | Cached answers indexed by question embedding | the semantic cache, as questions are answered | the semantic cache; `cache stats`, `cache list`, `cache clear` |
 | `doc_<source_id>_chunks` | Document chunk embeddings | `doc-ingest`, `doc-sync-notion`, `doc-sync-confluence` | `doc-ask` |
 | `agent_<id>_verified` | Question/SQL pairs from positively rated feedback | `promote-feedback`, and `export-kb` at the end of its run | the question path, as example queries |
-| `agent_<id>_schema` | Table and column description embeddings | `generate_knowledge_base(..., embed=True)` in the Python API; no `nlqueries` command passes `embed=True` | the question path, for relevant tables; it also searches this collection for example queries, though nothing writes capsules to it |
+| `agent_<id>_schema` | Table and column description embeddings, and the agent's query capsules | tables and columns: `generate_knowledge_base(..., embed=True)` in the Python API (no `nlqueries` command passes `embed=True`); capsules: `process-history --embed`, which replaces the agent's capsules on each run | the question path: relevant tables, and capsules as example queries |
 
 Each collection is created on first write with 384-dimension vectors (`nlqueries.config.EMBED_DIMENSIONS`, a constant rather than a setting), cosine distance and INT8 scalar quantization.
 
@@ -16,9 +15,9 @@ In the names above, `cache_<agent>`, `agent_<id>_verified` and `doc_<source_id>_
 
 When upgrading: a document collection written under the raw ID by an earlier release (`doc_postgres:localhost:mydb_chunks`) is still read, by a caller that uses that raw ID, until a collection under the new name holds the source's chunks. The next successful `doc-ingest` for the source writes the new name and deletes the raw-ID collection; `doc-ingest --allow-empty` removes both. The MCP server knows such a source only by its sanitised ID, so it reads only the new name: a document source whose ID contains a replaced character (`:`, `/`, a space) is visible to it once it has been ingested again, as it was not before either. A cache collection for an ID containing `.` gets a new name and starts empty; the old one is not read, because under the old rule it was also the cache of the ID with `_` in place of each `.`. Nothing reads the old one after the upgrade; delete it in Qdrant to reclaim the space.
 
-**Current limitation:**
+**Example queries.** For each question the question path searches the agent's verified examples and its capsules in `agent_<id>_schema`, nearest first. Capsules are signed with the cache's signing key (`NLQ_CACHE_SIGNING_KEY`) when `process-history --embed` writes them, and a capsule whose signature does not verify is never shown to the model: one written into Qdrant by anything else, or one embedded before capsules were signed. Every process that answers questions must have the key that signed them, as for verified examples. When the searches give no example (Qdrant out of reach, nothing embedded for the agent, or nothing near the question), the first capsules in the knowledge base file that `export-kb` wrote are used, most frequent first, without ranking them against the question.
 
-- Capsules written by `process-history --embed` go to `QDRANT_COLLECTION`, which nothing reads. The question path searches `agent_<id>_schema` for capsules instead, and when none of its searches return anything it falls back to the first capsules in the knowledge base file that `export-kb` wrote, without ranking them against the question.
+Releases before capsules were signed wrote them to a collection named by `QDRANT_COLLECTION` (default `nlqueries`), which nothing read. That setting is gone; run `process-history --embed` once per agent, and delete the old collection in Qdrant.
 
 Qdrant is **optional** — NLQueries works without it, but semantic caching, document retrieval and the vector searches above won't be available.
 
@@ -118,10 +117,10 @@ Nothing in it is worth preserving — a benchmark run rebuilds its own fixtures.
 
 **What that costs.** Nothing in Qdrant here is a system of record, but the parts
 are not equally cheap to rebuild. The semantic cache regenerates on its own as
-questions are asked. The `QDRANT_COLLECTION` capsules come back by running
+questions are asked. The capsules in `agent_<id>_schema` come back by running
 `nlqueries process-history --embed` again, and the verified examples from
 `nlqueries promote-feedback` (or the next `export-kb`), which reads the feedback
-records kept outside Qdrant. `agent_<id>_schema` comes back only by calling
+records kept outside Qdrant. Its table and column points come back only by calling
 `generate_knowledge_base(..., embed=True)` again from Python. Document chunks need
 their sources re-ingested, which is the only part that costs real time — if you
 have ingested a large corpus, plan for it rather than discovering it afterwards.

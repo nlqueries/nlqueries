@@ -422,6 +422,66 @@ def verify_pair(payload: dict[str, Any], key: bytes | None = None) -> bool:
     return hmac.compare_digest(expected, tag)
 
 
+# ---------------------------------------------------------------------------
+# Query capsules
+# ---------------------------------------------------------------------------
+
+#: Incremented when the signed form of a query capsule changes.
+CAPSULE_VERSION = "1"
+
+#: Payload key holding a capsule's signature version.
+CAPSULE_VERSION_KEY = "capsule_version"
+
+#: The parts of a capsule its signature covers: everything the prompt shows or
+#: the reader filters on.
+CAPSULE_SIGNED_FIELDS = ("agent_id", "auto_description", "intent", "template_sql", "type")
+
+
+def _capsule_message(payload: dict[str, Any]) -> bytes:
+    fields = {name: payload.get(name) for name in CAPSULE_SIGNED_FIELDS}
+    body = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+    # Its own label, so a capsule's tag is never valid as a verified pair's or
+    # a cache entry's, or the reverse.
+    return f"query-capsule\n{CAPSULE_VERSION}\n{body}".encode()
+
+
+def sign_capsule(payload: dict[str, Any], key: bytes | None = None) -> dict[str, Any]:
+    """Return a query capsule's *payload* with a signature added.
+
+    Capsules are shown to the model as example queries, from Qdrant, which a
+    process other than this one can write to. As for verified pairs, the tag is
+    made with the cache's signing key, held outside Qdrant. Raises
+    :class:`SigningKeyError` when the key is unusable.
+    """
+    material = key if key is not None else signing_key()
+    tag = hmac.new(material, _capsule_message(payload), hashlib.sha256).hexdigest()
+    return {**payload, SIGNATURE_KEY: tag, CAPSULE_VERSION_KEY: CAPSULE_VERSION}
+
+
+def verify_capsule(payload: dict[str, Any], key: bytes | None = None) -> bool:
+    """Whether *payload* is a query capsule signed with this key.
+
+    False for an unsigned capsule (one embedded before capsules were signed),
+    one of a different version, one whose signed fields have changed, and, with
+    an unusable key, every capsule.
+    """
+    tag = payload.get(SIGNATURE_KEY)
+    if not isinstance(tag, str) or not tag:
+        return False
+    if str(payload.get(CAPSULE_VERSION_KEY, "")) != CAPSULE_VERSION:
+        return False
+    if key is not None:
+        material = key
+    else:
+        try:
+            material = signing_key()
+        except SigningKeyError as exc:
+            report_key_error(exc)
+            return False
+    expected = hmac.new(material, _capsule_message(payload), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, tag)
+
+
 @lru_cache(maxsize=32)
 def _hash_file(path: str, mtime_ns: int, size: int) -> str:
     """SHA-256 of a file, memoised on its identity and last modification.

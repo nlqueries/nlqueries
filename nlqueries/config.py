@@ -97,9 +97,6 @@ EMBED_MAX_BODY_BYTES: int = 10 * 1024 * 1024
 QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
 """URL of the Qdrant vector store. Defaults to a local instance."""
 
-QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "nlqueries")
-"""Name of the Qdrant collection used for query embeddings."""
-
 QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
 """API key for a Qdrant instance running with authentication enabled.
 
