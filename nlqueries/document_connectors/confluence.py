@@ -258,6 +258,20 @@ class ConfluenceConnector(DocumentConnector):
         results: dict[str, Any] = self._client().cql(self._cql(space_key, since), limit=1)
         return bool(results.get("results"))
 
+    def page_ids(self, space_key: str) -> set[str]:
+        """The IDs of every page in *space_key*, with no page bodies fetched.
+
+        The same paged search a full read makes, so it is bounded by the same
+        page cap and raises :class:`IncompleteSpaceRead` when it cannot finish.
+        An incremental sync compares it with the pages it stored, to notice a
+        page deleted, moved out or hidden since then, which no
+        ``lastModified`` search can return.
+        """
+        results = self._search_all(self._client(), self._cql(space_key, None))
+        return {
+            str(r.get("content", r).get("id", "")) for r in results if r.get("content", r).get("id")
+        }
+
     def ingest(
         self,
         source: str | Path,

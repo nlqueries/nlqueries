@@ -12,6 +12,7 @@ import hashlib
 import math
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -213,8 +214,10 @@ def test_notion_since_with_an_unchanged_page_leaves_the_stored_copy(
     from nlqueries.document_connectors import notion
 
     stored: list[Any] = []
+    ingest = MagicMock(return_value=[])
     monkeypatch.setenv("NOTION_API_TOKEN", "secret")
-    monkeypatch.setattr(notion.NotionConnector, "ingest", lambda self, *a, **k: [])
+    monkeypatch.setattr(notion.NotionConnector, "has_changes_since", lambda self, *a: False)
+    monkeypatch.setattr(notion.NotionConnector, "ingest", lambda self, *a, **k: ingest(*a, **k))
     monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
 
     result = CliRunner().invoke(
@@ -223,7 +226,34 @@ def test_notion_since_with_an_unchanged_page_leaves_the_stored_copy(
 
     assert result.exit_code == 0, result.output
     assert stored == []
+    ingest.assert_not_called()
+    assert "Not modified after the given timestamp" in result.output
     assert "stored copy is unchanged" in result.output
+
+
+def test_notion_since_with_a_page_edited_to_no_text_is_not_reported_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty read with --since was taken to mean "unchanged", so a page whose
+    text had been removed kept serving the old text. A changed page is now read
+    and stored as a full sync is: an empty one is refused without --allow-empty."""
+    from nlqueries.document_connectors import notion
+
+    stored: list[Any] = []
+    monkeypatch.setenv("NOTION_API_TOKEN", "secret")
+    monkeypatch.setattr(notion.NotionConnector, "has_changes_since", lambda self, *a: True)
+    monkeypatch.setattr(notion.NotionConnector, "ingest", lambda self, *a, **k: [])
+    monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
+    args = ["doc-sync-notion", "wiki", "page1", "--since", "2026-01-01T00:00:00+00:00"]
+
+    refused = CliRunner().invoke(cli, args)
+    removed = CliRunner().invoke(cli, [*args, "--allow-empty"])
+
+    assert refused.exit_code == 1
+    assert "produced no text" in refused.output
+    assert "Not modified after" not in refused.output
+    assert removed.exit_code == 0, removed.output
+    assert stored == [("doc_wiki_chunks", "wiki", [])]
 
 
 def test_notion_full_sync_reading_nothing_stores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -247,6 +277,7 @@ def test_notion_sync_stores_the_page(monkeypatch: pytest.MonkeyPatch) -> None:
     stored: list[Any] = []
     chunks = [_chunk("wiki", 0, "page text")]
     monkeypatch.setenv("NOTION_API_TOKEN", "secret")
+    monkeypatch.setattr(notion.NotionConnector, "has_changes_since", lambda self, *a: True)
     monkeypatch.setattr(notion.NotionConnector, "ingest", lambda self, *a, **k: chunks)
     monkeypatch.setattr(qdrant_store, "replace_chunks", lambda *a: stored.append(a))
 
@@ -271,14 +302,28 @@ _SINCE = ["--since", "2026-01-01T00:00:00+00:00"]
 
 
 def _stub_confluence(
-    monkeypatch: pytest.MonkeyPatch, *, changed: bool, whole: list[DocumentChunk]
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    changed: bool,
+    whole: list[DocumentChunk],
+    present: set[str] | None = None,
+    stored_pages: set[str] | Exception | None = None,
 ) -> tuple[MagicMock, MagicMock, list[Any]]:
     from nlqueries.document_connectors import confluence
 
     probe = MagicMock(return_value=changed)
     ingest = MagicMock(return_value=whole)
     stored: list[Any] = []
+    pages = present if present is not None else {"1", "2"}
+
+    def stored_ids(*args: Any) -> set[str]:
+        if isinstance(stored_pages, Exception):
+            raise stored_pages
+        return stored_pages if stored_pages is not None else pages
+
     monkeypatch.setenv("CONFLUENCE_API_TOKEN", "secret")
+    monkeypatch.setattr(confluence.ConfluenceConnector, "page_ids", lambda self, *a: pages)
+    monkeypatch.setattr(qdrant_store, "chunk_metadata_values", stored_ids)
     monkeypatch.setattr(
         confluence.ConfluenceConnector, "has_changes_since", lambda self, *a: probe(*a)
     )
@@ -317,6 +362,54 @@ def test_confluence_since_with_no_changes_reads_nothing(monkeypatch: pytest.Monk
     ingest.assert_not_called()
     assert stored == []
     assert "stored copy is unchanged" in result.output
+
+
+def test_confluence_since_rereads_when_a_stored_page_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A page deleted, moved to another space or hidden since the last sync is
+    returned by no lastModified search, so --since used to keep its chunks."""
+    whole = [_chunk("eng", 0, "page one")]
+    probe, ingest, stored = _stub_confluence(
+        monkeypatch, changed=False, whole=whole, present={"1"}, stored_pages={"1", "2"}
+    )
+
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS + _SINCE)
+
+    assert result.exit_code == 0, result.output
+    assert "Pages were removed from the space" in result.output
+    ingest.assert_called_once()
+    assert stored == [("doc_eng_chunks", "eng", whole)]
+
+
+def test_confluence_since_ignores_a_page_in_the_space_that_stored_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A page with no text stores no chunks. Counting pages in the space but
+    not stored would re-read the whole space on every sync."""
+    probe, ingest, stored = _stub_confluence(
+        monkeypatch, changed=False, whole=[], present={"1", "2", "3"}, stored_pages={"1", "2"}
+    )
+
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS + _SINCE)
+
+    assert result.exit_code == 0, result.output
+    ingest.assert_not_called()
+    assert stored == []
+
+
+def test_confluence_since_rereads_when_the_stored_copy_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    whole = [_chunk("eng", 0, "page one")]
+    probe, ingest, stored = _stub_confluence(
+        monkeypatch, changed=False, whole=whole, stored_pages=ConnectionError("Qdrant is down")
+    )
+
+    result = CliRunner().invoke(cli, _CONFLUENCE_ARGS + _SINCE)
+
+    assert result.exit_code == 0, result.output
+    ingest.assert_called_once()
 
 
 def test_confluence_full_sync_reading_nothing_stores_nothing(
@@ -400,3 +493,39 @@ def test_the_default_batch_stays_well_under_qdrants_request_limit() -> None:
     per_point = 8 * 1024
 
     assert qdrant_store._REPLACE_BATCH_SIZE * per_point < 32 * 1024 * 1024 // 4
+
+
+class _ScrollingQdrant:
+    """Pages of points, as `scroll` returns them, for one source's chunks."""
+
+    def __init__(self, pages: list[list[dict[str, Any]]], name: str = "doc_eng_chunks") -> None:
+        self.pages, self.name, self.filters = pages, name, []
+
+    def get_collections(self) -> Any:
+        # A real attribute: MagicMock(name=...) names the mock, not `.name`.
+        return SimpleNamespace(collections=[SimpleNamespace(name=self.name)])
+
+    def scroll(self, **kwargs: Any) -> tuple[list[Any], Any]:
+        self.filters.append(kwargs["scroll_filter"])
+        i = kwargs["offset"] or 0
+        points = [MagicMock(payload={"metadata": m}) for m in self.pages[i]]
+        return points, (i + 1 if i + 1 < len(self.pages) else None)
+
+
+def test_stored_page_ids_are_read_across_scroll_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _ScrollingQdrant([[{"page_id": "1"}, {"page_id": "1"}], [{"page_id": "2"}, {}]])
+    monkeypatch.setattr(qdrant_store, "_client", fake)
+
+    ids = qdrant_store.chunk_metadata_values("doc_eng_chunks", "eng", "page_id")
+
+    assert ids == {"1", "2"}
+    (condition,) = fake.filters[0].must
+    assert condition.key == "source_id" and condition.match.value == "eng"
+
+
+def test_no_collection_means_nothing_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Points are there to be found, so only the missing collection keeps them out.
+    fake = _ScrollingQdrant([[{"page_id": "9"}]], name="something_else")
+    monkeypatch.setattr(qdrant_store, "_client", fake)
+
+    assert qdrant_store.chunk_metadata_values("doc_eng_chunks", "eng", "page_id") == set()

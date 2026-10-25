@@ -335,14 +335,16 @@ nlq doc-ask doc_my-q1-report_chunks "What did the report say about churn?"
 
 # Sync a Notion page — requires NOTION_API_TOKEN env var. Stored in doc_{source_id}_chunks,
 # replacing the earlier copy. --since <ISO 8601 timestamp> leaves the stored copy as it is
-# when the page has not changed since then; --allow-empty works as for doc-ingest.
+# when the page has not been edited since then; an edited page is read and stored as without
+# --since. --allow-empty works as for doc-ingest.
 nlq doc-sync-notion <source_id> <page_id> [--since 2024-01-15T00:00:00+00:00] [--allow-empty]
 # e.g.
 NOTION_API_TOKEN=secret_... nlq doc-sync-notion my-wiki-src abc123def456
 
 # Sync a Confluence space — requires CONFLUENCE_API_TOKEN env var. Stored in doc_{source_id}_chunks,
-# replacing the earlier copy. With --since, if any page changed after that timestamp the
-# space is re-read in full, and if none did the stored copy is left; --allow-empty as above.
+# replacing the earlier copy. With --since, if any page changed after that timestamp, or a
+# stored page is no longer in the space, the space is re-read in full; otherwise the stored
+# copy is left. --allow-empty as above.
 nlq doc-sync-confluence <source_id> <space_key> --base-url <url> --username <user> [--since <timestamp>] [--allow-empty]
 # e.g.
 CONFLUENCE_API_TOKEN=... nlq doc-sync-confluence my-src ENG \

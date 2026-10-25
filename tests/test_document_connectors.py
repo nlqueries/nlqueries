@@ -978,3 +978,56 @@ def test_document_connector_registry_contains_confluence() -> None:
 
     assert "confluence" in DOCUMENT_CONNECTOR_REGISTRY
     assert DOCUMENT_CONNECTOR_REGISTRY["confluence"] is ConfluenceConnector
+
+
+# ---------------------------------------------------------------------------
+# What an incremental sync asks before it reads
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("edited", "expected"),
+    [("2024-06-02T00:00:00.000Z", True), ("2024-05-31T00:00:00.000Z", False), ("", True)],
+)
+def test_notion_has_changes_since_reads_no_blocks(
+    _stub_notion_deps: None, edited: str, expected: bool
+) -> None:
+    """Separately from reading the page, so an unchanged page and one with no
+    text left are no longer the same empty answer."""
+    from datetime import UTC
+
+    from nlqueries.document_connectors.notion import NotionConnector
+
+    mock_client = MagicMock()
+    mock_client.pages.retrieve.return_value = _make_notion_page(last_edited_time=edited)
+
+    with patch("notion_client.Client", return_value=mock_client):
+        changed = NotionConnector(api_token="t").has_changes_since(
+            "page-1", datetime(2024, 6, 1, tzinfo=UTC)
+        )
+
+    assert changed is expected
+    mock_client.blocks.children.list.assert_not_called()
+
+
+def test_confluence_page_ids_lists_the_space_without_reading_bodies(
+    _stub_confluence_deps: None,
+) -> None:
+    from nlqueries.document_connectors.confluence import ConfluenceConnector
+
+    mock_client = MagicMock()
+    mock_client.cql.return_value = {
+        "results": [{"content": {"id": "11"}}, {"content": {"id": "12"}}, {"content": {}}],
+        "totalSize": 3,
+        "_links": {},
+    }
+
+    with patch("atlassian.Confluence", return_value=mock_client):
+        ids = ConfluenceConnector(
+            base_url="https://acme.atlassian.net", username="a@acme.com", api_token="t"
+        ).page_ids("ENG")
+
+    assert ids == {"11", "12"}
+    cql_query = mock_client.cql.call_args.args[0]
+    assert 'space = "ENG"' in cql_query and "lastModified" not in cql_query
+    mock_client.get_page_by_id.assert_not_called()
