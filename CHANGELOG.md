@@ -6,6 +6,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Upgrading from 0.4.0
 
+- **A Docker Compose stack started from the 0.4.0 release runs 0.3.0.** The
+  `docker-compose.yml` in the v0.4.0 tag pins `nlqueries/core:0.3.0`, and the
+  README and getting-started at that tag say so. The `pip` package and the
+  `nlqueries/core:0.4.0` image are 0.4.0. Run `docker exec nlqueries-core pip
+  show nlqueries-core` to see which you have. To move to 0.4.0 without
+  upgrading further, set the `image:` line to `nlqueries/core:0.4.0` and run
+  `docker compose up -d`, then follow "Upgrading from 0.3.0" under 0.4.0.
+  This release's compose file pins its own version.
 - **Run `nlqueries process-history <agent> --embed` again for each agent
   whose capsules you embedded.** Capsules embedded by earlier releases sit in
   the collection named by `QDRANT_COLLECTION` (default `nlqueries`), which no
@@ -41,6 +49,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A release's compose file runs that release.** A test now holds the
+  `docker-compose.yml` image pin, and the tag that README and getting-started
+  quote, to the version in `pyproject.toml`. The release workflow refuses a
+  final tag that does not match that version. Together they stop a tag from
+  publishing a compose file pinned to another release, as 0.4.0's was.
 - **Setting `MCP_PORT` in `.env` no longer makes the Docker Compose MCP
   server unreachable.** It was passed into the container as well, so the
   server listened on the new port behind a mapping to 8080 and nothing

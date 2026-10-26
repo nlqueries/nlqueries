@@ -25,6 +25,8 @@ name: Release — PyPI Publish
 # image tag and nothing else. docker-compose.yml pins the image by version, not
 # :latest, so cutting a final release includes bumping that pin, and the tag
 # shown in README.md and docs/getting-started.md, to the new version.
+# tests/test_release_pins_its_own_image.py holds all three to pyproject.toml's
+# version, and the `versions` job below holds a final tag to it.
 
 on:
   push:
@@ -50,12 +52,47 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   # ---------------------------------------------------------------------------
+  # 1b. The tag names the version pyproject.toml declares
+  #     The tests in `ci` hold docker-compose.yml's image pin to pyproject's
+  #     version; this holds a final tag to it, so a release cannot publish a
+  #     compose file that runs another release's image. v0.4.0 did: its
+  #     compose file pinned 0.3.0. A pre-release tag (v1.0.0-rc1) is spelled
+  #     differently from its PEP 440 version (1.0.0rc1) and does not move the
+  #     pin, so it is not compared. Neither is a dry run, which has no tag.
+  # ---------------------------------------------------------------------------
+  versions:
+    name: Tag matches pyproject version
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare the tag with pyproject.toml
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "Not a tag (${GITHUB_REF}): nothing to compare."
+            exit 0
+          fi
+          tag="${GITHUB_REF#refs/tags/v}"
+          if [[ ! "${tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Pre-release tag v${tag}: not compared."
+            exit 0
+          fi
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "${version}" != "${tag}" ]]; then
+            echo "::error::Tag v${tag} does not match pyproject.toml version ${version}."
+            exit 1
+          fi
+          echo "Tag v${tag} matches pyproject.toml."
+
+  # ---------------------------------------------------------------------------
   # 2. Build the source distribution and wheel
   # ---------------------------------------------------------------------------
   build:
     name: Build distribution packages
     runs-on: ubuntu-latest
-    needs: [ci]
+    needs: [ci, versions]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -167,7 +204,7 @@ jobs:
   publish-docker:
     name: Publish Docker image
     runs-on: ubuntu-latest
-    needs: [ci]   # run in parallel with PyPI build, not after it
+    needs: [ci, versions]   # run in parallel with PyPI build, not after it
     if: github.event_name == 'push'
     # Holds DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and is restricted to v*
     # tags with a required reviewer, so the credentials reach only this job
