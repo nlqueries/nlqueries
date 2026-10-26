@@ -158,6 +158,7 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read o
 | [docs/configuration.md](docs/configuration.md) (or [read online](https://nlqueries.com/docs/configuration)) | Environment variables |
 | [docs/troubleshooting.md](docs/troubleshooting.md) (or [read online](https://nlqueries.com/docs/troubleshooting)) | Common warnings and errors explained |
 | [docs/qdrant-setup.md](docs/qdrant-setup.md) (or [read online](https://nlqueries.com/docs/qdrant-setup)) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
+| [docs/mcp-clients.md](docs/mcp-clients.md) | Connecting Claude Desktop, Cursor and remote MCP clients |
 | [docs/mcp-authentication.md](docs/mcp-authentication.md) (or [read online](https://nlqueries.com/docs/mcp-authentication)) | Authenticating the MCP server — required to serve it over a network |
 | [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture)) | Module layout and request flow |
 | [docs/database-hardening.md](docs/database-hardening.md) (or [read online](https://nlqueries.com/docs/database-hardening)) | The read-only role to grant per engine, and exactly what each connector does and does not enforce |

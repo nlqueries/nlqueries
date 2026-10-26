@@ -277,7 +277,7 @@ nlq doc-ask doc_q1-report_chunks "What did the Q1 report say about churn?"
 
 ### Connect an AI assistant via MCP
 
-The Docker Compose stack runs an MCP server on port 8080. See [cli-reference.md](cli-reference.md#mcp-server) for the Claude Desktop config.
+The Docker Compose stack runs an MCP server on port 8080. See [mcp-clients.md](mcp-clients.md) to connect Claude Desktop or Cursor over stdio, or a client over the network with the stack's token.
 
 ### Run as a library
 
