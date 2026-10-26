@@ -151,6 +151,61 @@ def test_only_a_final_version_moves_latest(ref: str, expected: set[str], tmp_pat
     assert _image_tags_for(ref, tmp_path) == expected
 
 
+def _compare_versions(ref: str, version: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    """Run the `versions` job's comparison as a push of *ref* would, in a
+    checkout whose pyproject.toml declares *version*."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+    step = _step("versions", "Compare the tag with pyproject.toml")
+    assert step.get("shell") == "bash"
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nname = "nlqueries-core"\nversion = "{version}"\n', encoding="utf-8"
+    )
+    return subprocess.run(
+        [bash, "-c", step["run"]],
+        cwd=tmp_path,
+        # The whole environment, not just PATH: the step runs `python3`, which
+        # on some machines is a launcher that needs more of it to start.
+        env={**os.environ, "GITHUB_REF": ref},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("ref", "version", "passes"),
+    [
+        ("refs/tags/v1.2.3", "1.2.3", True),
+        # v0.4.0 shipped a compose file pinned to 0.3.0; a tag that disagrees
+        # with the package version it publishes is refused before anything is.
+        ("refs/tags/v1.2.4", "1.2.3", False),
+        ("refs/tags/v1.2.3", "1.2.4", False),
+        # A pre-release is spelled differently from its PEP 440 version and
+        # does not move the compose pin, so it is not compared.
+        ("refs/tags/v1.0.0-rc1", "1.0.0rc1", True),
+        # A dry run has no tag.
+        ("refs/heads/main", "1.2.3", True),
+    ],
+)
+def test_a_final_tag_must_name_the_version_it_publishes(
+    ref: str, version: str, passes: bool, tmp_path: Path
+) -> None:
+    result = _compare_versions(ref, version, tmp_path)
+
+    assert (result.returncode == 0) is passes, result.stdout + result.stderr
+    if not passes:
+        assert "does not match pyproject.toml version" in result.stdout
+
+
+@pytest.mark.parametrize("job", ["build", "publish-docker"])
+def test_nothing_is_built_to_publish_before_the_tag_is_checked(job: str) -> None:
+    """Dropping `versions` from either would let a mismatched tag publish again."""
+    assert "versions" in _jobs()[job]["needs"]
+
+
 def test_the_published_image_takes_its_tags_from_that_step() -> None:
     """The filter above proves nothing if the push names `latest` itself."""
     push = _image_builds()["publish-docker"]
@@ -207,7 +262,7 @@ def test_the_wheel_sbom_has_a_job_of_its_own_that_publishes_nothing() -> None:
 
 def test_publishing_to_pypi_does_not_wait_on_the_sbom() -> None:
     """A failed SBOM must not stop the packages reaching PyPI after the image
-    is already pushed; `publish-docker` needs only `ci`."""
+    is already pushed; `publish-docker` needs only `ci` and `versions`."""
     assert _jobs()["publish-pypi"]["needs"] == ["build"]
 
 
