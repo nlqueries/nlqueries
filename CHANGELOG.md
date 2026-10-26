@@ -123,6 +123,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   over stdio, including the `env` block a client-started server needs for its
   LLM key, and a client over the network with a bearer token. It also lists
   the tools, what `query` returns, and the usual first-run errors.
+- **`docs/llm-providers.md`: the LLM providers NLQueries has been run
+  against.** Anthropic, OpenAI, Amazon Bedrock and DeepSeek: how each is
+  selected, its models, effort and thinking settings, prompt caching, and
+  the output budget and timeout every provider shares.
 - **`nlqueries agent docs add|remove|list`: the document sources an agent may
   use.** The list is kept as `document_sources` on the agent's entry in the
   connectors file, under either form of its ID or its alias, and survives
