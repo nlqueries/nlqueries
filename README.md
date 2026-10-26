@@ -156,6 +156,7 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read o
 | [docs/cli-reference.md](docs/cli-reference.md) (or [read online](https://nlqueries.com/docs/cli-reference)) | Every command and flag |
 | [docs/connectors.md](docs/connectors.md) (or [read online](https://nlqueries.com/docs/connectors)) | Database and document connector setup, per-connector notes and caveats |
 | [docs/configuration.md](docs/configuration.md) (or [read online](https://nlqueries.com/docs/configuration)) | Environment variables |
+| [docs/llm-providers.md](docs/llm-providers.md) | Anthropic, OpenAI, Amazon Bedrock and DeepSeek: the settings for each, effort and thinking, prompt caching, token usage |
 | [docs/troubleshooting.md](docs/troubleshooting.md) (or [read online](https://nlqueries.com/docs/troubleshooting)) | Common warnings and errors explained |
 | [docs/qdrant-setup.md](docs/qdrant-setup.md) (or [read online](https://nlqueries.com/docs/qdrant-setup)) | Setting up Qdrant (required for embeddings, semantic cache, document search) |
 | [docs/mcp-clients.md](docs/mcp-clients.md) | Connecting Claude Desktop, Cursor and remote MCP clients |
