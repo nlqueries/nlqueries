@@ -163,6 +163,7 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md) (or [read o
 | [docs/mcp-authentication.md](docs/mcp-authentication.md) (or [read online](https://nlqueries.com/docs/mcp-authentication)) | Authenticating the MCP server — required to serve it over a network |
 | [docs/architecture.md](docs/architecture.md) (or [read online](https://nlqueries.com/docs/architecture)) | Module layout and request flow |
 | [docs/database-hardening.md](docs/database-hardening.md) (or [read online](https://nlqueries.com/docs/database-hardening)) | The read-only role to grant per engine, and exactly what each connector does and does not enforce |
+| [docs/observability.md](docs/observability.md) | Logs, audit events, OpenTelemetry spans and metrics, and health checks |
 | [docs/dependency-locking.md](docs/dependency-locking.md) (or [read online](https://nlqueries.com/docs/dependency-locking)) | The hashed lock file the image builds from, the digest-pinned base image, and how to regenerate both |
 | [docs/contributing.md](docs/contributing.md) (or [read online](https://nlqueries.com/docs/contributing)) | What a new connector has to implement, and what to open an issue about first |
 

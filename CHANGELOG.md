@@ -127,6 +127,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   against.** Anthropic, OpenAI, Amazon Bedrock and DeepSeek: how each is
   selected, its models, effort and thinking settings, prompt caching, and
   the output budget and timeout every provider shares.
+- **`docs/observability.md`: what NLQueries reports about itself.** Logs and
+  `LOG_LEVEL`, audit events, the OpenTelemetry spans and metrics and how to
+  export them (core installs no exporter of its own), health checks, and
+  per-answer provenance.
 - **`nlqueries agent docs add|remove|list`: the document sources an agent may
   use.** The list is kept as `document_sources` on the agent's entry in the
   connectors file, under either form of its ID or its alias, and survives
