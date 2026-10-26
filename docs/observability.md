@@ -49,7 +49,13 @@ An event carries a SHA-256 digest of the statement and its length, never the SQL
 
 To keep the events in a file of their own, set `NLQ_AUDIT_LOG` to a path: each event is appended as one JSON line, to a file created at mode `0600`. A file that cannot be written is reported on `nlqueries.audit.sink`, and the query is not failed.
 
-**With the CLI, set one or the other.** The CLI configures no logging unless `LOG_LEVEL` is set, and an execution event is not even built when nothing would receive it: `nlqueries.audit` below `INFO` and no `NLQ_AUDIT_LOG`. The MCP server logs at `INFO` by default, so its events are recorded without either.
+**Execution events need `INFO` logging or the file.** A `query_execution` event is built only when the `nlqueries.audit` logger would emit an `INFO` record or `NLQ_AUDIT_LOG` is set. Otherwise it is skipped, and nothing says so. That catches three cases:
+
+- the CLI with no `LOG_LEVEL`, since it then configures no logging at all;
+- `LOG_LEVEL=WARNING` or higher, set to quieten the output, on the CLI or the MCP server;
+- the MCP server at any level above its default of `INFO`.
+
+For audit records with quiet logs, set `NLQ_AUDIT_LOG`: the file does not depend on the log level.
 
 Every field, and the rules the file sink follows, are in [Audit events](configuration.md#audit-events). The `authorization` event's fields are in [What gets recorded](mcp-authentication.md#what-gets-recorded).
 
@@ -82,7 +88,7 @@ To see the output without a collector, use `OTEL_TRACES_EXPORTER=console` and `O
 |---|---|---|
 | `orchestrator.handle_question` | Generating, and when execution is on running, the SQL for one question | `agent_id`, `dialect`, `intent_type` (`sql`), `sql_valid`, `attempt_count`, `row_count`, and `execution_retry` when a correction was attempted after a database error |
 | `document_orchestrator.handle_question` | Answering one question from a document source | `collection`, `intent_type` (`document`), `top_k`, and `source_id` when the search is limited to one source |
-| `postgres_connector.execute_query` | One statement on the `postgres` connector. Other connectors have no span of their own | `db.system` (`postgresql`) |
+| `postgres_connector.execute_query` | One statement on the `postgres` connector. Other connectors have no span of their own | `db.system` (`postgresql`); `db.row_count` and `db.result_truncated` when it succeeds; `error` (`true`) when it fails |
 | `qdrant_store.search_chunks` | One document-chunk search | `collection`, `top_k`, `result_count`, and `source_id_filter` when set |
 | `qdrant_store.upsert_chunks` | Storing a document's chunks | `collection`, `chunk_count` |
 
