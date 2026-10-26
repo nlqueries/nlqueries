@@ -119,6 +119,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`docs/mcp-clients.md`: connecting MCP clients.** Claude Desktop and Cursor
+  over stdio, including the `env` block a client-started server needs for its
+  LLM key, and a client over the network with a bearer token. It also lists
+  the tools, what `query` returns, and the usual first-run errors.
 - **`nlqueries agent docs add|remove|list`: the document sources an agent may
   use.** The list is kept as `document_sources` on the agent's entry in the
   connectors file, under either form of its ID or its alias, and survives
