@@ -204,7 +204,7 @@ Every Qdrant client in NLQueries is built in one place (`nlqueries.embeddings.qd
 | Setting | Default | Notes |
 |---|---|---|
 | `QDRANT_URL` | `http://localhost:6333` | The REST endpoint. A URL with no scheme, such as `qdrant:6333`, is plain http |
-| `QDRANT_API_KEY` | empty | Sent with every request when set |
+| `QDRANT_API_KEY` | empty | Sent by every Qdrant client NLQueries builds. Not sent by the health checks (`nlqueries health` and the MCP `health` tool) or by the `kb-stats` cache count, which call `QDRANT_URL` directly: on a Qdrant that requires the key, that count shows as n/a |
 
 Nothing else is configurable: no timeout, and no gRPC. NLQueries talks REST to the port in `QDRANT_URL`, so port 6334 can stay unpublished.
 
