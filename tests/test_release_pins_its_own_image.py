@@ -33,7 +33,14 @@ QUOTED_TAG = re.compile(re.escape(IMAGE) + r":(\d+\.\d+\.\d+[^\s`'\")]*)")
 @pytest.fixture(scope="module")
 def version() -> str:
     with (ROOT / "pyproject.toml").open("rb") as fh:
-        return str(tomllib.load(fh)["project"]["version"])
+        declared = str(tomllib.load(fh)["project"]["version"])
+    # A pre-release does not move the pin: pyproject says `1.0.0rc1` so PyPI
+    # gets that version, the image is pushed as `1.0.0-rc1`, and compose stays
+    # on the last final release. The release workflow's `versions` job skips
+    # pre-release tags for the same reason.
+    if not re.fullmatch(r"\d+\.\d+\.\d+", declared):
+        pytest.skip(f"{declared} is a pre-release; the compose pin stays on the last final release")
+    return declared
 
 
 def test_the_compose_file_pins_this_version(version: str) -> None:
