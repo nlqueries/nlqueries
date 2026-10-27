@@ -83,19 +83,23 @@ def _apply_read_only(conn: Connection) -> None:
     form used.) DDL still commits implicitly, ending the transaction first, so
     a ``CREATE TABLE`` stands.
 
-    Oracle is a gap rather than a limit, and the distinction is worth keeping.
-    It has a transaction-scoped ``SET TRANSACTION READ ONLY`` that must be the
-    first statement of the transaction -- exactly the position this function
-    occupies -- and refuses DML and DDL thereafter with ORA-01456, so the DDL
-    exposure recorded for Oracle elsewhere in the docs looks closable rather than
-    inherent. It is left out because no test here can reach an Oracle instance,
-    and adding a statement to the execution path of an engine nothing exercises
-    is how every query against it becomes an error instead. Whoever has an
-    instance to try it against should add ``oracle`` to the tuple below and move
-    it out of the "commits implicitly and nothing more" column.
+    Oracle takes the same ``SET TRANSACTION READ ONLY`` as Postgres, also
+    transaction-scoped and also first. Measured through this connector with
+    python-oracledb 26.1.0 and SQLAlchemy 2.0 against Oracle Database Free
+    23.26.3: a ``SELECT`` runs; ``INSERT``, ``UPDATE``, ``DELETE`` and
+    ``SELECT ... FOR UPDATE`` are refused with ORA-01456; and the next use of
+    the same pooled connection is not read-only. DDL is not refused: Oracle
+    commits implicitly before it, which ends the read-only transaction, so a
+    ``CREATE TABLE`` stands, as on MySQL. One cost: a read-only transaction
+    cannot read a table newer than its snapshot, so a query against a table
+    truncated or created a moment before is refused with ORA-01466 ("table
+    definition has changed"). Measured eight times each: refused every time
+    directly after a ``TRUNCATE``, and for about two seconds after a
+    ``CREATE``; never a second after the ``TRUNCATE`` or two after the
+    ``CREATE``. ``ALTER TABLE ... ADD`` and ordinary writes did not cause it.
     """
     name = conn.engine.dialect.name
-    if name in ("postgresql", "redshift"):
+    if name in ("postgresql", "redshift", "oracle"):
         conn.execute(text("SET TRANSACTION READ ONLY"))
     elif name in _MYSQL_BACKENDS:
         conn.execute(text("START TRANSACTION READ ONLY"))

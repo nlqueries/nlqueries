@@ -532,7 +532,7 @@ statement, and anything it did outside the transaction stands.
 | `redshift` | `SET TRANSACTION READ ONLY` | `SET statement_timeout` | measured by hand |
 | `snowflake` | `BEGIN` … `ROLLBACK`, so DML is undone. **DDL is not transactional and still stands** | `STATEMENT_QUEUED_TIMEOUT_IN_SECONDS` (`SNOWFLAKE_QUEUE_TIMEOUT_SECONDS`, at most half the budget) and `STATEMENT_TIMEOUT_IN_SECONDS` (the rest) statement parameters | no — asserted against a fake driver |
 | `bigquery` | **none** | `job_timeout_ms` | no |
-| `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql` or `redshift` and `START TRANSACTION READ ONLY` where it is `mysql` or `mariadb`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it, so a `CREATE` or `DROP` stands | best-effort per dialect | MySQL and MariaDB measured by hand (MySQL 8.0 and 8.4, MariaDB 10.11); otherwise asserted against a fake driver |
+| `sqlalchemy` | DML never committed; rolled back either way, plus `SET TRANSACTION READ ONLY` where the dialect is `postgresql`, `redshift` or `oracle` and `START TRANSACTION READ ONLY` where it is `mysql` or `mariadb`. **DDL is not covered everywhere** — MySQL, MariaDB and Oracle commit implicitly around it, so a `CREATE` or `DROP` stands | best-effort per dialect | MySQL, MariaDB and Oracle measured by hand (MySQL 8.0 and 8.4, MariaDB 10.11, Oracle Database Free 23.26); otherwise asserted against a fake driver |
 
 `nlqueries health` reports this per connector, so the row that applies to a
 deployment does not have to be looked up here.
@@ -604,13 +604,24 @@ name with `NLQ_TEST_MYSQL_URL`; it is skipped otherwise. The URL hardening behin
 the two middle rows is described in
 [connectors.md](connectors.md#mysql-and-mariadb-what-the-generic-connector-changes-in-the-url).
 
-**Oracle's gap looks closable.** It has a transaction-scoped
-`SET TRANSACTION READ ONLY` that must be the first statement of the transaction
--- exactly where the connector applies one -- and refuses DML and DDL thereafter
-with ORA-01456. It is left out of `_apply_read_only` only because no test here
-can reach an Oracle instance, and adding a statement to the execution path of an
-untested engine is how every query against it becomes an error instead. Someone
-with an instance should try it and move Oracle out of the column below.
+**Oracle takes the same read-only transaction.** `SET TRANSACTION READ ONLY` is
+transaction-scoped and must be the first statement of the transaction, which is
+where the connector applies it. Measured through the connector with
+python-oracledb 26.1 against Oracle Database Free 23.26:
+
+| Inside the read-only transaction | Result |
+|---|---|
+| `SELECT` | runs |
+| `INSERT`, `UPDATE`, `DELETE`, `SELECT ... FOR UPDATE` | refused, ORA-01456 |
+| `CREATE TABLE` | stands: Oracle commits implicitly before DDL, which ends the transaction |
+| a plain `INSERT` on the same pooled connection afterwards | committed |
+| a `SELECT` on a table truncated a moment before, or created in the last two seconds | refused, ORA-01466 (`table definition has changed`); the same query a little later runs |
+
+The last row is the cost: a read-only transaction cannot read a table newer than
+its snapshot, so a question asked while a load truncates or recreates its table
+can fail once with ORA-01466. `tests/integration/test_oracle_integration.py`
+repeats this against a database you name with `NLQ_TEST_ORACLE_URL`; it is
+skipped otherwise.
 
 **And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit
 implicitly around DDL, so a `CREATE` or `DROP` sent through this connector is
