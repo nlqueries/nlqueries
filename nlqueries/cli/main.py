@@ -294,8 +294,8 @@ def _resolve_dialect(agent_id: str, explicit: str | None) -> str:
             )
         return chosen
     # The entry the loader will open, found the way it finds it: it also
-    # matches an id whose punctuation became underscores (`sqlite:/bird/dev`
-    # as `sqlite__bird_dev`), which a plain `.get` misses -- and missing it
+    # matches an id whose punctuation became underscores (`sqlite:/data/dev`
+    # as `sqlite__data_dev`), which a plain `.get` misses -- and missing it
     # would generate Postgres for a query that then runs against SQLite. The
     # MCP server resolves through the same function, with no flag to override.
     return dialect_for_agent(agent_id, _load_connectors())

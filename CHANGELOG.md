@@ -1136,9 +1136,9 @@ Mostly security fixes: see *Security* below, and the steps to take first.
   using `DISTINCT` and some not. Measured, keying `DISTINCT` to the wording
   fixed about twice as many misses as it lost, and no wording-based exception for
   that shape did better.
-- **SQL prompt: project only the requested columns.** In a benchmark run
-  (core b3ebdc7, Sonnet 5.5, 67.08 execution accuracy), 21% of the misses were
-  correct answers returned with extra columns. A set-of-rows comparison scores
+- **SQL prompt: project only the requested columns.** In a text-to-SQL
+  benchmark run, 21% of the misses were correct answers returned with extra
+  columns. A set-of-rows comparison scores
   those as wrong. Examples were the column it ranked by, a name added for
   context, every numbered variant of a column, or a count split into a
   labelled GROUP BY. Both SQL system prompts now tell the model to select only
@@ -1158,8 +1158,8 @@ Mostly security fixes: see *Security* below, and the steps to take first.
   and is cached again.
 - **`--dialect` accepts every engine `nlqueries connect` registers, and
   defaults to the connector's.** On `ask`, `query` and `eval` it used to offer
-  only `postgres`, `snowflake` and `bigquery`, so a SQLite connector, a BIRD-SQL
-  database for instance, could not be asked for SQLite SQL at all. It now takes
+  only `postgres`, `snowflake` and `bigquery`, so a SQLite connector could not
+  be asked for SQLite SQL at all. It now takes
   `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` and
   `sqlite`. Without the flag, the dialect is the connector's type (for a
   `sqlalchemy` connector, the engine its URL names), and `postgres` only when
@@ -1473,7 +1473,7 @@ Mostly security fixes: see *Security* below, and the steps to take first.
   promise MySQL query history from the performance schema, or TLS settings
   from `SSL_MODE`/`SSL_CA_CERT`, neither of which anything read.
 - **The LLM health check works on OpenAI's Responses-API and reasoning
-  models.** `nlqueries doctor` and the MCP `health` tool asked the model for 5
+  models.** `nlqueries health` and the MCP `health` tool asked the model for 5
   output tokens. OpenAI's Responses API, which LiteLLM uses for models such as
   `o3-pro`, `gpt-5-pro` and the codex models, refuses fewer than 16, so the
   check failed on every one of them. The probe now asks for 16
