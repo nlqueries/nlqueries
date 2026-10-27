@@ -360,6 +360,7 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
     import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
 
+    from nlqueries.embeddings.qdrant_client import qdrant_rest_request  # noqa: PLC0415
     from nlqueries.http_urls import NotAnHttpUrl, http_url  # noqa: PLC0415
 
     try:
@@ -368,7 +369,9 @@ def _check_qdrant(qdrant_url: str) -> _CheckResult:
         return _CheckResult("Qdrant", "fail", f"QDRANT_URL is not usable: {exc}", str(exc))
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310 - scheme checked
+        # With the API key: without it, a Qdrant that requires one answered 401,
+        # reported below as "connection refused".
+        with urllib.request.urlopen(qdrant_rest_request(url), timeout=3) as resp:  # noqa: S310
             data = _json.loads(resp.read())
             ms = int((time.monotonic() - t0) * 1000)
             version = data.get("version", "?")
@@ -2053,8 +2056,12 @@ def process_history(
     if embed:
         import httpx as _httpx
 
+        from nlqueries.embeddings.qdrant_client import qdrant_auth_headers  # noqa: PLC0415
+
         try:
-            _httpx.get(f"{QDRANT_URL}/healthz", timeout=3.0).raise_for_status()
+            _httpx.get(
+                f"{QDRANT_URL}/healthz", headers=qdrant_auth_headers(), timeout=3.0
+            ).raise_for_status()
         except Exception:  # noqa: BLE001
             err_console.print(
                 f"[bold red]✗ --embed requires Qdrant to be running at "

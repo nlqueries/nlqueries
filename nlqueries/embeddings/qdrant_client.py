@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import urllib.request
 from typing import TYPE_CHECKING
 from urllib.parse import ParseResult, urlparse
 
@@ -130,6 +131,29 @@ def require_qdrant_auth(url: str | None = None, api_key: str | None = None) -> N
         "both this process and the Qdrant service "
         "(QDRANT__SERVICE__API_KEY) — generate one with: openssl rand -hex 32"
     )
+
+
+def qdrant_rest_request(url: str) -> urllib.request.Request:
+    """A request for *url* on Qdrant's REST API, carrying ``QDRANT_API_KEY`` as
+    the client does.
+
+    For the probes that read Qdrant without building a client: ``health``, the
+    MCP ``health`` tool, process-history's preflight and kb-stats' cache count.
+    They sent no key, so on a Qdrant that requires one the health check said
+    "connection refused" -- a 401 is a URLError -- and the cache count showed
+    n/a with nothing said (from #343's review). *url* is already checked by
+    ``nlqueries.http_urls.http_url``.
+    """
+    return urllib.request.Request(url, headers=qdrant_auth_headers())  # noqa: S310 - checked
+
+
+def qdrant_auth_headers() -> dict[str, str]:
+    """The header that authenticates a REST call to Qdrant, as the client sends
+    it, or none when no ``QDRANT_API_KEY`` is set."""
+    if not config.QDRANT_API_KEY:
+        return {}
+    _warn_on_plain_http(config.QDRANT_URL)
+    return {"api-key": config.QDRANT_API_KEY}
 
 
 def build_qdrant_client(**kwargs: object) -> QdrantClient:
