@@ -179,7 +179,7 @@ Where the key is kept:
 - **With an OS keychain**, the key's contents (and its passphrase) go into it, under the connector's id, as a password does. A key is split across several entries, because Windows Credential Manager holds at most 2,560 bytes in one. The key file is not needed afterwards, and nothing of the key is written to `connectors.yaml`, which says `private_key_storage: keychain`.
 - **With no keychain** (core's Docker image, a headless host), the entry records the key file's path as `private_key_file`, and the key is read from it each time the connector opens. Keep the file there, readable by the account that runs nlqueries; in a container, mount it. An encrypted key's passphrase must then come from a variable, named in the entry as `private_key_passphrase_env`: one typed at the prompt has nowhere to be kept, so `connect` refuses it rather than leave a connector that cannot open.
 
-To change the key, run `connect` again with the new file.
+To change the key, run `connect` again with the new file. If the keychain refuses the new key part-way, nothing is left half-written: `connect` records the new file's path instead, as on a host with no keychain, or, when the passphrase was typed, stops and leaves the connector on its old key.
 
 ### Amazon Redshift
 

@@ -9,6 +9,7 @@ with no keychain. The connector hands the driver the key as PKCS#8 DER with
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -39,10 +40,15 @@ class _Keychain:
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        #: Writes to an entry this picks out fail, as a keychain that stops
+        #: part-way would.
+        self.fail_on: Callable[[str], bool] = lambda _entry: False
 
     def set_password(self, _service: str, entry: str, value: str) -> None:
         if len(value) > 1270:
             raise OSError(1783, "CredWrite", "The stub received bad data")
+        if self.fail_on(entry):
+            raise OSError(5, "CredWrite", "Access is denied")
         self.values[entry] = value
 
     def get_password(self, _service: str, entry: str) -> str | None:
@@ -176,13 +182,54 @@ def test_a_key_the_keychain_cannot_give_back_is_refused_by_name(removed: str) ->
     keychain = _Keychain()
     store_in_keychain(keychain, "sf:prod", _pem(), None)
     entry = private_key_entry("sf:prod")
-    keychain.values.pop(entry if removed == "count" else f"{entry}:0")
+    first_part = next(name for name in keychain.values if name.endswith(":0"))
+    keychain.values.pop(entry if removed == "count" else first_part)
 
     with (
         patch("keyring.get_password", keychain.get_password),
         pytest.raises(KeychainKeyError, match="sf:prod.*connect"),
     ):
         loader.credentials_for("sf:prod", dict(_KEYCHAIN_ENTRY))
+
+
+@pytest.mark.parametrize(
+    "fails_on",
+    [
+        lambda entry: entry.startswith("sf:prod:snowflake_private_key:") and entry.endswith(":1"),
+        lambda entry: entry.startswith("sf:prod:snowflake_private_key_passphrase:"),
+    ],
+    ids=["a part", "the passphrase"],
+)
+def test_a_new_key_that_fails_part_way_leaves_the_previous_one_readable(
+    fails_on: Callable[[str], bool],
+) -> None:
+    """From #347's review: the new parts once overwrote the ones in use, so a
+    failure part-way left the old count over a mix of old and new parts."""
+    keychain = _Keychain()
+    old_pem, new_pem = _pem(_PASSPHRASE), _pem()
+    store_in_keychain(keychain, "sf:prod", old_pem, _PASSPHRASE)
+    before = dict(keychain.values)
+
+    keychain.fail_on = fails_on
+    with pytest.raises(OSError):
+        store_in_keychain(keychain, "sf:prod", new_pem, "another passphrase")
+
+    assert load_from_keychain(keychain, "sf:prod") == (old_pem, _PASSPHRASE)
+    # What the failed write had put in is gone again.
+    assert keychain.values == before
+
+
+def test_a_new_key_replaces_the_previous_one_and_its_passphrase() -> None:
+    keychain = _Keychain()
+    store_in_keychain(keychain, "sf:prod", _pem(_PASSPHRASE), _PASSPHRASE)
+    plain = _pem()
+
+    store_in_keychain(keychain, "sf:prod", plain, None)
+
+    # A plain key gets no passphrase, not the encrypted one's.
+    assert load_from_keychain(keychain, "sf:prod") == (plain, None)
+    # The previous key's entries are gone: the pointer and the new parts remain.
+    assert len(keychain.values) == 1 + -(-len(plain) // 1000)
 
 
 # -- nlqueries connect --------------------------------------------------------
@@ -200,7 +247,7 @@ class _Reachable:
 
 def _connect(
     tmp_path: Path, pem: str, *extra: str, keychain: bool, env: dict[str, str] | None = None
-) -> tuple[Any, dict[str, Any], dict[str, str]]:
+) -> tuple[Any, dict[str, Any], _Keychain]:
     key_file = tmp_path / "svc.p8"
     key_file.write_text(pem, encoding="utf-8")
     saved: dict[str, Any] = {}
