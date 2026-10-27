@@ -229,7 +229,7 @@ def _output_budget() -> int:
         # `LLM_MAX_OUTPUT_TOKENS=` -- blanking a value is how people disable one
         # -- gives `int("")`, and an unhandled ValueError here aborts the import
         # of this module. That takes down every CLI command with it, including
-        # `doctor`, which is the one an operator reaches for to find out why.
+        # `health`, which is the one an operator reaches for to find out why.
         logging.getLogger(__name__).warning(
             "LLM_MAX_OUTPUT_TOKENS=%r is not a number and is being ignored; "
             "using the default of %d.",
@@ -378,7 +378,7 @@ def _llm_timeout() -> float:
     except ValueError:
         # See `_output_budget`: `LLM_TIMEOUT_SECONDS=` is how people disable a
         # setting, and an unhandled ValueError at import takes down every CLI
-        # command including `doctor`.
+        # command including `health`.
         logging.getLogger(__name__).warning(
             "LLM_TIMEOUT_SECONDS=%r is not a number and is being ignored; "
             "using the default of %.0f seconds.",
@@ -456,11 +456,16 @@ def llm_credentials_available() -> bool:
     a real process; where they differ is a caller that has replaced one, and
     honouring that is the point.
 
+    The keys are those of the providers ``docs/llm-providers.md`` covers:
+    Anthropic, OpenAI and DeepSeek, which LiteLLM reads as ``DEEPSEEK_API_KEY``.
+    A DeepSeek-only host was reported as having no credentials, so ``health``
+    faulted it and ``process-history`` refused to annotate.
+
     This says a credential *route* exists, not that it is valid. Whether the
     role can actually invoke the model is what the call itself answers, and
-    ``doctor`` makes that call.
+    ``health`` makes that call.
     """
-    if ANTHROPIC_API_KEY or os.getenv("OPENAI_API_KEY"):
+    if ANTHROPIC_API_KEY or os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY"):
         return True
     names_bedrock = LLM_PROVIDER_CONFIGURED.lower() == BEDROCK_PROVIDER
     model_is_bedrock = LLM_MODEL.startswith(BEDROCK_MODEL_PREFIX)
@@ -979,7 +984,7 @@ def _optional_positive_int(name: str) -> int | None:
 
 #: Why ``BIGQUERY_MAX_BYTES_BILLED`` could not be read, or None. Recorded
 #: rather than raised: raised here, a typo in the setting stopped every command
-#: at import, ``health`` and ``doctor`` included, with a traceback. The BigQuery
+#: at import, ``health`` included, with a traceback. The BigQuery
 #: connector refuses to run a query while this is set, so the cap still never
 #: quietly disappears.
 BIGQUERY_MAX_BYTES_BILLED_ERROR: str | None = None

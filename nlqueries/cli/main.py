@@ -530,7 +530,7 @@ def _check_llm() -> _CheckResult:
         return _CheckResult(
             "LLM provider",
             "fail",
-            "no credentials (set ANTHROPIC_API_KEY or OPENAI_API_KEY, or "
+            "no credentials (set ANTHROPIC_API_KEY, OPENAI_API_KEY or DEEPSEEK_API_KEY, or "
             "configure Bedrock with an LLM_MODEL beginning bedrock/)",
         )
 
@@ -611,7 +611,7 @@ def _check_config() -> _CheckResult:
     else:
         notes.append("QDRANT_URL using default (localhost:6333)")
 
-    # The same question the LLM check asks, so `doctor` cannot report a
+    # The same question the LLM check asks, so `health` cannot report a
     # working provider and a missing key in the same output.
     if not llm_credentials_available():
         issues.append("no LLM credentials set")
@@ -2042,7 +2042,8 @@ def process_history(
     if annotate and not _llm_ok():
         err_console.print(
             "[bold red]✗ --annotate requires an LLM credential.[/bold red]\n"
-            "  Set [bold]ANTHROPIC_API_KEY[/bold] or [bold]OPENAI_API_KEY[/bold], "
+            "  Set [bold]ANTHROPIC_API_KEY[/bold], [bold]OPENAI_API_KEY[/bold] or "
+            "[bold]DEEPSEEK_API_KEY[/bold], "
             "or configure Bedrock, before running this command.\n"
             "  To skip annotation, run with [bold]--no-annotate[/bold]."
         )
@@ -2278,7 +2279,8 @@ def process_history(
         "Use the LLM to auto-populate column descriptions from sample data. "
         "Skips surrogate-key columns (PKs, FKs, *_id/*_uuid/*_key). "
         "Manually written descriptions in an existing KB always win. "
-        "Requires an LLM credential: ANTHROPIC_API_KEY, OPENAI_API_KEY, or Bedrock."
+        "Requires an LLM credential: ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, "
+        "or Bedrock."
     ),
 )
 @click.option(

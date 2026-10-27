@@ -518,7 +518,7 @@ def health(probe_llm: bool = False) -> str:
     if not config.llm_credentials_available():
         lines.append(
             "❌ **LLM** — no credentials (ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-            "or a Bedrock configuration)"
+            "DEEPSEEK_API_KEY or a Bedrock configuration)"
         )
     elif not probe_llm:
         lines.append(
@@ -534,7 +534,7 @@ def health(probe_llm: bool = False) -> str:
             )
 
             t0 = time.monotonic()
-            # See the CLI doctor: the probe asks for a small budget to stay
+            # See the CLI's health check: the probe asks for a small budget to stay
             # cheap, and a reasoning model can spend it all reasoning. The round
             # trip succeeded, which is what is being checked -- but it is said
             # out loud, so a caller diagnosing empty answers is not told the LLM
