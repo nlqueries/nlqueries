@@ -49,6 +49,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A DeepSeek key counts as an LLM credential.** The credential check knew
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and Bedrock. On a host with only
+  `DEEPSEEK_API_KEY`:
+  - `nlqueries health` and the MCP `health` tool reported no credentials;
+  - `process-history` refused to annotate;
+  - `export-kb --describe-columns` skipped the descriptions.
 - **A release's compose file runs that release.** A test now holds the
   `docker-compose.yml` image pin, and the tag that README and getting-started
   quote, to the version in `pyproject.toml`. The release workflow refuses a

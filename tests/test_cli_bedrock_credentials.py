@@ -27,7 +27,13 @@ def _no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     same in a fresh process: `config.ANTHROPIC_API_KEY` was read at import and
     would otherwise keep a key this fixture believes it has removed.
     """
-    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LLM_PROVIDER", "LLM_MODEL"):
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "LLM_PROVIDER",
+        "LLM_MODEL",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
     monkeypatch.setattr(config, "LLM_PROVIDER_CONFIGURED", "")
@@ -59,6 +65,23 @@ def test_an_openai_key_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
 
     assert config.llm_credentials_available() is True
+
+
+def test_a_deepseek_key_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LiteLLM reads it for DeepSeek, a provider docs/llm-providers.md covers. A
+    DeepSeek-only host was told it had no credentials: `health` failed it and
+    `process-history` refused to annotate."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+
+    assert config.llm_credentials_available() is True
+
+
+def test_a_deepseek_host_passes_the_health_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nlqueries.cli import main as cli_main
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+
+    assert "no LLM credentials set" not in (cli_main._check_config().detail or "")
 
 
 def test_nothing_configured_is_still_nothing() -> None:
