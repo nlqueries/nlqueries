@@ -47,6 +47,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   application never runs pip, so only installing packages inside a running
   container was exposed. Images up to 0.4.0 carry pip 24.0.
 
+- **litellm 1.100.4 in the image.** The lock pinned litellm 1.98.0
+  (CVE-2026-114612, fixed in 1.100.4, 1.101.3, 1.102.2 and 1.103.1). Images up
+  to 0.4.0 carry 1.98.0: pull the next release. A fresh `pip install
+  nlqueries-core` resolves the newest litellm below 1.104 (1.103.10 on
+  2026-10-28), which is already fixed.
+
 ### Fixed
 
 - **A DeepSeek key counts as an LLM credential.** The credential check knew
