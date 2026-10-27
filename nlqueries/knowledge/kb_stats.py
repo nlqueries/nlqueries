@@ -248,11 +248,14 @@ def compute_kb_stats(
 
         from nlqueries.cache.semantic_cache import cache_collection_name  # noqa: PLC0415
         from nlqueries.config import QDRANT_URL  # noqa: PLC0415
+        from nlqueries.embeddings.qdrant_client import qdrant_rest_request  # noqa: PLC0415
         from nlqueries.http_urls import http_url  # noqa: PLC0415
 
         collection = cache_collection_name(agent_id)
         url = http_url(f"{QDRANT_URL}/collections/{collection}")
-        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310 - scheme checked
+        # With the API key, which it lacked: a keyed Qdrant answered 401, and the
+        # count showed n/a with nothing said (from #343's review).
+        with urllib.request.urlopen(qdrant_rest_request(url), timeout=3) as resp:  # noqa: S310
             data = _json.loads(resp.read())
             stats.cache_entries = data.get("result", {}).get("vectors_count", 0)
     except Exception as exc:  # noqa: BLE001

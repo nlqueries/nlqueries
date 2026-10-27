@@ -55,6 +55,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   - `nlqueries health` and the MCP `health` tool reported no credentials;
   - `process-history` refused to annotate;
   - `export-kb --describe-columns` skipped the descriptions.
+- **The direct Qdrant probes send `QDRANT_API_KEY`.** `nlqueries health`, the
+  MCP `health` tool, `process-history --embed`'s preflight and the `kb-stats`
+  cache count call Qdrant's REST API without building a client, and they sent
+  no key. On a Qdrant that requires one:
+  - `health` reported "connection refused";
+  - the cache count showed n/a and said nothing.
 - **A release's compose file runs that release.** A test now holds the
   `docker-compose.yml` image pin, and the tag that README and getting-started
   quote, to the version in `pyproject.toml`. The release workflow refuses a

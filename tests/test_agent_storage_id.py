@@ -100,8 +100,9 @@ class TestTheCache:
         kb_file.write_text(yaml.safe_dump({"schema": {"tables": []}}), encoding="utf-8")
         urls: list[str] = []
 
-        def urlopen(url: str, timeout: float) -> Any:
-            urls.append(url)
+        def urlopen(request: Any, timeout: float) -> Any:
+            # A Request, which carries QDRANT_API_KEY when one is set.
+            urls.append(getattr(request, "full_url", request))
             return io.BytesIO(json.dumps({"result": {"vectors_count": 3}}).encode())
 
         with patch("urllib.request.urlopen", urlopen):
