@@ -49,6 +49,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A DeepSeek key counts as an LLM credential.** The credential check knew
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and Bedrock. On a host with only
+  `DEEPSEEK_API_KEY`:
+  - `nlqueries health` and the MCP `health` tool reported no credentials;
+  - `process-history` refused to annotate;
+  - `export-kb --describe-columns` skipped the descriptions.
+- **The direct Qdrant probes send `QDRANT_API_KEY`.** `nlqueries health`, the
+  MCP `health` tool, `process-history --embed`'s preflight and the `kb-stats`
+  cache count call Qdrant's REST API without building a client, and they sent
+  no key. On a Qdrant that requires one:
+  - `health` reported "connection refused";
+  - the cache count showed n/a and said nothing.
 - **A release's compose file runs that release.** A test now holds the
   `docker-compose.yml` image pin, and the tag that README and getting-started
   quote, to the version in `pyproject.toml`. The release workflow refuses a
@@ -119,6 +131,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Snowflake key-pair authentication.** `nlqueries connect snowflake
+  --private-key-file KEY.p8` signs a service user in with a private key instead
+  of a password, as Snowflake asks now that it is retiring single-factor
+  password sign-in. The key's contents go to the OS keychain. With no keychain
+  (the Docker image, a headless host), the file's path is recorded and the key
+  is read at each connect. An encrypted key's passphrase is prompted for, or
+  read from `--private-key-passphrase-env`. See
+  [connectors.md](docs/connectors.md#snowflake-key-pair-authentication).
 - **`docs/mcp-clients.md`: connecting MCP clients.** Claude Desktop and Cursor
   over stdio, including the `env` block a client-started server needs for its
   LLM key, and a client over the network with a bearer token. It also lists
@@ -127,6 +147,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   against.** Anthropic, OpenAI, Amazon Bedrock and DeepSeek: how each is
   selected, its models, effort and thinking settings, prompt caching, and
   the output budget and timeout every provider shares.
+- **`docs/observability.md`: what NLQueries reports about itself.** Logs and
+  `LOG_LEVEL`, audit events, the OpenTelemetry spans and metrics and how to
+  export them (core installs no exporter of its own), health checks, and
+  per-answer provenance.
 - **`nlqueries agent docs add|remove|list`: the document sources an agent may
   use.** The list is kept as `document_sources` on the agent's entry in the
   connectors file, under either form of its ID or its alias, and survives
@@ -1132,9 +1156,9 @@ Mostly security fixes: see *Security* below, and the steps to take first.
   using `DISTINCT` and some not. Measured, keying `DISTINCT` to the wording
   fixed about twice as many misses as it lost, and no wording-based exception for
   that shape did better.
-- **SQL prompt: project only the requested columns.** In a benchmark run
-  (core b3ebdc7, Sonnet 5.5, 67.08 execution accuracy), 21% of the misses were
-  correct answers returned with extra columns. A set-of-rows comparison scores
+- **SQL prompt: project only the requested columns.** In a text-to-SQL
+  benchmark run, 21% of the misses were correct answers returned with extra
+  columns. A set-of-rows comparison scores
   those as wrong. Examples were the column it ranked by, a name added for
   context, every numbered variant of a column, or a count split into a
   labelled GROUP BY. Both SQL system prompts now tell the model to select only
@@ -1154,8 +1178,8 @@ Mostly security fixes: see *Security* below, and the steps to take first.
   and is cached again.
 - **`--dialect` accepts every engine `nlqueries connect` registers, and
   defaults to the connector's.** On `ask`, `query` and `eval` it used to offer
-  only `postgres`, `snowflake` and `bigquery`, so a SQLite connector, a BIRD-SQL
-  database for instance, could not be asked for SQLite SQL at all. It now takes
+  only `postgres`, `snowflake` and `bigquery`, so a SQLite connector could not
+  be asked for SQLite SQL at all. It now takes
   `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` and
   `sqlite`. Without the flag, the dialect is the connector's type (for a
   `sqlalchemy` connector, the engine its URL names), and `postgres` only when
@@ -1469,7 +1493,7 @@ Mostly security fixes: see *Security* below, and the steps to take first.
   promise MySQL query history from the performance schema, or TLS settings
   from `SSL_MODE`/`SSL_CA_CERT`, neither of which anything read.
 - **The LLM health check works on OpenAI's Responses-API and reasoning
-  models.** `nlqueries doctor` and the MCP `health` tool asked the model for 5
+  models.** `nlqueries health` and the MCP `health` tool asked the model for 5
   output tokens. OpenAI's Responses API, which LiteLLM uses for models such as
   `o3-pro`, `gpt-5-pro` and the codex models, refuses fewer than 16, so the
   check failed on every one of them. The probe now asks for 16

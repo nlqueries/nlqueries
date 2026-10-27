@@ -1,7 +1,7 @@
 """``--dialect`` on ``ask``, ``query`` and ``eval``: what it accepts, and its default.
 
 It offered ``postgres``, ``snowflake`` and ``bigquery`` only, so a SQLite
-connector (a BIRD-SQL database, say) could not be asked for SQLite SQL. It now
+connector could not be asked for SQLite SQL. It now
 takes the grammar of every engine ``nlqueries connect`` registers, and without
 the flag follows the connector.
 """
@@ -21,7 +21,7 @@ from nlqueries.cli import main as cli_main
 from nlqueries.cli.main import _DB_SCHEMES, DIALECT_CHOICES, _resolve_dialect, cli
 from nlqueries.sql_policy import _sqlglot_dialect, evaluate
 
-AGENT = "bird-dev"
+AGENT = "sales-dev"
 
 # ---------------------------------------------------------------------------
 # The list itself
@@ -53,7 +53,7 @@ def test_sql_policy_allows_a_plain_select_in_sqlite() -> None:
 @pytest.mark.parametrize(
     ("connector", "explicit", "expected"),
     [
-        ({"db_type": "sqlite", "database": "/bird/dev.sqlite"}, None, "sqlite"),
+        ({"db_type": "sqlite", "database": "/data/dev.sqlite"}, None, "sqlite"),
         ({"db_type": "duckdb"}, None, "duckdb"),
         ({"db_type": "snowflake"}, None, "snowflake"),
         # `connect postgresql` saves that spelling.
@@ -86,9 +86,9 @@ def test_an_underscored_id_finds_the_connector_the_loader_opens() -> None:
     """The loader also matches an id whose punctuation became underscores (the
     MCP form). Looked up with a plain ``.get``, that id found nothing and fell
     back to Postgres while the query ran against SQLite."""
-    connectors = {"sqlite:/bird/dev.sqlite": {"db_type": "sqlite"}}
+    connectors = {"sqlite:/data/dev.sqlite": {"db_type": "sqlite"}}
     with patch.object(cli_main, "_load_connectors", return_value=connectors):
-        assert _resolve_dialect("sqlite__bird_dev.sqlite", None) == "sqlite"
+        assert _resolve_dialect("sqlite__data_dev.sqlite", None) == "sqlite"
 
 
 @pytest.mark.parametrize(
@@ -251,7 +251,7 @@ def test_an_unknown_dialect_is_still_refused(command: str, tmp_path: Path) -> No
 
 @pytest.mark.parametrize("command", ["ask", "query", "eval"])
 def test_a_sqlite_connector_needs_no_flag(command: str, tmp_path: Path) -> None:
-    sqlite = {AGENT: {"db_type": "sqlite", "database": "/bird/dev.sqlite"}}
+    sqlite = {AGENT: {"db_type": "sqlite", "database": "/data/dev.sqlite"}}
     result, dialects = _invoke(command, [], sqlite, tmp_path)
     assert result.exit_code == 0, result.output
     assert dialects and set(dialects) == {"sqlite"}
@@ -259,9 +259,9 @@ def test_a_sqlite_connector_needs_no_flag(command: str, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("command", ["ask", "query", "eval"])
 def test_an_underscored_id_gets_its_connector_s_dialect(command: str, tmp_path: Path) -> None:
-    sqlite = {"sqlite:/bird/dev.sqlite": {"db_type": "sqlite"}}
+    sqlite = {"sqlite:/data/dev.sqlite": {"db_type": "sqlite"}}
     with patch.object(cli_main, "_resolve_alias", side_effect=lambda value: value):
-        result, dialects = _invoke(command, [], sqlite, tmp_path, agent="sqlite__bird_dev.sqlite")
+        result, dialects = _invoke(command, [], sqlite, tmp_path, agent="sqlite__data_dev.sqlite")
     assert result.exit_code == 0, result.output
     assert dialects and set(dialects) == {"sqlite"}
 

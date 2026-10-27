@@ -148,6 +148,39 @@ than ignored, since ignoring it would run queries as the starting identity. Ther
 is no `connect` flag for it yet, and running `nlqueries connect bigquery` again for
 the same connector rewrites its whole entry, so add the key back afterwards.
 
+### Snowflake: key-pair authentication
+
+Snowflake is retiring single-factor password sign-in, and a service user signs in with a key pair instead: the connector proves it holds a private key whose public half is set on the user.
+
+1. Make the key pair. This writes an unencrypted key; drop `-nocrypt` to encrypt it with a passphrase:
+
+   ```bash
+   openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out snowflake_rsa_key.p8 -nocrypt
+   openssl rsa -in snowflake_rsa_key.p8 -pubout -out snowflake_rsa_key.pub
+   ```
+
+2. Set the public half on the user, pasting the `.pub` file's contents without its `BEGIN`/`END` lines:
+
+   ```sql
+   ALTER USER svc_nlq SET RSA_PUBLIC_KEY='MIIBIjANBgkqh...';
+   ```
+
+3. Register the connector with the private key in place of a password:
+
+   ```bash
+   nlqueries connect snowflake --account acme-prod --database PROD --warehouse COMPUTE_WH \
+       --user svc_nlq --private-key-file snowflake_rsa_key.p8
+   ```
+
+   An encrypted key's passphrase is asked for, or read from `--private-key-passphrase-env VAR`. A password and a key together are refused.
+
+Where the key is kept:
+
+- **With an OS keychain**, the key's contents (and its passphrase) go into it, under the connector's id, as a password does. A key is split across several entries, because Windows Credential Manager holds at most 2,560 bytes in one. The key file is not needed afterwards, and nothing of the key is written to `connectors.yaml`, which says `private_key_storage: keychain`.
+- **With no keychain** (core's Docker image, a headless host), the entry records the key file's path as `private_key_file`, and the key is read from it each time the connector opens. Keep the file there, readable by the account that runs nlqueries; in a container, mount it. An encrypted key's passphrase must then come from a variable, named in the entry as `private_key_passphrase_env`: one typed at the prompt has nowhere to be kept, so `connect` refuses it rather than leave a connector that cannot open.
+
+To change the key, run `connect` again with the new file. If the keychain refuses the new key part-way, nothing is left half-written: `connect` records the new file's path instead, as on a host with no keychain, or, when the passphrase was typed, stops and leaves the connector on its old key.
+
 ### Amazon Redshift
 
 The connector does not read table or column comments (`COMMENT ON`), so descriptions come from `import-dbt` or from editing the knowledge base. Row counts come from `SVV_TABLE_INFO` (requires table-owner or superuser; falls back to a permission-free list if inaccessible).

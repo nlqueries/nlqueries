@@ -518,7 +518,7 @@ def health(probe_llm: bool = False) -> str:
     if not config.llm_credentials_available():
         lines.append(
             "❌ **LLM** — no credentials (ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-            "or a Bedrock configuration)"
+            "DEEPSEEK_API_KEY or a Bedrock configuration)"
         )
     elif not probe_llm:
         lines.append(
@@ -534,7 +534,7 @@ def health(probe_llm: bool = False) -> str:
             )
 
             t0 = time.monotonic()
-            # See the CLI doctor: the probe asks for a small budget to stay
+            # See the CLI's health check: the probe asks for a small budget to stay
             # cheap, and a reasoning model can spend it all reasoning. The round
             # trip succeeded, which is what is being checked -- but it is said
             # out loud, so a caller diagnosing empty answers is not told the LLM
@@ -554,9 +554,10 @@ def health(probe_llm: bool = False) -> str:
 
     # Qdrant
     try:
+        from nlqueries.embeddings.qdrant_client import qdrant_rest_request  # noqa: PLC0415
         from nlqueries.http_urls import http_url  # noqa: PLC0415
 
-        req = urllib.request.Request(http_url(f"{config.QDRANT_URL}/healthz"))  # noqa: S310
+        req = qdrant_rest_request(http_url(f"{config.QDRANT_URL}/healthz"))
         urllib.request.urlopen(req, timeout=3)  # noqa: S310 - scheme checked
         lines.append(f"✅ **Qdrant** — {config.QDRANT_URL}")
     except Exception as exc:  # noqa: BLE001

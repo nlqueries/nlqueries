@@ -35,7 +35,10 @@ TLS is not a `connect` flag. For PostgreSQL the connector requires TLS by defaul
 
 ```bash
 nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --schema PUBLIC --warehouse COMPUTE_WH --user alice --password YOUR_PASSWORD
+nlqueries connect snowflake --account myorg.us-east-1 --database ANALYTICS --warehouse COMPUTE_WH --user svc_nlq --private-key-file ~/.ssh/snowflake_rsa_key.p8
 ```
+
+`--private-key-file` signs a service user in with a key pair instead of a password; `--private-key-passphrase-env VAR` reads an encrypted key's passphrase from a variable, and without it you are prompted when the key is encrypted. The key's contents go to the OS keychain as a password does; with no keychain, the file's path is recorded instead. See [connectors.md](connectors.md#snowflake-key-pair-authentication).
 
 **BigQuery** — install `pip install "nlqueries-core[bigquery]"` first (uses Application Default Credentials if `--service-account-json` is omitted). `--service-account-json` takes a service account key or a Workload Identity Federation credential configuration; to run as an impersonated service account, see [connectors.md](connectors.md#bigquery-authentication)
 

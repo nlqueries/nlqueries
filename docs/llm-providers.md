@@ -124,13 +124,11 @@ Both go in the request's `extra_body`, because LiteLLM rewrites a top-level `rea
 
 Thinking is billed from `LLM_MAX_OUTPUT_TOKENS`, and spent first. See [Output budget](#output-budget).
 
-**The CLI's credential checks do not recognise `DEEPSEEK_API_KEY`.** They look for `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or a Bedrock configuration. With only a DeepSeek key:
+**The CLI's credential checks recognise `DEEPSEEK_API_KEY`**, as they do `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and a Bedrock configuration. So with only a DeepSeek key:
 
-- `nlqueries health` and the MCP `health` tool report no LLM credentials;
-- `process-history` refuses to annotate, so run it with `--no-annotate`;
-- `export-kb --describe-columns` skips the descriptions.
-
-`query`, `ask` and the MCP `query` tool are not gated this way and use DeepSeek as configured.
+- `nlqueries health` and the MCP `health` tool report the credential;
+- `process-history` annotates;
+- `export-kb --describe-columns` writes the descriptions.
 
 ---
 

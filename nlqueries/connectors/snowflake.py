@@ -10,11 +10,13 @@ part of the public OSS API and has no dependency on the enterprise layer.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import snowflake.connector
@@ -37,6 +39,7 @@ from nlqueries.connectors.base import (
 )
 from nlqueries.connectors.login_identity import LoginIdentity, log_identity
 from nlqueries.connectors.snowflake_identity import inspect_identity as inspect_snowflake_identity
+from nlqueries.connectors.snowflake_keys import private_key_der
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +187,16 @@ class SnowflakeConnector(DatabaseConnector):
     def connect(self, credentials: dict[str, Any]) -> None:
         """Open a Snowflake connection from ``credentials``.
 
-        Required keys: ``account``, ``user``, ``password``, ``warehouse``,
-        ``database``. ``schema`` is optional.
+        Required keys: ``account``, ``user``, ``warehouse``, ``database``, and
+        a way to sign in: ``password``, or a private key for key-pair
+        authentication. ``schema`` is optional.
+
+        The private key is ``private_key`` (the PEM itself, which the loader
+        reads from the keychain) or ``private_key_file`` (its path, on a host
+        with no keychain). Its passphrase, when it has one, is
+        ``private_key_passphrase``, or the environment variable named by
+        ``private_key_passphrase_env``. A key signs the user in in place of a
+        password (``SNOWFLAKE_JWT``); see :mod:`nlqueries.connectors.snowflake_keys`.
         """
         self._database = credentials["database"]
         self._db_schema = credentials.get("schema")
@@ -193,14 +204,35 @@ class SnowflakeConnector(DatabaseConnector):
         connect_kwargs: dict[str, Any] = {
             "account": self._account_identifier(str(credentials["account"])),
             "user": credentials.get("user"),
-            "password": credentials.get("password"),
             "warehouse": credentials.get("warehouse"),
             "database": self._database,
         }
         if self._db_schema:
             connect_kwargs["schema"] = self._db_schema
+        key = self._private_key(credentials)
+        if key is not None:
+            connect_kwargs["private_key"] = key
+            connect_kwargs["authenticator"] = "SNOWFLAKE_JWT"
+        else:
+            connect_kwargs["password"] = credentials.get("password")
 
         self._connection = snowflake.connector.connect(**connect_kwargs)
+
+    @staticmethod
+    def _private_key(credentials: dict[str, Any]) -> bytes | None:
+        """The private key to sign in with, as the driver takes it, or None for
+        password sign-in."""
+        pem = credentials.get("private_key")
+        key_file = credentials.get("private_key_file")
+        if not pem and not key_file:
+            return None
+        if not pem:
+            pem = Path(str(key_file)).expanduser().read_bytes()
+        passphrase = credentials.get("private_key_passphrase")
+        variable = credentials.get("private_key_passphrase_env")
+        if not passphrase and variable:
+            passphrase = os.environ.get(str(variable)) or None
+        return private_key_der(pem, passphrase)
 
     def _require_connection(self) -> Any:
         if self._connection is None:

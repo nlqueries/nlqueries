@@ -195,6 +195,59 @@ export QDRANT_URL=http://localhost:6333
 
 NLQueries creates each collection listed at the top of this page automatically on its first write.
 
+## Running Qdrant in production
+
+### How NLQueries connects
+
+Every Qdrant client in NLQueries is built in one place (`nlqueries.embeddings.qdrant_client.build_qdrant_client`), from two settings:
+
+| Setting | Default | Notes |
+|---|---|---|
+| `QDRANT_URL` | `http://localhost:6333` | The REST endpoint. A URL with no scheme, such as `qdrant:6333`, is plain http |
+| `QDRANT_API_KEY` | empty | Sent by every Qdrant client NLQueries builds, and by the requests that call `QDRANT_URL` directly: the health checks (`nlqueries health` and the MCP `health` tool), `process-history --embed`'s check that Qdrant is up, and the `kb-stats` cache count |
+
+Nothing else is configurable: no timeout, and no gRPC. NLQueries talks REST to the port in `QDRANT_URL`, so port 6334 can stay unpublished.
+
+**A Qdrant that is not on this machine needs a key.** `localhost`, `127.0.0.0/8` and `::1` count as this machine; every other host, a private Docker network included, does not. For any other `QDRANT_URL`, an empty `QDRANT_API_KEY` stops the first Qdrant call with `QdrantAuthenticationRequired`. There is no setting to turn this off. The reason is the semantic cache: it stores SQL that is executed against your database, so a Qdrant that anyone can write to is a way to run SQL. Set the same key on the server, as `QDRANT__SERVICE__API_KEY`.
+
+**Use https when the key crosses a network.** A key sent to a host other than this machine over plain `http://` is logged as a warning, once per URL, and not refused. Anyone on that path can read the key. Use an `https://` URL (Qdrant Cloud serves one), or keep Qdrant on a network nothing else can reach.
+
+### Several NLQueries processes, one Qdrant
+
+Point every process at the same `QDRANT_URL`, and give them all the same two keys. Otherwise each one generates its own, under its own state directory:
+
+- **`NLQ_CACHE_SIGNING_KEY`** signs cached answers, capsules and verified examples. An entry another process signed with a different key does not verify. It is then treated as a cache miss, or left out as an example ([configuration](configuration.md)).
+- **`NLQ_CACHE_ENCRYPTION_KEY`**, if [encryption](#encrypting-what-qdrant-stores) is on. Text another process encrypted under a different key cannot be read.
+
+### What to back up
+
+Qdrant holds nothing that cannot be rebuilt, but the parts differ in what rebuilding costs: see [What that costs](#upgrading-an-existing-qdrant). Document chunks are the expensive part, because every source has to be ingested again. If you have ingested a large corpus, back Qdrant up.
+
+Qdrant's own tools do this: its snapshot API, per collection or for the whole storage, or a copy of its storage directory (`/qdrant/storage` in the container) taken while Qdrant is stopped. Qdrant Cloud has backups of its own. Qdrant's documentation covers all three.
+
+Restoring a backup restores signed and encrypted entries, which are only useful with the keys that wrote them. Keep `NLQ_CACHE_SIGNING_KEY` with the deployment's configuration, so a restored Qdrant still verifies. Keep `NLQ_CACHE_ENCRYPTION_KEY` too, but apart from the backups, as [Encrypting what Qdrant stores](#encrypting-what-qdrant-stores) says.
+
+### Sizing
+
+There are no measured figures for NLQueries' footprint in Qdrant, so plan from what is stored:
+
+- **Points:** one per cached answer, per document chunk, per verified example, and per table, column and capsule an agent has embedded.
+- **Vectors:** 384 dimensions, cosine distance.
+- **Quantization:** INT8 scalar quantization on every collection NLQueries creates, with the quantized vectors kept in RAM (`always_ram`).
+
+Document chunks are usually the largest share, and they grow with what you ingest. Watch Qdrant's own memory and disk use as a corpus grows.
+
+### The Docker Compose service
+
+The compose file's `qdrant` service is a reasonable model for a single-host deployment:
+
+- **A pinned version:** `qdrant/qdrant:v1.18.2`. Move it deliberately, after reading [Upgrading an existing Qdrant](#upgrading-an-existing-qdrant).
+- **A required key:** `QDRANT__SERVICE__API_KEY` is taken from `QDRANT_API_KEY`, and compose refuses to start without it.
+- **Ports published on loopback only** (`BIND_ADDR`, default `127.0.0.1`). The NLQueries container reaches Qdrant over the compose network as `http://qdrant:6333`.
+- **Storage in the named volume `qdrant-data`.**
+- **Privileges:** all Linux capabilities dropped, and `no-new-privileges` set.
+- **A health check** that opens the REST port, which `nlqueries-core` waits on before it starts.
+
 ## Encrypting what Qdrant stores
 
 Qdrant keeps the text of cached answers and of every ingested document chunk, readable by anyone with access to its storage, its snapshots or its API. With `NLQ_CACHE_ENCRYPTION=true`, both are encrypted with AES-256-GCM before they are stored and decrypted when they are read; searching is unchanged, since it runs on vectors computed from the text before it is encrypted.
