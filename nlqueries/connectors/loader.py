@@ -30,6 +30,7 @@ from nlqueries.connectors import (
     _resolve,
 )
 from nlqueries.connectors.base import PermittedConnector
+from nlqueries.connectors.snowflake_keys import passphrase_entry, private_key_entry
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.state_files import agent_storage_id
 
@@ -44,7 +45,7 @@ _KEYRING_SERVICE = "nlqueries"
 #:
 #: ``url`` is NOT here: it is replaced rather than dropped, with the
 #: password-resolved form, because ``SQLAlchemyConnector`` connects with it.
-_ENTRY_ONLY_KEYS = frozenset({"db_type", "password_storage"})
+_ENTRY_ONLY_KEYS = frozenset({"db_type", "password_storage", "private_key_storage"})
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +490,25 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "password": parsed.password or _load_password(connector_id, cfg),
         }
     )
+    if cfg.get("private_key_storage") == "keychain":
+        # A Snowflake key pair's private key, kept in the keychain as a
+        # password is (nlqueries.connectors.snowflake_keys).
+        credentials["private_key"] = _keychain_get(private_key_entry(connector_id))
+        passphrase = _keychain_get(passphrase_entry(connector_id))
+        if passphrase:
+            credentials["private_key_passphrase"] = passphrase
     return credentials
+
+
+def _keychain_get(entry: str) -> str | None:
+    """*entry*'s value in the OS keychain, or None when it, or the keychain, is not there."""
+    try:
+        import keyring  # noqa: PLC0415
+
+        value: str | None = keyring.get_password(_KEYRING_SERVICE, entry)
+        return value
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @dataclass(frozen=True)

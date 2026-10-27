@@ -139,6 +139,63 @@ def _save_connector(connector_id: str, config: dict[str, Any]) -> None:
 _KEYRING_SERVICE = "nlqueries"
 
 
+def _read_private_key(path: str, passphrase_env: str | None) -> tuple[str, str | None]:
+    """The PEM at *path*, and its passphrase, checked to open the key.
+
+    The passphrase comes from *passphrase_env* when it is named; otherwise it is
+    asked for only if the key turns out to be encrypted.
+    """
+    from nlqueries.connectors.snowflake_keys import (  # noqa: PLC0415
+        EncryptedKeyError,
+        PrivateKeyError,
+        private_key_der,
+    )
+
+    pem = Path(path).expanduser().read_text(encoding="utf-8")
+    passphrase: str | None = None
+    if passphrase_env is not None:
+        passphrase = os.environ.get(passphrase_env) or None
+        if passphrase is None:
+            raise click.ClickException(
+                f"Environment variable '{passphrase_env}' is not set or is empty."
+            )
+    try:
+        private_key_der(pem, passphrase)
+    except EncryptedKeyError:
+        passphrase = click.prompt("Private key passphrase", hide_input=True)
+        try:
+            private_key_der(pem, passphrase)
+        except PrivateKeyError as exc:
+            raise click.ClickException(f"{path}: {exc}") from exc
+    except PrivateKeyError as exc:
+        raise click.ClickException(f"{path}: {exc}") from exc
+    return pem, passphrase
+
+
+def _save_private_key(connector_id: str, pem: str, passphrase: str | None) -> bool:
+    """Store a Snowflake private key, and its passphrase, in the OS keychain for
+    *connector_id*. Returns True on success."""
+    from nlqueries.connectors.snowflake_keys import (  # noqa: PLC0415
+        passphrase_entry,
+        private_key_entry,
+    )
+
+    try:
+        import keyring as _kr  # noqa: PLC0415
+
+        _kr.set_password(_KEYRING_SERVICE, private_key_entry(connector_id), pem)
+        if passphrase:
+            _kr.set_password(_KEYRING_SERVICE, passphrase_entry(connector_id), passphrase)
+        else:
+            # A passphrase left by an earlier, encrypted key would be tried on
+            # this one, which has none, and refused.
+            with contextlib.suppress(Exception):
+                _kr.delete_password(_KEYRING_SERVICE, passphrase_entry(connector_id))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _save_password(connector_id: str, password: str) -> bool:
     """Store *password* in the OS keychain for *connector_id*. Returns True on success."""
     try:
@@ -805,6 +862,27 @@ def cli() -> None:
 @click.option("--account", default=None, help="Snowflake account identifier.")
 @click.option("--warehouse", default=None, help="Snowflake warehouse to use.")
 @click.option("--schema", "db_schema", default=None, help="Snowflake schema (optional).")
+@click.option(
+    "--private-key-file",
+    "private_key_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Snowflake: sign in with this PEM private key (key-pair authentication) "
+        "instead of a password. Its contents go to the OS keychain; without one, "
+        "its path is recorded."
+    ),
+)
+@click.option(
+    "--private-key-passphrase-env",
+    "private_key_passphrase_env",
+    default=None,
+    metavar="VAR",
+    help=(
+        "Snowflake: read the private key's passphrase from environment variable VAR. "
+        "Omit to be prompted when the key is encrypted."
+    ),
+)
 @click.option("--project-id", "project_id", default=None, help="BigQuery / GCP project ID.")
 @click.option("--dataset-id", "dataset_id", default=None, help="BigQuery dataset ID (optional).")
 @click.option(
@@ -842,6 +920,8 @@ def connect(
     account: str | None,
     warehouse: str | None,
     db_schema: str | None,
+    private_key_file: str | None,
+    private_key_passphrase_env: str | None,
     project_id: str | None,
     dataset_id: str | None,
     service_account_json: str | None,
@@ -871,10 +951,24 @@ def connect(
       nlqueries connect sqlalchemy --url "mysql+pymysql://alice:secret@db:3306/shop"
       nlqueries connect snowflake --account acme-prod --database PROD --user bob \\
           --password YOUR_PASSWORD --warehouse COMPUTE_WH --schema PUBLIC
+      nlqueries connect snowflake --account acme-prod --database PROD --user svc_nlq \\
+          --private-key-file ~/.ssh/snowflake_rsa_key.p8 --warehouse COMPUTE_WH
       nlqueries connect bigquery --project-id acme-prod --dataset-id analytics \\
           --service-account-json /path/to/key.json
     """
     db_type_l = db_type.lower()
+
+    # Key-pair sign-in is Snowflake's, and replaces the password.
+    if private_key_file and db_type_l != "snowflake":
+        raise click.ClickException(
+            f"--private-key-file is only valid with snowflake, not '{db_type}'."
+        )
+    if private_key_passphrase_env is not None and not private_key_file:
+        raise click.ClickException("--private-key-passphrase-env needs --private-key-file.")
+    if private_key_file and (password is not None or password_env is not None):
+        raise click.ClickException(
+            "Give a password or --private-key-file, not both: the key signs the user in."
+        )
 
     # --url and `sqlalchemy` go together. The generic connector's only
     # credential is a whole URL, and every other type composes its URL from the
@@ -907,7 +1001,7 @@ def connect(
     # below applies them to the parsed URL.
     # The generic connector takes its password inside --url.
     _no_auth_types = _TAKES_NO_PASSWORD | {"sqlalchemy"}
-    if db_type_l not in _no_auth_types:
+    if db_type_l not in _no_auth_types and not private_key_file:
         if password_env is not None:
             password = os.environ.get(password_env) or ""
             if not password:
@@ -936,7 +1030,7 @@ def connect(
                 ("--warehouse", warehouse),
                 ("--database", database),
                 ("--user", user),
-                ("--password", password),
+                ("--password or --private-key-file", password or private_key_file),
             )
             if not value
         ]
@@ -1066,6 +1160,15 @@ def connect(
             f"[cyan]{host}:{resolved_port}/{database}[/cyan] …"
         )
 
+    # The private key, read and opened now: a key that will not open is said so
+    # here, rather than as an authentication failure from Snowflake.
+    private_key_pem: str | None = None
+    private_key_passphrase: str | None = None
+    if private_key_file:
+        private_key_pem, private_key_passphrase = _read_private_key(
+            private_key_file, private_key_passphrase_env
+        )
+
     # Built before the class is resolved, not inside the call below, because the
     # class can depend on the credentials: an authentication method present in
     # them selects a subclass whose `connect()` performs a different handshake.
@@ -1083,6 +1186,8 @@ def connect(
         "project_id": project_id,
         "dataset_id": dataset_id,
         "service_account_json": service_account_json,
+        "private_key": private_key_pem,
+        "private_key_passphrase": private_key_passphrase,
         # SQLAlchemyConnector's only credential. Every other connector ignores
         # an unknown key, and `resolver_entry` below already carried it.
         "url": url,
@@ -1098,7 +1203,9 @@ def connect(
     # the connection would be validated through the registry class while every
     # later path used the resolved one, which is the split this seam removes.
     resolver_entry: dict[str, Any] = {
-        key: value for key, value in credentials.items() if key != "password"
+        key: value
+        for key, value in credentials.items()
+        if key not in ("password", "private_key", "private_key_passphrase")
     }
     resolver_entry["db_type"] = db_type_l
     resolver_entry["url"] = url
@@ -1193,12 +1300,41 @@ def connect(
         config["host"] = ""
         config["port"] = 0
         config["user"] = ""
+    key_in_keychain = False
+    if private_key_pem is not None and private_key_file:
+        key_in_keychain = _save_private_key(cid, private_key_pem, private_key_passphrase)
+        if key_in_keychain:
+            config["private_key_storage"] = "keychain"
+        else:
+            # No keychain (a container, a headless host): the key stays a file,
+            # read at each connect (owner, 2026-10-27). A passphrase typed at
+            # the prompt has nowhere to be kept, so it must come from a variable.
+            if private_key_passphrase and private_key_passphrase_env is None:
+                raise click.ClickException(
+                    "There is no keychain here to keep the private key's passphrase in. "
+                    "Run again with --private-key-passphrase-env VAR, and set VAR "
+                    "wherever nlqueries runs."
+                )
+            config["private_key_file"] = str(Path(private_key_file).expanduser().resolve())
+            if private_key_passphrase_env is not None:
+                config["private_key_passphrase_env"] = private_key_passphrase_env
     _save_connector(cid, config)
 
     console.print(f"  Connector registered as [bold]{cid!r}[/bold]")
     if alias:
         console.print(f"  Alias               : [bold]{alias}[/bold]")
     console.print(f"  Config saved to [dim]{CONNECTORS_FILE}[/dim]")
+    if key_in_keychain:
+        console.print(
+            "  [green]✓ Private key stored in OS keychain[/green] (not written to the config "
+            "file). The key file is no longer needed by nlqueries."
+        )
+    elif private_key_file:
+        console.print(
+            "  [yellow]Note:[/yellow] keyring unavailable — the private key's path is "
+            f"recorded ({config['private_key_file']}) and the key is read from it at each "
+            "connect. Keep it there, readable by this account only."
+        )
     if stored_in_keychain:
         console.print(
             "  [green]✓ Password stored in OS keychain[/green] (not written to the config file)."

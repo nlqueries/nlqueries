@@ -131,6 +131,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Snowflake key-pair authentication.** `nlqueries connect snowflake
+  --private-key-file KEY.p8` signs a service user in with a private key instead
+  of a password, as Snowflake asks now that it is retiring single-factor
+  password sign-in. The key's contents go to the OS keychain. With no keychain
+  (the Docker image, a headless host), the file's path is recorded and the key
+  is read at each connect. An encrypted key's passphrase is prompted for, or
+  read from `--private-key-passphrase-env`. See
+  [connectors.md](docs/connectors.md#snowflake-key-pair-authentication).
 - **`docs/mcp-clients.md`: connecting MCP clients.** Claude Desktop and Cursor
   over stdio, including the `env` block a client-started server needs for its
   LLM key, and a client over the network with a bearer token. It also lists
