@@ -17,6 +17,9 @@ path of the key file, read at each connect.
 
 from __future__ import annotations
 
+import contextlib
+from typing import Any
+
 from cryptography.hazmat.primitives import serialization
 
 #: The keychain service a connector's secrets are stored under, as passwords are.
@@ -66,3 +69,68 @@ def private_key_der(pem: str | bytes, passphrase: str | None = None) -> bytes:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
+
+
+#: Characters per keychain entry. Windows Credential Manager holds at most 2,560
+#: bytes per credential, and keyring stores the value as UTF-16, so a PEM --
+#: 1,700 characters for a 2048-bit key -- does not fit in one entry: CredWrite
+#: refuses it ("The stub received bad data"). Measured, 1,270 characters fit;
+#: 1,000 leaves room. The key is split across entries, and the connector's own
+#: entry holds how many there are (from #347's review).
+_CHUNK = 1000
+
+
+class KeychainKeyError(RuntimeError):
+    """A connector's private key is not in the keychain, or not all of it."""
+
+
+def store_in_keychain(keyring: Any, connector_id: str, pem: str, passphrase: str | None) -> None:
+    """Put *pem*, and *passphrase*, in the keychain for *connector_id*.
+
+    *keyring* is the ``keyring`` module, or a stand-in. Raises what it raises
+    when the keychain will not take a value. The count goes in last, so a write
+    that fails part-way leaves the previous key readable.
+    """
+    entry = private_key_entry(connector_id)
+    chunks = [pem[i : i + _CHUNK] for i in range(0, len(pem), _CHUNK)]
+    for index, chunk in enumerate(chunks):
+        keyring.set_password(KEYCHAIN_SERVICE, f"{entry}:{index}", chunk)
+    keyring.set_password(KEYCHAIN_SERVICE, entry, str(len(chunks)))
+    if passphrase:
+        keyring.set_password(KEYCHAIN_SERVICE, passphrase_entry(connector_id), passphrase)
+    else:
+        # A passphrase left by an earlier, encrypted key would be tried on
+        # this one, which has none, and refused.
+        with contextlib.suppress(Exception):
+            keyring.delete_password(KEYCHAIN_SERVICE, passphrase_entry(connector_id))
+
+
+def load_from_keychain(keyring: Any, connector_id: str) -> tuple[str, str | None]:
+    """*connector_id*'s private key and passphrase, from the keychain.
+
+    Raises:
+        KeychainKeyError: the key is not there, or not all of it -- the keychain
+            is locked, nlqueries runs as another account, or the entry was
+            removed. Said, rather than left to Snowflake to refuse a sign-in
+            with no key and no password.
+    """
+    entry = private_key_entry(connector_id)
+    missing = KeychainKeyError(
+        f"The private key for connector {connector_id!r} could not be read from the OS "
+        "keychain (it may be locked, nlqueries may be running as another account, or the "
+        "entry was removed). Run `nlqueries connect snowflake ... --private-key-file` "
+        "again to store it."
+    )
+    try:
+        count = keyring.get_password(KEYCHAIN_SERVICE, entry)
+        if count is None or not count.isdigit():
+            raise missing
+        parts = [keyring.get_password(KEYCHAIN_SERVICE, f"{entry}:{i}") for i in range(int(count))]
+        passphrase = keyring.get_password(KEYCHAIN_SERVICE, passphrase_entry(connector_id))
+    except KeychainKeyError:
+        raise
+    except Exception as exc:  # the keychain itself failed
+        raise missing from exc
+    if any(part is None for part in parts):
+        raise missing
+    return "".join(str(part) for part in parts), passphrase

@@ -22,13 +22,34 @@ from nlqueries.connectors import loader
 from nlqueries.connectors.snowflake import SnowflakeConnector
 from nlqueries.connectors.snowflake_keys import (
     EncryptedKeyError,
+    KeychainKeyError,
     PrivateKeyError,
-    passphrase_entry,
+    load_from_keychain,
     private_key_der,
     private_key_entry,
+    store_in_keychain,
 )
 
 _PASSPHRASE = "correct horse battery staple"
+
+
+class _Keychain:
+    """A keychain that, like Windows Credential Manager, will not take a value
+    much over 1,270 characters (2,560 bytes of UTF-16) -- a PEM is 1,700."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def set_password(self, _service: str, entry: str, value: str) -> None:
+        if len(value) > 1270:
+            raise OSError(1783, "CredWrite", "The stub received bad data")
+        self.values[entry] = value
+
+    def get_password(self, _service: str, entry: str) -> str | None:
+        return self.values.get(entry)
+
+    def delete_password(self, _service: str, entry: str) -> None:
+        self.values.pop(entry, None)
 
 
 def _pem(passphrase: str | None = None) -> str:
@@ -116,24 +137,52 @@ def test_without_a_key_it_still_signs_in_with_the_password(mock_connect: Any) ->
 # -- the loader ---------------------------------------------------------------
 
 
+_KEYCHAIN_ENTRY = {
+    "db_type": "snowflake",
+    "url": "snowflake://svc_nlq:@acme-prod/PROD",
+    "account": "acme-prod",
+    "private_key_storage": "keychain",
+}
+
+
+def test_a_key_too_long_for_one_keychain_entry_is_stored_and_read_back_whole() -> None:
+    """Windows refuses a PEM in one credential (from #347's review), so it is
+    split across entries; the key and passphrase come back as they went in."""
+    keychain, pem = _Keychain(), _pem(_PASSPHRASE)
+
+    store_in_keychain(keychain, "sf:prod", pem, _PASSPHRASE)
+
+    assert len(keychain.values) > 2  # the count, several parts, the passphrase
+    assert load_from_keychain(keychain, "sf:prod") == (pem, _PASSPHRASE)
+
+
 def test_the_loader_reads_the_key_and_passphrase_from_the_keychain() -> None:
-    stored = {
-        private_key_entry("sf:prod"): "PEM",
-        passphrase_entry("sf:prod"): _PASSPHRASE,
-    }
-    cfg = {
-        "db_type": "snowflake",
-        "url": "snowflake://svc_nlq:@acme-prod/PROD",
-        "account": "acme-prod",
-        "private_key_storage": "keychain",
-    }
-    with patch("keyring.get_password", lambda _service, entry: stored.get(entry)):
+    keychain, pem = _Keychain(), _pem()
+    store_in_keychain(keychain, "sf:prod", pem, _PASSPHRASE)
+    cfg = dict(_KEYCHAIN_ENTRY)
+    with patch("keyring.get_password", keychain.get_password):
         credentials = loader.credentials_for("sf:prod", cfg)
 
-    assert credentials["private_key"] == "PEM"
+    assert credentials["private_key"] == pem
     assert credentials["private_key_passphrase"] == _PASSPHRASE
     # Where the key is kept describes the entry, not the connection.
     assert "private_key_storage" not in credentials
+
+
+@pytest.mark.parametrize("removed", ["count", "part"])
+def test_a_key_the_keychain_cannot_give_back_is_refused_by_name(removed: str) -> None:
+    """Rather than a connector with neither key nor password, which Snowflake
+    refuses as a bad password (from #347's review)."""
+    keychain = _Keychain()
+    store_in_keychain(keychain, "sf:prod", _pem(), None)
+    entry = private_key_entry("sf:prod")
+    keychain.values.pop(entry if removed == "count" else f"{entry}:0")
+
+    with (
+        patch("keyring.get_password", keychain.get_password),
+        pytest.raises(KeychainKeyError, match="sf:prod.*connect"),
+    ):
+        loader.credentials_for("sf:prod", dict(_KEYCHAIN_ENTRY))
 
 
 # -- nlqueries connect --------------------------------------------------------
@@ -155,18 +204,18 @@ def _connect(
     key_file = tmp_path / "svc.p8"
     key_file.write_text(pem, encoding="utf-8")
     saved: dict[str, Any] = {}
-    secrets: dict[str, str] = {}
+    store = _Keychain()
 
-    def _set(_service: str, entry: str, value: str) -> None:
+    def _set(service: str, entry: str, value: str) -> None:
         if not keychain:
             raise RuntimeError("no keyring backend")
-        secrets[entry] = value
+        store.set_password(service, entry, value)
 
     with (
         patch("nlqueries.cli.main._save_connector", lambda cid, cfg: saved.update(cfg)),
         patch("nlqueries.cli.main.connector_class_for", return_value=_Reachable),
         patch("keyring.set_password", _set),
-        patch("keyring.delete_password", lambda *a: None),
+        patch("keyring.delete_password", store.delete_password),
     ):
         result = CliRunner().invoke(
             cli,
@@ -188,26 +237,27 @@ def _connect(
             env=env,
             input=f"{_PASSPHRASE}\n",
         )
-    return result, saved, secrets
+    return result, saved, store
 
 
 def test_connect_keeps_the_key_in_the_keychain_and_not_in_the_file(tmp_path: Path) -> None:
     pem = _pem()
-    result, saved, secrets = _connect(tmp_path, pem, keychain=True)
+    result, saved, store = _connect(tmp_path, pem, keychain=True)
 
     assert result.exit_code == 0, result.output
     assert saved["private_key_storage"] == "keychain"
     assert pem not in str(saved) and "private_key_file" not in saved
-    assert next(iter(secrets.values())) == pem
+    cid = "snowflake:localhost:PROD"
+    assert load_from_keychain(store, cid)[0] == pem
     # The connection was tested with the key, not a password.
     assert _Reachable.seen["private_key"] == pem and not _Reachable.seen["password"]
 
 
 def test_an_encrypted_keys_passphrase_is_asked_for_and_kept_with_it(tmp_path: Path) -> None:
-    result, saved, secrets = _connect(tmp_path, _pem(_PASSPHRASE), keychain=True)
+    result, saved, store = _connect(tmp_path, _pem(_PASSPHRASE), keychain=True)
 
     assert result.exit_code == 0, result.output
-    assert _PASSPHRASE in secrets.values()
+    assert _PASSPHRASE in store.values.values()
     assert _PASSPHRASE not in str(saved)
 
 
@@ -225,7 +275,8 @@ def test_without_a_keychain_the_key_files_path_is_recorded(tmp_path: Path) -> No
     assert saved["private_key_file"] == str((tmp_path / "svc.p8").resolve())
     assert saved["private_key_passphrase_env"] == "SF_KEY_PASS"
     assert "private_key_storage" not in saved
-    assert "keyring unavailable" in " ".join(result.output.split())
+    # Why the keychain did not take it, not just that it did not.
+    assert "no keyring backend" in " ".join(result.output.split())
 
 
 def test_without_a_keychain_a_typed_passphrase_is_refused_rather_than_lost(

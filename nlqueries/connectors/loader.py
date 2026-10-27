@@ -30,7 +30,7 @@ from nlqueries.connectors import (
     _resolve,
 )
 from nlqueries.connectors.base import PermittedConnector
-from nlqueries.connectors.snowflake_keys import passphrase_entry, private_key_entry
+from nlqueries.connectors.snowflake_keys import KeychainKeyError, load_from_keychain
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.state_files import agent_storage_id
 
@@ -492,23 +492,20 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
     )
     if cfg.get("private_key_storage") == "keychain":
         # A Snowflake key pair's private key, kept in the keychain as a
-        # password is (nlqueries.connectors.snowflake_keys).
-        credentials["private_key"] = _keychain_get(private_key_entry(connector_id))
-        passphrase = _keychain_get(passphrase_entry(connector_id))
+        # password is (nlqueries.connectors.snowflake_keys). Unlike a password,
+        # a key the keychain cannot give back is refused here: the connector
+        # would otherwise sign in with neither a key nor a password.
+        try:
+            import keyring  # noqa: PLC0415
+        except ImportError as exc:
+            raise KeychainKeyError(
+                "keyring is not installed, and the private key is in the keychain."
+            ) from exc
+        pem, passphrase = load_from_keychain(keyring, connector_id)
+        credentials["private_key"] = pem
         if passphrase:
             credentials["private_key_passphrase"] = passphrase
     return credentials
-
-
-def _keychain_get(entry: str) -> str | None:
-    """*entry*'s value in the OS keychain, or None when it, or the keychain, is not there."""
-    try:
-        import keyring  # noqa: PLC0415
-
-        value: str | None = keyring.get_password(_KEYRING_SERVICE, entry)
-        return value
-    except Exception:  # noqa: BLE001
-        return None
 
 
 @dataclass(frozen=True)

@@ -172,28 +172,22 @@ def _read_private_key(path: str, passphrase_env: str | None) -> tuple[str, str |
     return pem, passphrase
 
 
-def _save_private_key(connector_id: str, pem: str, passphrase: str | None) -> bool:
+def _save_private_key(connector_id: str, pem: str, passphrase: str | None) -> str | None:
     """Store a Snowflake private key, and its passphrase, in the OS keychain for
-    *connector_id*. Returns True on success."""
-    from nlqueries.connectors.snowflake_keys import (  # noqa: PLC0415
-        passphrase_entry,
-        private_key_entry,
-    )
+    *connector_id*. Returns None on success, else why the keychain refused it.
+
+    The reason is said: "keyring unavailable" was wrong for a desktop whose
+    keychain is there but would not take a value (from #347's review).
+    """
+    from nlqueries.connectors.snowflake_keys import store_in_keychain  # noqa: PLC0415
 
     try:
         import keyring as _kr  # noqa: PLC0415
 
-        _kr.set_password(_KEYRING_SERVICE, private_key_entry(connector_id), pem)
-        if passphrase:
-            _kr.set_password(_KEYRING_SERVICE, passphrase_entry(connector_id), passphrase)
-        else:
-            # A passphrase left by an earlier, encrypted key would be tried on
-            # this one, which has none, and refused.
-            with contextlib.suppress(Exception):
-                _kr.delete_password(_KEYRING_SERVICE, passphrase_entry(connector_id))
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+        store_in_keychain(_kr, connector_id, pem, passphrase)
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+    return None
 
 
 def _save_password(connector_id: str, password: str) -> bool:
@@ -1301,19 +1295,22 @@ def connect(
         config["port"] = 0
         config["user"] = ""
     key_in_keychain = False
+    keychain_refusal: str | None = None
     if private_key_pem is not None and private_key_file:
-        key_in_keychain = _save_private_key(cid, private_key_pem, private_key_passphrase)
+        keychain_refusal = _save_private_key(cid, private_key_pem, private_key_passphrase)
+        key_in_keychain = keychain_refusal is None
         if key_in_keychain:
             config["private_key_storage"] = "keychain"
         else:
-            # No keychain (a container, a headless host): the key stays a file,
-            # read at each connect (owner, 2026-10-27). A passphrase typed at
-            # the prompt has nowhere to be kept, so it must come from a variable.
+            # No keychain that takes it (a container, a headless host): the key
+            # stays a file, read at each connect (owner, 2026-10-27). A
+            # passphrase typed at the prompt has nowhere to be kept, so it must
+            # come from a variable.
             if private_key_passphrase and private_key_passphrase_env is None:
                 raise click.ClickException(
-                    "There is no keychain here to keep the private key's passphrase in. "
-                    "Run again with --private-key-passphrase-env VAR, and set VAR "
-                    "wherever nlqueries runs."
+                    f"The OS keychain did not take the private key ({keychain_refusal}), "
+                    "so its passphrase has nowhere to be kept. Run again with "
+                    "--private-key-passphrase-env VAR, and set VAR wherever nlqueries runs."
                 )
             config["private_key_file"] = str(Path(private_key_file).expanduser().resolve())
             if private_key_passphrase_env is not None:
@@ -1331,9 +1328,10 @@ def connect(
         )
     elif private_key_file:
         console.print(
-            "  [yellow]Note:[/yellow] keyring unavailable — the private key's path is "
-            f"recorded ({config['private_key_file']}) and the key is read from it at each "
-            "connect. Keep it there, readable by this account only."
+            f"  [yellow]Note:[/yellow] the OS keychain did not take the private key "
+            f"({keychain_refusal}) — its path is recorded ({config['private_key_file']}) "
+            "and the key is read from it at each connect. Keep it there, readable by "
+            "this account only."
         )
     if stored_in_keychain:
         console.print(
