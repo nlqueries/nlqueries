@@ -171,12 +171,14 @@ def test_the_generic_connector_never_commits(dialect: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("dialect", ["postgresql", "redshift"])
+@pytest.mark.parametrize("dialect", ["postgresql", "redshift", "oracle"])
 def test_the_transaction_is_made_read_only_before_the_query(dialect: str) -> None:
     """First statement in the transaction, which is the only place it can be set.
 
     Broader than any validator can be, because it applies to what the statement
-    does rather than to how it is spelled: DML and DDL anywhere in the call graph.
+    does rather than to how it is spelled: DML anywhere in the call graph, and on
+    Postgres and Redshift DDL too. Oracle commits implicitly before DDL, which ends
+    the transaction; measured in `tests/integration/test_oracle_integration.py`.
     """
     connector, conn = _generic(dialect)
 

@@ -206,19 +206,21 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
         dialect="sqlalchemy",
         read_only_mechanism=(
             "never committed, rolled back either way; plus a read-only transaction on "
-            "postgresql, redshift, mysql and mariadb"
+            "postgresql, redshift, oracle, mysql and mariadb"
         ),
         not_covered=(
-            "DDL, since MySQL, MariaDB and Oracle commit implicitly around it, which on "
-            "MySQL and MariaDB also ends the read-only transaction"
+            "DDL, since MySQL, MariaDB and Oracle commit implicitly around it, which also "
+            "ends the read-only transaction"
         ),
         statement_timeout_mechanism="a best-effort per-dialect SET, where the dialect is known",
         verified_here=False,
         operator_requirement=(
             "This connector reaches any engine SQLAlchemy supports, so the rollback is the "
-            "only thing that holds everywhere. PostgreSQL, Redshift, MySQL and MariaDB also "
-            "get a read-only transaction; other engines get the rollback alone. The "
-            "restriction must come from the privileges granted to the login."
+            "only thing that holds everywhere. PostgreSQL, Redshift, Oracle, MySQL and "
+            "MariaDB also get a read-only transaction; other engines get the rollback alone. "
+            "On Oracle a query against a table truncated or created in the last couple of "
+            "seconds can fail once with ORA-01466. The restriction must come from the "
+            "privileges granted to the login."
         ),
     ),
 }
