@@ -14,8 +14,8 @@ generic connector applies `ssl_mode`/`ssl_ca_cert` only to libpq PostgreSQL URLs
 `encryption` setting is `require` (the default, `request`, leaves the session unencrypted unless the server forces encryption, [below](#sql-server--azure-sql)),
 and `connect mysql` sets no TLS options at all ([Transport security](database-hardening.md#transport-security)).
 Read-only: PostgreSQL and Redshift are asked for a read-only transaction (directly
-or through the generic connector), as are MySQL and MariaDB through the generic
-connector, and SQLite and DuckDB files are opened read-only; every other engine
+or through the generic connector), as are Oracle, MySQL and MariaDB through the
+generic connector, and SQLite and DuckDB files are opened read-only; every other engine
 gets at most a transaction that is never committed
 ([What each connector enforces](database-hardening.md#what-each-connector-enforces)).
 None of this limits *what* the role can read, and none of it is a substitute for a
