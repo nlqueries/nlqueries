@@ -30,6 +30,7 @@ from nlqueries.connectors import (
     _resolve,
 )
 from nlqueries.connectors.base import PermittedConnector
+from nlqueries.connectors.snowflake_keys import KeychainKeyError, load_from_keychain
 from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.state_files import agent_storage_id
 
@@ -44,7 +45,7 @@ _KEYRING_SERVICE = "nlqueries"
 #:
 #: ``url`` is NOT here: it is replaced rather than dropped, with the
 #: password-resolved form, because ``SQLAlchemyConnector`` connects with it.
-_ENTRY_ONLY_KEYS = frozenset({"db_type", "password_storage"})
+_ENTRY_ONLY_KEYS = frozenset({"db_type", "password_storage", "private_key_storage"})
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +490,21 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "password": parsed.password or _load_password(connector_id, cfg),
         }
     )
+    if cfg.get("private_key_storage") == "keychain":
+        # A Snowflake key pair's private key, kept in the keychain as a
+        # password is (nlqueries.connectors.snowflake_keys). Unlike a password,
+        # a key the keychain cannot give back is refused here: the connector
+        # would otherwise sign in with neither a key nor a password.
+        try:
+            import keyring  # noqa: PLC0415
+        except ImportError as exc:
+            raise KeychainKeyError(
+                "keyring is not installed, and the private key is in the keychain."
+            ) from exc
+        pem, passphrase = load_from_keychain(keyring, connector_id)
+        credentials["private_key"] = pem
+        if passphrase:
+            credentials["private_key_passphrase"] = passphrase
     return credentials
 
 
