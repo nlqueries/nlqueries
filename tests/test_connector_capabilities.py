@@ -167,6 +167,9 @@ def test_the_engines_with_a_surprising_gap_declare_it() -> None:
     # to a MyISAM table too, so that is no longer a gap to declare.
     assert "MyISAM" not in CAPABILITIES["sqlalchemy"].not_covered
     assert "mysql" in CAPABILITIES["sqlalchemy"].read_only_mechanism
+    # Oracle too since D6, with its one cost said where operators read it.
+    assert "oracle" in CAPABILITIES["sqlalchemy"].read_only_mechanism
+    assert "ORA-01466" in CAPABILITIES["sqlalchemy"].operator_requirement
 
     # SQL Server's DDL *is* transactional, so it has no surprising gap and must
     # not manufacture one -- an empty field is the correct answer, not prose.

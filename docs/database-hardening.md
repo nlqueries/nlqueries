@@ -625,8 +625,8 @@ skipped otherwise.
 
 **And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit
 implicitly around DDL, so a `CREATE` or `DROP` sent through this connector is
-permanent whatever the transaction does — on MySQL and MariaDB the implicit
-commit ends the read-only transaction before the DDL runs. It is the same limit
+permanent whatever the transaction does — on all three the implicit commit
+ends the read-only transaction before the DDL runs. It is the same limit
 Snowflake has, for the same reason, and it applies to any engine behind the
 generic SQLAlchemy connector that commits implicitly. On all of these the grant is the only thing
 standing between a generated statement and a schema change, which is why the
@@ -641,8 +641,8 @@ restricts what a statement may do, not what the login may reach.
 
 **The generic `sqlalchemy` connector reaches any engine SQLAlchemy supports**,
 so no single statement about its behaviour holds beyond the rollback, which does.
-It adds `SET TRANSACTION READ ONLY` when the URL turns out to be `postgresql` or
-`redshift`, `START TRANSACTION READ ONLY` for `mysql` or `mariadb`, and nothing
+It adds `SET TRANSACTION READ ONLY` when the URL turns out to be `postgresql`,
+`redshift` or `oracle`, `START TRANSACTION READ ONLY` for `mysql` or `mariadb`, and nothing
 further for a dialect it does not recognise. It refuses `sqlite://` and
 `duckdb://` URLs outright: the dedicated connectors open those files read-only
 and sandboxed, and through this one the same file opened read-write, with

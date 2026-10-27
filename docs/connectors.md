@@ -25,10 +25,12 @@ How much the connector can enforce differs by engine, and the gap worth knowing
 is **DDL**. A rolled-back transaction undoes an `INSERT` on a transactional
 table; it does not undo a `CREATE` or `DROP` on an engine that commits
 implicitly around DDL. That is **Snowflake**, and also **MySQL, MariaDB and
-Oracle** behind the generic SQLAlchemy connector: on MySQL and MariaDB the
-read-only transaction refuses every write to a table, MyISAM and MEMORY tables
-included, but a DDL statement commits implicitly, which ends that transaction,
-and then runs. **BigQuery** has no transaction to roll back at all, so a
+Oracle** behind the generic SQLAlchemy connector: on all three the read-only
+transaction refuses every write to a table (on MySQL and MariaDB, MyISAM and
+MEMORY tables included), but a DDL statement commits implicitly, which ends that
+transaction, and then runs. On Oracle, a query against a table truncated or
+created in the last couple of seconds can also fail once with ORA-01466; see
+[database-hardening.md](database-hardening.md). **BigQuery** has no transaction to roll back at all, so a
 non-`SELECT` statement type is logged after the job has run rather than
 prevented. On all of these the grant is doing work the connector cannot, which is
 why the role matters more than the transaction does.
