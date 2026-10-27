@@ -18,6 +18,7 @@ path of the key file, read at each connect.
 from __future__ import annotations
 
 import contextlib
+import secrets
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
@@ -76,7 +77,8 @@ def private_key_der(pem: str | bytes, passphrase: str | None = None) -> bytes:
 #: 1,700 characters for a 2048-bit key -- does not fit in one entry: CredWrite
 #: refuses it ("The stub received bad data"). Measured, 1,270 characters fit;
 #: 1,000 leaves room. The key is split across entries, and the connector's own
-#: entry holds how many there are (from #347's review).
+#: entry says which generation of them is in use, and how many there are (from
+#: #347's review).
 _CHUNK = 1000
 
 
@@ -84,25 +86,63 @@ class KeychainKeyError(RuntimeError):
     """A connector's private key is not in the keychain, or not all of it."""
 
 
+def _generation_entries(connector_id: str, generation: str, count: int) -> list[str]:
+    """The entries one stored key uses: its parts, then its passphrase."""
+    entry = private_key_entry(connector_id)
+    parts = [f"{entry}:{generation}:{i}" for i in range(count)]
+    return [*parts, f"{passphrase_entry(connector_id)}:{generation}"]
+
+
+def _parse_pointer(value: str | None) -> tuple[str, int] | None:
+    """The generation and part count the connector's own entry holds, or None."""
+    generation, _, count = (value or "").partition(":")
+    if not generation.isalnum() or not count.isdigit() or int(count) == 0:
+        return None
+    return generation, int(count)
+
+
 def store_in_keychain(keyring: Any, connector_id: str, pem: str, passphrase: str | None) -> None:
     """Put *pem*, and *passphrase*, in the keychain for *connector_id*.
 
     *keyring* is the ``keyring`` module, or a stand-in. Raises what it raises
-    when the keychain will not take a value. The count goes in last, so a write
-    that fails part-way leaves the previous key readable.
+    when the keychain will not take a value.
+
+    Each key goes under a fresh generation, its parts and passphrase alike, and
+    the connector's own entry -- ``<generation>:<count>`` -- switches to it
+    last. So a write that fails part-way leaves the previous key and its
+    passphrase as they were (from #347's review): the new parts never overwrite
+    the ones in use. The previous generation is removed after the switch.
     """
     entry = private_key_entry(connector_id)
+    previous = None
+    with contextlib.suppress(Exception):
+        previous = _parse_pointer(keyring.get_password(KEYCHAIN_SERVICE, entry))
+    generation = secrets.token_hex(4)
+    while previous is not None and generation == previous[0]:
+        generation = secrets.token_hex(4)
     chunks = [pem[i : i + _CHUNK] for i in range(0, len(pem), _CHUNK)]
-    for index, chunk in enumerate(chunks):
-        keyring.set_password(KEYCHAIN_SERVICE, f"{entry}:{index}", chunk)
-    keyring.set_password(KEYCHAIN_SERVICE, entry, str(len(chunks)))
-    if passphrase:
-        keyring.set_password(KEYCHAIN_SERVICE, passphrase_entry(connector_id), passphrase)
-    else:
-        # A passphrase left by an earlier, encrypted key would be tried on
-        # this one, which has none, and refused.
+    *part_entries, passphrase_name = _generation_entries(connector_id, generation, len(chunks))
+    written: list[str] = []
+    try:
+        for name, chunk in zip(part_entries, chunks, strict=True):
+            keyring.set_password(KEYCHAIN_SERVICE, name, chunk)
+            written.append(name)
+        if passphrase:
+            keyring.set_password(KEYCHAIN_SERVICE, passphrase_name, passphrase)
+            written.append(passphrase_name)
+        keyring.set_password(KEYCHAIN_SERVICE, entry, f"{generation}:{len(chunks)}")
+    except Exception:
+        _delete_entries(keyring, written)
+        raise
+    if previous is not None:
+        _delete_entries(keyring, _generation_entries(connector_id, *previous))
+
+
+def _delete_entries(keyring: Any, names: list[str]) -> None:
+    """Remove *names* from the keychain, as far as it lets us; what stays is unused."""
+    for name in names:
         with contextlib.suppress(Exception):
-            keyring.delete_password(KEYCHAIN_SERVICE, passphrase_entry(connector_id))
+            keyring.delete_password(KEYCHAIN_SERVICE, name)
 
 
 def load_from_keychain(keyring: Any, connector_id: str) -> tuple[str, str | None]:
@@ -122,11 +162,12 @@ def load_from_keychain(keyring: Any, connector_id: str) -> tuple[str, str | None
         "again to store it."
     )
     try:
-        count = keyring.get_password(KEYCHAIN_SERVICE, entry)
-        if count is None or not count.isdigit():
+        pointer = _parse_pointer(keyring.get_password(KEYCHAIN_SERVICE, entry))
+        if pointer is None:
             raise missing
-        parts = [keyring.get_password(KEYCHAIN_SERVICE, f"{entry}:{i}") for i in range(int(count))]
-        passphrase = keyring.get_password(KEYCHAIN_SERVICE, passphrase_entry(connector_id))
+        *part_entries, passphrase_name = _generation_entries(connector_id, *pointer)
+        parts = [keyring.get_password(KEYCHAIN_SERVICE, name) for name in part_entries]
+        passphrase = keyring.get_password(KEYCHAIN_SERVICE, passphrase_name)
     except KeychainKeyError:
         raise
     except Exception as exc:  # the keychain itself failed
