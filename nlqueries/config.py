@@ -913,6 +913,42 @@ SNOWFLAKE_QUEUE_TIMEOUT_SECONDS: float = float(os.getenv("SNOWFLAKE_QUEUE_TIMEOU
 CONNECTOR_STATEMENT_TIMEOUT_SECONDS: float = float(
     os.getenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", "120")
 )
+
+
+def _oracle_snapshot_retry_seconds() -> float:
+    """``ORACLE_SNAPSHOT_RETRY_SECONDS``, validated, and loud about it when it rejects.
+
+    How long an Oracle query refused with ORA-01466 waits before its one retry.
+    The read-only transaction core opens on Oracle cannot read a table truncated
+    or created just before it. A fresh transaction straight away is refused too,
+    so the retry waits. Measured through this connector against Oracle Database
+    Free 23, 8 trials each:
+    - retrying at once succeeded 0/8 times;
+    - after 1 second, 8/8 after a ``TRUNCATE`` but 4/8 after a ``CREATE``;
+    - after 2.5 seconds, 8/8 after both.
+    3 is the owner's default (2026-10-28), with margin. ``0`` turns the retry
+    off. Anything that is not a finite, non-negative number is ignored with a
+    warning, as ``LLM_TIMEOUT_SECONDS`` is.
+    """
+    default = 3.0
+    written = os.getenv("ORACLE_SNAPSHOT_RETRY_SECONDS", str(default))
+    try:
+        raw = float(written)
+    except ValueError:
+        raw = math.nan
+    if not math.isfinite(raw) or raw < 0:
+        logging.getLogger(__name__).warning(
+            "ORACLE_SNAPSHOT_RETRY_SECONDS=%r is not a finite, non-negative number of "
+            "seconds and is being ignored; using the default of %.0f.",
+            written,
+            default,
+        )
+        return default
+    return raw
+
+
+ORACLE_SNAPSHOT_RETRY_SECONDS: float = _oracle_snapshot_retry_seconds()
+"""Seconds an Oracle query refused with ORA-01466 waits before its one retry; 0 turns it off."""
 """Default server-side statement timeout (seconds) applied to connector queries
 that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast with
 an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.

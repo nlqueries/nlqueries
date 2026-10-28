@@ -619,8 +619,21 @@ python-oracledb 26.1 against Oracle Database Free 23.26:
 
 The last row is the cost: a read-only transaction cannot read a table newer than
 its snapshot, so a question asked while a load truncates or recreates its table
-can fail once with ORA-01466. `tests/integration/test_oracle_integration.py`
-repeats this against a database you name with `NLQ_TEST_ORACLE_URL`; it is
+is refused with ORA-01466. **The connector retries such a query once**, in a new
+read-only transaction, after `ORACLE_SNAPSHOT_RETRY_SECONDS` (3 by default; `0`
+turns the retry off). Retrying at once does not help. Measured eight times each,
+from a separate session:
+
+| Retry after | after a `TRUNCATE` | after a `CREATE` |
+|---|---|---|
+| at once | 0/8 succeed | 0/8 |
+| 1 second | 8/8 | 4/8 |
+| 2.5 seconds | 8/8 | 8/8 |
+
+So a query that hits it takes about three seconds longer, once, and a query
+that is refused again is reported with ORA-01466 as before.
+`tests/integration/test_oracle_integration.py` repeats this against a database
+you name with `NLQ_TEST_ORACLE_URL`, with the retry and without it; it is
 skipped otherwise.
 
 **And the rollback does not reach their DDL.** MySQL, MariaDB and Oracle commit

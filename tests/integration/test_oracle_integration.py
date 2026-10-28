@@ -131,3 +131,41 @@ def test_ddl_still_stands(connector: SQLAlchemyConnector) -> None:
     finally:
         engine.dispose()
     assert made == 1, result.error
+
+
+def _truncate_after_a_write() -> None:
+    """A row, then a TRUNCATE: D6 measured the next read-only query refused every time."""
+    engine = create_engine(_URL)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"INSERT INTO {_TABLE} VALUES (8)"))
+        time.sleep(1.2)
+        with engine.begin() as conn:
+            conn.execute(text(f"TRUNCATE TABLE {_TABLE}"))
+    finally:
+        engine.dispose()
+
+
+def test_a_query_right_after_a_truncate_is_retried_and_answers(
+    connector: SQLAlchemyConnector,
+) -> None:
+    _truncate_after_a_write()
+
+    result = connector.execute_query(f"SELECT COUNT(*) FROM {_TABLE}")
+
+    assert result.error is None, result.error
+    assert result.rows == [[0]]
+
+
+def test_with_the_retry_off_the_same_query_is_refused(
+    connector: SQLAlchemyConnector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative control: without the retry, this is ORA-01466."""
+    from nlqueries import config
+
+    monkeypatch.setattr(config, "ORACLE_SNAPSHOT_RETRY_SECONDS", 0.0)
+    _truncate_after_a_write()
+
+    result = connector.execute_query(f"SELECT COUNT(*) FROM {_TABLE}")
+
+    assert result.error is not None and "ORA-01466" in result.error
