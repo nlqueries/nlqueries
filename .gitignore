@@ -220,3 +220,7 @@ __marimo__/
 
 # Probe artifacts (created by partial-execution tools)
 *.probe
+
+# A signing key must never be committed (scripts/sign_rates.py refuses to
+# write one inside the repository; this is the second line of defence).
+*.pem
