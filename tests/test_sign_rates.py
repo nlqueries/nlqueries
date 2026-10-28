@@ -12,7 +12,12 @@ import base64
 import importlib.util
 import json
 import pathlib
-from datetime import date
+import re
+import threading
+import urllib.error
+import urllib.request
+from datetime import date, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import pytest
@@ -232,3 +237,296 @@ def test_a_pem_file_is_ignored_by_git() -> None:
         ["git", "check-ignore", "-q", probe], cwd=_SCRIPT.parents[1], capture_output=True
     )
     assert result.returncode == 0, f"{probe} is not ignored"
+
+
+# --- update: what the daily job runs ---------------------------------------------------
+
+_DAY = date(2026, 11, 1)
+_KID = "rates-2026"
+
+
+def _map(n: int = 20, changes: dict[str, Any] | None = None) -> dict[str, Any]:
+    """*n* priced models; a change of ``None`` takes that model out."""
+    source: dict[str, Any] = {
+        f"model-{i:02d}": {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}
+        for i in range(n)
+    }
+    for name, entry in (changes or {}).items():
+        if entry is None:
+            source.pop(name)
+        else:
+            source[name] = entry
+    return source
+
+
+def _update(
+    directory: pathlib.Path,
+    source: dict[str, Any],
+    key: Ed25519PrivateKey,
+    day: date = _DAY,
+    **kwargs: Any,
+) -> tuple[bool, list[str]]:
+    return sign_rates.update(directory, source, key, _KID, today=day, **kwargs)
+
+
+def _files(directory: pathlib.Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in directory.iterdir()} if directory.exists() else {}
+
+
+def _public(key: Ed25519PrivateKey) -> str:
+    return sign_rates._b64url(key.public_key().public_bytes_raw())
+
+
+def test_the_first_update_publishes_a_signed_file(tmp_path: pathlib.Path) -> None:
+    key, public = _key_pair()
+    directory = tmp_path / "assets"
+    wrote, report = _update(directory, _map(), key)
+    assert wrote
+    data = (directory / "rates.json").read_bytes()
+    sign_rates.verify(data, (directory / "rates.json.sig").read_bytes(), public, _KID)
+    body = json.loads(data)
+    assert body["effective_from"] == "2026-11-01"
+    assert len(body["models"]) == 20
+    assert report[0] == "Rates for 20 models, effective 2026-11-01: 20 added, 0 removed, 0 changed"
+
+
+def test_an_update_with_no_rate_changed_writes_nothing(tmp_path: pathlib.Path) -> None:
+    """Not even a new effective date: the file in force stays the one published."""
+    key, _ = _key_pair()
+    _update(tmp_path, _map(), key)
+    before = _files(tmp_path)
+    wrote, report = _update(tmp_path, _map(), key, day=_DAY + timedelta(days=1))
+    assert not wrote
+    assert report[0] == "Rates unchanged: 20 models."
+    assert _files(tmp_path) == before
+
+
+def test_a_changed_rate_is_published_effective_that_day(tmp_path: pathlib.Path) -> None:
+    key, public = _key_pair()
+    _update(tmp_path, _map(), key)
+    later = _DAY + timedelta(days=3)
+    source = _map(
+        changes={
+            "model-03": {"input_cost_per_token": 3e-06, "output_cost_per_token": 2e-06},
+            "model-new": {"input_cost_per_token": 5e-06, "output_cost_per_token": 6e-06},
+        }
+    )
+    wrote, report = _update(tmp_path, source, key, day=later)
+    assert wrote
+    data = (tmp_path / "rates.json").read_bytes()
+    sign_rates.verify(data, (tmp_path / "rates.json.sig").read_bytes(), public, _KID)
+    body = json.loads(data)
+    assert body["effective_from"] == later.isoformat()
+    assert body["models"]["model-03"]["input_cost_per_token"] == 3e-06
+    assert report[0].endswith(": 1 added, 0 removed, 1 changed")
+    assert "  changed: model-03" in report
+    assert "  added: model-new" in report
+
+
+def test_an_update_that_would_drop_too_many_models_writes_nothing(tmp_path: pathlib.Path) -> None:
+    """A tenth of the published models may go; more is refused unless allowed."""
+    key, _ = _key_pair()
+    _update(tmp_path, _map(), key)
+    before = _files(tmp_path)
+    three_gone = _map(changes={"model-00": None, "model-01": None, "model-02": None})
+    with pytest.raises(SystemExit, match="3 of the 20 published models would go"):
+        _update(tmp_path, three_gone, key, day=_DAY + timedelta(days=1))
+    assert _files(tmp_path) == before
+
+    assert _update(tmp_path, three_gone, key, max_removed=0.2)[0]
+
+
+def test_a_tenth_of_the_models_may_go(tmp_path: pathlib.Path) -> None:
+    key, _ = _key_pair()
+    _update(tmp_path, _map(), key)
+    wrote, report = _update(tmp_path, _map(changes={"model-00": None, "model-01": None}), key)
+    assert wrote
+    assert "  removed: model-00, model-01" in report
+
+
+def test_a_key_other_than_the_one_named_writes_nothing(tmp_path: pathlib.Path) -> None:
+    key, _ = _key_pair()
+    other, _ = _key_pair()
+    with pytest.raises(SystemExit, match="not the one --public-key names"):
+        _update(tmp_path, _map(), key, public_key=_public(other))
+    assert _files(tmp_path) == {}
+    assert _update(tmp_path, _map(), key, public_key=_public(key))[0]
+
+
+@pytest.mark.parametrize(
+    ("kid", "public_key", "message"),
+    [("", None, "key id is empty"), (_KID, "", "--public-key is empty")],
+)
+def test_an_empty_setting_is_refused(
+    tmp_path: pathlib.Path, kid: str, public_key: str | None, message: str
+) -> None:
+    """What an unset repository variable passes."""
+    key, _ = _key_pair()
+    with pytest.raises(SystemExit, match=message):
+        sign_rates.update(tmp_path, _map(), key, kid, today=_DAY, public_key=public_key)
+    assert _files(tmp_path) == {}
+
+
+def test_a_missing_signature_is_written_again(tmp_path: pathlib.Path) -> None:
+    key, public = _key_pair()
+    _update(tmp_path, _map(), key)
+    (tmp_path / "rates.json.sig").unlink()
+    assert _update(tmp_path, _map(), key)[0]
+    sign_rates.verify(
+        (tmp_path / "rates.json").read_bytes(),
+        (tmp_path / "rates.json.sig").read_bytes(),
+        public,
+        _KID,
+    )
+
+
+def test_the_command_line_update_takes_the_key_from_the_environment(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from cryptography.hazmat.primitives import serialization
+
+    key, public = _key_pair()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_map()), encoding="utf-8")
+    args = ["update", str(tmp_path / "assets"), "--kid", _KID, "--key-env", "RATES_KEY_TEST"]
+    args += ["--source", str(source), "--public-key", _public(key)]
+
+    monkeypatch.setenv("RATES_KEY_TEST", "")
+    with pytest.raises(SystemExit, match="RATES_KEY_TEST is empty or unset"):
+        sign_rates.main(args)
+
+    monkeypatch.setenv("RATES_KEY_TEST", pem)
+    assert sign_rates.main(args) == 0
+    assert capsys.readouterr().out.startswith("Rates for 20 models, effective ")
+    sign_rates.verify(
+        (tmp_path / "assets" / "rates.json").read_bytes(),
+        (tmp_path / "assets" / "rates.json.sig").read_bytes(),
+        public,
+        _KID,
+    )
+
+
+# --- fetching LiteLLM's map ---------------------------------------------------------------
+
+
+class _Response:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status, self._body = status, body
+
+    def read(self, n: int) -> bytes:
+        return self._body[:n]
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+class _Opener:
+    def __init__(
+        self, status: int = 200, body: bytes = b"{}", error: Exception | None = None
+    ) -> None:
+        self.status, self.body, self.error = status, body, error
+        self.urls: list[str] = []
+
+    def open(self, url: str, timeout: float) -> _Response:
+        self.urls.append(url)
+        if self.error is not None:
+            raise self.error
+        return _Response(self.status, self.body)
+
+
+def test_a_fetched_map_is_returned() -> None:
+    opener = _Opener(body=json.dumps(_map(2)).encode())
+    assert sign_rates.fetch_map("https://example.test/map.json", opener=opener) == _map(2)
+    assert opener.urls == ["https://example.test/map.json"]
+
+
+def test_the_map_is_fetched_over_https_only() -> None:
+    opener = _Opener()
+    with pytest.raises(SystemExit, match="must be fetched over https"):
+        sign_rates.fetch_map("http://example.test/map.json", opener=opener)
+    assert opener.urls == []
+
+
+@pytest.mark.parametrize(
+    ("opener", "message"),
+    [
+        (_Opener(status=204), "HTTP 204"),
+        (
+            _Opener(error=urllib.error.HTTPError("u", 404, "Not Found", {}, None)),
+            "Could not fetch",
+        ),
+        (_Opener(error=urllib.error.URLError("refused")), "Could not fetch"),
+        (_Opener(body=b"<html>"), "is not JSON"),
+        (_Opener(body=b"[]"), "not a model-cost map"),
+        (_Opener(body=b'{"m": "' + b"x" * 64 + b'"}'), "larger than 32 bytes"),
+    ],
+)
+def test_a_bad_fetch_says_why(opener: _Opener, message: str) -> None:
+    with pytest.raises(SystemExit, match=message):
+        sign_rates.fetch_map("https://example.test/map.json", opener=opener, max_bytes=32)
+
+
+def test_the_fetch_follows_no_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fetch's own opener is built with the handler, and the handler, given a
+    real redirect, follows nothing."""
+    handlers: list[Any] = []
+
+    def _build_opener(*given: Any) -> _Opener:
+        handlers.extend(given)
+        return _Opener()
+
+    monkeypatch.setattr(sign_rates.urllib.request, "build_opener", _build_opener)
+    sign_rates.fetch_map("https://example.test/map.json")
+    assert handlers == [sign_rates._NoRedirect]
+    monkeypatch.undo()
+
+    class _Redirect(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), _Redirect)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        opener = urllib.request.build_opener(sign_rates._NoRedirect)
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            opener.open(f"http://127.0.0.1:{server.server_port}/map.json", timeout=10)
+        assert raised.value.code == 302
+    finally:
+        thread.join(timeout=10)
+        server.server_close()
+
+
+# --- the job's dependencies -----------------------------------------------------------------
+
+
+def _lock_blocks(path: pathlib.Path) -> dict[str, str]:
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    return {
+        m.group(1): m.group(0)
+        for m in re.finditer(r"^([a-z0-9-]+)==[^\n]*\n(?:[ \t][^\n]*\n)*", text, re.M)
+    }
+
+
+def test_the_rates_lock_is_core_locks_own_pins() -> None:
+    """The signing job installs these; lock-audit scans core.lock, so each block
+    has to be core.lock's, unchanged."""
+    requirements = _SCRIPT.parents[1] / "requirements"
+    rates = _lock_blocks(requirements / "rates.lock")
+    core = _lock_blocks(requirements / "core.lock")
+    assert set(rates) == {"cffi", "cryptography", "pycparser"}
+    for name, block in rates.items():
+        assert block == core[name], f"{name} in rates.lock differs from core.lock"

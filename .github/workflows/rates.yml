@@ -1,0 +1,90 @@
+name: Rates
+
+# Rebuilds the signed LLM rate file every day from LiteLLM's live price map, and
+# publishes it when any model's rates changed: assets/rates.json and its .sig on
+# the `rates` branch, where nlqueries-enterprise fetches them.
+#
+# The `rates` branch, not main. Main takes changes only through a reviewed pull
+# request, and the job is meant to publish without one (owner, 2026-10-28). A
+# credential that let it push to main could push anything there. The branch
+# needs no protection of its own: deployments trust the signature, not the
+# branch, so a file pushed there without the key is refused wherever it is
+# fetched.
+#
+# Set up once in the repository settings:
+#   secret   RATES_SIGNING_KEY  the PEM private key from `sign_rates.py keygen`
+#   variable RATES_KID          its key id, as in enterprise's TRUSTED_RATE_KEYS
+#   variable RATES_PUBLIC_KEY   its public half; the job refuses any other key
+# Until they are set, every run fails and nothing is published.
+
+on:
+  schedule:
+    # 04:17 UTC, ahead of enterprise's daily check at 05:30 UTC.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rates
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # Explicit, for pipefail: the report is piped through tee.
+    shell: bash
+
+jobs:
+  update:
+    name: Rebuild the rate file
+    if: github.repository == 'nlqueries/nlqueries'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the signing dependencies
+        # Hash-pinned, and only these: this job holds the signing key.
+        run: pip install --require-hashes --no-deps -r requirements/rates.lock
+
+      - name: Check out the rates branch
+        run: |
+          if git ls-remote --exit-code --heads origin rates >/dev/null; then
+            git fetch --no-tags --depth 1 origin rates:refs/remotes/origin/rates
+            git worktree add -B rates published origin/rates
+          else
+            git worktree add --orphan -b rates published
+          fi
+
+      - name: Rebuild and sign
+        env:
+          RATES_SIGNING_KEY: ${{ secrets.RATES_SIGNING_KEY }}
+          RATES_KID: ${{ vars.RATES_KID }}
+          RATES_PUBLIC_KEY: ${{ vars.RATES_PUBLIC_KEY }}
+        run: |
+          python scripts/sign_rates.py update published/assets \
+            --kid "$RATES_KID" --key-env RATES_SIGNING_KEY --public-key "$RATES_PUBLIC_KEY" \
+            | tee "$RUNNER_TEMP/report.txt"
+
+      - name: Publish
+        working-directory: published
+        run: |
+          git add assets/rates.json assets/rates.json.sig
+          if git diff --cached --quiet; then
+            echo "Rates unchanged; nothing to publish."
+            exit 0
+          fi
+          # The report's first line is the subject; the rest, the body.
+          report="$RUNNER_TEMP/report.txt"
+          { head -n 1 "$report"; echo; tail -n +2 "$report"; } > "$RUNNER_TEMP/message.txt"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898213+github-actions[bot]@users.noreply.github.com" \
+              commit -q -F "$RUNNER_TEMP/message.txt"
+          git push origin rates
