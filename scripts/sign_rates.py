@@ -11,6 +11,7 @@ script is the signing side. It never sees a private key until you pass one.
     build   OUT.json --effective-from YYYY-MM-DD [--source MAP.json]
     sign    rates.json --key KEY.pem --kid KID
     verify  rates.json --public-key BASE64URL --kid KID
+    update  DIR --kid KID (--key KEY.pem | --key-env VAR) [--public-key BASE64URL]
 
 ``build`` takes LiteLLM's bundled map (or ``--source``) and keeps only what
 enterprise prices:
@@ -29,6 +30,18 @@ reason, so the file is what you meant to publish.
 
 The file this writes is exactly what is signed, so do not reformat it after
 ``sign``. Re-run ``sign`` if you change it.
+
+``update`` is what ``.github/workflows/rates.yml`` runs every day. It does
+``build`` from LiteLLM's live map, effective today, and then:
+- if no model's rates changed, it writes nothing, so the published file keeps
+  its effective date;
+- if they did, it signs and writes ``DIR/rates.json`` and its ``.sig``.
+The published file it compares against counts only if it verifies with the
+signing key; one that does not is replaced.
+It writes nothing either if more than ``--max-removed`` of the published models
+(default a tenth) would go, which is a broken map more often than a real change;
+or if the key is not the one ``--public-key`` names, which would publish a file
+every deployment refuses.
 """
 
 from __future__ import annotations
@@ -41,6 +54,9 @@ import os
 import pathlib
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -204,10 +220,149 @@ def _check_file(data: bytes) -> None:
 
 
 def _load_private_key(path: pathlib.Path) -> Ed25519PrivateKey:
-    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    return _private_key(path.read_bytes(), str(path))
+
+
+def _private_key_from_env(variable: str) -> Ed25519PrivateKey:
+    """The key whose PEM text is in *variable*, so CI never writes it to disk."""
+    pem = os.environ.get(variable, "").strip()
+    if not pem:
+        raise SystemExit(f"{variable} is empty or unset; it should hold the PEM signing key.")
+    return _private_key(pem.encode("ascii"), variable)
+
+
+def _private_key(pem: bytes, where: str) -> Ed25519PrivateKey:
+    key = serialization.load_pem_private_key(pem, password=None)
     if not isinstance(key, Ed25519PrivateKey):
-        raise SystemExit(f"{path} is not an Ed25519 private key.")
+        raise SystemExit(f"{where} is not an Ed25519 private key.")
     return key
+
+
+# --- update --------------------------------------------------------------------
+
+#: LiteLLM's price map on its main branch, where new prices appear first.
+LITELLM_MAP_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+)
+#: Far above the map's size (3 MB in October 2026); a body past this is not the map.
+MAX_MAP_BYTES = 64 * 1024 * 1024
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Turn a redirect into an error: the map is fetched from the URL given."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def fetch_map(url: str, opener: Any = None, max_bytes: int = MAX_MAP_BYTES) -> dict[str, Any]:
+    """The model-cost map at *url*: https only, no redirect, at most *max_bytes*."""
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise SystemExit(f"The price map must be fetched over https, not {url!r}.")
+    opener = opener or urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(url, timeout=60) as response:
+            status = response.status
+            body = response.read(max_bytes + 1)
+    except (OSError, urllib.error.URLError) as exc:
+        raise SystemExit(f"Could not fetch {url}: {exc}") from None
+    if status != 200:
+        raise SystemExit(f"Could not fetch {url}: HTTP {status}.")
+    if len(body) > max_bytes:
+        raise SystemExit(f"{url} is larger than {max_bytes} bytes; refusing it.")
+    try:
+        source = json.loads(body)
+    except ValueError:
+        raise SystemExit(f"{url} is not JSON.") from None
+    if not isinstance(source, dict):
+        raise SystemExit(f"{url} is not a model-cost map.")
+    return source
+
+
+def _named(label: str, names: list[str], shown: int = 20) -> str:
+    more = f", and {len(names) - shown} more" if len(names) > shown else ""
+    return f"  {label}: {', '.join(names[:shown])}{more}"
+
+
+def _published_models(
+    target: pathlib.Path, sig_path: pathlib.Path, public_key: Ed25519PublicKey, kid: str
+) -> tuple[dict[str, Any], str | None]:
+    """The models of the published file, if it verifies with this key; otherwise
+    none, and why.
+
+    The published file is the baseline for "unchanged" and for ``--max-removed``,
+    and the branch it sits on is not protected. So a file this key did not sign
+    counts as no file: the update replaces it with one that verifies, and
+    invented entries in it cannot hold a real update back (from #355's review).
+    """
+    if not target.exists():
+        return {}, None
+    if not sig_path.exists():
+        return {}, "it has no signature"
+    try:
+        data = target.read_bytes()
+        verify(data, sig_path.read_bytes(), public_key, kid)
+        return dict(json.loads(data)["models"]), None
+    except SystemExit as exc:
+        return {}, str(exc)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        return {}, f"it could not be read ({exc.__class__.__name__})"
+
+
+def update(
+    directory: pathlib.Path,
+    source: dict[str, Any],
+    key: Ed25519PrivateKey,
+    kid: str,
+    *,
+    today: date,
+    public_key: str | None = None,
+    max_per_million: float = 1000.0,
+    max_removed: float = 0.1,
+) -> tuple[bool, list[str]]:
+    """Rebuild ``directory/rates.json`` from *source*, signed, if any model's rates
+    changed. Returns whether it wrote, and a report whose first line suits a
+    commit subject."""
+    if not kid:
+        raise SystemExit("The key id is empty.")
+    if public_key == "":
+        raise SystemExit("--public-key is empty.")
+    if public_key is not None and _b64url(key.public_key().public_bytes_raw()) != public_key:
+        raise SystemExit("The signing key is not the one --public-key names; nothing was written.")
+    data, dropped = build(source, today, max_per_million)
+    new = json.loads(data)["models"]
+    target = directory / "rates.json"
+    sig_path = directory / "rates.json.sig"
+    old, unverified = _published_models(target, sig_path, key.public_key(), kid)
+
+    added = sorted(set(new) - set(old), key=str.lower)
+    removed = sorted(set(old) - set(new), key=str.lower)
+    changed = sorted((n for n in set(new) & set(old) if new[n] != old[n]), key=str.lower)
+    left_out = [f"  left out {line}" for line in dropped]
+    if unverified is not None:
+        left_out.insert(0, f"  replaced the published file, which did not verify: {unverified}")
+    if old and not (added or removed or changed):
+        return False, [f"Rates unchanged: {len(new)} models.", *left_out]
+    if old and len(removed) > max_removed * len(old):
+        raise SystemExit(
+            f"{len(removed)} of the {len(old)} published models would go, more than "
+            f"--max-removed {max_removed:g} allows; nothing was written.\n"
+            + _named("would go", removed)
+        )
+
+    signature = sign(data, key, kid)
+    verify(data, signature, key.public_key(), kid)
+    directory.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    sig_path.write_bytes(signature)
+    report = [
+        f"Rates for {len(new)} models, effective {today.isoformat()}: "
+        f"{len(added)} added, {len(removed)} removed, {len(changed)} changed",
+    ]
+    for label, names in (("added", added), ("removed", removed), ("changed", changed)):
+        if names:
+            report.append(_named(label, names))
+    return True, [*report, *left_out]
 
 
 # --- command line --------------------------------------------------------------
@@ -240,6 +395,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--public-key", required=True, help="base64url raw Ed25519 public key")
     p.add_argument("--kid", required=True)
 
+    p = commands.add_parser(
+        "update", help="rebuild DIR/rates.json from LiteLLM's live map if any rate changed"
+    )
+    p.add_argument("directory", type=pathlib.Path)
+    p.add_argument("--kid", required=True)
+    key = p.add_mutually_exclusive_group(required=True)
+    key.add_argument("--key", type=pathlib.Path)
+    key.add_argument("--key-env", metavar="VAR", help="an environment variable holding the PEM key")
+    p.add_argument("--public-key", help="refuse unless the key's public half is this (base64url)")
+    source = p.add_mutually_exclusive_group()
+    source.add_argument("--source-url", default=LITELLM_MAP_URL)
+    source.add_argument(
+        "--source", type=pathlib.Path, help="a model-cost JSON file instead of fetching"
+    )
+    p.add_argument("--max-per-million", type=float, default=1000.0)
+    p.add_argument(
+        "--max-removed",
+        type=float,
+        default=0.1,
+        help="refuse if more than this fraction of the published models would go",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "keygen":
@@ -266,6 +443,26 @@ def main(argv: list[str] | None = None) -> int:
         sig_path = args.file.with_name(args.file.name + ".sig")
         verify(args.file.read_bytes(), sig_path.read_bytes(), public, args.kid)
         print(f"{args.file} verifies with {args.kid}.")
+    elif args.command == "update":
+        signing_key = (
+            _load_private_key(args.key) if args.key else _private_key_from_env(args.key_env)
+        )
+        source_map = (
+            json.loads(args.source.read_text(encoding="utf-8"))
+            if args.source
+            else fetch_map(args.source_url)
+        )
+        _, report = update(
+            args.directory,
+            source_map,
+            signing_key,
+            args.kid,
+            today=datetime.now(UTC).date(),
+            public_key=args.public_key,
+            max_per_million=args.max_per_million,
+            max_removed=args.max_removed,
+        )
+        print("\n".join(report))
     return 0
 
 
