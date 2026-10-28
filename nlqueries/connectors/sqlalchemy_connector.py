@@ -97,6 +97,8 @@ def _apply_read_only(conn: Connection) -> None:
     directly after a ``TRUNCATE``, and for about two seconds after a
     ``CREATE``; never a second after the ``TRUNCATE`` or two after the
     ``CREATE``. ``ALTER TABLE ... ADD`` and ordinary writes did not cause it.
+    So ``_execute_query`` retries a query refused with ORA-01466 once, after
+    ``ORACLE_SNAPSHOT_RETRY_SECONDS`` (3 by default; see that setting).
     """
     name = conn.engine.dialect.name
     if name in ("postgresql", "redshift", "oracle"):
@@ -647,67 +649,116 @@ class SQLAlchemyConnector(DatabaseConnector):
         )
         start = time.perf_counter()
         try:
-            # `connect()` with an unconditional rollback, never `begin()`, which
-            # commits on the way out. Every validator in front of this one asks
-            # only whether the root node is a Select, and
-            # `SELECT some_volatile_function(...)` satisfies that while still
-            # writing -- reproduced through the Postgres connector twice by audit,
-            # eight weeks apart, and committed by `begin()` both times. This
-            # connector serves MySQL and any URL nobody wrote a dedicated class
-            # for, so it had the same ending and no read-only layer at all.
-            with self._require_engine().connect() as conn:
-                try:
-                    # First statement in the transaction, which is where a
-                    # read-only mode has to be set if the dialect has one.
-                    _apply_read_only(conn)
-                    if effective_timeout is not None and effective_timeout > 0:
-                        _apply_statement_timeout(conn, effective_timeout)
-                    cursor_result = conn.execute(text(sql))
-                    elapsed_ms = (time.perf_counter() - start) * 1000
-                    _truncated, _reason = False, None
-                    if cursor_result.returns_rows:
-                        columns = list(cursor_result.keys())
-                        rows, _truncated, _reason = collect(cursor_result, max_rows)
-                    else:
-                        columns, rows = [], []
-                    return QueryResult(
-                        columns=columns,
-                        rows=rows,
-                        row_count=len(rows),
-                        truncated=_truncated,
-                        truncation_reason=_reason,
-                        execution_time_ms=elapsed_ms,
-                        error=None,
-                    )
-                finally:
-                    # In `finally`, so it runs on the success path too: the point
-                    # is that a statement which succeeded is still not committed.
-                    # Rows have already been collected by here.
-                    #
-                    # The failure is logged and swallowed rather than raised. A
-                    # connection dropped after a cancelled or timed-out statement
-                    # is the realistic case, and letting it out of the `finally`
-                    # would report a successful query as an error, or replace the
-                    # driver's message -- the one the caller needs -- with the
-                    # rollback's. Nothing is committed either way: the connection
-                    # is reset when the pool takes it back, and an unreachable
-                    # connection has no transaction left to commit.
-                    try:
-                        conn.rollback()
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "%s: rollback after the query failed. Nothing was "
-                            "committed; the connection is reset on return to the "
-                            "pool.",
-                            "SQLAlchemyConnector",
-                            exc_info=True,
-                        )
+            try:
+                return self._run_once(sql, effective_timeout, max_rows, start)
+            except Exception as exc:
+                delay = config.ORACLE_SNAPSHOT_RETRY_SECONDS
+                retry = _is_snapshot_refusal(exc) and self._dialect_name() == "oracle"
+                if not retry or delay <= 0:
+                    raise
+                # A table truncated or created just before this read-only
+                # transaction began (see _apply_read_only). A fresh one straight
+                # away is refused too, so wait, then try once more.
+                logger.info(
+                    "SQLAlchemyConnector: ORA-01466 (a table changed just before the "
+                    "query); retrying once in %.1f s.",
+                    delay,
+                )
+                time.sleep(delay)
+                return self._run_once(sql, effective_timeout, max_rows, start)
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.exception("SQLAlchemyConnector.execute_query failed")
             return QueryResult(
                 columns=[], rows=[], row_count=0, execution_time_ms=elapsed_ms, error=str(exc)
             )
+
+    def _dialect_name(self) -> str:
+        return self._require_engine().dialect.name
+
+    def _run_once(
+        self,
+        sql: str,
+        effective_timeout: float | None,
+        max_rows: int | None,
+        start: float,
+    ) -> QueryResult:
+        """One attempt at *sql* in its own read-only, rolled-back transaction.
+
+        Raises on failure; ``_execute_query`` turns that into ``QueryResult.error``.
+        """
+        # `connect()` with an unconditional rollback, never `begin()`, which
+        # commits on the way out. Every validator in front of this one asks
+        # only whether the root node is a Select, and
+        # `SELECT some_volatile_function(...)` satisfies that while still
+        # writing -- reproduced through the Postgres connector twice by audit,
+        # eight weeks apart, and committed by `begin()` both times. This
+        # connector serves MySQL and any URL nobody wrote a dedicated class
+        # for, so it had the same ending and no read-only layer at all.
+        with self._require_engine().connect() as conn:
+            try:
+                # First statement in the transaction, which is where a
+                # read-only mode has to be set if the dialect has one.
+                _apply_read_only(conn)
+                if effective_timeout is not None and effective_timeout > 0:
+                    _apply_statement_timeout(conn, effective_timeout)
+                cursor_result = conn.execute(text(sql))
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                _truncated, _reason = False, None
+                if cursor_result.returns_rows:
+                    columns = list(cursor_result.keys())
+                    rows, _truncated, _reason = collect(cursor_result, max_rows)
+                else:
+                    columns, rows = [], []
+                return QueryResult(
+                    columns=columns,
+                    rows=rows,
+                    row_count=len(rows),
+                    truncated=_truncated,
+                    truncation_reason=_reason,
+                    execution_time_ms=elapsed_ms,
+                    error=None,
+                )
+            finally:
+                # In `finally`, so it runs on the success path too: the point
+                # is that a statement which succeeded is still not committed.
+                # Rows have already been collected by here.
+                #
+                # The failure is logged and swallowed rather than raised. A
+                # connection dropped after a cancelled or timed-out statement
+                # is the realistic case, and letting it out of the `finally`
+                # would report a successful query as an error, or replace the
+                # driver's message -- the one the caller needs -- with the
+                # rollback's. Nothing is committed either way: the connection
+                # is reset when the pool takes it back, and an unreachable
+                # connection has no transaction left to commit.
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "%s: rollback after the query failed. Nothing was "
+                        "committed; the connection is reset on return to the "
+                        "pool.",
+                        "SQLAlchemyConnector",
+                        exc_info=True,
+                    )
+
+
+def _is_snapshot_refusal(exc: BaseException) -> bool:
+    """ORA-01466: "unable to read data - table definition has changed".
+
+    Read from the driver's error, not from ``str(exc)``: a SQLAlchemy error's
+    text includes the ``[SQL: ...]`` it ran, so a query that merely mentions
+    ORA-01466 (one over an error log, say) and fails for another reason would
+    match (from #354's review). python-oracledb puts an error object carrying
+    the code in ``args[0]``; any other driver is read by its message alone.
+    """
+    orig = getattr(exc, "orig", None) or exc
+    detail = orig.args[0] if getattr(orig, "args", None) else None
+    code = getattr(detail, "code", None)
+    if isinstance(code, int):
+        return code == 1466
+    return "ORA-01466" in str(orig)
 
 
 def _utc_now_iso() -> str:

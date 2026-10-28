@@ -141,9 +141,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   opens each Oracle query with `SET TRANSACTION READ ONLY`, as it already did for
   PostgreSQL and Redshift, so an `INSERT`, `UPDATE`, `DELETE` or
   `SELECT ... FOR UPDATE` is refused by the database (ORA-01456) rather than only
-  rolled back. DDL still commits implicitly, as before. One cost: a query against
-  a table truncated or created within the last couple of seconds can fail with
-  ORA-01466. Measured against Oracle Database Free 23.26; see
+  rolled back. DDL still commits implicitly, as before. A query against a table
+  truncated or created within the last couple of seconds is refused with
+  ORA-01466, and is retried once after `ORACLE_SNAPSHOT_RETRY_SECONDS` (3 by
+  default; `0` turns the retry off), since a retry at once is refused too.
+  Measured against Oracle Database Free 23.26; see
   [database-hardening.md](docs/database-hardening.md).
 - **Snowflake key-pair authentication.** `nlqueries connect snowflake
   --private-key-file KEY.p8` signs a service user in with a private key instead
