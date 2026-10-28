@@ -745,8 +745,20 @@ class SQLAlchemyConnector(DatabaseConnector):
 
 
 def _is_snapshot_refusal(exc: BaseException) -> bool:
-    """ORA-01466: "unable to read data - table definition has changed"."""
-    return "ORA-01466" in str(exc)
+    """ORA-01466: "unable to read data - table definition has changed".
+
+    Read from the driver's error, not from ``str(exc)``: a SQLAlchemy error's
+    text includes the ``[SQL: ...]`` it ran, so a query that merely mentions
+    ORA-01466 (one over an error log, say) and fails for another reason would
+    match (from #354's review). python-oracledb puts an error object carrying
+    the code in ``args[0]``; any other driver is read by its message alone.
+    """
+    orig = getattr(exc, "orig", None) or exc
+    detail = orig.args[0] if getattr(orig, "args", None) else None
+    code = getattr(detail, "code", None)
+    if isinstance(code, int):
+        return code == 1466
+    return "ORA-01466" in str(orig)
 
 
 def _utc_now_iso() -> str:

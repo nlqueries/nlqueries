@@ -913,6 +913,10 @@ SNOWFLAKE_QUEUE_TIMEOUT_SECONDS: float = float(os.getenv("SNOWFLAKE_QUEUE_TIMEOU
 CONNECTOR_STATEMENT_TIMEOUT_SECONDS: float = float(
     os.getenv("CONNECTOR_STATEMENT_TIMEOUT_SECONDS", "120")
 )
+"""Default server-side statement timeout (seconds) applied to connector queries
+that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast with
+an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
+Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
 
 
 def _oracle_snapshot_retry_seconds() -> float:
@@ -949,10 +953,6 @@ def _oracle_snapshot_retry_seconds() -> float:
 
 ORACLE_SNAPSHOT_RETRY_SECONDS: float = _oracle_snapshot_retry_seconds()
 """Seconds an Oracle query refused with ORA-01466 waits before its one retry; 0 turns it off."""
-"""Default server-side statement timeout (seconds) applied to connector queries
-that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast with
-an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
-Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
 
 
 def _default_redshift_socket_timeout() -> int:

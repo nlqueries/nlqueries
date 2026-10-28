@@ -139,3 +139,51 @@ def test_a_value_that_is_not_a_delay_is_ignored_with_a_warning(
 ) -> None:
     assert _setting(monkeypatch, written) == 3.0
     assert "ORACLE_SNAPSHOT_RETRY_SECONDS" in caplog.text
+
+
+# --- What counts as ORA-01466 (from #354's review) ---------------------------------
+
+
+def test_sql_that_mentions_the_error_does_not_make_another_error_retried(
+    monkeypatch, connector, slept
+) -> None:
+    """A SQLAlchemy error's text includes the SQL, so the match is on the driver's error."""
+    other = DatabaseError(
+        "SELECT * FROM error_log WHERE msg LIKE '%ORA-01466%'",
+        None,
+        Exception("ORA-00942: table or view does not exist"),
+    )
+    assert "ORA-01466" in str(other), "fixture assumption: the SQL is in the text"
+    calls = _attempts(monkeypatch, connector, "oracle", other)
+    assert "ORA-00942" in (connector._execute_query("SELECT 1").error or "")
+    assert (len(calls), slept) == (1, [])
+
+
+class _OracleErrorObject:
+    """What python-oracledb puts in an exception's ``args[0]``."""
+
+    def __init__(self, code: int, message: str) -> None:
+        self.code, self.message = code, message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "retried"),
+    [
+        (1466, "ORA-01466: unable to read data - table definition has changed", True),
+        # The code decides, even where the message has been reworded.
+        (1466, "table definition has changed", True),
+        (942, "ORA-00942: table or view does not exist (see ORA-01466)", False),
+    ],
+)
+def test_python_oracledbs_error_code_decides(
+    monkeypatch, connector, slept, code, message, retried
+) -> None:
+    driver_error = Exception(_OracleErrorObject(code, message))
+    calls = _attempts(
+        monkeypatch, connector, "oracle", DatabaseError("SELECT 1", None, driver_error), _OK
+    )
+    connector._execute_query("SELECT 1")
+    assert len(calls) == (2 if retried else 1)
