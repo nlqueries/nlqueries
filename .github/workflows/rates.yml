@@ -11,11 +11,18 @@ name: Rates
 # branch, so a file pushed there without the key is refused wherever it is
 # fetched.
 #
-# Set up once in the repository settings:
+# Set up once in the repository settings, under Environments:
+#   environment rate-signing, with deployment branches limited to main
 #   secret   RATES_SIGNING_KEY  the PEM private key from `sign_rates.py keygen`
 #   variable RATES_KID          its key id, as in enterprise's TRUSTED_RATE_KEYS
 #   variable RATES_PUBLIC_KEY   its public half; the job refuses any other key
 # Until they are set, every run fails and nothing is published.
+#
+# The key is the environment's, not the repository's. A repository secret
+# reaches a run of any workflow on any branch, so a run of a modified copy of
+# this workflow, dispatched from a branch, could sign anything. An environment
+# that only main may deploy to keeps the key to this file as reviewed on main
+# (from #355's review). It needs no approval, so the job still runs unattended.
 
 on:
   schedule:
@@ -41,6 +48,7 @@ jobs:
     if: github.repository == 'nlqueries/nlqueries'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: rate-signing
     permissions:
       contents: write
     steps:

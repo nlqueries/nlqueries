@@ -380,6 +380,82 @@ def test_a_missing_signature_is_written_again(tmp_path: pathlib.Path) -> None:
     )
 
 
+# From #355's review: the branch the file is published on is not protected, so the
+# published file is a baseline only if it verifies.
+
+
+def _plant(directory: pathlib.Path, source: dict[str, Any], key: Ed25519PrivateKey) -> None:
+    """Put a file on the branch as someone with write access could: signed by *key*."""
+    directory.mkdir(parents=True, exist_ok=True)
+    data, _ = sign_rates.build(source, _DAY, 1000.0)
+    (directory / "rates.json").write_bytes(data)
+    (directory / "rates.json.sig").write_bytes(sign_rates.sign(data, key, _KID))
+
+
+def _verifies(directory: pathlib.Path, public: Ed25519PublicKey) -> None:
+    sign_rates.verify(
+        (directory / "rates.json").read_bytes(),
+        (directory / "rates.json.sig").read_bytes(),
+        public,
+        _KID,
+    )
+
+
+def test_a_published_file_whose_bytes_were_changed_is_replaced(tmp_path: pathlib.Path) -> None:
+    """Same models, so it would read as unchanged, but it no longer verifies."""
+    key, public = _key_pair()
+    _update(tmp_path, _map(), key)
+    published = tmp_path / "rates.json"
+    published.write_bytes(published.read_bytes() + b" ")
+    wrote, report = _update(tmp_path, _map(), key, day=_DAY + timedelta(days=1))
+    assert wrote
+    _verifies(tmp_path, public)
+    assert any(line.startswith("  replaced the published file") for line in report)
+
+
+def test_a_published_file_signed_by_another_key_is_replaced(tmp_path: pathlib.Path) -> None:
+    key, public = _key_pair()
+    other, _ = _key_pair()
+    _plant(tmp_path, _map(), other)
+    wrote, report = _update(tmp_path, _map(), key)
+    assert wrote
+    _verifies(tmp_path, public)
+    assert any("does not verify" in line for line in report)
+
+
+def test_invented_models_cannot_hold_an_update_back(tmp_path: pathlib.Path) -> None:
+    """Padded with names the map lacks, a planted file would trip --max-removed."""
+    key, public = _key_pair()
+    other, _ = _key_pair()
+    padded = _map(
+        changes={
+            f"invented-{i:03d}": {"input_cost_per_token": 1e-06, "output_cost_per_token": 1e-06}
+            for i in range(200)
+        }
+    )
+    _plant(tmp_path, padded, other)
+    wrote, _ = _update(tmp_path, _map(), key)
+    assert wrote
+    _verifies(tmp_path, public)
+    assert not any(
+        name.startswith("invented-")
+        for name in json.loads((tmp_path / "rates.json").read_bytes())["models"]
+    )
+
+
+@pytest.mark.parametrize(
+    "signature", [b"", b"not json", b"[]", b'{"kid": "rates-2026", "sig": "!!"}']
+)
+def test_a_published_signature_that_cannot_be_read_is_replaced(
+    tmp_path: pathlib.Path, signature: bytes
+) -> None:
+    key, public = _key_pair()
+    _update(tmp_path, _map(), key)
+    (tmp_path / "rates.json.sig").write_bytes(signature)
+    assert _update(tmp_path, _map(), key)[0]
+    _verifies(tmp_path, public)
+
+
 def test_the_command_line_update_takes_the_key_from_the_environment(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

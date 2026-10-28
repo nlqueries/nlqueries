@@ -36,6 +36,8 @@ The file this writes is exactly what is signed, so do not reformat it after
 - if no model's rates changed, it writes nothing, so the published file keeps
   its effective date;
 - if they did, it signs and writes ``DIR/rates.json`` and its ``.sig``.
+The published file it compares against counts only if it verifies with the
+signing key; one that does not is replaced.
 It writes nothing either if more than ``--max-removed`` of the published models
 (default a tenth) would go, which is a broken map more often than a real change;
 or if the key is not the one ``--public-key`` names, which would publish a file
@@ -282,6 +284,31 @@ def _named(label: str, names: list[str], shown: int = 20) -> str:
     return f"  {label}: {', '.join(names[:shown])}{more}"
 
 
+def _published_models(
+    target: pathlib.Path, sig_path: pathlib.Path, public_key: Ed25519PublicKey, kid: str
+) -> tuple[dict[str, Any], str | None]:
+    """The models of the published file, if it verifies with this key; otherwise
+    none, and why.
+
+    The published file is the baseline for "unchanged" and for ``--max-removed``,
+    and the branch it sits on is not protected. So a file this key did not sign
+    counts as no file: the update replaces it with one that verifies, and
+    invented entries in it cannot hold a real update back (from #355's review).
+    """
+    if not target.exists():
+        return {}, None
+    if not sig_path.exists():
+        return {}, "it has no signature"
+    try:
+        data = target.read_bytes()
+        verify(data, sig_path.read_bytes(), public_key, kid)
+        return dict(json.loads(data)["models"]), None
+    except SystemExit as exc:
+        return {}, str(exc)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        return {}, f"it could not be read ({exc.__class__.__name__})"
+
+
 def update(
     directory: pathlib.Path,
     source: dict[str, Any],
@@ -306,13 +333,15 @@ def update(
     new = json.loads(data)["models"]
     target = directory / "rates.json"
     sig_path = directory / "rates.json.sig"
-    old: dict[str, Any] = json.loads(target.read_bytes())["models"] if target.exists() else {}
+    old, unverified = _published_models(target, sig_path, key.public_key(), kid)
 
     added = sorted(set(new) - set(old), key=str.lower)
     removed = sorted(set(old) - set(new), key=str.lower)
     changed = sorted((n for n in set(new) & set(old) if new[n] != old[n]), key=str.lower)
     left_out = [f"  left out {line}" for line in dropped]
-    if old and not (added or removed or changed) and sig_path.exists():
+    if unverified is not None:
+        left_out.insert(0, f"  replaced the published file, which did not verify: {unverified}")
+    if old and not (added or removed or changed):
         return False, [f"Rates unchanged: {len(new)} models.", *left_out]
     if old and len(removed) > max_removed * len(old):
         raise SystemExit(
