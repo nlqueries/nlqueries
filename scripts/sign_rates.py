@@ -83,7 +83,13 @@ def _litellm_map() -> dict[str, Any]:
 
 
 def _rate_fields(entry: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in entry.items() if k in BASE_FIELDS or TIER_FIELD.match(k)}
+    """The rate fields enterprise reads. A null is dropped: it is no rate, and
+    enterprise treats a missing field the same way."""
+    return {
+        k: v
+        for k, v in entry.items()
+        if (k in BASE_FIELDS or TIER_FIELD.match(k)) and v is not None
+    }
 
 
 def _problem(entry: dict[str, Any], max_per_million: float) -> str | None:
@@ -94,8 +100,6 @@ def _problem(entry: dict[str, Any], max_per_million: float) -> str | None:
     if 0 in thresholds:
         return "a long-prompt threshold of 0"
     for field, value in entry.items():
-        if value is None:
-            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return f"{field} is not a number"
         try:
@@ -120,9 +124,9 @@ def build(
         entry = source[name]
         if not isinstance(entry, dict):
             continue
-        if "input_cost_per_token" not in entry or "output_cost_per_token" not in entry:
-            continue  # embeddings, images, per-second and per-call pricing
         fields = _rate_fields(entry)
+        if "input_cost_per_token" not in fields or "output_cost_per_token" not in fields:
+            continue  # embeddings, images, per-second and per-call pricing, null rates
         problem = _problem(fields, max_per_million)
         if problem is None and name.strip().lower() in seen:
             problem = "another entry has the same id in lower case"
@@ -145,8 +149,19 @@ def build(
 # --- keys and signatures -------------------------------------------------------
 
 
+#: This repository. A key written inside it is one ``git add`` away from public.
+_REPOSITORY = pathlib.Path(__file__).resolve().parents[1]
+
+
 def keygen(out: pathlib.Path) -> str:
-    """Write a new private key to *out* (owner-only permissions) and return the public half."""
+    """Write a new private key to *out* and return the public half.
+
+    Refuses a path inside this repository, which is public: the key signs rates
+    every enterprise deployment trusts. ``0o600`` restricts the file on POSIX;
+    on Windows it takes the directory's permissions, so choose that directory.
+    """
+    if out.resolve().is_relative_to(_REPOSITORY):
+        raise SystemExit(f"{out} is inside this repository; write the key somewhere else.")
     if out.exists():
         raise SystemExit(f"{out} exists; refusing to overwrite a key.")
     key = Ed25519PrivateKey.generate()

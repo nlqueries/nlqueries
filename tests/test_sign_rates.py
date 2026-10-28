@@ -62,6 +62,12 @@ _SOURCE = {
         "output_cost_per_token": 1e-06,
         "input_cost_per_token_above_0k_tokens": 2e-06,
     },
+    "null-input": {"input_cost_per_token": None, "output_cost_per_token": 1e-06},
+    "null-cache": {
+        "input_cost_per_token": 1e-06,
+        "output_cost_per_token": 2e-06,
+        "cache_read_input_token_cost": None,
+    },
     "Case-Twin": {"input_cost_per_token": 1e-06, "output_cost_per_token": 1e-06},
     "case-twin": {"input_cost_per_token": 2e-06, "output_cost_per_token": 2e-06},
 }
@@ -196,3 +202,33 @@ def test_keygen_never_overwrites_a_key(tmp_path: pathlib.Path) -> None:
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         sign_rates.main(["keygen", str(existing)])
     assert existing.read_bytes() == b"a key someone needs"
+
+
+def test_a_null_rate_is_never_written() -> None:
+    """A null input or output rate is no price, so the entry is not priced, as
+    enterprise would leave it; a null cache rate is dropped from an entry kept."""
+    body, dropped = _built()
+    assert "null-input" not in body["models"]
+    assert not any(line.startswith("null-input") for line in dropped)
+    assert body["models"]["null-cache"] == {
+        "input_cost_per_token": 1e-06,
+        "output_cost_per_token": 2e-06,
+    }
+    assert all(v is not None for entry in body["models"].values() for v in entry.values())
+
+
+def test_keygen_refuses_a_path_inside_this_repository() -> None:
+    inside = _SCRIPT.parents[1] / "rates-signing-key.pem"
+    with pytest.raises(SystemExit, match="inside this repository"):
+        sign_rates.main(["keygen", str(inside)])
+    assert not inside.exists()
+
+
+def test_a_pem_file_is_ignored_by_git() -> None:
+    import subprocess
+
+    probe = "assets/rates-signing-key.pem"
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", probe], cwd=_SCRIPT.parents[1], capture_output=True
+    )
+    assert result.returncode == 0, f"{probe} is not ignored"
