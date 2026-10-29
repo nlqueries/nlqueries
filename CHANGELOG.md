@@ -66,6 +66,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   as "roughly") still hit.
   `NLQ_CACHE_CONTENT_GUARD=false` turns the check off.
 
+- **A column-level grant hides that column's keys too.** The PostgreSQL key
+  queries kept to tables the login may use, but tested the table, not the
+  column. A login granted only some columns of a table saw a foreign key into a
+  column its schema leaves out, and a join on it failed with a permission
+  error. A key is now offered only when the login may use every column in
+  it, on both sides of a foreign key; part of a composite key is never
+  offered, since a join on part of one runs and multiplies rows.
+
 - **PostgreSQL query history says why it cannot be read.** When the history
   query failed, the connector retried it with the PostgreSQL 12 column name
   inside the transaction the failure had aborted, so every cause was reported
