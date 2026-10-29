@@ -558,6 +558,7 @@ class MultiAgentOrchestrator:
         cache_context: dict[str, str] | None = None,
         execution: ExecutionPolicy = DEFAULT_POLICY,
         deadline: float | None = None,
+        use_cache: bool = True,
     ) -> AsyncGenerator[str, None]:
         """Route *question* to the appropriate agent and stream the response.
 
@@ -635,6 +636,9 @@ class MultiAgentOrchestrator:
                              (a ``time.monotonic()`` value). Forwarded to the
                              SQL agent, where it gates the one correction after
                              a database error. ``None`` leaves it ungated.
+            use_cache:       ``False`` neither reads nor writes the semantic
+                             cache, so the answer is always generated: what
+                             ``nlqueries eval`` needs to measure generation.
 
         Yields:
             String tokens from the agent response, then a final JSON chunk
@@ -682,6 +686,8 @@ class MultiAgentOrchestrator:
                 vector = _embed_text(effective_question)
             except Exception:  # noqa: BLE001, S110 — a missing embedder degrades to a text-only lookup
                 pass
+            if not use_cache:
+                return vector, None
             # A cache that cannot be read is a miss, not a failed question: the
             # cache only saves work that a miss goes on to do anyway.
             try:
@@ -783,9 +789,10 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            _schedule_cache_write(
-                _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
-            )
+            if use_cache:
+                _schedule_cache_write(
+                    _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
+                )
             return
 
         if intent == IntentType.document:

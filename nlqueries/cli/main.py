@@ -3622,6 +3622,10 @@ def eval_cmd(
                 agent_id,
                 dialect=resolved_dialect,
                 execution=ExecutionPolicy.generate_only(),
+                # And not from the cache: an answer cached under an earlier
+                # model or prompt would measure that instead, and eval's own
+                # questions have no place in the agent's cache.
+                use_cache=False,
             )
             sql: str | None = result.sql
             return sql

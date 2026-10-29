@@ -155,6 +155,33 @@ class TestRunQuery:
         assert isinstance(result.latency_ms, int)
         assert result.latency_ms >= 0
 
+    def test_run_query_sync_waits_for_the_cache_write(self) -> None:
+        """The orchestrator writes the semantic cache in a background task, and
+        asyncio.run cancels a task still pending when it returns: measured on a
+        real agent, a CLI query stored nothing, and the same run_query followed
+        by drain_background_tasks() stored the answer. So run_query_sync must
+        drain, after the question is answered, inside the same event loop."""
+        order: list[str] = []
+        loops: list[object] = []
+
+        async def _run_query(*_args: object, **_kwargs: object) -> str:
+            order.append("answered")
+            loops.append(asyncio.get_running_loop())
+            return "result"
+
+        async def _drain() -> None:
+            order.append("drained")
+            loops.append(asyncio.get_running_loop())
+
+        with (
+            patch("nlqueries.orchestrator.sync_runner.run_query", _run_query),
+            patch("nlqueries.orchestrator.sync_runner.drain_background_tasks", _drain),
+        ):
+            assert run_query_sync("How many orders?", "agent1") == "result"
+
+        assert order == ["answered", "drained"]
+        assert loops[0] is loops[1]
+
     def test_run_query_sync_works_without_event_loop(self) -> None:
         """run_query_sync works when called from a thread with no running event loop."""
         results: list[AgentQueryResult] = []

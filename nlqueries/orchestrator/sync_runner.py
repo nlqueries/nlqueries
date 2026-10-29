@@ -41,7 +41,10 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_retrieval import Citation
 from nlqueries.orchestrator.followup_resolver import resolve_followup
-from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+from nlqueries.orchestrator.multi_agent_orchestrator import (
+    MultiAgentOrchestrator,
+    drain_background_tasks,
+)
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 
 
@@ -225,6 +228,7 @@ async def run_query(
     explain: bool = False,
     execution: ExecutionPolicy = DEFAULT_POLICY,
     deadline: float | None = None,
+    use_cache: bool = True,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -263,6 +267,8 @@ async def run_query(
                          bounds the turn: the SQL sub-agent starts its one
                          correction after a database error only when enough
                          of it remains. ``None`` leaves that ungated.
+        use_cache:       ``False`` neither reads nor writes the semantic cache,
+                         so the answer is always generated (``nlqueries eval``).
 
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
@@ -300,6 +306,7 @@ async def run_query(
             extra_dynamic_context=extra_dynamic_context,
             execution=execution,
             deadline=deadline,
+            use_cache=use_cache,
         ):
             tokens.append(token)
 
@@ -350,5 +357,16 @@ def run_query_sync(
 
     Convenience for SDK users who do not have an async runtime.  Cannot be
     called from within a running event loop — use :func:`run_query` there.
+
+    The orchestrator writes the semantic cache in a background task, and
+    ``asyncio.run`` cancels whatever is still pending when it returns. So the
+    write is awaited here first: without it no CLI ``query`` and no caller of
+    this function ever stored an answer, and every repeat was a miss.
     """
-    return asyncio.run(run_query(question, agent_id, **kwargs))
+
+    async def _run_and_flush() -> AgentQueryResult:
+        result = await run_query(question, agent_id, **kwargs)
+        await drain_background_tasks()
+        return result
+
+    return asyncio.run(_run_and_flush())
