@@ -458,6 +458,14 @@ class PostgresConnector(DatabaseConnector):
             result.setdefault(key, []).append(dict(row))
         return result
 
+    # Keys are read from pg_catalog, not information_schema. PostgreSQL shows
+    # information_schema.table_constraints and key_column_usage only for tables
+    # the login owns or holds a privilege other than SELECT on, and
+    # constraint_column_usage only for tables it owns. The login
+    # docs/database-hardening.md recommends holds SELECT alone, so it saw no
+    # keys at all: every column read as no key, and no join was known.
+    # pg_constraint is readable by every login, so each query keeps to tables
+    # the login may use, as information_schema.columns does for the columns.
     @staticmethod
     def _fetch_primary_keys(conn: Any) -> dict[tuple[str, str], set[str]]:
         """Return ``{(schema, table): {primary key column names}}``."""
@@ -465,15 +473,18 @@ class PostgresConnector(DatabaseConnector):
             text(
                 """
                 SELECT
-                    tc.table_schema,
-                    tc.table_name,
-                    kcu.column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON kcu.constraint_name = tc.constraint_name
-                   AND kcu.constraint_schema = tc.constraint_schema
-                WHERE tc.constraint_type = 'PRIMARY KEY'
-                  AND tc.table_schema NOT IN :system_schemas
+                    n.nspname AS table_schema,
+                    c.relname AS table_name,
+                    a.attname AS column_name
+                FROM pg_catalog.pg_constraint con
+                JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                JOIN LATERAL unnest(con.conkey) AS k(attnum) ON TRUE
+                JOIN pg_catalog.pg_attribute a
+                    ON a.attrelid = c.oid AND a.attnum = k.attnum
+                WHERE con.contype = 'p'
+                  AND n.nspname NOT IN :system_schemas
+                  AND has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
                 """
             ),
             {"system_schemas": _SYSTEM_SCHEMAS},
@@ -491,20 +502,25 @@ class PostgresConnector(DatabaseConnector):
             text(
                 """
                 SELECT
-                    tc.table_schema,
-                    tc.table_name,
-                    kcu.column_name,
-                    ccu.table_name AS foreign_table_name,
-                    ccu.column_name AS foreign_column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON kcu.constraint_name = tc.constraint_name
-                   AND kcu.constraint_schema = tc.constraint_schema
-                JOIN information_schema.constraint_column_usage ccu
-                    ON ccu.constraint_name = tc.constraint_name
-                   AND ccu.constraint_schema = tc.constraint_schema
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND tc.table_schema NOT IN :system_schemas
+                    n.nspname AS table_schema,
+                    c.relname AS table_name,
+                    a.attname AS column_name,
+                    fc.relname AS foreign_table_name,
+                    fa.attname AS foreign_column_name
+                FROM pg_catalog.pg_constraint con
+                JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid
+                -- The two arrays pair each column with the one it references,
+                -- by position, so a composite key maps column to column.
+                JOIN LATERAL unnest(con.conkey, con.confkey) AS k(attnum, fattnum) ON TRUE
+                JOIN pg_catalog.pg_attribute a
+                    ON a.attrelid = c.oid AND a.attnum = k.attnum
+                JOIN pg_catalog.pg_attribute fa
+                    ON fa.attrelid = fc.oid AND fa.attnum = k.fattnum
+                WHERE con.contype = 'f'
+                  AND n.nspname NOT IN :system_schemas
+                  AND has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
                 """
             ),
             {"system_schemas": _SYSTEM_SCHEMAS},

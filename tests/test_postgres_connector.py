@@ -270,6 +270,49 @@ def test_extract_schema_returns_full_schema_spec(seeded_connector):
     assert orders_columns["id"].is_primary_key is True
 
 
+def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
+    """The login database-hardening.md recommends holds SELECT and nothing else.
+    information_schema hides constraints from such a login, so it used to read
+    no key at all. Keys come from pg_catalog now: primary keys, foreign keys,
+    a composite key paired column to column, and nothing of a table it may not
+    read."""
+    statements = [
+        "DROP TABLE IF EXISTS shipment_lines, shipments, secrets CASCADE",
+        "DROP ROLE IF EXISTS keys_reader",
+        "CREATE ROLE keys_reader LOGIN PASSWORD 'reader-pw'",
+        "CREATE TABLE shipments (order_id INTEGER, seq INTEGER, PRIMARY KEY (order_id, seq))",
+        """
+        CREATE TABLE shipment_lines (
+            id SERIAL PRIMARY KEY,
+            ship_order INTEGER,
+            ship_seq INTEGER,
+            FOREIGN KEY (ship_order, ship_seq) REFERENCES shipments (order_id, seq)
+        )
+        """,
+        "CREATE TABLE secrets (id SERIAL PRIMARY KEY, value TEXT)",
+        "GRANT USAGE ON SCHEMA public TO keys_reader",
+        "GRANT SELECT ON customers, orders, order_items, shipments, shipment_lines TO keys_reader",
+    ]
+    with seeded_connector._require_engine().begin() as conn:
+        for stmt in statements:
+            conn.execute(sa_text(stmt))
+
+    reader = granted(PostgresConnector())
+    reader.connect({**credentials, "user": "keys_reader", "password": "reader-pw"})
+    tables = {t.name: {c.name: c for c in t.columns} for t in reader.extract_schema().tables}
+
+    assert tables["customers"]["id"].is_primary_key is True
+    assert tables["orders"]["customer_id"].references == "customers.id"
+    assert {n for n, c in tables["shipments"].items() if c.is_primary_key} == {"order_id", "seq"}
+    assert tables["shipment_lines"]["ship_order"].references == "shipments.order_id"
+    assert tables["shipment_lines"]["ship_seq"].references == "shipments.seq"
+    assert "secrets" not in tables
+    # pg_constraint is readable by every login; the key queries keep to tables
+    # the login may use, so they name nothing of the one it may not.
+    with reader._require_engine().connect() as conn:
+        assert ("public", "secrets") not in PostgresConnector._fetch_primary_keys(conn)
+
+
 def test_extract_schema_row_counts_are_present_after_analyze(seeded_connector):
     schema = seeded_connector.extract_schema()
     tables_by_name = {t.name: t for t in schema.tables}
