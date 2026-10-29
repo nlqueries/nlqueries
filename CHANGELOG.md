@@ -55,6 +55,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A template cache hit no longer replays the answer text of the question
+  it was stored for.** Tier 2 rebinds a cached statement to the new question's
+  values and runs it, but streamed the stored text with it: "top 10" served
+  from a "top 5" template showed ten rows under "The top 5 customers are
+  ...". A template hit now serves the statement and its fresh result without
+  that text. A Tier 1 hit, whose question asked the same thing, is unchanged.
+
 - **The semantic cache answered a question with a near neighbour's SQL that
   asked for less.** "Which five customers have spent the most, how much, and
   in which region?" scored 0.985 against the cached "... and in which region

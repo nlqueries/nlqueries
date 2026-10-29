@@ -580,6 +580,68 @@ class TestMultiAgentOrchestratorNewPaths:
             "SELECT sum(revenue) FROM orders", None
         )
 
+    def test_a_template_hit_serves_its_sql_and_rows_without_the_stored_text(self) -> None:
+        """The stored text describes the question the template was written for.
+
+        "Top 10 customers by spend" bound into the template of "top 5" ran the
+        ten-row query under "The top 5 customers are ...". The statement and a
+        fresh result are still served; the text is not.
+        """
+        from datetime import UTC, datetime
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+        from nlqueries.connectors.base import QueryResult
+
+        cache_entry = CacheEntry(
+            question="Top 10 customers by spend",
+            resolved_question="Top 5 customers by spend",
+            agent_type="sql",
+            answer="The top 5 customers are Acme, Globex, Initech, Umbrella and Hooli.",
+            sql="SELECT name FROM customers ORDER BY spend DESC LIMIT 10",
+            created_at=datetime.now(UTC),
+            hit_count=0,
+            kind="template",
+        )
+        qr = QueryResult(
+            columns=["name"],
+            rows=[[f"c{i}"] for i in range(10)],
+            row_count=10,
+            execution_time_ms=3.0,
+            error=None,
+        )
+        fake_connector = MagicMock()
+        fake_connector.execute_query.return_value = qr
+
+        async def run() -> list[str]:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator") as MockOrch,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch(
+                    "nlqueries.connectors.loader.open_connector_for_agent",
+                    return_value=fake_connector,
+                ),
+            ):
+                MockCache.return_value.get.return_value = cache_entry
+                tokens: list[str] = []
+                async for token in MultiAgentOrchestrator().handle_question(
+                    "Top 10 customers by spend",
+                    "agent1",
+                    execution=ExecutionPolicy.execute_read_only(),
+                ):
+                    tokens.append(token)
+                MockOrch.assert_not_called()
+                return tokens
+
+        tokens = asyncio.run(run())
+
+        assert len(tokens) == 1, tokens[:-1]  # the final frame and nothing before it
+        final = json.loads(tokens[-1])
+        assert final["from_cache"] is True
+        assert final["sql"] == "SELECT name FROM customers ORDER BY spend DESC LIMIT 10"
+        assert final["sql_table"]["row_count"] == 10
+        assert "top 5" not in tokens[-1].lower()
+
     def test_cache_miss_writes_cache_in_background_non_blocking(self) -> None:
         """A cache write on miss must not block the caller from receiving tokens."""
         import time as _time
