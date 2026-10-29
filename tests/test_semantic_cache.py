@@ -597,8 +597,9 @@ class TestGetWithPrecomputedVector:
         The one embed a tier-1 hit makes is of the entry's stored question,
         checked against the query (`_stored_question_matches`). The stored
         question differs from the one asked, so the assertion below tells the
-        two apart."""
-        payload = _fresh_payload(question="How many orders were placed?")
+        two apart. Worded differently but asking the same thing: a stored question
+        that asked for more would now be refused (`_asks_the_same`)."""
+        payload = _fresh_payload(question="How many orders are there?")
         mock_client = self._make_hit_client(payload)
         precomputed = [0.9] * 384
 

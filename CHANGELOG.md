@@ -55,6 +55,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The semantic cache answered a question with a near neighbour's SQL that
+  asked for less.** "Which five customers have spent the most, how much, and
+  in which region?" scored 0.985 against the cached "... and in which region
+  are they?" and was served its answer, without the amount. Similarity is now
+  followed by a content check on Tiers 1 and 2: both questions are reduced to
+  their content words, with numbers, negation, most/least and "how much" kept
+  as such, and a candidate that differs is skipped in favour of the next one.
+  Rephrasings (plurals, "what's", "per" for "by", "all" for "the", a hedge such
+  as "roughly") still hit.
+  `NLQ_CACHE_CONTENT_GUARD=false` turns the check off.
+
 - **PostgreSQL query history says why it cannot be read.** When the history
   query failed, the connector retried it with the PostgreSQL 12 column name
   inside the transaction the failure had aborted, so every cause was reported

@@ -169,6 +169,150 @@ def _normalize_question(question: str) -> str:
     return re.sub(r"\s+", " ", q).strip()
 
 
+#: Words that carry no request of their own, for :func:`_question_content`.
+_CONTENT_STOP_WORDS: frozenset[str] = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "in",
+        "on",
+        "at",
+        "for",
+        "to",
+        "by",
+        "per",
+        "each",
+        "every",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "when",
+        "where",
+        "how",
+        "there",
+        "their",
+        "they",
+        "them",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "and",
+        "or",
+        "with",
+        "from",
+        "as",
+        "show",
+        "list",
+        "give",
+        "me",
+        "tell",
+        "find",
+        "get",
+        "display",
+        "please",
+        "all",
+        "any",
+        "i",
+        "we",
+        "you",
+        "our",
+        "your",
+        "s",
+        "about",
+        "into",
+        "has",
+        "have",
+        "had",
+        "up",
+        # Hedges: "roughly how many orders" is answered by the same SQL.
+        "roughly",
+        "approximately",
+    ]
+)
+_NUMBER_WORDS: dict[str, int] = {
+    word: value
+    for value, word in enumerate(
+        [
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+        ]
+    )
+}
+_NEGATIONS = frozenset({"no", "not", "never", "without", "none", "except", "excluding"})
+_MOST = frozenset({"most", "top", "highest", "largest", "best", "biggest", "greatest"})
+_LEAST = frozenset({"least", "bottom", "lowest", "fewest", "worst", "smallest"})
+
+
+def _question_content(question: str) -> frozenset[str]:
+    """The things *question* asks for, as a set of tokens.
+
+    Content words with a plural ``s`` dropped; any number, digits or words, as
+    ``N<value>``; negation as ``NEG``; most/least as ``HI``/``LO``; and "how
+    much" as ``AMOUNT``, because "how" and "much" are otherwise stop words or
+    nothing. Generic English only: no schema vocabulary.
+    """
+    lowered = question.lower().replace("n't", " not").replace("what's", "what is")
+    content: set[str] = set()
+    for token in re.findall(r"[a-z]+|\d+(?:\.\d+)?", lowered):
+        if token[0].isdigit():
+            content.add(f"N{token}")
+        elif token in _NUMBER_WORDS:
+            content.add(f"N{_NUMBER_WORDS[token]}")
+        elif token in _NEGATIONS:
+            content.add("NEG")
+        elif token in _MOST:
+            content.add("HI")
+        elif token in _LEAST:
+            content.add("LO")
+        elif token not in _CONTENT_STOP_WORDS:
+            content.add(token[:-1] if token.endswith("s") and len(token) > 3 else token)
+    if "how much" in lowered:
+        content.add("AMOUNT")
+    return frozenset(content)
+
+
+def _asks_the_same(stored: Any, question: str) -> bool:
+    """Whether a cached entry's question asks for what *question* asks for.
+
+    Checked after the similarity search, on candidates that already score as
+    near-identical: a rephrasing passes, an added column, filter, number,
+    negation or "how much" does not (``config.CACHE_CONTENT_GUARD``).
+    """
+    if not config.CACHE_CONTENT_GUARD:
+        return True
+    if not isinstance(stored, str) or not stored:
+        return False
+    return _question_content(stored) == _question_content(question)
+
+
 def _mask_entities(question: str) -> str:
     """Replace entity tokens in *question* with typed placeholders.
 
@@ -1358,6 +1502,10 @@ class SemanticCache:
                         _report_repointed(hit.id, "tier 1")
                     if not matches:
                         entry = None
+                # Similar is not the same request: one that adds "how much" scores
+                # 0.985 against the question without it.
+                if entry is not None and not _asks_the_same(payload.get("question"), question):
+                    entry = None
                 if entry is not None:
                     entry.hit_count = self._increment_hit_count(client, hit.id, payload)
                     record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
@@ -1424,6 +1572,9 @@ class SemanticCache:
                 _report_repointed(candidate.id, "tier 2")
             if not matches:
                 continue  # unconfirmed, or found by a vector that is not its own
+            # On the masked forms, so a different N or year still rebinds.
+            if not _asks_the_same(payload.get("question"), masked):
+                continue
 
             template_sql = str(payload.get("sql") or "")
             if not template_sql:

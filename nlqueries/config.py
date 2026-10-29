@@ -1104,6 +1104,22 @@ CACHE_ANSWER_THRESHOLD: float = float(os.getenv("NLQ_CACHE_ANSWER_THRESHOLD", "0
 CACHE_TEMPLATE_THRESHOLD: float = float(os.getenv("NLQ_CACHE_TEMPLATE_THRESHOLD", "0.90"))
 """Cosine similarity threshold for the Tier 2 template cache (kind=template)."""
 
+CACHE_CONTENT_GUARD: bool = os.getenv("NLQ_CACHE_CONTENT_GUARD", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""Serve a Tier 1 or Tier 2 hit only when it asks for the same things as the question.
+
+Similarity alone cannot tell "which five customers spent the most, and in
+which region" from "... how much, and in which region": the two score 0.985,
+above most genuine rephrasings, and the second was answered without the
+amount. With the guard on, both questions are reduced to their content words
+(numbers, negation, most/least and "how much" kept as such) and a hit whose
+question asks for anything the new one does not, or the reverse, is skipped.
+Tier 0 is exact and unaffected. Set false to serve on similarity alone.
+"""
+
 CACHE_MAX_QUESTION_CHARS: int = int(os.getenv("NLQ_CACHE_MAX_QUESTION_CHARS", "500"))
 """Longest question that may be written to the semantic cache. 0 disables the limit.
 
