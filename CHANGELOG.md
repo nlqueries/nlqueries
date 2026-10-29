@@ -62,7 +62,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   for the write before it returns. The MCP server, which keeps running, was
   not affected. An async program that calls `run_query` and exits at once
   should `await drain_background_tasks()` first (getting-started, "Run as a
-  library").
+  library"). `nlqueries eval` neither reads nor writes the cache (the new
+  `use_cache=False` on `run_query`), so it always measures generation.
 - **A DeepSeek key counts as an LLM credential.** The credential check knew
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and Bedrock. On a host with only
   `DEEPSEEK_API_KEY`:
