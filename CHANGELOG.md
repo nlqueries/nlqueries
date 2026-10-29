@@ -55,6 +55,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A PostgreSQL login with only SELECT sees its tables' keys.** The
+  connector read primary and foreign keys from `information_schema`, which
+  PostgreSQL shows only to a table's owner, or to a login with a privilege
+  other than SELECT on it. The login docs/database-hardening.md recommends
+  therefore saw no key: the knowledge base marked no column as a key,
+  `kb-stats` counted no foreign-key joins, and the prompt carried no join
+  path. Keys are now read from `pg_catalog`, for the tables the login may
+  use, and a composite foreign key is paired column to column. Run
+  `nlqueries export-kb` again for each PostgreSQL agent to pick them up.
+
 - **`nlqueries query` stores its answers in the semantic cache.** The answer
   is written to the cache in a background task, and the command ended before
   that task ran, so no CLI query, and no caller of `run_query_sync`, ever
@@ -64,6 +74,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   should `await drain_background_tasks()` first (getting-started, "Run as a
   library"). `nlqueries eval` neither reads nor writes the cache (the new
   `use_cache=False` on `run_query`), so it always measures generation.
+
 - **A DeepSeek key counts as an LLM credential.** The credential check knew
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and Bedrock. On a host with only
   `DEEPSEEK_API_KEY`:
