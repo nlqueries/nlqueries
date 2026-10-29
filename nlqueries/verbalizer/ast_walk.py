@@ -66,6 +66,10 @@ class QueryShape:
 
     ok: bool = True
     raw_sql: str = ""
+    #: The dialect *raw_sql* was parsed with. Every fragment is printed in it:
+    #: sqlglot's default printed Postgres `DATE_TRUNC('month', x)` as
+    #: `TIMESTAMP_TRUNC(x, MONTH)`.
+    dialect: str = "postgres"
     select_items: list[SelectItem] = field(default_factory=list)
     from_table: str = ""
     from_opaque: bool = False
@@ -143,15 +147,15 @@ def _classify_item(expression: exp.Expression, shape: QueryShape) -> SelectItem:
             return SelectItem(
                 kind="aggregate", table=table, column=column, func=agg_func, alias=alias
             )
-        arg_raw = str(arg.sql()) if arg is not None else ""
-        shape.flag(str(node.sql()))
+        arg_raw = str(arg.sql(dialect=shape.dialect)) if arg is not None else ""
+        shape.flag(str(node.sql(dialect=shape.dialect)))
         return SelectItem(kind="aggregate", func=agg_func, alias=alias, raw=arg_raw, of_opaque=True)
 
     if isinstance(node, exp.Column):
         table, column = resolve_column(node, shape.alias_map)
         return SelectItem(kind="column", table=table, column=column, alias=alias)
 
-    raw = str(node.sql())
+    raw = str(node.sql(dialect=shape.dialect))
     shape.flag(raw)
     return SelectItem(kind="opaque", alias=alias, raw=raw)
 
@@ -177,7 +181,7 @@ def _extract_from(select: exp.Select, shape: QueryShape, cte_names: set[str]) ->
             shape.flag(name)  # CTE body is not described
     else:
         shape.from_opaque = True
-        shape.flag(str(source.sql()))
+        shape.flag(str(source.sql(dialect=shape.dialect)))
 
 
 def _extract_joins(select: exp.Select, shape: QueryShape) -> None:
@@ -187,7 +191,7 @@ def _extract_joins(select: exp.Select, shape: QueryShape) -> None:
         target = join.this
         if not isinstance(target, exp.Table):
             shape.joins.append(JoinClause(table="", opaque=True))
-            shape.flag(str(target.sql()) if target else "join")
+            shape.flag(str(target.sql(dialect=shape.dialect)) if target else "join")
             continue
         side = str(join.args.get("side") or "").upper()
         kind = {"LEFT": "left", "RIGHT": "right", "FULL": "full"}.get(side, "inner")
@@ -202,7 +206,7 @@ def _extract_group(select: exp.Select, shape: QueryShape) -> None:
         if isinstance(item, exp.Column):
             shape.group_by.append(resolve_column(item, shape.alias_map))
         else:
-            shape.group_by.append(str(item.sql()))
+            shape.group_by.append(str(item.sql(dialect=shape.dialect)))
 
 
 def _extract_order(select: exp.Select, shape: QueryShape) -> None:
@@ -219,7 +223,11 @@ def _extract_order(select: exp.Select, shape: QueryShape) -> None:
             shape.order_by.append(OrderItem(label_ref=ref, text="", descending=descending))
         else:
             shape.order_by.append(
-                OrderItem(label_ref=None, text=str(target.sql()), descending=descending)
+                OrderItem(
+                    label_ref=None,
+                    text=str(target.sql(dialect=shape.dialect)),
+                    descending=descending,
+                )
             )
 
 
@@ -239,7 +247,7 @@ def _extract_limit(select: exp.Select, shape: QueryShape) -> None:
 
 def analyze(sql: str, dialect: str = "postgres") -> QueryShape:
     """Parse *sql* into a :class:`QueryShape`. Never raises."""
-    shape = QueryShape(raw_sql=sql)
+    shape = QueryShape(raw_sql=sql, dialect=dialect)
     if not sql or not sql.strip():
         shape.ok = False
         return shape

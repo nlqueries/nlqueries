@@ -195,6 +195,31 @@ def test_dialect_goldens(dialect: str, sql: str, expected: str) -> None:
     assert result.complete is True
 
 
+@pytest.mark.parametrize(
+    "dialect,sql,quoted",
+    [
+        (
+            "postgres",
+            "SELECT DATE_TRUNC('month', o.shipped_at) AS month FROM orders o",
+            "`DATE_TRUNC('MONTH', o.shipped_at)`",
+        ),
+        (
+            "bigquery",
+            "SELECT TIMESTAMP_TRUNC(o.shipped_at, MONTH) AS month FROM orders o",
+            "`TIMESTAMP_TRUNC(o.shipped_at, MONTH)`",
+        ),
+    ],
+    ids=["postgres", "bigquery"],
+)
+def test_a_quoted_fragment_is_in_the_dialect_it_was_written_in(
+    dialect: str, sql: str, quoted: str
+) -> None:
+    # A fragment the templates cannot describe is quoted as SQL. It was printed in
+    # sqlglot's default dialect, so a Postgres query read back with BigQuery's
+    # TIMESTAMP_TRUNC; the BigQuery case is the control that the dialect is used.
+    assert quoted in verbalize(sql, dialect).text
+
+
 # ---------------------------------------------------------------------------
 # Graceful degradation — quote verbatim, complete=False, never raise
 # ---------------------------------------------------------------------------

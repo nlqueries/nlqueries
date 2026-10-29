@@ -108,7 +108,11 @@ def _aggregate_phrase(node: exp.Expression, shape: QueryShape, vocab: Vocab) -> 
     if isinstance(arg, exp.Column):
         table, column = resolve_column(arg, shape.alias_map)
         return _AGG_TEMPLATE[func].format(vocab.column_label(table, column))
-    return _AGG_TEMPLATE[func].format(f"`{arg.sql()}`") if arg is not None else None
+    return (
+        _AGG_TEMPLATE[func].format(f"`{arg.sql(dialect=shape.dialect)}`")
+        if arg is not None
+        else None
+    )
 
 
 def _operand(node: exp.Expression, shape: QueryShape, vocab: Vocab) -> tuple[str, bool]:
@@ -122,7 +126,7 @@ def _operand(node: exp.Expression, shape: QueryShape, vocab: Vocab) -> tuple[str
     literal = _literal(node)
     if literal:
         return literal, True
-    return f"`{node.sql()}`", False
+    return f"`{node.sql(dialect=shape.dialect)}`", False
 
 
 def _render_predicate(node: exp.Expression, shape: QueryShape, vocab: Vocab) -> tuple[str, bool]:
@@ -177,15 +181,15 @@ def _render_predicate(node: exp.Expression, shape: QueryShape, vocab: Vocab) -> 
     if isinstance(node, (exp.Like, exp.ILike)):
         return _render_like(node, shape, vocab, negated=False)
 
-    return f"`{node.sql()}`", False
+    return f"`{node.sql(dialect=shape.dialect)}`", False
 
 
 def _render_in(node: exp.In, shape: QueryShape, vocab: Vocab, *, negated: bool) -> tuple[str, bool]:
     operand, ok = _operand(node.this, shape, vocab)
     values = node.args.get("expressions") or node.expressions
     if node.args.get("query") or not values:
-        return f"`{node.sql()}`", False  # IN (subquery) not modelled in v1
-    rendered = [_literal(v) or f"`{v.sql()}`" for v in values]
+        return f"`{node.sql(dialect=shape.dialect)}`", False  # IN (subquery) not modelled in v1
+    rendered = [_literal(v) or f"`{v.sql(dialect=shape.dialect)}`" for v in values]
     phrase = "is not one of" if negated else "is one of"
     return f"{operand} {phrase} {', '.join(rendered)}", ok
 
