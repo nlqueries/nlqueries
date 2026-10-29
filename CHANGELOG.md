@@ -55,6 +55,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The plain-English line quotes SQL in the query's own dialect.** A
+  fragment the paraphrase cannot describe is quoted as SQL, and it was printed in
+  sqlglot's default dialect: a PostgreSQL `DATE_TRUNC('month', shipped_at)` read
+  back as BigQuery's `TIMESTAMP_TRUNC(shipped_at, MONTH)`. Fragments are now
+  printed in the dialect the query was parsed with.
+
 - **A column-level grant hides that column's keys too.** The PostgreSQL key
   queries kept to tables the login may use, but tested the table, not the
   column. A login granted only some columns of a table saw a foreign key into a
