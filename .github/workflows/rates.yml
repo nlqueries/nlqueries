@@ -78,7 +78,7 @@ jobs:
           RATES_PUBLIC_KEY: ${{ vars.RATES_PUBLIC_KEY }}
         run: |
           python scripts/sign_rates.py update published/assets \
-            --kid "$RATES_KID" --key-env RATES_SIGNING_KEY --public-key "$RATES_PUBLIC_KEY" \
+            --kid "$RATES_KID" --key-env RATES_SIGNING_KEY --public-key="$RATES_PUBLIC_KEY" \
             | tee "$RUNNER_TEMP/report.txt"
 
       - name: Publish

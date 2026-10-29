@@ -197,7 +197,8 @@ def test_the_command_line_round_trip(
     assert sign_rates.main(["sign", str(rates), "--key", str(key_path), "--kid", "rates-2026"]) == 0
     assert (tmp_path / "rates.json.sig").exists()
     assert (
-        sign_rates.main(["verify", str(rates), "--public-key", public, "--kid", "rates-2026"]) == 0
+        sign_rates.main(["verify", str(rates), f"--public-key={public}", "--kid", "rates-2026"])
+        == 0
     )
 
 
@@ -470,7 +471,7 @@ def test_the_command_line_update_takes_the_key_from_the_environment(
     source = tmp_path / "map.json"
     source.write_text(json.dumps(_map()), encoding="utf-8")
     args = ["update", str(tmp_path / "assets"), "--kid", _KID, "--key-env", "RATES_KEY_TEST"]
-    args += ["--source", str(source), "--public-key", _public(key)]
+    args += ["--source", str(source), f"--public-key={_public(key)}"]
 
     monkeypatch.setenv("RATES_KEY_TEST", "")
     with pytest.raises(SystemExit, match="RATES_KEY_TEST is empty or unset"):
@@ -485,6 +486,35 @@ def test_the_command_line_update_takes_the_key_from_the_environment(
         public,
         _KID,
     )
+
+
+def test_a_public_key_that_begins_with_a_dash_is_taken(tmp_path: pathlib.Path) -> None:
+    """Base64url can begin with "-" (about one key in 64). Given as
+    ``--public-key -abc...``, argparse reads that as a missing value and exits,
+    which made the tests that drew such a key fail at random. The ``=`` form,
+    which the workflow uses, takes it."""
+    from cryptography.hazmat.primitives import serialization
+
+    key = next(
+        k for k in (Ed25519PrivateKey.generate() for _ in range(2000)) if _public(k)[0] == "-"
+    )
+    key_path = tmp_path / "rates.pem"
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_map()), encoding="utf-8")
+    args = ["update", str(tmp_path / "assets"), "--kid", _KID, "--key", str(key_path)]
+    args += ["--source", str(source)]
+
+    assert sign_rates.main([*args, f"--public-key={_public(key)}"]) == 0
+    with pytest.raises(SystemExit) as refused:
+        sign_rates.main([*args, "--public-key", _public(key)])
+    assert refused.value.code == 2  # argparse's usage error: why the "=" form
 
 
 # --- fetching LiteLLM's map ---------------------------------------------------------------
