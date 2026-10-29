@@ -340,6 +340,88 @@ def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
         assert ("public", "secrets") not in PostgresConnector._fetch_primary_keys(conn)
 
 
+def test_a_column_level_grant_names_no_key_on_a_column_it_hides(seeded_connector, credentials):
+    """Granted only some columns of a table, the login's schema leaves the rest
+    out, column by column. The keys did not: a per-table test reported
+    `tickets.person_id` as referencing `people.id`, though `id` is not in its
+    schema, and a join on it fails with a permission error (from #357's review).
+    Granted the column, the same keys appear, as the control."""
+    statements = [
+        "DROP TABLE IF EXISTS tickets, people CASCADE",
+        "DROP ROLE IF EXISTS cols_reader",
+        "CREATE ROLE cols_reader LOGIN PASSWORD 'reader-pw'",
+        "CREATE TABLE people (id SERIAL PRIMARY KEY, name TEXT, email TEXT)",
+        "CREATE TABLE tickets (id SERIAL PRIMARY KEY, person_id INTEGER REFERENCES people(id))",
+        "GRANT USAGE ON SCHEMA public TO cols_reader",
+        "GRANT SELECT (name, email) ON people TO cols_reader",
+        "GRANT SELECT ON tickets TO cols_reader",
+    ]
+    with seeded_connector._require_engine().begin() as conn:
+        for stmt in statements:
+            conn.execute(sa_text(stmt))
+
+    reader = granted(PostgresConnector())
+    reader.connect({**credentials, "user": "cols_reader", "password": "reader-pw"})
+    tables = {t.name: {c.name: c for c in t.columns} for t in reader.extract_schema().tables}
+
+    assert set(tables["people"]) == {"name", "email"}  # the column list, for reference
+    with reader._require_engine().connect() as conn:
+        assert ("public", "people") not in PostgresConnector._fetch_primary_keys(conn)
+    assert tables["tickets"]["person_id"].is_foreign_key is False
+    assert tables["tickets"]["id"].is_primary_key is True
+
+    with seeded_connector._require_engine().begin() as conn:
+        conn.execute(sa_text("GRANT SELECT (id) ON people TO cols_reader"))
+    reader.close()
+    reader.connect({**credentials, "user": "cols_reader", "password": "reader-pw"})
+    tables = {t.name: {c.name: c for c in t.columns} for t in reader.extract_schema().tables}
+    assert tables["people"]["id"].is_primary_key is True
+    assert tables["tickets"]["person_id"].references == "people.id"
+
+
+def test_a_composite_key_is_offered_whole_or_not_at_all(seeded_connector, credentials):
+    """Filtered column by column, a composite key lost only the columns the login
+    cannot see: granted `shipments.order_id` but not `seq`, the login was offered
+    `ship_order -> shipments.order_id` alone, a join that runs and multiplies rows,
+    and `order_id` as the whole primary key of `shipments` (from #360's review).
+    Granted `seq` too, both keys appear whole, as the control."""
+    statements = [
+        "DROP TABLE IF EXISTS shipment_lines, shipments CASCADE",
+        "DROP ROLE IF EXISTS part_reader",
+        "CREATE ROLE part_reader LOGIN PASSWORD 'reader-pw'",
+        "CREATE TABLE shipments (order_id INTEGER, seq INTEGER, carrier TEXT,"
+        " PRIMARY KEY (order_id, seq))",
+        "CREATE TABLE shipment_lines (id SERIAL PRIMARY KEY, ship_order INTEGER,"
+        " ship_seq INTEGER, FOREIGN KEY (ship_order, ship_seq)"
+        " REFERENCES shipments (order_id, seq))",
+        "GRANT USAGE ON SCHEMA public TO part_reader",
+        "GRANT SELECT (order_id, carrier) ON shipments TO part_reader",
+        "GRANT SELECT ON shipment_lines TO part_reader",
+    ]
+    with seeded_connector._require_engine().begin() as conn:
+        for stmt in statements:
+            conn.execute(sa_text(stmt))
+
+    reader = granted(PostgresConnector())
+    reader.connect({**credentials, "user": "part_reader", "password": "reader-pw"})
+    tables = {t.name: {c.name: c for c in t.columns} for t in reader.extract_schema().tables}
+
+    assert set(tables["shipments"]) == {"order_id", "carrier"}  # the column list
+    assert tables["shipments"]["order_id"].is_primary_key is False
+    assert tables["shipment_lines"]["ship_order"].is_foreign_key is False
+    assert tables["shipment_lines"]["ship_seq"].is_foreign_key is False
+
+    with seeded_connector._require_engine().begin() as conn:
+        conn.execute(sa_text("GRANT SELECT (seq) ON shipments TO part_reader"))
+    reader.close()
+    reader.connect({**credentials, "user": "part_reader", "password": "reader-pw"})
+    tables = {t.name: {c.name: c for c in t.columns} for t in reader.extract_schema().tables}
+    assert tables["shipments"]["order_id"].is_primary_key is True
+    assert tables["shipments"]["seq"].is_primary_key is True
+    assert tables["shipment_lines"]["ship_order"].references == "shipments.order_id"
+    assert tables["shipment_lines"]["ship_seq"].references == "shipments.seq"
+
+
 def test_extract_schema_row_counts_are_present_after_analyze(seeded_connector):
     schema = seeded_connector.extract_schema()
     tables_by_name = {t.name: t for t in schema.tables}
