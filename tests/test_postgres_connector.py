@@ -277,7 +277,8 @@ def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
     a composite key paired column to column, and nothing of a table it may not
     read."""
     statements = [
-        "DROP TABLE IF EXISTS event_notes, events, secret_links, shipment_lines, shipments, secrets CASCADE",
+        "DROP TABLE IF EXISTS event_notes, events, secret_links, shipment_lines, shipments, "
+        "secrets CASCADE",
         "DROP ROLE IF EXISTS keys_reader",
         "CREATE ROLE keys_reader LOGIN PASSWORD 'reader-pw'",
         "CREATE TABLE shipments (order_id INTEGER, seq INTEGER, PRIMARY KEY (order_id, seq))",
@@ -291,14 +292,17 @@ def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
         """,
         "CREATE TABLE secrets (id SERIAL PRIMARY KEY, value TEXT)",
         # A readable table with a key into the unreadable one.
-        "CREATE TABLE secret_links (id SERIAL PRIMARY KEY, secret_id INTEGER REFERENCES secrets(id))",
+        "CREATE TABLE secret_links "
+        "(id SERIAL PRIMARY KEY, secret_id INTEGER REFERENCES secrets(id))",
         # A key into a partitioned table, which PostgreSQL copies per partition.
         """
         CREATE TABLE events (id INTEGER, day DATE, PRIMARY KEY (id, day))
         PARTITION BY RANGE (day)
         """,
-        "CREATE TABLE events_2025 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')",
-        "CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')",
+        "CREATE TABLE events_2025 PARTITION OF events "
+        "FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')",
+        "CREATE TABLE events_2026 PARTITION OF events "
+        "FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')",
         """
         CREATE TABLE event_notes (
             id SERIAL PRIMARY KEY,
