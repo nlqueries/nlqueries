@@ -492,11 +492,19 @@ def test_a_public_key_that_begins_with_a_dash_is_taken(tmp_path: pathlib.Path) -
     """Base64url can begin with "-" (about one key in 64). Given as
     ``--public-key -abc...``, argparse reads that as a missing value and exits,
     which made the tests that drew such a key fail at random. The ``=`` form,
-    which the workflow uses, takes it."""
+    which the workflow uses, takes it.
+
+    The key drawn has a letter after the dash. Python 3.14's argparse takes
+    ``--public-key -0abc...`` as a value, as it does a negative number, while
+    3.12 refuses it; with a digit there the control below passed or failed
+    with the interpreter (#362's CI, Python 3.14). A letter is refused by both.
+    """
     from cryptography.hazmat.primitives import serialization
 
     key = next(
-        k for k in (Ed25519PrivateKey.generate() for _ in range(2000)) if _public(k)[0] == "-"
+        k
+        for k in (Ed25519PrivateKey.generate() for _ in range(5000))
+        if _public(k)[0] == "-" and _public(k)[1].isalpha()
     )
     key_path = tmp_path / "rates.pem"
     key_path.write_bytes(
