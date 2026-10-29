@@ -55,6 +55,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **PostgreSQL query history says why it cannot be read.** When the history
+  query failed, the connector retried it with the PostgreSQL 12 column name
+  inside the transaction the failure had aborted, so every cause was reported
+  as `current transaction is aborted`. The column is now chosen from the
+  server's version, and a failed read raises `QueryHistoryUnavailable` with the
+  database's own error. A login without `EXECUTE` on `pg_stat_statements()` is
+  told which grant to add, and `process-history` reports it as `Query history
+  unavailable` with that reason. A caller that builds without history when it
+  is unavailable now does so here too, instead of stopping.
+  `database-hardening.md` and `connectors.md` note that revoking `EXECUTE` on
+  functions from `PUBLIC` also covers that function when the extension is in
+  the same schema.
+
 - **A PostgreSQL login with only SELECT sees its tables' keys.** The
   connector read primary and foreign keys from `information_schema`, which
   PostgreSQL shows only to a table's owner, or to a login with a privilege

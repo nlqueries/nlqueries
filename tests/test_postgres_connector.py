@@ -648,23 +648,45 @@ def test_history_extraction_is_scoped_to_the_connected_database(seeded_connector
     assert others and others > 0
 
 
-def test_both_history_queries_carry_both_filters() -> None:
-    """The Postgres<13 fallback is a second copy of the statement.
+def _history_statement_for(server_version: tuple[int, ...]) -> str:
+    """The history statement the connector sends to a server of *server_version*."""
+    from unittest.mock import MagicMock
 
-    It was added for a renamed column and is easy to forget when the WHERE
-    clause changes — so a filter added to one and not the other would leave the
-    old behaviour reachable on exactly the deployments least likely to notice.
-    """
-    import inspect
+    sent: list[str] = []
 
-    from nlqueries.connectors.postgres import PostgresConnector as _PC
+    def execute(statement, *_args):
+        sent.append(str(statement))
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = 1  # the extension is installed
+        result.mappings.return_value = []
+        return result
 
-    source = inspect.getsource(_PC.extract_query_history)
-    body = source.split('"""', 2)[-1]  # assertions belong to the code, not the docstring
-    assert body.count("mean_exec_time\n") >= 1
-    assert body.count("dbid = (") == 2
-    assert body.count("{STATEMENT_IS_A_READ}") == 2
-    assert body.count("SELECT {STATEMENT_TEXT} AS query") == 2
+    conn = MagicMock()
+    conn.dialect.server_version_info = server_version
+    conn.execute.side_effect = execute
+    engine = MagicMock()
+    engine.connect.return_value.__enter__.return_value = conn
+    connector = PostgresConnector()
+    connector._engine = engine
+
+    assert connector.extract_query_history() == []
+    [statement] = [s for s in sent if "FROM pg_stat_statements" in s]
+    return statement
+
+
+def test_the_history_statement_names_the_column_the_server_has() -> None:
+    """Postgres < 13 called ``mean_exec_time`` ``mean_time``. The column is chosen
+    from the server's version: the old way tried one statement and, on any
+    error, ran the other in the transaction the first had aborted, so every
+    failure read as "current transaction is aborted"."""
+    old = _history_statement_for((12, 18))
+    new = _history_statement_for((16, 4))
+
+    assert "calls, mean_time AS mean_exec_time" in old
+    assert "calls, mean_exec_time AS mean_exec_time" in new
+    for statement in (old, new):  # one statement, so one set of filters
+        assert "dbid = (" in statement
+        assert "~* '^(select|with)[^a-z]'" in statement
 
 
 # ---------------------------------------------------------------------------
@@ -862,6 +884,45 @@ def test_a_streamed_read_of_ours_is_extracted_as_its_statement(history_credentia
     assert tagged in extracted
     assert not any(s.lstrip().upper().startswith(("DECLARE", "FETCH", "CLOSE")) for s in extracted)
     assert not any("hist_b.id >" in s for s in extracted)
+
+
+def test_a_login_that_may_not_read_the_history_is_told_why(history_credentials) -> None:
+    """A REVOKE EXECUTE ... FROM PUBLIC on the extension's schema takes
+    ``pg_stat_statements()`` away from every login. The connector says so, as
+    QueryHistoryUnavailable, so a caller can carry on without history; it used
+    to raise "current transaction is aborted", which named neither."""
+    from nlqueries.connectors.base import QueryHistoryUnavailable
+
+    admin = granted(PostgresConnector())
+    admin.connect(history_credentials)
+    with admin._require_engine().begin() as conn:
+        conn.execute(sa_text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        conn.execute(sa_text("DROP ROLE IF EXISTS history_reader"))
+        conn.execute(sa_text("CREATE ROLE history_reader LOGIN PASSWORD 'reader-pw'"))
+        conn.execute(sa_text("REVOKE EXECUTE ON FUNCTION pg_stat_statements(boolean) FROM PUBLIC"))
+    reader = PostgresConnector()
+    reader.connect({**history_credentials, "user": "history_reader", "password": "reader-pw"})
+    try:
+        with pytest.raises(QueryHistoryUnavailable) as err:
+            reader.extract_query_history()
+        message = str(err.value)
+        assert "permission denied for function pg_stat_statements" in message
+        assert "GRANT EXECUTE ON FUNCTION pg_stat_statements(boolean)" in message
+        assert "transaction is aborted" not in message
+
+        # The control: granted the function, the same login reads the history.
+        with admin._require_engine().begin() as conn:
+            conn.execute(
+                sa_text("GRANT EXECUTE ON FUNCTION pg_stat_statements(boolean) TO history_reader")
+            )
+        assert isinstance(reader.extract_query_history(), list)
+    finally:
+        reader.close()
+        with admin._require_engine().begin() as conn:
+            conn.execute(sa_text("GRANT EXECUTE ON FUNCTION pg_stat_statements(boolean) TO PUBLIC"))
+            conn.execute(sa_text("DROP OWNED BY history_reader"))
+            conn.execute(sa_text("DROP ROLE history_reader"))
+        admin.close()
 
 
 def test_resetting_the_timeout_per_batch_leaves_one_history_row(history_credentials) -> None:

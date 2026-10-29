@@ -596,9 +596,12 @@ class PostgresConnector(DatabaseConnector):
         annotates its SQL does the same — anchoring would discard precisely the
         queries someone ran deliberately.
 
-        If the ``pg_stat_statements`` extension is not installed, this raises
-        :class:`QueryHistoryUnavailable` saying so -- an empty list would read
-        as "no history" when the history simply cannot be read.
+        If the ``pg_stat_statements`` extension is not installed, or the login
+        may not read it, this raises :class:`QueryHistoryUnavailable` saying
+        so -- an empty list would read as "no history" when the history simply
+        cannot be read. The usual permission failure is a ``REVOKE EXECUTE ON
+        ALL FUNCTIONS IN SCHEMA ... FROM PUBLIC`` on the schema the extension
+        lives in, which takes ``pg_stat_statements()`` away from every login.
         """
         engine = self._require_engine()
 
@@ -615,11 +618,17 @@ class PostgresConnector(DatabaseConnector):
                     "in shared_preload_libraries)."
                 )
 
+            # Postgres < 13 named the column `mean_time`. Chosen from the server's
+            # version: retrying on the error instead ran the second statement in
+            # the transaction the first had aborted, so every failure read as
+            # "current transaction is aborted" and hid its cause.
+            server_version = conn.dialect.server_version_info or (13,)
+            mean_time = "mean_exec_time" if server_version >= (13,) else "mean_time"
             try:
                 rows = conn.execute(
                     text(
                         f"""
-                        SELECT {STATEMENT_TEXT} AS query, calls, mean_exec_time
+                        SELECT {STATEMENT_TEXT} AS query, calls, {mean_time} AS mean_exec_time
                         FROM pg_stat_statements
                         WHERE dbid = (
                             SELECT oid FROM pg_database WHERE datname = current_database()
@@ -631,23 +640,15 @@ class PostgresConnector(DatabaseConnector):
                     ),
                     {"limit": limit},
                 )
-            except Exception:
-                # Postgres < 13 named the column `mean_time` instead of `mean_exec_time`.
-                rows = conn.execute(
-                    text(
-                        f"""
-                        SELECT {STATEMENT_TEXT} AS query, calls, mean_time AS mean_exec_time
-                        FROM pg_stat_statements
-                        WHERE dbid = (
-                            SELECT oid FROM pg_database WHERE datname = current_database()
-                        )
-                          AND {STATEMENT_IS_A_READ}
-                        ORDER BY calls DESC
-                        LIMIT :limit
-                        """  # noqa: S608 - module constants; the limit is bound
-                    ),
-                    {"limit": limit},
-                )
+                records = list(rows.mappings())
+            except Exception as exc:  # noqa: BLE001
+                raise QueryHistoryUnavailable(
+                    f"Could not read pg_stat_statements ({short_cause(exc)}). If that is "
+                    "a permission error, the login needs EXECUTE on the "
+                    "pg_stat_statements() function, which REVOKE EXECUTE ON ALL FUNCTIONS "
+                    "... FROM PUBLIC on the extension's schema removes: GRANT EXECUTE ON "
+                    "FUNCTION pg_stat_statements(boolean) TO <login>."
+                ) from exc
 
             return [
                 QueryRecord(
@@ -659,7 +660,7 @@ class PostgresConnector(DatabaseConnector):
                     # pg_stat_statements does not record per-query timestamps.
                     last_executed=None,
                 )
-                for row in rows.mappings()
+                for row in records
             ]
 
     # ------------------------------------------------------------------

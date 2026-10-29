@@ -146,6 +146,15 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA analytics
     REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 ```
 
+If `pg_stat_statements` is installed in the schema you revoke on (it often
+lives in `public`), the revoke takes its function away too, and
+`process-history` stops with `Query history unavailable: ... permission denied
+for function pg_stat_statements`. Grant that one function back:
+
+```sql
+GRANT EXECUTE ON FUNCTION pg_stat_statements(boolean) TO nlqueries_readonly;
+```
+
 Then check the predefined roles, which are the ones that turn a `SELECT` into a
 file read:
 
