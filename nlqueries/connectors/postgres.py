@@ -521,6 +521,19 @@ class PostgresConnector(DatabaseConnector):
                 WHERE con.contype = 'f'
                   AND n.nspname NOT IN :system_schemas
                   AND has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
+                  -- Nor to a table it may not use: the knowledge base would then
+                  -- offer a join to a table that is not in the schema.
+                  AND has_any_column_privilege(fc.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
+                  -- A key into a partitioned table gets a copy per partition of
+                  -- that table (same referencing table, conparentid set), which
+                  -- would name a partition in place of the table. A copy a
+                  -- partition of the referencing table inherits has its own
+                  -- conrelid and is kept.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_constraint parent
+                      WHERE parent.oid = con.conparentid
+                        AND parent.conrelid = con.conrelid
+                  )
                 """
             ),
             {"system_schemas": _SYSTEM_SCHEMAS},

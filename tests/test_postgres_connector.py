@@ -277,7 +277,7 @@ def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
     a composite key paired column to column, and nothing of a table it may not
     read."""
     statements = [
-        "DROP TABLE IF EXISTS shipment_lines, shipments, secrets CASCADE",
+        "DROP TABLE IF EXISTS event_notes, events, secret_links, shipment_lines, shipments, secrets CASCADE",
         "DROP ROLE IF EXISTS keys_reader",
         "CREATE ROLE keys_reader LOGIN PASSWORD 'reader-pw'",
         "CREATE TABLE shipments (order_id INTEGER, seq INTEGER, PRIMARY KEY (order_id, seq))",
@@ -290,8 +290,26 @@ def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
         )
         """,
         "CREATE TABLE secrets (id SERIAL PRIMARY KEY, value TEXT)",
+        # A readable table with a key into the unreadable one.
+        "CREATE TABLE secret_links (id SERIAL PRIMARY KEY, secret_id INTEGER REFERENCES secrets(id))",
+        # A key into a partitioned table, which PostgreSQL copies per partition.
+        """
+        CREATE TABLE events (id INTEGER, day DATE, PRIMARY KEY (id, day))
+        PARTITION BY RANGE (day)
+        """,
+        "CREATE TABLE events_2025 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')",
+        "CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')",
+        """
+        CREATE TABLE event_notes (
+            id SERIAL PRIMARY KEY,
+            event_id INTEGER,
+            event_day DATE,
+            FOREIGN KEY (event_id, event_day) REFERENCES events (id, day)
+        )
+        """,
         "GRANT USAGE ON SCHEMA public TO keys_reader",
-        "GRANT SELECT ON customers, orders, order_items, shipments, shipment_lines TO keys_reader",
+        "GRANT SELECT ON customers, orders, order_items, shipments, shipment_lines, "
+        "secret_links, events, events_2025, events_2026, event_notes TO keys_reader",
     ]
     with seeded_connector._require_engine().begin() as conn:
         for stmt in statements:
@@ -307,6 +325,11 @@ def test_a_select_only_login_sees_the_keys(seeded_connector, credentials):
     assert tables["shipment_lines"]["ship_order"].references == "shipments.order_id"
     assert tables["shipment_lines"]["ship_seq"].references == "shipments.seq"
     assert "secrets" not in tables
+    # From #357's review: no join is offered to a table the login may not read,
+    # and a key into a partitioned table names the table, not a partition.
+    assert tables["secret_links"]["secret_id"].is_foreign_key is False
+    assert tables["event_notes"]["event_id"].references == "events.id"
+    assert tables["event_notes"]["event_day"].references == "events.day"
     # pg_constraint is readable by every login; the key queries keep to tables
     # the login may use, so they name nothing of the one it may not.
     with reader._require_engine().connect() as conn:
