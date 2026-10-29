@@ -302,6 +302,12 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+The answer is written to the semantic cache in the background. A program that
+exits as soon as it has its answer, like this one, should first
+`await drain_background_tasks()` (from `nlqueries.orchestrator.multi_agent_orchestrator`)
+at the end of `main()`, or the write is cancelled and the next run asks the LLM
+again. `run_query_sync` does this for you.
+
 ```python
 # Synchronous (blocking)
 from nlqueries.execution import ExecutionPolicy

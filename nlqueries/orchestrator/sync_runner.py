@@ -41,7 +41,10 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_retrieval import Citation
 from nlqueries.orchestrator.followup_resolver import resolve_followup
-from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+from nlqueries.orchestrator.multi_agent_orchestrator import (
+    MultiAgentOrchestrator,
+    drain_background_tasks,
+)
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 
 
@@ -350,5 +353,16 @@ def run_query_sync(
 
     Convenience for SDK users who do not have an async runtime.  Cannot be
     called from within a running event loop — use :func:`run_query` there.
+
+    The orchestrator writes the semantic cache in a background task, and
+    ``asyncio.run`` cancels whatever is still pending when it returns. So the
+    write is awaited here first: without it no CLI ``query`` and no caller of
+    this function ever stored an answer, and every repeat was a miss.
     """
-    return asyncio.run(run_query(question, agent_id, **kwargs))
+
+    async def _run_and_flush() -> AgentQueryResult:
+        result = await run_query(question, agent_id, **kwargs)
+        await drain_background_tasks()
+        return result
+
+    return asyncio.run(_run_and_flush())

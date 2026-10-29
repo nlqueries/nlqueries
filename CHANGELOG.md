@@ -55,6 +55,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **`nlqueries query` stores its answers in the semantic cache.** The answer
+  is written to the cache in a background task, and the command ended before
+  that task ran, so no CLI query, and no caller of `run_query_sync`, ever
+  stored one: every repeat went to the LLM again. `run_query_sync` now waits
+  for the write before it returns. The MCP server, which keeps running, was
+  not affected. An async program that calls `run_query` and exits at once
+  should `await drain_background_tasks()` first (getting-started, "Run as a
+  library").
 - **A DeepSeek key counts as an LLM credential.** The credential check knew
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and Bedrock. On a host with only
   `DEEPSEEK_API_KEY`:
