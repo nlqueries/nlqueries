@@ -628,6 +628,49 @@ class TestMultiAgentOrchestratorNewPaths:
         assert elapsed < delay
         assert put_calls, "cache.put should eventually run once drained"
 
+    def test_use_cache_false_neither_reads_nor_writes_the_cache(self) -> None:
+        """nlqueries eval asks with use_cache=False: a cached answer would measure
+        an earlier model or prompt, and eval's questions do not belong in the
+        cache. The question is still embedded, for the prompt."""
+        from nlqueries.orchestrator.multi_agent_orchestrator import drain_background_tasks
+
+        sql_instance = MagicMock()
+        sql_instance.handle_question = _async_gen_factory(_SQL_TOKENS)
+        embedded: list[str] = []
+
+        def _embed(text: str) -> list[float]:
+            embedded.append(text)
+            return [0.0] * 384
+
+        async def run(use_cache: bool) -> Any:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator",
+                    return_value=sql_instance,
+                ),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch("nlqueries.embeddings.embedder.embed_text", side_effect=_embed),
+            ):
+                MockCache.return_value.get.return_value = None
+                orch = MultiAgentOrchestrator()
+                async for _token in orch.handle_question(
+                    "Count orders", "agent1", use_cache=use_cache
+                ):
+                    pass
+                await drain_background_tasks()
+                return MockCache.return_value
+
+        off = asyncio.run(run(use_cache=False))
+        off.get.assert_not_called()
+        off.put.assert_not_called()
+        assert embedded == ["Count orders"]
+
+        # The control: the same question with the cache on reads and writes it.
+        on = asyncio.run(run(use_cache=True))
+        on.get.assert_called_once()
+        on.put.assert_called_once()
+
     def test_history_passed_to_resolve_followup(self) -> None:
         """resolve_followup receives *history* when given, and [] when history=None."""
         from datetime import UTC, datetime
