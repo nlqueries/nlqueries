@@ -60,8 +60,10 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   in which region?" scored 0.985 against the cached "... and in which region
   are they?" and was served its answer, without the amount. Similarity is now
   followed by a content check on Tiers 1 and 2: both questions are reduced to
-  their content words, with numbers, negation, most/least and "how much" kept
-  as such, and a candidate that differs is skipped in favour of the next one.
+  their content words, with numbers, negation, most/least, comparisons (`<`,
+  `>`, `=`, `!=`), "to"/"from" and "how much" kept as such, and a candidate
+  that differs is skipped in favour of the next one, before its stored question
+  is embedded again.
   Rephrasings (plurals, "what's", "per" for "by", "all" for "the", a hedge such
   as "roughly") still hit.
   `NLQ_CACHE_CONTENT_GUARD=false` turns the check off.

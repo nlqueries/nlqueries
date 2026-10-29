@@ -52,6 +52,11 @@ def _use_the_test_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
         ("Revenue by region", "Revenue and margin by region"),
         ("Orders shipped to Germany", "Orders shipped to France"),
         ("Orders placed last month", "Orders placed this month"),
+        # The comparisons Tier 0 keeps apart, and direction (from #362's review).
+        ("Orders with total > 100", "Orders with total < 100"),
+        ("Orders with total > 100", "Orders with total >= 100"),
+        ("Orders with status = 'open'", "Orders with status != 'open'"),
+        ("Orders shipped to Germany", "Orders shipped from Germany"),
     ],
 )
 def test_a_question_that_asks_for_something_else_is_not_the_same(
@@ -73,6 +78,7 @@ def test_a_question_that_asks_for_something_else_is_not_the_same(
         ("Total revenue by region", "Total revenue per region"),
         ("Show the orders", "Show me the order"),
         ("How many orders were there?", "Roughly how many orders were there?"),
+        ("Orders with total > 100", "Orders with a total > 100"),
     ],
 )
 def test_a_rephrasing_is_the_same(cached: str, incoming: str) -> None:
@@ -153,6 +159,29 @@ def test_tier_1_misses_when_only_the_narrower_entry_is_there() -> None:
     )
     # Tier 1 misses; the question has no entity Tier 2 could mask ("five" is a word).
     assert _get(_client([narrower]), ASKED) is None
+
+
+def test_a_refused_candidate_costs_no_embedding() -> None:
+    """The content check is pure, so it runs before the re-embed of the stored
+    question: a window of near neighbours that ask for something else is one
+    embed call (the question's own), not one per candidate."""
+    narrower = [
+        _make_scored_point(
+            0.985 - i / 1000,
+            _fresh_payload(
+                question="Which five customers have spent the most, and in which region are they?"
+            ),
+            point_id=i + 1,
+        )
+        for i in range(3)
+    ]
+    client = _client(narrower)
+    with (
+        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
+        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384) as embed,
+    ):
+        assert SemanticCache("agent1", binding=TEST_BINDING).get(ASKED) is None
+    assert embed.call_count == 1
 
 
 def test_the_guard_can_be_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
