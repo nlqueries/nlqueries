@@ -170,9 +170,11 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.dialects: list[str] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     def run_query_sync(self, question: str, agent_id: str, **kwargs: Any) -> Any:
         self.dialects.append(kwargs["dialect"])
+        self.kwargs.append(kwargs)
         return SimpleNamespace(
             question=question,
             resolved_question=None,
@@ -206,10 +208,15 @@ class _Recorder:
 
 
 def _invoke(
-    command: str, args: list[str], connectors: dict[str, Any], tmp_path: Path, agent: str = AGENT
+    command: str,
+    args: list[str],
+    connectors: dict[str, Any],
+    tmp_path: Path,
+    agent: str = AGENT,
+    recorder: _Recorder | None = None,
 ) -> Any:
     """Run *command* with generation mocked; returns (result, dialects handed down)."""
-    recorder = _Recorder()
+    recorder = recorder or _Recorder()
     (tmp_path / f"{agent}.yaml").write_text("{}", encoding="utf-8")
 
     def _run_eval(kb: Any, cases: Any, generate: Any, *, dialect: str) -> list[Any]:
@@ -271,3 +278,18 @@ def test_with_nothing_known_the_default_is_still_postgres(command: str, tmp_path
     result, dialects = _invoke(command, [], {}, tmp_path)
     assert result.exit_code == 0, result.output
     assert dialects and set(dialects) == {"postgres"}
+
+
+def test_eval_generates_without_the_semantic_cache(tmp_path: Path) -> None:
+    """eval measures generation: a cached answer would measure an earlier model
+    or prompt, and its questions do not belong in the agent's cache. query keeps
+    the cache."""
+    evaluated = _Recorder()
+    result, _ = _invoke("eval", [], {}, tmp_path, recorder=evaluated)
+    assert result.exit_code == 0, result.output
+    assert [k.get("use_cache") for k in evaluated.kwargs] == [False]
+
+    queried = _Recorder()
+    result, _ = _invoke("query", [], {}, tmp_path, recorder=queried)
+    assert result.exit_code == 0, result.output
+    assert [k.get("use_cache", True) for k in queried.kwargs] == [True]
