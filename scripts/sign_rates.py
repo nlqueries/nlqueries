@@ -10,8 +10,11 @@ script is the signing side. It never sees a private key until you pass one.
     keygen  OUT.pem                 a new signing key; prints the public half
     build   OUT.json --effective-from YYYY-MM-DD [--source MAP.json]
     sign    rates.json --key KEY.pem --kid KID
-    verify  rates.json --public-key BASE64URL --kid KID
-    update  DIR --kid KID (--key KEY.pem | --key-env VAR) [--public-key BASE64URL]
+    verify  rates.json --public-key=BASE64URL --kid KID
+    update  DIR --kid KID (--key KEY.pem | --key-env VAR) [--public-key=BASE64URL]
+
+Give the public key with ``=``. Base64url text can begin with ``-``, about one
+key in 64, and ``--public-key -abc...`` reads to argparse as a missing value.
 
 ``build`` takes LiteLLM's bundled map (or ``--source``) and keeps only what
 enterprise prices:
