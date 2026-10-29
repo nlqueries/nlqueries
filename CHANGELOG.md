@@ -55,6 +55,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The plain-English line quotes SQL in the query's own dialect.** A
+  fragment the paraphrase cannot describe is quoted as SQL, and it was printed in
+  sqlglot's default dialect: a PostgreSQL `DATE_TRUNC('month', shipped_at)` read
+  back as BigQuery's `TIMESTAMP_TRUNC(shipped_at, MONTH)`. Fragments are now
+  printed in the dialect the query was parsed with.
+
 - **PostgreSQL query history says why it cannot be read.** When the history
   query failed, the connector retried it with the PostgreSQL 12 column name
   inside the transaction the failure had aborted, so every cause was reported
