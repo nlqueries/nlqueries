@@ -92,7 +92,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 3. Run `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;` once per database
 4. Verify: `SELECT count(*) FROM pg_stat_statements;`
 
-The view is cluster-wide; `process-history` reads only this database's rows, and only statements that begin with `SELECT` or `WITH`, ordered by call count. For a login that is neither a superuser nor a member of `pg_read_all_stats`, PostgreSQL shows other roles' statements as `<insufficient privilege>`; those rows are skipped, so the history holds only the login's own statements. To include everyone's queries, `GRANT pg_read_all_stats TO <login>;`.
+The view is cluster-wide; `process-history` reads only this database's rows, and only statements that begin with `SELECT` or `WITH`, ordered by call count. For a login that is neither a superuser nor a member of `pg_read_all_stats`, PostgreSQL shows other roles' statements as `<insufficient privilege>`; those rows are skipped, so the history holds only the login's own statements. To include everyone's queries, `GRANT pg_read_all_stats TO <login>;`. The login also needs `EXECUTE` on the `pg_stat_statements()` function, which every login has unless someone revoked it from `PUBLIC` (see [database-hardening.md](database-hardening.md#4-sequences-functions-and-the-file-reading-roles)).
 
 Note: `--days` has no effect on PostgreSQL — `pg_stat_statements` doesn't record per-query timestamps, so all history since the last `pg_stat_statements_reset()` is returned. `--days` is honoured on Snowflake, BigQuery, Redshift and SQL Server, which do track execution time. (On SQL Server it filters on each cached plan's last execution time.)
 
