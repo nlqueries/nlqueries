@@ -464,8 +464,9 @@ class PostgresConnector(DatabaseConnector):
     # constraint_column_usage only for tables it owns. The login
     # docs/database-hardening.md recommends holds SELECT alone, so it saw no
     # keys at all: every column read as no key, and no join was known.
-    # pg_constraint is readable by every login, so each query keeps to tables
-    # the login may use, as information_schema.columns does for the columns.
+    # pg_constraint is readable by every login, so each query keeps to the
+    # columns the login may use, column by column, as information_schema.columns
+    # does for the column list: a key never names a column the schema leaves out.
     @staticmethod
     def _fetch_primary_keys(conn: Any) -> dict[tuple[str, str], set[str]]:
         """Return ``{(schema, table): {primary key column names}}``."""
@@ -484,7 +485,7 @@ class PostgresConnector(DatabaseConnector):
                     ON a.attrelid = c.oid AND a.attnum = k.attnum
                 WHERE con.contype = 'p'
                   AND n.nspname NOT IN :system_schemas
-                  AND has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
+                  AND has_column_privilege(c.oid, a.attnum, 'SELECT, INSERT, UPDATE, REFERENCES')
                 """
             ),
             {"system_schemas": _SYSTEM_SCHEMAS},
@@ -520,10 +521,11 @@ class PostgresConnector(DatabaseConnector):
                     ON fa.attrelid = fc.oid AND fa.attnum = k.fattnum
                 WHERE con.contype = 'f'
                   AND n.nspname NOT IN :system_schemas
-                  AND has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
-                  -- Nor to a table it may not use: the knowledge base would then
-                  -- offer a join to a table that is not in the schema.
-                  AND has_any_column_privilege(fc.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
+                  AND has_column_privilege(c.oid, a.attnum, 'SELECT, INSERT, UPDATE, REFERENCES')
+                  -- Nor to a column it may not use: the knowledge base would then
+                  -- offer a join on a column that is not in the schema, and the
+                  -- query would fail on permissions.
+                  AND has_column_privilege(fc.oid, fa.attnum, 'SELECT, INSERT, UPDATE, REFERENCES')
                   -- A key into a partitioned table gets a copy per partition of
                   -- that table (same referencing table, conparentid set), which
                   -- would name a partition in place of the table. A copy a
