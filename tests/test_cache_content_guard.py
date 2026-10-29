@@ -89,6 +89,14 @@ def test_numbers_and_their_words_are_one_value() -> None:
     assert _question_content("top 5 customers") == _question_content("top five customers")
 
 
+def test_a_masked_comparison_is_still_told_apart() -> None:
+    """Tier 2 compares masked questions, and a placeholder's own angle brackets
+    made "total > <NUMBER>" and "total < <NUMBER>" one set (from #362's review)."""
+    assert not _asks_the_same("orders with total > <NUMBER>", "orders with total < <NUMBER>")
+    assert _asks_the_same("orders with total > <NUMBER>", "orders with a total > <NUMBER>")
+    assert not {"<", ">"} & _question_content("orders on <DATE> for <STRING>")
+
+
 def test_how_much_is_a_request_of_its_own() -> None:
     assert "AMOUNT" in _question_content("how much did they spend")
     assert "AMOUNT" not in _question_content("how many did they buy")
@@ -161,29 +169,6 @@ def test_tier_1_misses_when_only_the_narrower_entry_is_there() -> None:
     assert _get(_client([narrower]), ASKED) is None
 
 
-def test_a_refused_candidate_costs_no_embedding() -> None:
-    """The content check is pure, so it runs before the re-embed of the stored
-    question: a window of near neighbours that ask for something else is one
-    embed call (the question's own), not one per candidate."""
-    narrower = [
-        _make_scored_point(
-            0.985 - i / 1000,
-            _fresh_payload(
-                question="Which five customers have spent the most, and in which region are they?"
-            ),
-            point_id=i + 1,
-        )
-        for i in range(3)
-    ]
-    client = _client(narrower)
-    with (
-        patch("nlqueries.cache.semantic_cache._get_client", return_value=client),
-        patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384) as embed,
-    ):
-        assert SemanticCache("agent1", binding=TEST_BINDING).get(ASKED) is None
-    assert embed.call_count == 1
-
-
 def test_the_guard_can_be_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "CACHE_CONTENT_GUARD", False)
     narrower = _make_scored_point(
@@ -223,6 +208,23 @@ def test_tier_2_still_rebinds_a_different_value() -> None:
     )
     entry = _get(_client([], [tmpl]), "orders after 2024-06-01")
     assert entry is not None and entry.sql == "SELECT * FROM orders WHERE d >= '2024-06-01'"
+
+
+def test_tier_2_binds_a_comparison_only_into_the_same_comparison() -> None:
+    """A `>` template is bound for a `>` question and refused for a `<` one."""
+
+    def tmpl() -> Any:
+        return _make_scored_point(
+            0.95,
+            _template(
+                "orders with total > <NUMBER>",
+                "SELECT * FROM orders WHERE total > [total:INT]",
+            ),
+        )
+
+    entry = _get(_client([], [tmpl()]), "orders with total > 100")
+    assert entry is not None and entry.sql == "SELECT * FROM orders WHERE total > 100"
+    assert _get(_client([], [tmpl()]), "orders with total < 100") is None
 
 
 def test_tier_2_skips_a_template_that_asks_for_something_else() -> None:

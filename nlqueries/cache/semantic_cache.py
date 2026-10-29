@@ -269,6 +269,10 @@ _MOST = frozenset({"most", "top", "highest", "largest", "best", "biggest", "grea
 _LEAST = frozenset({"least", "bottom", "lowest", "fewest", "worst", "smallest"})
 
 
+#: The placeholders `_mask_entities` writes (``<DATE>``, ``<NUMBER>`` ...).
+_PLACEHOLDER_TOKEN_RE = re.compile(r"<([A-Z]+)>")
+
+
 def _question_content(question: str) -> frozenset[str]:
     """The things *question* asks for, as a set of tokens.
 
@@ -280,7 +284,11 @@ def _question_content(question: str) -> frozenset[str]:
     "To" and "from" are content: "shipped to Germany" and "shipped from
     Germany" ask for different rows. Generic English only: no schema vocabulary.
     """
-    lowered = question.lower().replace("n't", " not").replace("what's", "what is")
+    # A Tier 2 placeholder becomes one word first. Left as it is, `<NUMBER>`
+    # adds a `<` and a `>` of its own to every masked question, and the masked
+    # "total > <NUMBER>" and "total < <NUMBER>" then hold both.
+    unmasked = _PLACEHOLDER_TOKEN_RE.sub(lambda m: f" slot{m.group(1).lower()} ", question)
+    lowered = unmasked.lower().replace("n't", " not").replace("what's", "what is")
     content: set[str] = set()
     for token in re.findall(r"[a-z]+|\d+(?:\.\d+)?|[<>!]=|[<>=]", lowered):
         if token[0].isdigit():
@@ -1495,11 +1503,6 @@ class SemanticCache:
                 if not _payload_matches(payload, payload_filter):
                     continue
                 entry = self._verified_entry(payload)
-                # Similar is not the same request: one that adds "how much" scores
-                # 0.985 against the question without it. Checked before the
-                # re-embed below, which costs an embedding call per candidate.
-                if entry is not None and not _asks_the_same(payload.get("question"), question):
-                    entry = None
                 if entry is not None:
                     matches = _stored_question_matches(
                         payload.get("question"), v, config.CACHE_ANSWER_THRESHOLD, "tier 1"
@@ -1508,6 +1511,14 @@ class SemanticCache:
                         _report_repointed(hit.id, "tier 1")
                     if not matches:
                         entry = None
+                # Similar is not the same request: one that adds "how much" scores
+                # 0.985 against the question without it. After the re-embed, not
+                # before, although that costs an embedding call per candidate: the
+                # re-embed is also what reports an entry moved onto another
+                # question's vector, and such an entry fails this check too, so
+                # checking first would skip it without a word.
+                if entry is not None and not _asks_the_same(payload.get("question"), question):
+                    entry = None
                 if entry is not None:
                     entry.hit_count = self._increment_hit_count(client, hit.id, payload)
                     record_cache(hit=True, similarity=float(hit.score), tier="answer")  # SYL-1.1
@@ -1567,10 +1578,6 @@ class SemanticCache:
             candidate_entry = self._verified_entry(payload)
             if candidate_entry is None:
                 continue  # expired or unverifiable: try the next candidate
-            # On the masked forms, so a different N or year still rebinds; and
-            # before the re-embed, which costs an embedding call.
-            if not _asks_the_same(payload.get("question"), masked):
-                continue
             matches = _stored_question_matches(
                 payload.get("question"), masked_vector, config.CACHE_TEMPLATE_THRESHOLD, "tier 2"
             )
@@ -1578,6 +1585,10 @@ class SemanticCache:
                 _report_repointed(candidate.id, "tier 2")
             if not matches:
                 continue  # unconfirmed, or found by a vector that is not its own
+            # On the masked forms, so a different N or year still rebinds; after
+            # the re-embed, for the reason given in Tier 1.
+            if not _asks_the_same(payload.get("question"), masked):
+                continue
 
             template_sql = str(payload.get("sql") or "")
             if not template_sql:
