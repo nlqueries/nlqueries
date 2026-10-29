@@ -701,9 +701,15 @@ class MultiAgentOrchestrator:
         if _cached is None:
             record_cache(hit=False)  # provenance (SYL-1.1); a hit records tier+score itself
         if _cached is not None:
-            # Serve cached answer word-by-word to simulate streaming.
-            for _word in _cached.answer.split():
-                yield _word + " "
+            # Serve cached answer word-by-word to simulate streaming -- except a
+            # template hit's. A template is a stored statement rebound to this
+            # question's values, and its answer text was written about the rows the
+            # original question returned: "the top 5 customers ..." replayed over the
+            # ten rows of "top 10". The rebound SQL and its freshly executed rows,
+            # below, are the answer.
+            if _cached.kind != "template":
+                for _word in _cached.answer.split():
+                    yield _word + " "
             # Build a final structured chunk that mirrors the live format.
             _hit_chunk: dict[str, Any] = {
                 "agent_type": _cached.agent_type,
