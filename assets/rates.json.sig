@@ -1,1 +1,1 @@
-{"kid": "rates-2026-10-29", "sig": "GyVGJVaeT-2QdF6AdDOoe2g_V2YNhC0dUGKCxW5Cl1iWZcuPMTbqVMoUXHONEJnGFNRXydH9N4gZXrygWBhUBw"}
+{"kid": "rates-2026-10-29", "sig": "KPJxUnmHDelolEWhxQssi4YH9ywYa4S3LTcOaetCTu1vqLTgN64XnIVpjywE8ZoAijCpMGd03Y_tlvLqKR5WBQ"}

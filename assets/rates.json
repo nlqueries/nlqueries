@@ -1,7 +1,7 @@
 {
  "format": "nlq-rates-v1",
- "effective_from": "2026-10-30",
- "published": "2026-10-30",
+ "effective_from": "2026-10-31",
+ "published": "2026-10-31",
  "models": {
   "abliteration/abliterated-model": {
    "cache_read_input_token_cost": 1e-07,
@@ -58,10 +58,20 @@
    "input_cost_per_token": 3e-07,
    "output_cost_per_token": 6e-07
   },
+  "aiand/deepseek-ai/deepseek-v4.1-flash-1017": {
+   "cache_read_input_token_cost": 2e-08,
+   "input_cost_per_token": 3e-07,
+   "output_cost_per_token": 6e-07
+  },
   "aiand/google/gemma-4-31b-it": {
    "cache_read_input_token_cost": 5e-08,
    "input_cost_per_token": 2e-07,
    "output_cost_per_token": 5e-07
+  },
+  "aiand/meta/muse-spark-open": {
+   "cache_read_input_token_cost": 1.5e-07,
+   "input_cost_per_token": 1.25e-06,
+   "output_cost_per_token": 4.25e-06
   },
   "aiand/moonshotai/kimi-k2.7-code": {
    "cache_read_input_token_cost": 2e-07,
@@ -6565,6 +6575,12 @@
    "input_cost_per_token": 1.1e-05,
    "output_cost_per_token": 5.5e-05
   },
+  "eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
+   "cache_creation_input_token_cost": 1.375e-06,
+   "cache_read_input_token_cost": 1.1e-07,
+   "input_cost_per_token": 1.1e-06,
+   "output_cost_per_token": 5.5e-06
+  },
   "eu.anthropic.claude-haiku-5-5": {
    "input_cost_per_token_above_100k_tokens": 5.5e-07,
    "output_cost_per_token_above_100k_tokens": 2.75e-06,
@@ -9846,6 +9862,16 @@
    "output_cost_per_token": 5e-07,
    "output_cost_per_token_above_272k_tokens": 7.5e-07
   },
+  "gpt-6-rosalind": {
+   "cache_creation_input_token_cost": 1.875e-05,
+   "cache_creation_input_token_cost_above_272k_tokens": 3.75e-05,
+   "cache_read_input_token_cost": 1.5e-06,
+   "cache_read_input_token_cost_above_272k_tokens": 3e-06,
+   "input_cost_per_token": 1.5e-05,
+   "input_cost_per_token_above_272k_tokens": 3e-05,
+   "output_cost_per_token": 7.5e-05,
+   "output_cost_per_token_above_272k_tokens": 0.0001125
+  },
   "gpt-6-sol": {
    "cache_creation_input_token_cost": 2.5e-06,
    "cache_creation_input_token_cost_above_272k_tokens": 5e-06,
@@ -10050,6 +10076,25 @@
   "groq/qwen/qwen3.8-27b": {
    "input_cost_per_token": 8e-07,
    "output_cost_per_token": 4e-06
+  },
+  "hostinger_router/claude-sonnet-5": {
+   "cache_creation_input_token_cost": 3.3e-06,
+   "cache_read_input_token_cost": 2.64e-07,
+   "input_cost_per_token": 2.64e-06,
+   "output_cost_per_token": 1.32e-05
+  },
+  "hostinger_router/gpt-5.2": {
+   "cache_read_input_token_cost": 2.1e-07,
+   "input_cost_per_token": 2.1e-06,
+   "output_cost_per_token": 1.68e-05
+  },
+  "hostinger_router/text-embedding-3-large": {
+   "input_cost_per_token": 1.716e-07,
+   "output_cost_per_token": 0.0
+  },
+  "hostinger_router/text-embedding-3-small": {
+   "input_cost_per_token": 3e-08,
+   "output_cost_per_token": 0.0
   },
   "hyperbolic/deepseek-ai/DeepSeek-R1": {
    "input_cost_per_token": 4e-07,
@@ -14206,6 +14251,14 @@
   },
   "rerank-v4.0-pro": {
    "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "rerank-v5.0-fast": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "rerank-v5.0-pro": {
+   "input_cost_per_token": 5e-08,
    "output_cost_per_token": 0.0
   },
   "sagemaker/meta-textgeneration-llama-2-13b": {
