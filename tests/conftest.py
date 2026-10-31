@@ -208,6 +208,21 @@ def _documents_parsed_in_process(monkeypatch):
     monkeypatch.setattr(config, "DOCUMENT_PARSE_ISOLATION", False)
 
 
+@pytest.fixture(autouse=True)
+def _no_process_surface(monkeypatch):
+    """Start every test with no surface bound for the process.
+
+    The CLI's root group binds ``Surface.CLI`` for the rest of the process, so
+    any test that invokes the CLI left it bound for every test after it. The
+    embedding fallback's log level reads the surface, and a test of the
+    server's warning failed on Linux after such a test (an absent daemon is
+    quiet in the CLI). A test that wants a surface binds one.
+    """
+    from nlqueries import audit  # noqa: PLC0415
+
+    monkeypatch.setattr(audit, "_process_context", None)
+
+
 def granted(connector):
     """Give *connector* permission to execute, explicitly.
 
