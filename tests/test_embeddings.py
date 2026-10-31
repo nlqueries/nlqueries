@@ -787,15 +787,18 @@ def test_the_daemon_and_the_client_read_one_declaration_of_the_limits() -> None:
     assert embed_server._EmbedHandler.MAX_BODY_BYTES == config.EMBED_MAX_BODY_BYTES
 
 
-def test_the_fallback_warning_does_not_say_the_daemon_is_required(caplog) -> None:
+def test_the_fallback_warning_does_not_say_the_daemon_is_required(caplog, monkeypatch) -> None:
     """The exception's message is written for the required case ("will not load a
     model in-process"); the fallback, which does, says what happened instead."""
+    from nlqueries import audit
     from nlqueries.embeddings.embedder import (
         ABSENT,
         EmbeddingServiceUnavailable,
         _fall_back_or_raise,
     )
 
+    # Library use: a CLI test earlier in the run leaves the process bound to the CLI.
+    monkeypatch.setattr(audit, "_process_context", None)
     with (
         patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
         caplog.at_level("WARNING", logger="nlqueries.embeddings.embedder"),
@@ -805,3 +808,50 @@ def test_the_fallback_warning_does_not_say_the_daemon_is_required(caplog) -> Non
     (line,) = [r.getMessage() for r in caplog.records if "in-process instead" in r.getMessage()]
     assert "connection refused" in line
     assert "EMBED_SERVER_REQUIRED is set" not in line
+
+
+@pytest.mark.parametrize(
+    ("surface", "reason", "level"),
+    [
+        # A CLI command with no daemon: how the CLI works without one.
+        ("cli", "absent", "INFO"),
+        # A daemon that is there and failing, or on another model: worth a warning anywhere.
+        ("cli", "failing", "WARNING"),
+        ("cli", "running a different model", "WARNING"),
+        # A server, or a library caller, loading a model into itself.
+        ("mcp", "absent", "WARNING"),
+        ("library", "absent", "WARNING"),
+    ],
+)
+def test_the_fallback_is_a_warning_except_for_a_cli_command_with_no_daemon(
+    caplog, monkeypatch, surface: str, reason: str, level: str
+) -> None:
+    from nlqueries import audit
+    from nlqueries.embeddings.embedder import EmbeddingServiceUnavailable, _fall_back_or_raise
+
+    monkeypatch.setattr(audit, "_process_context", None)
+    if surface != "library":
+        audit.bind_process(audit.Surface(surface))
+
+    with (
+        patch("nlqueries.config.EMBED_SERVER_REQUIRED", False),
+        caplog.at_level("DEBUG", logger="nlqueries.embeddings.embedder"),
+    ):
+        _fall_back_or_raise(EmbeddingServiceUnavailable(reason, "detail"))
+
+    (record,) = [r for r in caplog.records if "in-process instead" in r.getMessage()]
+    assert record.levelname == level
+
+
+def test_a_cli_command_binds_the_surface_the_fallback_level_reads(monkeypatch) -> None:
+    """The quiet case keys on the CLI's own binding, made by the root group
+    before any command runs."""
+    from click.testing import CliRunner
+    from nlqueries import audit
+    from nlqueries.cli.main import cli
+
+    monkeypatch.setattr(audit, "_process_context", None)
+    result = CliRunner().invoke(cli, ["kb-stats", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert audit.current().surface == audit.Surface.CLI

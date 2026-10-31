@@ -264,6 +264,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   to `assemble_prompt` and `assemble_prompt_async` as `agent_id=` rather than
   read back out of the collection name; a caller passing `collection=` alone
   works as before.
+- **CLI commands no longer print warnings you cannot act on.** On Python 3.11,
+  including the `nlqueries/core` image, every command and the MCP server's
+  start printed Google's notice that its libraries will stop supporting
+  Python 3.11, once for `google.api_core` and once for
+  `google.cloud.bigquery`. That notice is now filtered; other warnings,
+  Google's included, still show. A CLI command with no embedding daemon
+  running no longer prints "Embedding daemon absent … embedding in-process
+  instead": that is how the CLI works without a daemon, and `nlqueries
+  health` reports the daemon as not running. It is logged at `INFO`
+  (`LOG_LEVEL=INFO` shows it). A daemon that is running but failing, or
+  serving another model, is still a warning in the CLI, and every fallback
+  is still a warning in the MCP server.
 
 ### Removed
 

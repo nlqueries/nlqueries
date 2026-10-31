@@ -186,7 +186,8 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
 
     The fallback used to be silent, which is how a deployment could spend weeks
     loading torch models into its request path without anyone knowing. It is a
-    warning now whether or not it is fatal.
+    warning now whether or not it is fatal, except for a CLI command with no
+    daemon running (`_fallback_level`).
 
     Also invalidates the model check, because any failure may be a daemon that
     is going away and will come back on a different model. See
@@ -204,7 +205,8 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
 
     if config.EMBED_SERVER_REQUIRED:
         raise exc
-    logger.warning(
+    logger.log(
+        _fallback_level(exc),
         "Embedding daemon %s (%s); embedding in-process instead. "
         "This loads a full model into THIS process — set EMBED_SERVER_REQUIRED "
         "on a server to make it a failure instead.",
@@ -213,6 +215,25 @@ def _fall_back_or_raise(exc: EmbeddingServiceUnavailable) -> None:
         # required, and says this call will not load a model in-process.
         exc.detail,
     )
+
+
+def _fallback_level(exc: EmbeddingServiceUnavailable) -> int:
+    """How loudly to say a call fell back to embedding in-process.
+
+    A warning, except for a CLI command with no daemon running: one command
+    loading the model for itself is how the CLI works without a daemon, and
+    `health` already reports the daemon as not running. Printed on every
+    command, the warning said nothing the person running it could act on.
+    A daemon that is there but failing, or running another model, is still a
+    warning in the CLI, and every fallback is one in the MCP server and in
+    library use, where loading a model into the serving process is the
+    problem the warning names.
+    """
+    from nlqueries.audit import Surface, current  # noqa: PLC0415
+
+    if exc.reason == ABSENT and current().surface == Surface.CLI:
+        return logging.INFO
+    return logging.WARNING
 
 
 def _require_daemon_model_agreement() -> None:
