@@ -465,8 +465,8 @@ class TestDuckDBConnector:
 
         mock_result = MagicMock()
         mock_result.description = [("n",), ("label",)]
-        mock_result.fetchall.return_value = [(42, "hello")]
-        mock_result.__iter__.return_value = iter([(42, "hello")])
+        # Read in batches until one comes back empty, so the budget can stop it.
+        mock_result.fetchmany.side_effect = [[(42, "hello")], []]
 
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result

@@ -187,3 +187,40 @@ def test_the_budget_reports_the_first_reason_it_hit(monkeypatch) -> None:
 
     _, truncated, reason = budget.finish()
     assert truncated is True and reason == ROW_BUDGET
+
+
+# ---------------------------------------------------------------------------
+# A connector that reads the whole result first defeats the budget
+# ---------------------------------------------------------------------------
+
+
+def test_duckdb_stops_reading_at_the_budget(monkeypatch) -> None:
+    """DuckDB called ``fetchall()`` and handed the finished list to the budget,
+    so a million-row result was held whole and then cut to ten rows. Read in
+    batches, the process holds the ten rows and a batch, not the million."""
+    pytest.importorskip("duckdb", reason="the duckdb package is not installed")
+    tracemalloc = pytest.importorskip("tracemalloc")
+    from nlqueries.connectors.duckdb import DuckDBConnector
+
+    from tests.conftest import granted
+
+    monkeypatch.setattr(config, "CONNECTOR_MAX_FETCH_ROWS", 10)
+    monkeypatch.setattr(config, "CONNECTOR_MAX_RESULT_BYTES", 64 * 1024 * 1024)
+    connector = granted(DuckDBConnector())
+    connector.connect({})  # in memory: range() needs no table and reads no file
+
+    tracemalloc.start()
+    try:
+        before = tracemalloc.get_traced_memory()[0]
+        result = connector.execute_query("SELECT range AS n, range * 2 AS m FROM range(1000000)")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+        connector.close()
+
+    assert result.error is None, result.error
+    assert result.row_count == 10 and result.truncated is True
+    assert result.truncation_reason == ROW_BUDGET
+    # A million two-column tuples are over 100 MB of Python objects.
+    grew_mb = (peak - before) / (1024 * 1024)
+    assert grew_mb < 10, f"held {grew_mb:.1f} MB at peak for a 10-row read"
