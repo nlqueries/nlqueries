@@ -352,3 +352,6 @@ def test_feedback_warns_when_a_thumbs_up_has_no_sql(flags: list[str], warned: bo
     assert result.exit_code == 0, result.output
     assert len(recorded) == 1  # recorded either way
     assert ("cannot become a verified example" in result.output) is warned
+    # The store only appends: a new thumbs-up does not replace this one, so the
+    # warning must not say it does.
+    assert ("count it as skipped from now on" in result.output) is warned

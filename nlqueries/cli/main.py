@@ -1666,7 +1666,8 @@ def submit_feedback(
     elif rating == "up" and not generated_sql.strip():
         console.print(
             "  [yellow]⚠ No SQL attached, so this thumbs-up cannot become a verified "
-            "example. Record it again with --generated-sql.[/yellow]"
+            "example, and promotion will count it as skipped from now on. To promote "
+            "the answer, record a new thumbs-up with --generated-sql.[/yellow]"
         )
 
 

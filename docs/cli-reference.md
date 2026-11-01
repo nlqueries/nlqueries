@@ -377,7 +377,7 @@ nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-
 nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-down --corrected-sql "SELECT ..."
 ```
 
-`--question` is required. `--generated-sql` attaches the SQL the agent produced: a thumbs-up needs it (or `--corrected-sql`) to be promoted to a verified example, so `feedback` warns when a thumbs-up has neither, and `promote-feedback` counts it among the records it skipped. `nlqueries query --json` prints the SQL to copy. A thumbs-down with `--corrected-sql` is saved but not applied automatically — re-run `export-kb` to fold it into the knowledge base.
+`--question` is required. `--generated-sql` attaches the SQL the agent produced: a thumbs-up needs it (or `--corrected-sql`) to be promoted to a verified example, so `feedback` warns when a thumbs-up has neither, and `promote-feedback` counts it among the records it skipped. Feedback is only ever added to, never edited, so recording a new thumbs-up with the SQL promotes the answer but leaves the old record, which goes on being counted as skipped. `nlqueries query --json` prints the SQL to copy. A thumbs-down with `--corrected-sql` is saved but not applied automatically — re-run `export-kb` to fold it into the knowledge base.
 
 `export-kb` puts each correction it accepts at the front of the knowledge base's example queries, and the model sees the first few of those for every question on the agent, so it accepts a correction only when:
 
