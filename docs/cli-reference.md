@@ -200,7 +200,7 @@ The KB holds the schema and sample values, so it is written readable by your acc
 | `--sample-rows` | `3` | Rows sampled per table, and so the most sample values stored per column |
 | `--values-max-rows` | `10000000` | A table the schema records as having more rows than this gets no column values, and none of the queries that collect them. `0` for no cap; a table whose size the connector does not report is collected. The size is the one the connector reports, and the generic SQLAlchemy connector (MySQL, MariaDB, Oracle and the rest) reports none, so on those engines this cap skips nothing; nor do the others report one in every case (a Postgres table never analysed, a Redshift role without access to `SVV_TABLE_INFO`). `export-kb` says how many tables report no row count. |
 | `--describe-columns` | off | Use the LLM to auto-populate column descriptions from sample data (skips surrogate-key columns; requires LLM key) |
-| `--include-anonymous` | off | Also use thumbs-down corrections whose origin cannot be established: submitted over MCP, or recorded before origins were tracked. Review them first. See below |
+| `--include-anonymous` | off | Also use thumbs-down corrections whose origin cannot be established: submitted over MCP, written from Python without a `source`, or recorded before origins were tracked. Review them first. See below |
 
 ---
 
@@ -377,11 +377,11 @@ nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-
 nlqueries feedback <connector-or-alias> --question "Orders last month" --thumbs-down --corrected-sql "SELECT ..."
 ```
 
-`--question` is required; `--generated-sql` is an optional third flag to attach the SQL the agent originally produced (useful context alongside a correction). A thumbs-down with `--corrected-sql` is saved but not applied automatically — re-run `export-kb` to fold it into the knowledge base.
+`--question` is required. `--generated-sql` attaches the SQL the agent produced: a thumbs-up needs it (or `--corrected-sql`) to be promoted to a verified example, so `feedback` warns when a thumbs-up has neither, and `promote-feedback` counts it among the records it skipped. `nlqueries query --json` prints the SQL to copy. A thumbs-down with `--corrected-sql` is saved but not applied automatically — re-run `export-kb` to fold it into the knowledge base.
 
 `export-kb` puts each correction it accepts at the front of the knowledge base's example queries, and the model sees the first few of those for every question on the agent, so it accepts a correction only when:
 
-- it was recorded with `nlqueries feedback` or the Python API, which identify who gave it. Corrections submitted over MCP, and records from before origins were tracked, are skipped unless you pass `--include-anonymous` after reviewing them;
+- it was recorded with `nlqueries feedback`, which names the operator who ran it, or from Python with `source` set to `"cli"` or `"api"`. A `QueryFeedback` left at its default `source`, `"unknown"`, is skipped like a correction submitted over MCP or a record from before origins were tracked, unless you pass `--include-anonymous` after reviewing them;
 - its SQL is a single read-only query that passes the SQL policy in the agent's dialect and reads only tables in the knowledge base.
 
 The question is stored on one line, at most 200 characters, and literals in the SQL become placeholders, as in examples taken from query history. `export-kb` says how many corrections it skipped, and why.
@@ -407,7 +407,7 @@ nlqueries promote-feedback <connector-or-alias>
 nlqueries promote-feedback <connector-or-alias> --include-anonymous
 ```
 
-Feedback submitted over the MCP transport, and feedback recorded before origins were tracked, is skipped, because who gave the rating cannot be established and a promoted pair steers generation for everyone using the agent. Review those records and pass `--include-anonymous` to promote them as well.
+Feedback submitted over the MCP transport, feedback written from Python without a `source`, and feedback recorded before origins were tracked, is skipped, because who gave the rating cannot be established and a promoted pair steers generation for everyone using the agent. Review those records and pass `--include-anonymous` to promote them as well.
 
 This is also called automatically at the end of every `export-kb` run, without `--include-anonymous`. Run it manually after submitting a batch of thumbs-up ratings between KB exports.
 

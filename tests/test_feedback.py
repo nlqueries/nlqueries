@@ -325,3 +325,30 @@ class TestFeedbackStatsCli:
 
         assert result.exit_code == 0
         assert "Corrections" in result.output or "correction" in result.output.lower()
+
+
+@pytest.mark.parametrize(
+    ("flags", "warned"),
+    [
+        (["--thumbs-up"], True),
+        (["--thumbs-up", "--generated-sql", "SELECT 1"], False),
+        (["--thumbs-down"], False),
+    ],
+)
+def test_feedback_warns_when_a_thumbs_up_has_no_sql(flags: list[str], warned: bool) -> None:
+    """Promotion needs a pair, so a thumbs-up with no SQL can never become a
+    verified example; the operator is told when recording it, not never."""
+    from nlqueries.cli.main import cli
+
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("nlqueries.feedback.store.config") as mock_cfg,
+        patch("nlqueries.cli.main._load_connectors", return_value={}),
+    ):
+        mock_cfg.FEEDBACK_DIR = Path(tmpdir)
+        result = CliRunner().invoke(cli, ["feedback", "agent1", "--question", "q", *flags])
+        recorded = load_feedback("agent1")
+
+    assert result.exit_code == 0, result.output
+    assert len(recorded) == 1  # recorded either way
+    assert ("cannot become a verified example" in result.output) is warned

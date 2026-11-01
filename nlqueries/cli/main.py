@@ -1601,7 +1601,10 @@ def update_password(connector_id: str, password_env: str | None) -> None:
     "--generated-sql",
     "generated_sql",
     default="",
-    help="The SQL the agent produced (optional — leave blank if unknown).",
+    help=(
+        "The SQL the agent produced. A thumbs-up needs it, or --corrected-sql, "
+        "to become a verified example."
+    ),
 )
 @click.option(
     "--corrected-sql",
@@ -1625,7 +1628,9 @@ def submit_feedback(
 
     \b
     Examples:
-      nlqueries feedback dvdrental --question "Top customers?" --thumbs-up
+      nlqueries feedback dvdrental --question "Top customers?" --thumbs-up \\
+        --generated-sql "SELECT customer_id, SUM(amount) FROM payment
+          GROUP BY customer_id ORDER BY 2 DESC LIMIT 10"
       nlqueries feedback dvdrental \\
         --question "How many films have more than one actor?" \\
         --thumbs-down \\
@@ -1657,6 +1662,11 @@ def submit_feedback(
     if corrected_sql:
         console.print(
             f"  [dim]Correction saved. Re-run 'nlqueries export-kb {agent_id}' to apply it.[/dim]"
+        )
+    elif rating == "up" and not generated_sql.strip():
+        console.print(
+            "  [yellow]⚠ No SQL attached, so this thumbs-up cannot become a verified "
+            "example. Record it again with --generated-sql.[/yellow]"
         )
 
 

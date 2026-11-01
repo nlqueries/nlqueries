@@ -55,6 +55,21 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A thumbs-up recorded without SQL is reported instead of dropped.**
+  Promotion needs a question and its SQL, and a thumbs-up recorded with
+  `nlqueries feedback ... --thumbs-up` and no `--generated-sql` was passed
+  over with no count and no log, unlike every other skip. `promote-feedback`
+  now counts it among the records it skipped ("it was recorded without its
+  SQL"), `feedback` warns when such a thumbs-up is recorded, and the help
+  example passes the SQL.
+
+- **Two doc claims corrected.** `architecture.md` said document answers are
+  cached verbatim; document and hybrid answers are not cached at all, as
+  `configuration.md` says. The CLI reference said feedback recorded from
+  Python identifies who gave it; a `QueryFeedback` left at its default
+  `source` (`"unknown"`) is skipped by promotion and corrections, like MCP
+  feedback, unless `--include-anonymous` is passed.
+
 - **A template cache hit no longer replays the answer text of the question
   it was stored for.** Tier 2 rebinds a cached statement to the new question's
   values and runs it, but streamed the stored text with it: "top 10" served

@@ -93,8 +93,8 @@ who may query that agent.** That is not a gap in the model, it is a restatement
 of it -- authorisation is granted at agent level, row filters are a property of
 the agent record rather than of the caller, and cached SQL is replayed through
 the same filtered connector that produced it, so a replay is subject to the
-filters a fresh run would be. Document answers are cached verbatim, and every
-user of the agent is entitled to the same documents.
+filters a fresh run would be. Document and hybrid answers are not cached at
+all, so a replay never outlives an edited document.
 
 That reasoning holds only as long as nothing narrows what a caller may see
 *below* the agent. The invariant to preserve:

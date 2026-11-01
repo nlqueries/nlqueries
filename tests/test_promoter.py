@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -225,6 +226,20 @@ class TestPromoteFeedback:
     def test_skips_empty_sql(self) -> None:
         rec = _make_feedback_record(rating="up", generated_sql="")
         assert self._run_promote([rec]) == 0
+
+    def test_a_thumbs_up_without_sql_is_reported_not_lost(self, caplog) -> None:
+        """It was skipped with no count and no log, unlike every other skip, so
+        an operator could rate answers for weeks and promote none of them."""
+        records = [
+            _make_feedback_record(rating="up", question="Q1", generated_sql=""),
+            _make_feedback_record(rating="up", question="Q2", generated_sql="   "),
+            _make_feedback_record(rating="up", question="Q3"),
+        ]
+        with caplog.at_level(logging.WARNING, logger="nlqueries.feedback.promoter"):
+            assert self._run_promote(records) == 1
+
+        said = [r.getMessage() for r in caplog.records]
+        assert any("2 because it was recorded without its SQL" in m for m in said), said
 
     def test_skips_unknown_table(self) -> None:
         rec = _make_feedback_record(rating="up", generated_sql="SELECT * FROM does_not_exist")

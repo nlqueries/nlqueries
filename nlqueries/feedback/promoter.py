@@ -72,6 +72,8 @@ def _load_kb(agent_id: str) -> dict[str, Any]:
 #: Why :func:`why_not_promotable` refused when there is nothing to check
 #: against; `promote_feedback` reports it on its own, since it refuses all.
 NO_SCHEMA = "the knowledge base has no schema to check against"
+#: A thumbs-up recorded without SQL has no pair to promote.
+NO_SQL = "it was recorded without its SQL"
 
 
 def why_not_promotable(sql: str, schema_tables: set[str], dialect: str | None = None) -> str | None:
@@ -488,6 +490,8 @@ def promote_feedback(
     for rec in positive:
         sql = rec.corrected_sql or rec.generated_sql
         if not sql or not sql.strip():
+            # Counted with the rest, so the thumbs-up is not lost without a word.
+            refused[NO_SQL] += 1
             continue
         norm = sql.strip().lower()
         if norm in seen_sql:
