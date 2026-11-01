@@ -55,6 +55,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **DuckDB results stop at the row and byte budgets as they are read.** The
+  connector fetched the whole result with `fetchall()` before the budget saw a
+  row, so `CONNECTOR_MAX_FETCH_ROWS` and `CONNECTOR_MAX_RESULT_BYTES` cut the
+  result down only after every row was already held in memory: a 10-row read
+  of a million-row result held over 120 MB. It now reads in batches of 1,000,
+  as the other connectors stream, and stops at the budget.
+
 - **A template cache hit no longer replays the answer text of the question
   it was stored for.** Tier 2 rebinds a cached statement to the new question's
   values and runs it, but streamed the stored text with it: "top 10" served
