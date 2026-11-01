@@ -25,6 +25,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,28 @@ def _already_sandboxed(conn: Any) -> bool:
 
 _temp_dir_lock = threading.Lock()
 _temp_dir: str | None = None
+
+
+#: Rows per ``fetchmany()`` while reading a result. Small enough that a wide
+#: result cannot run far past the byte budget between checks, large enough that
+#: a narrow one is not paying a call per handful of rows.
+_FETCH_BATCH = 1000
+
+
+def _batched(result: Any) -> Iterator[Any]:
+    """The rows of *result*, :data:`_FETCH_BATCH` at a time.
+
+    ``fetchall()`` turned every row into Python objects before the budget saw
+    the first one, so ``CONNECTOR_MAX_FETCH_ROWS`` and
+    ``CONNECTOR_MAX_RESULT_BYTES`` bounded nothing on DuckDB: a large result was
+    held whole and then cut down. Read in batches, the rows past the budget are
+    never fetched.
+    """
+    while True:
+        batch = result.fetchmany(_FETCH_BATCH)
+        if not batch:
+            return
+        yield from batch
 
 
 def _private_temp_directory() -> str:
@@ -405,7 +428,7 @@ class DuckDBConnector(DatabaseConnector):
                 _truncated, _reason = False, None
                 if result.description:
                     columns = [desc[0] for desc in result.description]
-                    rows, _truncated, _reason = collect(iter(result.fetchall()), max_rows)
+                    rows, _truncated, _reason = collect(_batched(result), max_rows)
                 else:
                     columns, rows = [], []
             finally:
