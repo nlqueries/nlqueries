@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -124,6 +125,28 @@ def _reaches_anthropic_api(model: str) -> bool:
 #: ``low``, ``high`` and ``max``: ``medium`` has no level of its own and goes
 #: down to ``low``, ``xhigh`` up to ``max``.
 _DEEPSEEK_EFFORT = {"low": "low", "medium": "low", "high": "high", "xhigh": "max", "max": "max"}
+
+
+@functools.lru_cache(maxsize=128)
+def _takes_a_sampling_temperature(model: str) -> bool:
+    """Whether LiteLLM sends *model* a temperature other than 1.
+
+    OpenAI's reasoning models, the GPT-5 family and the o-series, accept only
+    the default of 1 while they reason, and LiteLLM refuses any other value
+    with ``UnsupportedParamsError`` before the request leaves. Self-consistency
+    asks for 0.4 and 0.8, so on those models two of its three candidates
+    failed. LiteLLM is asked once per model, so a model it learns about later
+    is covered without a list here. Anything else it raises means it cannot
+    tell, and the temperature is sent as before.
+    """
+    try:
+        name, provider, _, _ = litellm.get_llm_provider(model)
+        litellm.get_optional_params(model=name, custom_llm_provider=provider, temperature=0.5)
+    except litellm.exceptions.UnsupportedParamsError:
+        return False
+    except Exception:  # noqa: BLE001 - unknown is not unsupported
+        return True
+    return True
 
 
 def _deepseek_body(model: str) -> dict[str, Any]:
@@ -273,10 +296,10 @@ class LiteLLMClient(LLMClient):
     Examples::
 
         anthropic/claude-sonnet-5-5
-        openai/gpt-4o
+        openai/gpt-5
         gemini/gemini-1.5-pro
         ollama/llama3
-        bedrock/us.anthropic.claude-sonnet-4-6
+        bedrock/us.anthropic.claude-sonnet-5-5
 
     API keys are read from environment variables automatically by LiteLLM
     (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.). An explicit
@@ -393,7 +416,11 @@ class LiteLLMClient(LLMClient):
         effort = effort_for(self._model) if _reaches_anthropic_api(self._model) else None
         if effort is not None:
             kwargs["output_config"] = {"effort": effort}
-        if temperature is not None and accepts_temperature(self._model):
+        if (
+            temperature is not None
+            and accepts_temperature(self._model)
+            and _takes_a_sampling_temperature(self._model)
+        ):
             kwargs["temperature"] = temperature
         body = _deepseek_body(self._model)
         if body:

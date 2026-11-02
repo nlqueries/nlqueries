@@ -4,6 +4,27 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenAI defaults to GPT-5.** With only `OPENAI_API_KEY` set, `LLM_MODEL`
+  now defaults to `openai/gpt-5` and `LLM_MODEL_FAST` to `openai/gpt-5-mini`,
+  replacing the older `openai/gpt-4o` and `openai/gpt-4o-mini`. An explicit `LLM_MODEL` or `LLM_MODEL_FAST` is unchanged. GPT-5
+  models reason before they answer, and spend that from the same output
+  allowance; raise `LLM_MAX_OUTPUT_TOKENS`, which every budget derives from,
+  if short calls run out.
+- **Bedrock examples name Claude Sonnet 5.5 and Haiku 5.5**
+  (`us.anthropic.claude-sonnet-5-5`, `us.anthropic.claude-haiku-5-5`), in the
+  docs and in the model a misconfigured Bedrock tier is told to use.
+
+### Fixed
+
+- **Self-consistency keeps its candidates on GPT-5 and the o-series.** These
+  models accept only the default temperature while they reason, and LiteLLM
+  refused the 0.4 and 0.8 that self-consistency asks for, so two of its three
+  candidates failed and the vote ran on one, with nothing logged. The
+  temperature is now left out for any model LiteLLM says refuses it, and a
+  candidate that fails is logged with the reason.
+
 ## [0.4.1] — 2026-11-02
 
 Mostly fixes: to the semantic cache, query history, feedback and the published image,

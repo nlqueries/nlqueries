@@ -75,7 +75,7 @@ failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
 
 **When:** `process-history` runs with `--annotate` (the default) and no LLM credential is configured: no `ANTHROPIC_API_KEY`, no `OPENAI_API_KEY`, and neither `LLM_PROVIDER=bedrock` nor a `bedrock/` model in `LLM_MODEL`. The command exits with status 1 before it reads any query history.
 
-**Why:** NLQueries defaults to Anthropic. When `LLM_PROVIDER` is not set, `OPENAI_API_KEY` is set and `ANTHROPIC_API_KEY` is not, the provider is detected as `litellm` and the model defaults to `openai/gpt-4o`, so the OpenAI key alone is enough. If both keys are set, Anthropic is used unless you set `LLM_PROVIDER` and `LLM_MODEL` explicitly.
+**Why:** NLQueries defaults to Anthropic. When `LLM_PROVIDER` is not set, `OPENAI_API_KEY` is set and `ANTHROPIC_API_KEY` is not, the provider is detected as `litellm` and the model defaults to `openai/gpt-5`, so the OpenAI key alone is enough. If both keys are set, Anthropic is used unless you set `LLM_PROVIDER` and `LLM_MODEL` explicitly.
 
 **Action:**
 
@@ -84,10 +84,10 @@ failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # OpenAI (LLM_PROVIDER and LLM_MODEL are only needed if ANTHROPIC_API_KEY is also set,
-# or to pick a model other than openai/gpt-4o)
+# or to pick a model other than openai/gpt-5)
 export OPENAI_API_KEY=sk-proj-...
 export LLM_PROVIDER=litellm
-export LLM_MODEL=openai/gpt-4o
+export LLM_MODEL=openai/gpt-5
 ```
 
 To skip annotation entirely, use `--no-annotate`.

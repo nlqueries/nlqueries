@@ -6,7 +6,7 @@ NLQueries uses a language model to classify each question, write the SQL, correc
 
 ## How a provider is chosen
 
-Two clients do the work. `anthropic` calls the Anthropic API through Anthropic's SDK. `litellm` calls everything else through [LiteLLM](https://docs.litellm.ai/), where a model is written `provider/model-id` (`openai/gpt-4o`, `deepseek/deepseek-chat`, `bedrock/us.anthropic.claude-sonnet-4-6`).
+Two clients do the work. `anthropic` calls the Anthropic API through Anthropic's SDK. `litellm` calls everything else through [LiteLLM](https://docs.litellm.ai/), where a model is written `provider/model-id` (`openai/gpt-5`, `deepseek/deepseek-chat`, `bedrock/us.anthropic.claude-sonnet-5-5`).
 
 `LLM_PROVIDER` names the client: `anthropic`, `litellm`, or `bedrock`, which is a name for `litellm`. Any other value fails with `Unknown LLM provider` when the first LLM call is made. Unset, it is detected in this order:
 
@@ -63,8 +63,8 @@ OPENAI_API_KEY=sk-...
 | Setting | Default with only `OPENAI_API_KEY` |
 |---|---|
 | `LLM_PROVIDER` | `litellm` |
-| `LLM_MODEL` | `openai/gpt-4o` |
-| `LLM_MODEL_FAST` | `openai/gpt-4o-mini` |
+| `LLM_MODEL` | `openai/gpt-5` |
+| `LLM_MODEL_FAST` | `openai/gpt-5-mini` |
 
 To pick another model, set `LLM_MODEL=openai/<model>`, and `LLM_MODEL_FAST` with it.
 
@@ -79,8 +79,8 @@ To pick another model, set `LLM_MODEL=openai/<model>`, and `LLM_MODEL_FAST` with
 Bedrock is reached through LiteLLM and authenticates through boto3, so there is no API key. Set the model and the region:
 
 ```bash
-LLM_MODEL=bedrock/us.anthropic.claude-sonnet-4-6
-LLM_MODEL_FAST=bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+LLM_MODEL=bedrock/us.anthropic.claude-sonnet-5-5
+LLM_MODEL_FAST=bedrock/us.anthropic.claude-haiku-5-5
 AWS_REGION=us-east-1
 ```
 
