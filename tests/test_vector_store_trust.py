@@ -13,8 +13,10 @@ import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
+import yaml
 from nlqueries import config
 from nlqueries.cache import envelope
 from nlqueries.embeddings import qdrant_client as qc
@@ -94,6 +96,40 @@ class TestPlainHttpWithAKey:
         with caplog.at_level(logging.WARNING, logger=qc.__name__):
             require_qdrant_auth(url, GOOD_KEY)
         assert not [r for r in caplog.records if "plain http" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        ("value", "warned"), [("1", 0), ("true", 0), ("YES", 0), ("0", 1), ("", 1)]
+    )
+    def test_a_deployment_on_a_private_network_says_so(
+        self,
+        value: str,
+        warned: int,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """What the warning asks for, a network nothing else can read, can be
+        stated; the Compose quickstart states it for its own Qdrant."""
+        monkeypatch.setenv("NLQ_QDRANT_PRIVATE_NETWORK", value)
+        with caplog.at_level(logging.WARNING, logger=qc.__name__):
+            require_qdrant_auth("http://qdrant:6333", GOOD_KEY)
+        assert len([r for r in caplog.records if "plain http" in r.getMessage()]) == warned
+
+    def test_the_quickstart_vouches_only_for_its_own_qdrant(self) -> None:
+        """The Compose file sets the flag beside the QDRANT_URL it pins, and
+        that URL names another service in the same file: the flag cannot come
+        to cover a Qdrant somewhere else."""
+        compose_file = PACKAGE.parent / "docker-compose.yml"
+        compose = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+        services = compose["services"]
+        flagged = {
+            name: s["environment"]
+            for name, s in services.items()
+            if "NLQ_QDRANT_PRIVATE_NETWORK" in (s.get("environment") or {})
+        }
+        assert flagged, "the quickstart no longer marks its Qdrant as private"
+        for env in flagged.values():
+            host = urlparse(env["QDRANT_URL"]).hostname
+            assert env["QDRANT_URL"].startswith("http://") and host in services
 
 
 # ---------------------------------------------------------------------------

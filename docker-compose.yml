@@ -96,6 +96,11 @@ services:
       - .env
     environment:
       QDRANT_URL: "http://qdrant:6333"
+      # Plain http, but to another container on this file's own network, which
+      # nothing outside the host can read; the key in .env is no further away.
+      # Says so, so commands do not warn about the key crossing a network.
+      # QDRANT_URL is pinned above, so this vouches for that address only.
+      NLQ_QDRANT_PRIVATE_NETWORK: "1"
       # The server binds 0.0.0.0 *inside the container*; the ports mapping below
       # publishes it on the host's loopback only, and that is the actual
       # boundary. MCP_HOST is set here, not left to the image, because env_file

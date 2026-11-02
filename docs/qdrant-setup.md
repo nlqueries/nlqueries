@@ -210,7 +210,7 @@ Nothing else is configurable: no timeout, and no gRPC. NLQueries talks REST to t
 
 **A Qdrant that is not on this machine needs a key.** `localhost`, `127.0.0.0/8` and `::1` count as this machine; every other host, a private Docker network included, does not. For any other `QDRANT_URL`, an empty `QDRANT_API_KEY` stops the first Qdrant call with `QdrantAuthenticationRequired`. There is no setting to turn this off. The reason is the semantic cache: it stores SQL that is executed against your database, so a Qdrant that anyone can write to is a way to run SQL. Set the same key on the server, as `QDRANT__SERVICE__API_KEY`.
 
-**Use https when the key crosses a network.** A key sent to a host other than this machine over plain `http://` is logged as a warning, once per URL, and not refused. Anyone on that path can read the key. Use an `https://` URL (Qdrant Cloud serves one), or keep Qdrant on a network nothing else can reach.
+**Use https when the key crosses a network.** A key sent to a host other than this machine over plain `http://` is logged as a warning, once per URL, and not refused. Anyone on that path can read the key. Use an `https://` URL (Qdrant Cloud serves one), or keep Qdrant on a network nothing else can reach, and say so with `NLQ_QDRANT_PRIVATE_NETWORK=1`. The Docker Compose stack does: its Qdrant is another container on Compose's own network, on the same host.
 
 ### Several NLQueries processes, one Qdrant
 
