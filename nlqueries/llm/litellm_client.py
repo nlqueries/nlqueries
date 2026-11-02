@@ -273,10 +273,10 @@ class LiteLLMClient(LLMClient):
     Examples::
 
         anthropic/claude-sonnet-5-5
-        openai/gpt-4o
+        openai/gpt-5
         gemini/gemini-1.5-pro
         ollama/llama3
-        bedrock/us.anthropic.claude-sonnet-4-6
+        bedrock/us.anthropic.claude-sonnet-5-5
 
     API keys are read from environment variables automatically by LiteLLM
     (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.). An explicit

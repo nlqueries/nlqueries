@@ -961,8 +961,8 @@ def test_extra_still_refuses_max_tokens() -> None:
 @pytest.mark.parametrize(
     ("tier", "example"),
     [
-        ("default", "bedrock/us.anthropic.claude-sonnet-4-6"),
-        ("fast", "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+        ("default", "bedrock/us.anthropic.claude-sonnet-5-5"),
+        ("fast", "bedrock/us.anthropic.claude-haiku-5-5"),
     ],
 )
 def test_the_bedrock_refusal_suggests_a_model_for_its_tier(tier: str, example: str) -> None:

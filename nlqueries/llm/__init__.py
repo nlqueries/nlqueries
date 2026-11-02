@@ -112,9 +112,9 @@ def get_llm_client(tier: str = "default") -> LLMClient:
         # been sent yet and nothing else breaks.
         setting = "LLM_MODEL_FAST" if tier == "fast" else "LLM_MODEL"
         example = (
-            "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            "bedrock/us.anthropic.claude-haiku-5-5"
             if tier == "fast"
-            else "bedrock/us.anthropic.claude-sonnet-4-6"
+            else "bedrock/us.anthropic.claude-sonnet-5-5"
         )
         raise ValueError(
             f"Bedrock is configured, but the {tier} model {model!r} is not a Bedrock "

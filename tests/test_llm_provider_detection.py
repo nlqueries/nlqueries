@@ -103,7 +103,7 @@ def test_the_fast_model_stays_on_bedrock_despite_an_openai_key(
 ) -> None:
     """The second ordering guard.
 
-    `claude-haiku-...` and `openai/gpt-4o-mini` are both invalid model ids on
+    `claude-haiku-...` and `openai/gpt-5-mini` are both invalid model ids on
     Bedrock. Either one breaks every fast call — the intent classifier and the
     follow-up resolver — while the main model keeps working, which reads as a
     broken product rather than one unset variable.
@@ -123,10 +123,18 @@ def test_an_explicit_fast_model_still_wins_on_bedrock(monkeypatch: pytest.Monkey
     )
 
 
-def test_the_openai_fast_default_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The negative control: no bedrock model, so the old branch still applies."""
+def test_the_openai_fast_default_applies_without_a_bedrock_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The negative control: no bedrock model, so the OpenAI branch applies."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
-    assert config._detect_fast_model("litellm") == "openai/gpt-4o-mini"
+    assert config._detect_fast_model("litellm") == "openai/gpt-5-mini"
+
+
+def test_an_openai_key_alone_defaults_the_model_to_gpt_5(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    assert config._detect_model("litellm") == "openai/gpt-5"
 
 
 def test_the_anthropic_fast_default_is_haiku_5_5() -> None:
