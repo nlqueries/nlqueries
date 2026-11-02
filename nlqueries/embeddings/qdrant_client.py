@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import urllib.request
 from typing import TYPE_CHECKING
 from urllib.parse import ParseResult, urlparse
@@ -45,6 +46,13 @@ logger = logging.getLogger(__name__)
 
 #: URLs already warned about for carrying an API key over plain http.
 _PLAIN_HTTP_WARNED: set[str] = set()
+
+#: Set by a deployment that keeps Qdrant on a network nothing else can read,
+#: which is what the plain-http warning asks for: the Docker Compose quickstart,
+#: where Qdrant is another container on Compose's own network, sets it beside
+#: the QDRANT_URL it pins. Read when the warning would be given, so a test or a
+#: caller can set it after import.
+_PRIVATE_NETWORK_ENV = "NLQ_QDRANT_PRIVATE_NETWORK"
 
 
 class QdrantAuthenticationRequired(RuntimeError):
@@ -99,6 +107,8 @@ def _warn_on_plain_http(url: str) -> None:
     # The scheme qdrant-client will use, not the one written: `qdrant:6333`
     # is plain http too.
     if _parsed(url).scheme.lower() != "http" or is_loopback(url) or url in _PLAIN_HTTP_WARNED:
+        return
+    if os.getenv(_PRIVATE_NETWORK_ENV, "").strip().lower() in {"1", "true", "yes"}:
         return
     _PLAIN_HTTP_WARNED.add(url)
     logger.warning(

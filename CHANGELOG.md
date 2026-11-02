@@ -55,6 +55,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The Docker Compose quickstart no longer warns about its own Qdrant.** Every
+  command printed that QDRANT_API_KEY "is sent unencrypted to a host that is
+  not this machine", about the Qdrant container on Compose's own network, on
+  the same host. A new setting, `NLQ_QDRANT_PRIVATE_NETWORK=1`, says Qdrant is
+  on a network nothing else can read; the compose file sets it beside the
+  `QDRANT_URL` it pins. Any other plain-http Qdrant still warns.
+
 - **A thumbs-up recorded without SQL is reported instead of dropped.**
   Promotion needs a question and its SQL, and a thumbs-up recorded with
   `nlqueries feedback ... --thumbs-up` and no `--generated-sql` was passed
