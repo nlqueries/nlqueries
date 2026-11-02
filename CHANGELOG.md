@@ -16,6 +16,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   (`us.anthropic.claude-sonnet-5-5`, `us.anthropic.claude-haiku-5-5`), in the
   docs and in the model a misconfigured Bedrock tier is told to use.
 
+### Fixed
+
+- **Self-consistency keeps its candidates on GPT-5 and the o-series.** These
+  models accept only the default temperature while they reason, and LiteLLM
+  refused the 0.4 and 0.8 that self-consistency asks for, so two of its three
+  candidates failed and the vote ran on one, with nothing logged. The
+  temperature is now left out for any model LiteLLM says refuses it, and a
+  candidate that fails is logged with the reason.
+
 ## [0.4.1] — 2026-11-02
 
 Mostly fixes: to the semantic cache, query history, feedback and the published image,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -136,7 +137,24 @@ class TestGenerateCandidates:
 
         llm.acomplete = raise_sometimes
         results = asyncio.run(generate_candidates(llm, "system", "user", n=3))
-        assert len(results) == 2  # 2 successes, 1 exception silently dropped
+        assert len(results) == 2  # 2 successes; the failure leaves the others
+
+    def test_a_failed_candidate_is_logged_not_swallowed(self, caplog) -> None:
+        """A model that refuses the temperature fails every call at it, and the
+        vote quietly ran on fewer candidates; now the log says why."""
+
+        async def refuse_a_temperature(system, user, max_tokens=512, *, temperature=None) -> str:
+            if temperature is not None:
+                raise RuntimeError("Only temperature=1 is supported")
+            return "<sql>SELECT 1</sql>"
+
+        llm = MagicMock()
+        llm.acomplete = refuse_a_temperature
+        with caplog.at_level(logging.WARNING, logger="nlqueries.orchestrator.candidates"):
+            results = asyncio.run(generate_candidates(llm, "system", "user", n=3))
+        assert len(results) == 1
+        said = [r.getMessage() for r in caplog.records]
+        assert sum("Only temperature=1 is supported" in m for m in said) == 2, said
 
     def test_calls_vary_temperature(self) -> None:
         """generate_candidates must pass varying temperatures to acomplete."""

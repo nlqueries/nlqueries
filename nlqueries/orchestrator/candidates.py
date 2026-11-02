@@ -22,6 +22,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -54,9 +55,12 @@ _HARD_TABLE_THRESHOLD = 20
 # Temperatures to use for the N candidate calls.  The first call uses None
 # (provider default, typically 1.0) so it is identical to a non-consistency
 # run — ensuring reproducibility when only 1 candidate is requested.
-# Claude 5 and later reject a temperature, so the clients drop it for them and
+# Claude 5 and later reject a temperature, and OpenAI's reasoning models (GPT-5,
+# the o-series) take only the default, so the clients drop it for them and
 # every candidate samples at the default; they still differ, just not by design.
 _CANDIDATE_TEMPERATURES: list[float | None] = [None, 0.4, 0.8, 0.2, 0.6]
+
+_log = logging.getLogger(__name__)
 
 
 def _is_hard(question: str, knowledge_base: dict[str, Any]) -> bool:
@@ -107,7 +111,12 @@ async def generate_candidates(
                 system, user, max_tokens=output_budget("correction"), temperature=temperature
             )
             return _extract_sql(raw)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - one candidate's failure leaves the others
+            # Said, not swallowed: a model that refuses the temperature fails
+            # every call at it, and the vote then runs on fewer candidates.
+            _log.warning(
+                "Self-consistency candidate at temperature %s failed: %s", temperature, exc
+            )
             return ""
 
     results = await asyncio.gather(*[_one(t) for t in temperatures])
