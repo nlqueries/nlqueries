@@ -56,7 +56,7 @@ from 0.4.0* first.
 
 - **litellm 1.100.4 in the image.** The lock pinned litellm 1.98.0
   (CVE-2026-114612, fixed in 1.100.4, 1.101.3, 1.102.2 and 1.103.1). Images up
-  to 0.4.0 carry 1.98.0: pull the next release. A fresh `pip install
+  to 0.4.0 carry 1.98.0: pull 0.4.1. A fresh `pip install
   nlqueries-core` resolves the newest litellm below 1.104 (1.103.10 on
   2026-10-28), which is already fixed.
 
