@@ -4,6 +4,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-02
+
+Mostly fixes: to the semantic cache, query history, feedback and the published image,
+with security fixes among them. Snowflake key-pair sign-in and read-only Oracle
+queries are added, and `query` answers from an agent's documents. Read *Upgrading
+from 0.4.0* first.
+
 ### Upgrading from 0.4.0
 
 - **A Docker Compose stack started from the 0.4.0 release runs 0.3.0.** The
@@ -49,7 +56,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 - **litellm 1.100.4 in the image.** The lock pinned litellm 1.98.0
   (CVE-2026-114612, fixed in 1.100.4, 1.101.3, 1.102.2 and 1.103.1). Images up
-  to 0.4.0 carry 1.98.0: pull the next release. A fresh `pip install
+  to 0.4.0 carry 1.98.0: pull 0.4.1. A fresh `pip install
   nlqueries-core` resolves the newest litellm below 1.104 (1.103.10 on
   2026-10-28), which is already fixed.
 
@@ -2289,6 +2296,7 @@ First public release of NLQueries Core.
 - Python 3.14+ is not supported for document ingestion (`doc-ingest`, `doc-sync-notion`, `doc-sync-confluence`) — see [docs/troubleshooting.md](docs/troubleshooting.md#w6--pydantic-v1-incompatibility-python-314)
 - `--days` has no effect on PostgreSQL query history (`pg_stat_statements` doesn't record per-query timestamps) — see [docs/connectors.md](docs/connectors.md#postgresql--enabling-query-history-capture)
 
+[0.4.1]: https://github.com/nlqueries/nlqueries/releases/tag/v0.4.1
 [0.4.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.4.0
 [0.3.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nlqueries/nlqueries/releases/tag/v0.2.0
