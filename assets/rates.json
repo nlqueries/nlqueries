@@ -1,7 +1,7 @@
 {
  "format": "nlq-rates-v1",
- "effective_from": "2026-11-01",
- "published": "2026-11-01",
+ "effective_from": "2026-11-03",
+ "published": "2026-11-03",
  "models": {
   "abliteration/abliterated-model": {
    "cache_read_input_token_cost": 1e-07,
@@ -2040,7 +2040,17 @@
    "input_cost_per_token": 4e-06,
    "output_cost_per_token": 2.4e-05
   },
+  "azure/gpt-realtime-2.1-2026-07-07": {
+   "cache_read_input_token_cost": 4e-07,
+   "input_cost_per_token": 4e-06,
+   "output_cost_per_token": 2.4e-05
+  },
   "azure/gpt-realtime-2.1-mini": {
+   "cache_read_input_token_cost": 6e-08,
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "azure/gpt-realtime-2.1-mini-2026-07-07": {
    "cache_read_input_token_cost": 6e-08,
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 2.4e-06
@@ -11413,14 +11423,14 @@
    "output_cost_per_token": 1.5e-06
   },
   "mistral/mistral-large-4": {
-   "cache_read_input_token_cost": 1.4e-07,
-   "input_cost_per_token": 1.36e-06,
-   "output_cost_per_token": 4.18e-06
+   "cache_read_input_token_cost": 7e-08,
+   "input_cost_per_token": 7e-07,
+   "output_cost_per_token": 2.1e-06
   },
   "mistral/mistral-large-4-0": {
-   "cache_read_input_token_cost": 1.4e-07,
-   "input_cost_per_token": 1.36e-06,
-   "output_cost_per_token": 4.18e-06
+   "cache_read_input_token_cost": 7e-08,
+   "input_cost_per_token": 7e-07,
+   "output_cost_per_token": 2.1e-06
   },
   "mistral/mistral-large-latest": {
    "cache_read_input_token_cost": 5e-08,
@@ -13280,6 +13290,10 @@
   "ovhcloud/Qwen3-32B": {
    "input_cost_per_token": 8e-08,
    "output_cost_per_token": 2.3e-07
+  },
+  "parallel_ai/decision": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
   },
   "perplexity/anthropic/claude-fable-5": {
    "input_cost_per_token": 1e-05,
