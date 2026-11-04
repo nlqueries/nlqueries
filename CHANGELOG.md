@@ -18,6 +18,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **SQLite's `date` and `strftime` with modifiers, and `timediff`, are no longer
+  refused.** sqlglot models `strftime(format, time)` but not the form with
+  modifiers, `strftime('%Y', 'now', '-1 day')`, which the SQL policy therefore
+  refused as an unrecognised function; sqlglot 30.29 does the same to `date`
+  with a modifier, `date('now', '-1 day')`, which earlier releases modelled.
+  Questions about ages and relative dates ("last year", "the start of next
+  month") were refused for it. All three are now on SQLite's list of allowed
+  functions, beside `datetime`, `julianday`, `time` and `unixepoch`, and the
+  policy version is 7.
 - **Valid SQL that reads a column through `SELECT *` is no longer refused.**
   The column check left stars unexpanded, so a column taken from a derived
   table, CTE or `UNION` written with `SELECT *` could not be resolved:

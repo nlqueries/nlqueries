@@ -244,6 +244,10 @@ SQLITE = [
     "SELECT country, group_concat(name, ', ') FROM customers GROUP BY country",
     "SELECT IFNULL(SUM(total), 0), ROUND(AVG(total), 2) FROM orders",
     "SELECT julianday('2025-06-01') - julianday(created_at) AS days FROM customers",
+    "SELECT COUNT(*) FROM orders "
+    "WHERE strftime('%Y', created_at) = strftime('%Y', 'now', '-1 year')",
+    "SELECT strftime('%Y-%m', created_at, 'start of month', '+1 month') AS next_month, COUNT(*) "
+    "FROM orders GROUP BY next_month",
     "SELECT p.category, SUM(i.quantity * i.unit_price) FROM order_items i "
     "JOIN products p ON p.id = i.product_id GROUP BY p.category HAVING SUM(i.quantity) > 1",
     "SELECT c.name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o "
