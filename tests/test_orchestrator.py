@@ -604,3 +604,63 @@ def test_load_knowledge_base_raises_for_unknown_agent() -> None:
 
         with pytest.raises(FileNotFoundError):
             orch._load_knowledge_base("does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# A reply cut off by the output budget
+# ---------------------------------------------------------------------------
+
+
+class _FinishingLLM(_MockLLM):
+    """Streams its tokens, then finishes the way a client does: *finish* is the
+    provider's finish reason, recorded for `output_was_cut_off`."""
+
+    def __init__(self, tokens: list[str], finish: str) -> None:
+        super().__init__(tokens)
+        self._finish = finish
+
+    async def astream(self, system: Any, user: str) -> Any:
+        from nlqueries.llm.client import note_finish
+
+        self._calls.append((system, user))
+        for t in self._tokens:
+            yield t
+        note_finish(self._finish, "".join(self._tokens))
+
+
+def _cut_off_passed_on(tokens: list[str], finish: str) -> bool:
+    """What `handle_question` tells the repair about a reply of *tokens* that
+    finished with *finish*."""
+    validate = AsyncMock(return_value=_make_sql_result())
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _write_kb(kb_path, "agent1", _make_kb())
+        with (
+            patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch(
+                "nlqueries.orchestrator.orchestrator.get_llm_client",
+                return_value=_FinishingLLM(tokens, finish),
+            ),
+            patch("nlqueries.orchestrator.orchestrator.validate_and_repair", new=validate),
+            patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
+            patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        ):
+            mock_cfg.KB_PATH = kb_path
+            asyncio.run(_collect_tokens(Orchestrator().handle_question("big orders", "agent1")))
+    return bool(validate.call_args.kwargs["cut_off"])
+
+
+def test_a_reply_cut_off_inside_its_statement_is_passed_on_as_cut_off() -> None:
+    tokens = ["Orders over 100.\n", "<sql>SELECT id FROM orders ", "WHERE total >"]
+    assert _cut_off_passed_on(tokens, "max_tokens") is True
+
+
+def test_a_reply_cut_off_after_its_statement_closed_is_not() -> None:
+    """The statement arrived whole; only the words after it ran out of room."""
+    tokens = ["<sql>SELECT id FROM orders WHERE total > 100</sql>", "\nThis lists the"]
+    assert _cut_off_passed_on(tokens, "max_tokens") is False
+
+
+def test_a_reply_that_finished_is_not_cut_off() -> None:
+    tokens = ["<sql>SELECT id FROM orders WHERE total > 100</sql>"]
+    assert _cut_off_passed_on(tokens, "end_turn") is False

@@ -12,6 +12,7 @@ from nlqueries.llm.client import (
     LLMClient,
     LLMTimeout,
     OutputBudgetExhausted,
+    output_was_cut_off,
     probe_round_trip,
 )
 from nlqueries.llm.litellm_client import LiteLLMClient
@@ -44,6 +45,7 @@ __all__ = [
     "estimate_tokens",
     "get_llm_client",
     "output_budget",
+    "output_was_cut_off",
     "probe_round_trip",
     "record_usage",
     "use_llm_override",

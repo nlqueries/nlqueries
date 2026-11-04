@@ -36,7 +36,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
     from nlqueries.connectors.base import QueryResult
-from nlqueries.llm import get_llm_client
+from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
 from nlqueries.orchestrator.result_checks import check_result
@@ -503,6 +503,17 @@ class Orchestrator:
             if not found_sql:
                 sql_buf = _extract_sql("".join(all_tokens))
 
+            # A reply that ran out of output budget before </sql> ends
+            # mid-statement, so the repair below must know it lacked room, not
+            # made a mistake. Cut off after </sql>, the statement is whole.
+            cut_off = output_was_cut_off() and not found_sql
+            if cut_off:
+                _log.warning(
+                    "The answer was cut off at the output budget (%d tokens, "
+                    "LLM_MAX_OUTPUT_TOKENS) before the statement was complete.",
+                    output_budget("answer"),
+                )
+
             # ------------------------------------------------------------------
             # Validate (and repair if needed) the extracted SQL.
             # validate_and_repair() reuses the same `system` blocks so Anthropic
@@ -534,6 +545,7 @@ class Orchestrator:
                 system,
                 lookups=lookups,
                 question=question,
+                cut_off=cut_off,
             )
 
             span.set_attribute("sql_valid", result.is_valid)

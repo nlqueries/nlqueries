@@ -20,6 +20,7 @@ from nlqueries.llm.client import (
     SystemParam,
     exhausted,
     looks_like_timeout,
+    note_finish,
 )
 from nlqueries.llm.endpoint import warn_if_plain_http
 from nlqueries.llm.override import output_budget
@@ -480,6 +481,7 @@ class LiteLLMClient(LLMClient):
         # came back, and a deployment tracking cost should see them.
         if exhausted(getattr(response.choices[0], "finish_reason", None), content):
             raise OutputBudgetExhausted(self._model, budget)
+        note_finish(getattr(response.choices[0], "finish_reason", None), content)
         return content
 
     def stream(self, system: SystemParam, user: str) -> Iterator[str]:
@@ -527,6 +529,7 @@ class LiteLLMClient(LLMClient):
         # delivered as-is; a blank answer beats a broken stream.
         if not collected and str(finish) in TRUNCATED:
             raise OutputBudgetExhausted(self._model, budget)
+        note_finish(finish, "".join(collected))
 
     # ------------------------------------------------------------------
     # Native async API
@@ -560,6 +563,7 @@ class LiteLLMClient(LLMClient):
             _record_estimated(self._model, f"{_flatten_system(system)}\n{user}", content)
         if exhausted(getattr(response.choices[0], "finish_reason", None), content):
             raise OutputBudgetExhausted(self._model, budget)
+        note_finish(getattr(response.choices[0], "finish_reason", None), content)
         return content
 
     async def astream(self, system: SystemParam, user: str) -> AsyncIterator[str]:
@@ -594,3 +598,4 @@ class LiteLLMClient(LLMClient):
         # See the sync path: empty, not blank.
         if not collected and str(finish) in TRUNCATED:
             raise OutputBudgetExhausted(self._model, budget)
+        note_finish(finish, "".join(collected))
