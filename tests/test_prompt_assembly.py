@@ -817,6 +817,7 @@ ANSWER_RULE_PHRASES = [
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
     "Return the column as stored: for its largest value, keep the",
     "rather than returning MAX(CAST(...)) itself",
+    "when only the value is asked for, return it once, with DISTINCT",
     "A plain cast reads only digits and a decimal point: where the values shown carry",
     "(a decimal comma becomes a point, not removed: '1,5' is 1.5)",
     "When the question only asks for the value, do not",
@@ -828,6 +829,10 @@ ANSWER_RULE_PHRASES = [
     "which some databases run once per row of the outer query",
     # Superlatives: every tie, and no NULL at the top.
     "return every row that shares the top value",
+    # Ties are rows; a value asked for on its own comes back once.
+    "That is for a question that asks which rows hold the top value",
+    "one that asks only for the value itself",
+    "gets it once, with MAX or MIN",
     "Do not pick one of them arbitrarily with",
     "LIMIT 1 unless the question asks for exactly one",
     "Leave out rows where the value ranked by is NULL",

@@ -282,7 +282,8 @@ counts as 0 where a count is asked for. If unsure, use an inner join.
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
 text, '9' sorts above '10'. Return the column as stored: for its largest value, keep the \
 rows whose cast equals the largest cast, compared in a subquery, rather than returning \
-MAX(CAST(...)) itself, since a converted copy is not the value asked for. A plain cast \
+MAX(CAST(...)) itself, since a converted copy is not the value asked for; when only the \
+value is asked for, return it once, with DISTINCT. A plain cast \
 reads only digits and a decimal point: \
 where the values shown carry \
 anything else, remove it inside the cast (a decimal comma becomes a point, not removed: \
@@ -298,8 +299,11 @@ can take minutes.
 - For "the highest", "lowest", "most", "least", "earliest" or "latest", return every \
 row that shares the top value: compare with the MAX or MIN in a subquery that does not \
 refer to the outer row, or keep RANK() = 1. Do not pick one of them arbitrarily with \
-LIMIT 1 unless the question asks for exactly one ("any one", "a single"). Leave out \
-rows where the value ranked by is NULL: a row with no value has no place in a ranking.
+LIMIT 1 unless the question asks for exactly one ("any one", "a single"). That is for \
+a question that asks which rows hold the top value; one that asks only for the value \
+itself ("what is the highest price?", "the latest order date") gets it once, with MAX or \
+MIN. Leave out rows where the value ranked by is NULL: a row with no value has no place \
+in a ranking.
 - A quoted value in the hint is exact: use it as written, in the column the hint names.
 - Coded values ('Y', 'N', '+', '-', '65+', a status code) stay exactly as stored, in \
 SELECT and in WHERE: do not relabel them (no CASE turning 'Y' into a word) and do not \
