@@ -37,6 +37,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
+from nlqueries.orchestrator.grain_check import check_grain
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
@@ -576,6 +577,24 @@ class Orchestrator:
                 question=question,
                 cut_off=cut_off,
             )
+            # The statement checked against the plan line the model wrote
+            # before it, which says what one row is and what is counted; a
+            # disagreement gets one repair. See `grain_check`. Before execution,
+            # so a generate-only request gets the same statement.
+            regrained = await check_grain(
+                result,
+                "".join(all_tokens),
+                question=prompt.user_content(),
+                knowledge_base=kb,
+                dialect=dialect,
+                llm=llm,
+                system=system,
+                started=attempt_started,
+                deadline=deadline,
+            )
+            if regrained is not result:
+                span.set_attribute("grain_repair", True)
+                result = regrained
 
             span.set_attribute("sql_valid", result.is_valid)
             span.set_attribute("attempt_count", result.attempt_count)

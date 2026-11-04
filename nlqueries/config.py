@@ -557,6 +557,16 @@ joins itself, and the other engines' plans do not say it plainly, so they are no
 Table sizes come from the knowledge base, or on MySQL and MariaDB from the plan. On by
 default; set NLQ_PLAN_CHECK=false to turn it off."""
 
+GRAIN_CHECK: bool = os.getenv("NLQ_GRAIN_CHECK", "true").lower() in ("1", "true", "yes")
+"""Check the generated statement against the plan line the model writes first, which
+says what one row of the answer is and what is counted: a statement that groups the
+rows' table without the key the plan names, or counts with a plain COUNT across a join
+the knowledge base's foreign keys say repeats the counted rows, gets one LLM call asking
+for the statement that matches the question. The answer replaces the statement only when
+it validates and agrees with its own plan line. Recorded in provenance as
+``grain_check``. The plan line itself is always asked for; this setting turns off only
+the check. On by default; set NLQ_GRAIN_CHECK=false to turn it off."""
+
 PLAN_CHECK_MIN_ROW_READS: int = int(os.getenv("NLQ_PLAN_CHECK_MIN_ROW_READS", "1000000000"))
 """How many rows a subquery re-run per row must be expected to read, across all its runs,
 before the plan check asks for a rewrite. At the default, a billion, a correlated subquery

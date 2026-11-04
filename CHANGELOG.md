@@ -6,6 +6,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **The model says what one row is and what is counted, and the statement is
+  checked against it (`NLQ_GRAIN_CHECK`, on by default).** Its reasoning now
+  opens with a plan line, such as `Plan: rows = one customer per row, key
+  customers.id; counted = orders, once each by orders.id; filters = none`,
+  which the user sees. Two disagreements between that line and the
+  statement are caught without a query or a model call: rows told apart by
+  a key the statement groups without, so customers who share a name are
+  added together; and a plain `COUNT` across a join that the knowledge
+  base's foreign keys say repeats the counted rows. Either gets one repair
+  call, kept only if the result validates and agrees with its own plan line.
+  Recorded in provenance as `grain_check`.
+
 - **`export-kb` profiles each column (`--profile`, on by default).** Samples
   show the first rows, and miss what is wrong across a whole column: a join
   key whose values nearly all start with a space, so an equality join matches
