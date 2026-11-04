@@ -144,6 +144,7 @@ The MCP server's `health` tool checks the LLM configuration, Qdrant, the embeddi
 - `cache`: `hit`, `similarity` and `tier`;
 - `validator`: warnings;
 - `literals_grounded` and `literal_repair`;
+- `plan_rewrite`: when the plan check found a subquery re-run for every row, the statement as generated, what the plan showed, and whether the rewrite replaced it (see [`NLQ_PLAN_CHECK`](configuration.md));
 - `timings`: `total_ms` for the whole question, and `sql_ms` for the SQL path.
 
 The JSON also carries `latency_ms` either way. The MCP `query` tool takes an `explain` argument for the same record. See [query](cli-reference.md#query).

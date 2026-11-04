@@ -1,0 +1,411 @@
+{
+ "engine": "11.8.9-MariaDB-ubu2404",
+ "tables": "a, b, c: 50,000 rows each; c has an index on k",
+ "plans": {
+  "correlated_scalar": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(b.v) FROM b WHERE b.k = a.k)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ],
+    [
+     "2",
+     "DEPENDENT SUBQUERY",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ]
+   ]
+  },
+  "correlated_in_select_list": {
+   "sql": "SELECT a.id, (SELECT COUNT(*) FROM b WHERE b.k = a.k) FROM a",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     ""
+    ],
+    [
+     "2",
+     "DEPENDENT SUBQUERY",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ]
+   ]
+  },
+  "correlated_after_join": {
+   "sql": "SELECT a.id FROM a JOIN c ON c.id = a.id WHERE c.v > 0.5 AND a.v > (SELECT AVG(b.v) FROM b WHERE b.k = a.k)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     "PRIMARY",
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ],
+    [
+     "1",
+     "PRIMARY",
+     "c",
+     "eq_ref",
+     "PRIMARY",
+     "PRIMARY",
+     "4",
+     "p.a.id",
+     "1",
+     "Using where"
+    ],
+    [
+     "2",
+     "DEPENDENT SUBQUERY",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ]
+   ]
+  },
+  "correlated_in_list": {
+   "sql": "SELECT a.id FROM a WHERE a.k IN (SELECT b.k FROM b WHERE b.v = a.v)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     ""
+    ],
+    [
+     "1",
+     "PRIMARY",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where; FirstMatch(a); Using join buffer (flat, BNL join)"
+    ]
+   ]
+  },
+  "correlated_exists": {
+   "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND b.v > 0.3)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     ""
+    ],
+    [
+     "1",
+     "PRIMARY",
+     "<subquery2>",
+     "eq_ref",
+     "distinct_key",
+     "distinct_key",
+     "4",
+     "func",
+     "1",
+     ""
+    ],
+    [
+     "2",
+     "MATERIALIZED",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ]
+   ]
+  },
+  "uncorrelated_not_in": {
+   "sql": "SELECT a.id FROM a WHERE a.k NOT IN (SELECT b.k FROM b WHERE b.v > 0.3)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ],
+    [
+     "2",
+     "MATERIALIZED",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ]
+   ]
+  },
+  "uncorrelated_scalar": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(v) FROM b)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ],
+    [
+     "2",
+     "SUBQUERY",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     ""
+    ]
+   ]
+  },
+  "correlated_indexed": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(c.v) FROM c WHERE c.k = a.k)",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ],
+    [
+     "2",
+     "DEPENDENT SUBQUERY",
+     "c",
+     "ref",
+     "ck",
+     "ck",
+     "5",
+     "p.a.k",
+     "51",
+     ""
+    ]
+   ]
+  },
+  "rewritten_as_join": {
+   "sql": "SELECT a.id FROM a JOIN (SELECT k, AVG(v) AS m FROM b GROUP BY k) AS g ON g.k = a.k WHERE a.v > g.m",
+   "columns": [
+    "id",
+    "select_type",
+    "table",
+    "type",
+    "possible_keys",
+    "key",
+    "key_len",
+    "ref",
+    "rows",
+    "Extra"
+   ],
+   "rows": [
+    [
+     "1",
+     "PRIMARY",
+     "a",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using where"
+    ],
+    [
+     "1",
+     "PRIMARY",
+     "<derived2>",
+     "ref",
+     "key0",
+     "key0",
+     "5",
+     "p.a.k",
+     "10",
+     "Using where"
+    ],
+    [
+     "2",
+     "DERIVED",
+     "b",
+     "ALL",
+     null,
+     null,
+     null,
+     null,
+     "50386",
+     "Using temporary; Using filesort"
+    ]
+   ]
+  }
+ }
+}

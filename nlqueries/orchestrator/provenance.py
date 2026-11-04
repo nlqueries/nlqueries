@@ -70,6 +70,12 @@ class Provenance:
     # and "rejected: changed a literal grounding did not flag" when it changed a
     # literal other than those grounding flagged.
     literal_repair: dict[str, Any] | None = None
+    # The plan check's rewrite of a subquery the plan re-runs per row:
+    # {"attempted": bool, "changed": bool, "original_sql": str, "findings":
+    # [...], "reason": str | None}, or None when no rewrite was due. "attempted"
+    # is False when the deadline left no room for the call; "reason" says why a
+    # rewrite did not replace the statement.
+    plan_rewrite: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +100,11 @@ class Provenance:
                 None
                 if self.literal_repair is None
                 else {**self.literal_repair, "notes": list(self.literal_repair["notes"])}
+            ),
+            "plan_rewrite": (
+                None
+                if self.plan_rewrite is None
+                else {**self.plan_rewrite, "findings": list(self.plan_rewrite["findings"])}
             ),
         }
 
@@ -176,6 +187,28 @@ def record_literal_repair(changed: bool, notes: list[str], reason: str | None = 
             "attempted": True,
             "changed": changed,
             "notes": list(notes),
+            "reason": reason,
+        }
+
+
+def record_plan_rewrite(
+    *,
+    attempted: bool,
+    changed: bool,
+    original_sql: str,
+    findings: list[str],
+    reason: str | None = None,
+) -> None:
+    """The plan check found a subquery re-run per row (*findings*) in
+    *original_sql*; *changed* when its rewrite replaced the statement, and
+    *reason* why not."""
+    p = _collector.get()
+    if p is not None:
+        p.plan_rewrite = {
+            "attempted": attempted,
+            "changed": changed,
+            "original_sql": original_sql,
+            "findings": list(findings),
             "reason": reason,
         }
 

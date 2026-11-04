@@ -545,6 +545,25 @@ second call. Recorded in provenance as ``literal_repair``. Only
 meaningful when NLQ_LITERAL_GROUNDING is on. On by default; set
 NLQ_LITERAL_GROUNDING_REPAIR=false to turn it off."""
 
+PLAN_CHECK: bool = os.getenv("NLQ_PLAN_CHECK", "true").lower() in ("1", "true", "yes")
+"""Before a statement that has a subquery inside an expression runs on PostgreSQL, MySQL,
+MariaDB or SQLite, read its plan with a plain EXPLAIN (never EXPLAIN ANALYZE, so nothing is
+run) for a subquery the database will re-run once for each row of the outer query, reading
+a table in full each time. When the rows that reads add up to PLAN_CHECK_MIN_ROW_READS or
+more, make one LLM call asking for the same statement with the subquery computed once; the
+answer replaces the statement only when it validates and its own plan shows no such
+subquery. Otherwise the statement runs as it was. DuckDB rewrites these subqueries into
+joins itself, and the other engines' plans do not say it plainly, so they are not checked.
+Table sizes come from the knowledge base, or on MySQL and MariaDB from the plan. On by
+default; set NLQ_PLAN_CHECK=false to turn it off."""
+
+PLAN_CHECK_MIN_ROW_READS: int = int(os.getenv("NLQ_PLAN_CHECK_MIN_ROW_READS", "1000000000"))
+"""How many rows a subquery re-run per row must be expected to read, across all its runs,
+before the plan check asks for a rewrite. At the default, a billion, a correlated subquery
+that scans 40,000 rows for each of 40,000 outer rows qualifies (1.6 billion), which takes
+tens of seconds or more on the engines checked; well below it, a rewrite would cost about
+as long as it saves."""
+
 # ---------------------------------------------------------------------------
 # Embedding daemon
 # ---------------------------------------------------------------------------
