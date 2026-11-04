@@ -51,6 +51,7 @@ from starlette.applications import Starlette
 
 from nlqueries import config
 from nlqueries.auth.principal import Principal, Source, local_principal
+from nlqueries.knowledge.column_profiles import profile_notes
 from nlqueries.state_files import agent_storage_id
 
 _log = logging.getLogger(__name__)
@@ -176,6 +177,7 @@ def get_agent_schema(agent_id: str) -> str:
                 flags.append("PK")
             if col.get("is_foreign_key") and col.get("references"):
                 flags.append(f"FK→{col['references']}")
+            flags.extend(profile_notes(col))
             samples = col.get("samples", [])
             if samples and col.get("values_complete"):
                 sample_str = f" values: {samples}"

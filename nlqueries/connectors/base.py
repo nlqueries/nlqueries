@@ -109,6 +109,44 @@ def table_sample_sql(name: str, schema: str | None, limit: int, dialect: str | N
     return str(exp.select(exp.Star()).from_(table).limit(limit).sql(dialect=grammar))
 
 
+def column_profile_sql(
+    name: str, schema: str | None, columns: list[tuple[str, str]], dialect: str | None = None
+) -> str:
+    """One aggregate over the table *name*, profiling each of *columns*.
+
+    *columns* is ``(column, kind)`` pairs, kind ``"text"``, ``"date"`` or
+    ``"plain"``. The statement returns one row: ``COUNT(*)``, then per column
+    in order ``COUNT(column)``, and for text the number of values with spaces
+    around them (``column <> TRIM(column)``) and the shortest and longest
+    length, for a date the earliest and latest. Built with sqlglot so each
+    dialect gets its own spelling (``LEN`` in T-SQL), and quoted as
+    :func:`column_values_sql` is. It reads every row of the table.
+    """
+    from sqlglot import exp  # noqa: PLC0415
+
+    table, grammar = _table_expression(name, schema, dialect)
+    projections: list[Any] = [exp.Count(this=exp.Star())]
+    for column, kind in columns:
+        col = exp.column(column, quoted=True)
+        projections.append(exp.Count(this=col.copy()))
+        if kind == "text":
+            padded = exp.NEQ(this=col.copy(), expression=exp.Trim(this=col.copy()))
+            projections.append(
+                exp.Sum(
+                    this=exp.Case(
+                        ifs=[exp.If(this=padded, true=exp.Literal.number(1))],
+                        default=exp.Literal.number(0),
+                    )
+                )
+            )
+            projections.append(exp.Min(this=exp.Length(this=col.copy())))
+            projections.append(exp.Max(this=exp.Length(this=col.copy())))
+        elif kind == "date":
+            projections.append(exp.Min(this=col.copy()))
+            projections.append(exp.Max(this=col.copy()))
+    return str(exp.select(*projections).from_(table).sql(dialect=grammar))
+
+
 def column_values_sql(
     name: str, schema: str | None, column: str, limit: int, dialect: str | None = None
 ) -> str:

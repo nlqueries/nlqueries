@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nlqueries.knowledge.column_profiles import profile_notes
 from nlqueries.knowledge.concept_hierarchy import GlossaryHierarchy, build_glossary_hierarchy
 from nlqueries.orchestrator.provenance import record_capsule, record_prompt_section
 
@@ -810,6 +811,7 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
                         shown = shown[:5]
                     sample_str = ", ".join(_quote_sample(s) for s in shown)
                     flags.append(f"samples: [{sample_str}]")
+            flags.extend(profile_notes(col))
 
             inner = f"{col_name}:{col_type}"
             if flags:
