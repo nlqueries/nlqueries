@@ -22,6 +22,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **Answers follow what the question means where four rules followed a
+  benchmark's conventions instead.** A thing the question counts is counted
+  once, with `COUNT(DISTINCT key)` where the joins can repeat it, not once per
+  joined row (an order counted once per item). "The highest", "the earliest"
+  and the like return every row that shares the top value, not one picked by
+  `LIMIT 1`, unless the question asks for exactly one, and leave out rows with no
+  value for the column ranked by. A figure given per entity comes with what names
+  the entity -- the column the question names, else a name or title, else the
+  key -- so each row says what it is about. The rule for the largest value of a
+  text column holding numbers keeps every row with the largest cast, in step.
+  These change the SQL generated for such questions; scores on benchmarks whose
+  reference answers count join rows or keep one tied row will drop.
+
 - **OpenAI defaults to GPT-5.** With only `OPENAI_API_KEY` set, `LLM_MODEL`
   now defaults to `openai/gpt-5` and `LLM_MODEL_FAST` to `openai/gpt-5-mini`,
   replacing the older `openai/gpt-4o` and `openai/gpt-4o-mini`. An explicit `LLM_MODEL` or `LLM_MODEL_FAST` is unchanged. GPT-5

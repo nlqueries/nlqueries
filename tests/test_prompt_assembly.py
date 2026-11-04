@@ -765,26 +765,24 @@ ANSWER_RULE_PHRASES = [
     "SELECT only the columns the question asks for",
     "in the order the question or its hint lists them",
     "Do not add the column you sorted, filtered or ranked by",
-    "the one exception, an entity's key for a figure given per entity, is set out below",
+    "the one exception, what names the entity a figure is given for, is set out below",
     "id column stays where the question names it, never moved to the front",
     "A field, count, total, average or rank the question names is a requested column",
     "with no breakdown asked for returns a single number with no grouping column",
-    # A key only for a per-entity figure with nothing else to name it by; the whole
-    # key where it has two columns, since half of it merges distinct entities.
-    "Add an entity's key only when the question asks for a figure for each entity",
-    # A grouping column the question names ("in each city") is a column for the
-    # entity, so no key goes beside it.
-    "names no column for it, such as a name, title, label or description",
+    # A per-entity figure says which entity each row is about: the column the
+    # question names, else a name, else the whole key.
+    "When the question asks for a figure for each entity",
+    "return what names the entity beside the",
+    "so each row says what it is about",
     '("in each city" names the city column)',
-    "then add that entity's key once (every column of it, where it has more than one)",
-    "and no other id",
-    "Never add an id beside a name the question asked for",
+    "else its name or title, else its key (every column",
+    "Never add an id beside a name",
     "never return a url or a code in place of a name it asked for",
     "A person's full name is the first name and the last name, as two columns",
     "not every numbered variant",
-    # Counting the joined rows, not distinct ones, unless asked.
-    "Count the rows the joins produce with COUNT(column)",
-    "Use COUNT(DISTINCT ...) only when the question or hint says distinct, unique or different",
+    # Each counted thing once, however the joins repeat it.
+    "Count each thing the question counts once",
+    "count its key with COUNT(DISTINCT key)",
     # A join that repeats the rows being totalled: aggregate them first.
     "When a join repeats the rows whose values you total or count",
     "total or count them per join key in a subquery first, then join the result",
@@ -813,7 +811,7 @@ ANSWER_RULE_PHRASES = [
     # Numbers stored as text: ordered, compared or added by the cast, returned as stored.
     "When the question orders, compares or adds a text column that holds numbers",
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
-    "Return the column as stored: for its largest value, ORDER BY",
+    "Return the column as stored: for its largest value, keep the",
     "A plain cast reads only digits and a decimal point: where the values shown carry",
     "(a decimal comma becomes a point, not removed: '1,5' is 1.5)",
     "When the question only asks for the value, do not",
@@ -823,9 +821,11 @@ ANSWER_RULE_PHRASES = [
     # Joins and window functions over per-row subqueries.
     "Prefer joins, GROUP BY and window functions to a subquery that refers to the outer",
     "which some databases run once per row of the outer query",
-    # Superlatives.
-    "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
-    "unless the question asks for every tie",
+    # Superlatives: every tie, and no NULL at the top.
+    "return every row that shares the top value",
+    "Do not pick one of them arbitrarily with",
+    "LIMIT 1 unless the question asks for exactly one",
+    "Leave out rows where the value ranked by is NULL",
     # Literals.
     "A quoted value in the hint is exact: use it as written",
     # Codes stay codes.
@@ -857,6 +857,14 @@ REMOVED_RULE_PHRASES = [
     # A choice between the joins: the same wording went both ways.
     "Join with an inner join unless the question keeps the rows that have no match",
     "Before comparing, sorting or adding a text column as a number",
+    # Replaced 2026-11-04 by rules that follow what the person asking means (the
+    # owner's decision): a text-to-SQL benchmark scored the old ones higher, by
+    # counting join rows, returning one of several tied rows and leaving
+    # grouped figures unlabelled, none of which a person asking wants.
+    "Count the rows the joins produce with COUNT(column)",
+    "Use COUNT(DISTINCT ...) only when the question or hint says distinct",
+    "use ORDER BY ... LIMIT 1, not a comparison with a MAX or MIN subquery",
+    "Add an entity's key only when the question asks for a figure for each entity",
 ]
 
 

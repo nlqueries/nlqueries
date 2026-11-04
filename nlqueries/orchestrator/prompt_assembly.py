@@ -161,8 +161,18 @@ def _excerpt_block(label: str, text: str) -> str:
 #: meant, a MAX/MIN subquery where ORDER BY ... LIMIT 1 was, and a hint's
 #: literal not used as written.
 #:
+#: Revised 2026-11-04 toward what the person asking means, the owner's
+#: decision, knowing that benchmark scores the old wording higher. Three rules
+#: had followed its conventions and against the user: counting join rows (an
+#: order counted once per item), one of several tied rows picked by LIMIT 1, and
+#: a figure per entity returned with a bare key or no label at all. Now each
+#: counted thing is counted once, every tied row is returned and rows with no
+#: value for the ranking column are left out of the ranking, and a figure per
+#: entity carries what names the entity.
+#:
 #: Measured, not assumed. A rule against filters nobody asked for (IS NOT NULL)
-#: lost twice as many correct answers as it gained and was taken out; the
+#: lost twice as many correct answers as it gained and was taken out (the
+#: ranking rule's NULL clause is narrower: only the column ranked by); the
 #: YES/NO rule is limited to questions that offer the choice, because applied
 #: to every "is it ...?" it replaced the value the data holds with 'YES'.
 #:
@@ -183,12 +193,14 @@ def _excerpt_block(label: str, text: str) -> str:
 #: a key leading its row. Its net effect is not yet measured; the re-run after
 #: these rule changes is that measurement.
 #:
-#: The key-column rule: a key is added only to a figure given per entity when
-#: nothing the question names tells the entities apart, and that key once, with
-#: no other id. Added anywhere else, an id crowded out the columns asked for, or a
-#: url came back in place of the name the question wanted. "Once" counts keys, not
-#: columns: half of a two-column key groups distinct entities together. The first
-#: rule names this as its one exception, so the two are not weighed afresh each time.
+#: The per-entity rule: a figure given per entity says which entity each row is
+#: about, by the column the question names for it, else a name or title, else
+#: the whole key. Rows of bare figures, or of keys, are right and useless to the
+#: person who asked. Added anywhere else, an id crowded out the columns asked
+#: for, or a url came back in place of the name the question wanted. The whole
+#: key, since half of a two-column key groups distinct entities together. The
+#: first rule names this as its one exception, so the two are not weighed afresh
+#: each time.
 #:
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
@@ -233,25 +245,26 @@ hint lists them: "street, city, state and zip" is four columns in that order. A 
 id column stays where the question names it, never moved to the front: "the city, the \
 store id and the opening date" puts the id second. Do not add the column you sorted, \
 filtered or ranked by, an id, or a name, label or count column for context; the one \
-exception, an entity's key for a figure given per entity, is set out below.
+exception, what names the entity a figure is given for, is set out below.
 - A field, count, total, average or rank the question names is a requested column: \
 "the top five cities and their number of stores" returns the city and the count.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \
 returns a single number with no grouping column.
-- Add an entity's key only when the question asks for a figure for each entity ("how \
-many orders each customer placed") and names no column for it, such as a name, title, \
-label or description ("in each city" names the city column); then add that entity's \
-key once (every column of it, where it has more than one) and no other id. Never add \
-an id beside a name the question asked for, and never return a url or a code in place \
-of a name it asked for: "who" asks for the name.
+- When the question asks for a figure for each entity ("how many orders each customer \
+placed", "the average price per category"), return what names the entity beside the \
+figure, so each row says what it is about: the column the question names for it ("in \
+each city" names the city column), else its name or title, else its key (every column \
+of it, where it has more than one). Never add an id beside a name, and never return a \
+url or a code in place of a name it asked for: "who" asks for the name.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
 - When the question asks which customer, product or other thing, return its name or \
 title column instead of the id, or a description where it has neither, unless the \
 question asks for the id.
-- Count the rows the joins produce with COUNT(column). Use COUNT(DISTINCT ...) only \
-when the question or hint says distinct, unique or different.
+- Count each thing the question counts once. Where the joins can repeat it (an order \
+joined to its several items, a customer to their several orders), count its key with \
+COUNT(DISTINCT key); where they cannot, COUNT(column) is the count.
 - When a join repeats the rows whose values you total or count (a customer's invoices \
 joined to the same customer's shipments repeat each invoice once per shipment), total \
 or count them per join key in a subquery first, then join the result.
@@ -264,9 +277,10 @@ such a question unless it says the unmatched ones are wanted. There a row with n
 counts as 0 where a count is asked for. If unsure, use an inner join.
 - When the question orders, compares or adds a text column that holds numbers, use its \
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
-text, '9' sorts above '10'. Return the column as stored: for its largest value, ORDER BY \
-the cast DESC LIMIT 1, not MAX(CAST(...)), since a converted copy is not the value asked \
-for. A plain cast reads only digits and a decimal point: where the values shown carry \
+text, '9' sorts above '10'. Return the column as stored: for its largest value, keep the \
+rows whose cast equals the largest cast, not MAX(CAST(...)), since a converted copy is \
+not the value asked for. A plain cast reads only digits and a decimal point: \
+where the values shown carry \
 anything else, remove it inside the cast (a decimal comma becomes a point, not removed: \
 '1,5' is 1.5), or the cast gives 0 or the leading digits on \
 some databases and fails on others. When the question only asks for the value, do not \
@@ -277,9 +291,11 @@ as stored, and where you explain your reasoning, say so.
 - Prefer joins, GROUP BY and window functions to a subquery that refers to the outer \
 row, which some databases run once per row of the outer query: on a large table that \
 can take minutes.
-- For "the highest", "lowest", "most", "least", "earliest" or "latest", use ORDER BY \
-... LIMIT 1, not a comparison with a MAX or MIN subquery, unless the question asks \
-for every tie.
+- For "the highest", "lowest", "most", "least", "earliest" or "latest", return every \
+row that shares the top value: compare with the MAX or MIN in a subquery that does not \
+refer to the outer row, or keep RANK() = 1. Do not pick one of them arbitrarily with \
+LIMIT 1 unless the question asks for exactly one ("any one", "a single"). Leave out \
+rows where the value ranked by is NULL: a row with no value has no place in a ranking.
 - A quoted value in the hint is exact: use it as written, in the column the hint names.
 - Coded values ('Y', 'N', '+', '-', '65+', a status code) stay exactly as stored, in \
 SELECT and in WHERE: do not relabel them (no CASE turning 'Y' into a word) and do not \
