@@ -271,15 +271,15 @@ async def validate_and_repair(
         if candidates:
             repaired_sql = select_best(candidates, knowledge_base, dialect)
         else:
-            raw = await llm.acomplete(
-                system, correction_user, max_tokens=output_budget("correction")
-            )
+            raw = await llm.acomplete(system, correction_user, max_tokens=budget)
             repaired_sql = _extract_sql(raw)
+            repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
     else:
         raw = await llm.acomplete(system, correction_user, max_tokens=budget)
         repaired_sql = _extract_sql(raw)
         # Cut off before </sql>, the statement is incomplete even if it
-        # parses, as the first one was.
+        # parses, as the first one was. Asked after every single reply,
+        # including the fallback above when no candidate came back.
         repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
 
     repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)

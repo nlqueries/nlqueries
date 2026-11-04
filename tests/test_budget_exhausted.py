@@ -794,3 +794,15 @@ def test_note_finish_records_an_answer_cut_off_part_way(
 
     note_finish(finish, content)
     assert output_was_cut_off() is expected
+
+
+def test_a_cut_off_left_set_by_one_test() -> None:
+    """With the next test, pins that each test starts with no cut-off recorded."""
+    from nlqueries.llm.client import note_finish
+
+    note_finish("length", "half")
+    assert output_was_cut_off() is True
+
+
+def test_does_not_reach_the_next() -> None:
+    assert output_was_cut_off() is False

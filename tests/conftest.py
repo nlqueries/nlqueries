@@ -223,6 +223,23 @@ def _no_process_surface(monkeypatch):
     monkeypatch.setattr(audit, "_process_context", None)
 
 
+@pytest.fixture(autouse=True)
+def _no_reply_cut_off():
+    """Start every test with no LLM reply recorded as cut off.
+
+    Clients record how each reply finished in a context variable
+    (`llm.client.output_was_cut_off`), and a synchronous test that records a
+    cut-off leaves it set for every test after it in the process: one selected
+    on its own, or run in another order, would hand a later test's fake LLM, which
+    records nothing, a cut-off it never had.
+    """
+    from nlqueries.llm import client  # noqa: PLC0415
+
+    token = client._cut_off.set(False)
+    yield
+    client._cut_off.reset(token)
+
+
 def granted(connector):
     """Give *connector* permission to execute, explicitly.
 

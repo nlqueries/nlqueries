@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nlqueries.orchestrator.sql_generation import (
@@ -926,3 +926,17 @@ def test_a_repair_cut_off_after_its_statement_closed_is_kept() -> None:
 
     assert result.is_valid
     assert "WHERE total > 100" in result.sql
+
+
+def test_a_fallback_repair_cut_off_says_so_too() -> None:
+    """Self-consistency that returns no candidate falls back to one reply; that
+    reply is checked for a cut-off like any other."""
+    llm, _ = _recording_llm("<sql>SELECT id FROM orders", cut_off=True)
+    with patch(
+        "nlqueries.orchestrator.candidates.generate_candidates", new=AsyncMock(return_value=[])
+    ):
+        result = _repair("SELECT * FROM ghost_table", llm, cut_off=False)
+
+    assert not result.is_valid
+    assert result.validation_error is not None
+    assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
