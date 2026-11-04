@@ -578,6 +578,20 @@ usually better than the alternative, so a larger value is often the right call â
 particularly with EMBED_SERVER_REQUIRED, where the alternative is a failed turn.
 """
 
+EMBED_CLIENT_ABSENT_RECHECK_SECONDS: float = float(
+    os.getenv("EMBED_CLIENT_ABSENT_RECHECK_SECONDS", "30")
+)
+"""How long a process remembers that no embedding daemon is listening.
+
+Within that time it embeds in-process without asking the daemon again. Asking
+is not free everywhere: on Windows a connection to a port nobody listens on is
+refused only after about two seconds of retries, so without this every
+embedding call waited that long first. A daemon started meanwhile is picked up
+at the next check. ``0`` asks every time. Ignored with EMBED_SERVER_REQUIRED,
+where the daemon is expected and a restart must not be read as an absence that
+fails every call until the time is up.
+"""
+
 EMBED_SERVER_MAX_CONCURRENCY: int = int(
     os.getenv("EMBED_SERVER_MAX_CONCURRENCY", str(min(4, os.cpu_count() or 1)))
 )
