@@ -336,3 +336,23 @@ def test_export_kb_does_not_profile_a_table_over_values_max_rows(
 
     assert result.exit_code == 0, result.output
     assert not _profiled(queries)
+
+
+def test_a_statement_that_timed_out_is_not_retried(
+    connector: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A count reads the same rows, so it would time out again, and on a
+    warehouse be charged again."""
+    import time
+
+    monkeypatch.setattr(column_profiles, "_VALUES_TIMEOUT_S", 0.05)
+    seen: list[str] = []
+
+    class _Slow:
+        def execute_query(self, sql: str, timeout: float) -> Any:
+            seen.append(sql)
+            time.sleep(0.06)
+            raise TimeoutError("statement timeout")
+
+    assert collect_column_profiles(_Slow(), _schema(), "sqlite") == {}
+    assert len(seen) == 1

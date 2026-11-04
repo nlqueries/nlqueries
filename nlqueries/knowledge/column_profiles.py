@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any
 
 from nlqueries.connectors.base import SchemaSpec
@@ -49,6 +50,11 @@ _COMPOSITE_TYPE = re.compile(r"\[\]|ARRAY|LIST|REPEATED|STRUCT|RECORD|MAP\b", re
 
 #: SQL Server's legacy large types, which TRIM, LEN and <> reject.
 _TSQL_LEGACY_TEXT = re.compile(r"^\s*N?TEXT\s*$", re.IGNORECASE)
+
+#: A statement that failed after this share of its time budget timed out, as
+#: the orchestrator judges one (`_TIMED_OUT_SHARE`): drivers word a timeout
+#: differently, and its cost is what it has in common.
+_TIMED_OUT_SHARE = 0.9
 
 #: A share of NULLs below this is not worth a note.
 _NOTED_NULL_SHARE = 0.1
@@ -86,8 +92,11 @@ def collect_column_profiles(
     - ``range``: a date column's earliest and latest value.
 
     Keys are profiled -- a padded join key is the case this exists for -- and
-    columns whose names mark them as personal data are not. Read-only; a
-    statement that fails or times out leaves that table without profiles. A
+    columns whose names mark them as personal data are not. Read-only. A
+    statement that fails is retried once counting values only, so a column the
+    other aggregates reject costs the table its other notes but not its NULL
+    shares; one that times out is not retried, and leaves the table without
+    profiles. A
     table over *max_rows* is skipped, as for column values
     (:func:`too_large_for_values`): the statement reads every row, and on a
     warehouse billed by bytes read that is charged in full.
@@ -104,14 +113,16 @@ def collect_column_profiles(
         ]
         for start in range(0, len(columns), COLUMNS_PER_QUERY):
             batch = columns[start : start + COLUMNS_PER_QUERY]
-            row = _profile_row(connector, table.name, table.schema, batch, dialect)
-            if row is None and any(kind != "plain" for _, kind in batch):
+            row, timed_out = _profile_row(connector, table.name, table.schema, batch, dialect)
+            if row is None and not timed_out and any(kind != "plain" for _, kind in batch):
                 # One column the text or date aggregates do not take fails the
                 # statement for the whole batch. Counting each column's values
-                # works on any type, so the batch keeps its share of NULLs.
+                # works on any type, so the batch keeps its share of NULLs. Not
+                # after a timeout: the count reads the same rows, so it would
+                # time out again, and on a warehouse be charged again.
                 logger.info("Profiling %s failed; counting its columns' values only.", table.name)
                 batch = [(name, "plain") for name, _ in batch]
-                row = _profile_row(connector, table.name, table.schema, batch, dialect)
+                row, _ = _profile_row(connector, table.name, table.schema, batch, dialect)
             if row is None:
                 logger.info("Profiling %s failed; it has no profiles.", table.name)
                 break
@@ -127,22 +138,27 @@ def _profile_row(
     schema: str | None,
     batch: list[tuple[str, str]],
     dialect: str | None,
-) -> list[Any] | None:
+) -> tuple[list[Any] | None, bool]:
     """The one row the profile statement for *batch* returns, or ``None`` when
-    it failed."""
+    it failed; and whether the failure was a timeout."""
     from nlqueries.connectors.base import column_profile_sql  # noqa: PLC0415
 
+    started = time.monotonic()
     try:
         result = connector.execute_query(
             column_profile_sql(table, schema, batch, dialect), _VALUES_TIMEOUT_S
         )
     except Exception:  # noqa: BLE001
         logger.debug("Profiling %s raised.", table, exc_info=True)
-        return None
+        return None, _took_the_budget(started)
     if result.error or not result.rows:
         logger.debug("Profiling %s failed: %s", table, result.error)
-        return None
-    return list(result.rows[0])
+        return None, _took_the_budget(started)
+    return list(result.rows[0]), False
+
+
+def _took_the_budget(started: float) -> bool:
+    return time.monotonic() - started >= _VALUES_TIMEOUT_S * _TIMED_OUT_SHARE
 
 
 def _read_profiles(batch: list[tuple[str, str]], row: list[Any]) -> dict[str, dict[str, Any]]:
