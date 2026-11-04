@@ -61,7 +61,13 @@ from nlqueries.sql_constructs import allowed_constructs
 #:
 #: 6: in T-SQL, a reserved word used as an unquoted identifier is refused (see
 #: :data:`TSQL_RESERVED`).
-POLICY_VERSION = "6"
+#:
+#: 7: SQLite's ``date`` and ``strftime`` with modifiers, and ``timediff``, are
+#: allowed. sqlglot models ``strftime(format, time)`` and leaves it unmodelled
+#: with a modifier (``strftime('%Y', 'now', '-1 day')``), so that form was
+#: refused as an unrecognised function. sqlglot 30.29 does the same to ``date``
+#: with a modifier (``date('now', '-1 day')``), which earlier releases modelled.
+POLICY_VERSION = "7"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -129,7 +135,9 @@ ALLOWED_ANONYMOUS: dict[str, frozenset[str]] = {
     "bigquery": frozenset(),
     "tsql": frozenset(),
     "mysql": frozenset({"now", "sysdate", "unix_timestamp", "json_array"}),
-    "sqlite": frozenset({"julianday", "datetime", "time", "unixepoch"}),
+    "sqlite": frozenset(
+        {"julianday", "date", "datetime", "time", "unixepoch", "strftime", "timediff"}
+    ),
     "duckdb": frozenset(
         {"every", "age", "cardinality", "date_part", "datepart", "date_sub", "now", "to_json"}
     ),
