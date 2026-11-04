@@ -38,8 +38,16 @@ def test_every_listed_name_is_a_class_in_this_sqlglot() -> None:
     assert unresolved_names() == []
 
 
+def test_sqlite_timediff_is_allowed() -> None:
+    """Checked here rather than in the corpus: the corpus also runs on the
+    `sqlite3` library Python links, and `timediff` needs SQLite 3.43, newer
+    than some a contributor will have (Debian bookworm ships 3.40)."""
+    decision = evaluate("SELECT timediff(MAX(created_at), MIN(created_at)) FROM orders", "sqlite")
+    assert decision.allowed, decision.summary()
+
+
 def test_the_version_records_the_change() -> None:
-    assert POLICY_VERSION == "6"
+    assert POLICY_VERSION == "7"
 
 
 #: Calls that read files, sleep, lock, reach the network, run commands, or read
