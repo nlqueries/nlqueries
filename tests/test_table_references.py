@@ -155,6 +155,10 @@ def test_export_kb_samples_a_generic_connector_in_its_url_s_grammar(
     assert queries == [
         "SELECT * FROM `sales`.`orders` LIMIT 3",
         "SELECT DISTINCT `region` FROM `sales`.`orders` WHERE NOT `region` IS NULL LIMIT 21",
+        # The column profile, in the same grammar: MySQL's CHAR_LENGTH.
+        "SELECT COUNT(*), COUNT(`region`), SUM(CASE WHEN `region` <> TRIM(`region`) THEN 1 "
+        "ELSE 0 END), MIN(CHAR_LENGTH(`region`)), MAX(CHAR_LENGTH(`region`)) "
+        "FROM `sales`.`orders`",
         "SELECT * FROM `sales`.`orders` LIMIT 3",
     ]
     assert "LLM described 1 column(s)" in result.output
@@ -172,6 +176,9 @@ def test_export_kb_samples_a_named_connector_in_its_own_grammar(
     assert queries == [
         'SELECT * FROM "sales"."orders" LIMIT 3',
         'SELECT DISTINCT "region" FROM "sales"."orders" WHERE NOT "region" IS NULL LIMIT 21',
+        # The column profile, in the same grammar.
+        'SELECT COUNT(*), COUNT("region"), SUM(CASE WHEN "region" <> TRIM("region") THEN 1 '
+        'ELSE 0 END), MIN(LENGTH("region")), MAX(LENGTH("region")) FROM "sales"."orders"',
         'SELECT * FROM "sales"."orders" LIMIT 3',
     ]
 
