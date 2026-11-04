@@ -19,10 +19,11 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from nlqueries.connectors.base import QueryResult
 from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator import grain_check
 from nlqueries.orchestrator.grain_check import (
@@ -60,6 +61,7 @@ def _kb(*, references: bool = True) -> dict[str, Any]:
                     "columns": [
                         _col("id", pk=True),
                         _col("customer_id", ref=ref("customers.id")),
+                        _col("referrer_id", ref=ref("customers.id")),
                         _col("status"),
                     ],
                 },
@@ -159,6 +161,31 @@ _ROWS = GrainPlan(text="", row_key=("customers", "id"), count_key=None)
         # Grouped by the foreign key, which is the customer: nothing to say.
         ("SELECT o.customer_id, COUNT(*) FROM orders o GROUP BY o.customer_id", False),
         ("SELECT c.name FROM customers c", False),
+        # The foreign key is joined to the key, so it is the customer.
+        (
+            "SELECT o.customer_id, c.name, COUNT(*) FROM orders o JOIN customers c "
+            "ON o.customer_id = c.id GROUP BY o.customer_id, c.name",
+            False,
+        ),
+        # The same, joined in the WHERE among conditions that all hold.
+        (
+            "SELECT o.customer_id, c.name, COUNT(*) FROM orders o, customers c "
+            "WHERE c.id = o.customer_id AND o.status = 'open' GROUP BY o.customer_id, c.name",
+            False,
+        ),
+        # A foreign key to the key, but the joined customer is the referrer:
+        # the customer grouped by is not the one named.
+        (
+            "SELECT o.customer_id, c.name, COUNT(*) FROM orders o JOIN customers c "
+            "ON c.id = o.referrer_id GROUP BY o.customer_id, c.name",
+            True,
+        ),
+        # An equality inside an OR does not make the two the same.
+        (
+            "SELECT o.customer_id, c.name, COUNT(*) FROM orders o JOIN customers c "
+            "ON o.customer_id = c.id OR o.referrer_id = c.id GROUP BY o.customer_id, c.name",
+            True,
+        ),
         # An unqualified column across two tables is not resolved, not guessed.
         (
             "SELECT name, COUNT(*) FROM customers c JOIN orders o ON o.customer_id = c.id "
@@ -243,13 +270,19 @@ _QUESTION = "how many orders each customer placed"
 class _LLM:
     supports_prompt_caching = False
 
-    def __init__(self, reply: str | Exception, stream: str = "") -> None:
+    def __init__(
+        self, reply: str | Exception, stream: str = "", until: float | None = None
+    ) -> None:
+        """*until*, a ``time.monotonic()`` value, makes the call last until then."""
+        self._until = until
         self._reply = reply
         self._stream = stream
         self.calls: list[str] = []
 
     async def acomplete(self, system: Any, user: str, **_kw: Any) -> str:
         self.calls.append(user)
+        if self._until is not None:
+            await asyncio.sleep(max(0.0, self._until - time.monotonic()))
         if isinstance(self._reply, Exception):
             raise self._reply
         return self._reply
@@ -259,6 +292,7 @@ class _LLM:
 
 
 _RECORDED: dict[str, Provenance] = {}
+_ASKED: dict[str, bool] = {}
 
 
 def _check(
@@ -274,7 +308,7 @@ def _check(
     )
     _RECORDED["last"] = collected = Provenance()
     with use_provenance(collected):
-        return asyncio.run(
+        checked = asyncio.run(
             check_grain(
                 first,
                 output,
@@ -287,6 +321,8 @@ def _check(
                 deadline=deadline,
             )
         )
+    _ASKED["last"] = checked.asked_model
+    return checked.result
 
 
 def _record() -> dict[str, Any] | None:
@@ -376,7 +412,19 @@ def test_switched_off_the_statement_is_not_checked() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _ask(llm: _LLM, generated: str) -> tuple[dict[str, Any], Any]:
+def _ask(
+    llm: _LLM,
+    generated: str,
+    *,
+    connector: Any = None,
+    deadline: float | None = None,
+) -> tuple[dict[str, Any], Any]:
+    """Ask through the orchestrator: generate-only, or executing on *connector*."""
+    execution = (
+        ExecutionPolicy.generate_only()
+        if connector is None
+        else ExecutionPolicy.execute_read_only()
+    )
     first = SQLGenerationResult(
         sql=generated, is_valid=True, validation_error=None, dialect="sqlite", attempt_count=1
     )
@@ -391,6 +439,7 @@ def _ask(llm: _LLM, generated: str) -> tuple[dict[str, Any], Any]:
                 "nlqueries.orchestrator.orchestrator.validate_and_repair",
                 new=AsyncMock(return_value=first),
             ),
+            patch("nlqueries.connectors.loader.open_connector_for_agent", return_value=connector),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
             patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
             patch("nlqueries.embeddings.embedder.embed_text", return_value=[0.0] * 384),
@@ -409,7 +458,8 @@ def _ask(llm: _LLM, generated: str) -> tuple[dict[str, Any], Any]:
                         _QUESTION,
                         "agent1",
                         dialect="sqlite",
-                        execution=ExecutionPolicy.generate_only(),
+                        execution=execution,
+                        deadline=deadline,
                     )
                 ]
 
@@ -439,10 +489,81 @@ def test_the_orchestrator_leaves_a_statement_that_agrees() -> None:
 def test_the_connector_is_not_needed() -> None:
     # Generate-only: the check reads the statement, never the database.
     llm = _LLM(f"<sql>{_RIGHT}</sql>", stream=f"{_PER_CUSTOMER}\n<sql>{_WRONG}</sql>")
-    with patch("nlqueries.connectors.loader.open_connector_for_agent") as opened:
-        frame, _span = _ask(llm, _WRONG)
-    opened.assert_not_called()
+    frame, _span = _ask(llm, _WRONG)
     assert frame["sql"] == _RIGHT
+
+
+def _rows_connector() -> MagicMock:
+    connector = MagicMock()
+    connector.execute_query.return_value = QueryResult(
+        columns=["name", "n"], rows=[["Ann", 2]], row_count=1, execution_time_ms=1.0, error=None
+    )
+    return connector
+
+
+@pytest.mark.parametrize(
+    ("reply", "runs"),
+    [(f"{_PER_CUSTOMER}\n<sql>{_RIGHT}</sql>", _RIGHT), (f"<sql>{_WRONG}</sql>", _WRONG)],
+    ids=["repair-kept", "repair-refused"],
+)
+def test_after_a_repair_call_the_statement_is_bounded_by_the_time_left(
+    reply: str, runs: str
+) -> None:
+    connector = _rows_connector()
+    llm = _LLM(reply, stream=f"{_PER_CUSTOMER}\n<sql>{_WRONG}</sql>")
+    frame, _span = _ask(llm, _WRONG, connector=connector, deadline=time.monotonic() + 60)
+    assert frame["sql"] == runs
+    [(sql, timeout)] = [c.args[:2] for c in connector.execute_query.call_args_list]
+    # Not the 120 s statement timeout: what is left of the caller's 60.
+    assert sql == runs and timeout is not None and 50 < timeout <= 60
+
+
+def test_with_under_a_second_left_after_a_repair_call_nothing_runs() -> None:
+    connector = _rows_connector()
+    deadline = time.monotonic() + 8
+    llm = _LLM(
+        f"{_PER_CUSTOMER}\n<sql>{_RIGHT}</sql>",
+        stream=f"{_PER_CUSTOMER}\n<sql>{_WRONG}</sql>",
+        until=deadline - 0.5,
+    )
+    frame, _span = _ask(llm, _WRONG, connector=connector, deadline=deadline)
+    assert len(llm.calls) == 1
+    connector.execute_query.assert_not_called()
+    assert frame["sql_table"]["error"].startswith("Not run: the caller's deadline")
+
+
+def test_without_a_repair_call_the_statement_keeps_its_own_timeout() -> None:
+    connector = _rows_connector()
+    llm = _LLM("", stream=f"{_PER_CUSTOMER}\n<sql>{_RIGHT}</sql>")
+    _ask(llm, _RIGHT, connector=connector, deadline=time.monotonic() + 60)
+    assert llm.calls == []
+    [(sql, timeout)] = [c.args[:2] for c in connector.execute_query.call_args_list]
+    assert (sql, timeout) == (_RIGHT, None)
+
+
+@pytest.mark.parametrize(
+    ("reply", "sql", "output", "asked"),
+    [
+        (f"{_PER_CUSTOMER}\n<sql>{_RIGHT}</sql>", _WRONG, _PER_CUSTOMER, True),
+        (f"<sql>{_WRONG}</sql>", _WRONG, _PER_CUSTOMER, True),
+        ("<sql>SELECT name FROM ghosts</sql>", _WRONG, _PER_CUSTOMER, True),
+        (RuntimeError("provider unavailable"), _WRONG, _PER_CUSTOMER, True),
+        ("", _RIGHT, _PER_CUSTOMER, False),
+        ("", _WRONG, "No plan line here.", False),
+    ],
+    ids=["kept", "unchanged", "invalid", "llm-failed", "agrees", "no-plan-line"],
+)
+def test_the_caller_is_told_whether_the_model_was_asked(
+    reply: Any, sql: str, output: str, asked: bool
+) -> None:
+    _check(_LLM(reply), sql=sql, output=output)
+    assert _ASKED["last"] is asked
+
+
+def test_the_caller_is_told_the_model_was_not_asked_when_time_ran_short() -> None:
+    now = time.monotonic()
+    _check(_LLM(f"<sql>{_RIGHT}</sql>"), started=now - 10, deadline=now + 3)
+    assert _ASKED["last"] is False
 
 
 # ---------------------------------------------------------------------------

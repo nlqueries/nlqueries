@@ -581,7 +581,7 @@ class Orchestrator:
             # before it, which says what one row is and what is counted; a
             # disagreement gets one repair. See `grain_check`. Before execution,
             # so a generate-only request gets the same statement.
-            regrained = await check_grain(
+            grain = await check_grain(
                 result,
                 "".join(all_tokens),
                 question=prompt.user_content(),
@@ -592,9 +592,9 @@ class Orchestrator:
                 started=attempt_started,
                 deadline=deadline,
             )
-            if regrained is not result:
+            if grain.result is not result:
                 span.set_attribute("grain_repair", True)
-                result = regrained
+                result = grain.result
 
             span.set_attribute("sql_valid", result.is_valid)
             span.set_attribute("attempt_count", result.attempt_count)
@@ -645,17 +645,17 @@ class Orchestrator:
                             span.set_attribute("plan_rewrite", True)
                             result = plan.result
                             span.set_attribute("attempt_count", result.attempt_count)
-                        if plan.asked_model:
-                            # Whatever runs after the rewrite call, the rewrite
-                            # or the statement it did not replace, is bounded
-                            # by the time left, as a correction is, and with
-                            # too little left it does not start: no one would
-                            # be waiting for it.
+                        if grain.asked_model or plan.asked_model:
+                            # Whatever runs after a repair or rewrite call, the
+                            # new statement or the one it did not replace, is
+                            # bounded by the time left, as a correction is, and
+                            # with too little left it does not start: no one
+                            # would be waiting for it.
                             runnable, clamped = _correction_budget(timeout_seconds, deadline)
                             if not runnable:
                                 raise _DeadlineSpent(
                                     "Not run: the caller's deadline left too little time "
-                                    "after the plan check's rewrite request."
+                                    "after a request to the model to rewrite the statement."
                                 )
                             run_timeout = clamped
                         qr = await asyncio.to_thread(

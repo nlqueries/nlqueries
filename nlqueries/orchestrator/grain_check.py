@@ -49,7 +49,7 @@ import sqlglot.expressions as exp
 
 from nlqueries import config
 from nlqueries.llm import output_budget
-from nlqueries.orchestrator.plan_check import _room_for_rewrite
+from nlqueries.orchestrator.plan_check import PlanCheck, _room_for_rewrite
 from nlqueries.orchestrator.provenance import record_grain_check
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
@@ -146,6 +146,40 @@ def _resolve(col: exp.Column, sources: dict[str, str]) -> tuple[str, str] | None
     return (tables.pop(), col.name.lower()) if len(tables) == 1 else None
 
 
+def _conjuncts(condition: exp.Expr | None) -> list[exp.Expr]:
+    """The parts of *condition* that all hold: its AND-ed terms, or itself."""
+    if condition is None:
+        return []
+    return list(condition.flatten()) if isinstance(condition, exp.And) else [condition]
+
+
+def _equal_to(
+    select: exp.Select, key: tuple[str, str], sources: dict[str, str]
+) -> set[tuple[str, str]]:
+    """*key* and the columns this select makes equal to it: a join's ON, or a
+    WHERE, that says ``column = key`` among the conditions that all hold.
+
+    A foreign key that references *key* is not enough on its own: joined on
+    another column, ``o.customer_id`` is not the customer the joined row is.
+    """
+    conditions = [j.args.get("on") for j in select.args.get("joins") or []]
+    where = select.args.get("where")
+    conditions.append(where.this if where is not None else None)
+    equal = {key}
+    for condition in conditions:
+        for term in _conjuncts(condition):
+            if not isinstance(term, exp.EQ):
+                continue
+            left, right = term.this, term.expression
+            if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+                continue
+            sides = (_resolve(left, sources), _resolve(right, sources))
+            for this, other in (sides, sides[::-1]):
+                if this == key and other is not None:
+                    equal.add(other)
+    return equal
+
+
 def _grouped_without_the_key(
     select: exp.Select, key: tuple[str, str], sources: dict[str, str]
 ) -> str | None:
@@ -158,7 +192,7 @@ def _grouped_without_the_key(
         if isinstance(e, exp.Column) and (r := _resolve(e, sources)) is not None
     ]
     same_table = [c for t, c in grouped if t == key[0]]
-    if not same_table or key in grouped:
+    if not same_table or _equal_to(select, key, sources) & set(grouped):
         return None
     table, column = key
     return (
@@ -278,7 +312,7 @@ async def check_grain(
     system: str | list[dict[str, Any]],
     started: float | None = None,
     deadline: float | None = None,
-) -> SQLGenerationResult:
+) -> PlanCheck:
     """The statement to go on with: a repair that matches the plan line in
     *output*, or *result* itself.
 
@@ -287,19 +321,21 @@ async def check_grain(
     plan check uses, with *started* when the attempt began), and it replaces
     *result* only when it is valid, different, and agrees with its own plan
     line. The outcome goes into the answer's provenance as ``grain_check``.
+    Like `check_plan`, it says whether the model was asked, since whatever
+    runs after that call starts later than the caller planned for.
     """
     if not config.GRAIN_CHECK or not result.is_valid:
-        return result
+        return PlanCheck(result)
     plan = parse_plan(output)
     if plan is None:
-        return result
+        return PlanCheck(result)
     try:
         problems = mismatches(plan, result.sql, dialect, knowledge_base)
     except Exception:  # noqa: BLE001 - a check that fails says nothing
         _log.debug("Checking a statement against its plan line failed.", exc_info=True)
-        return result
+        return PlanCheck(result)
     if not problems:
-        return result
+        return PlanCheck(result)
     _log.info("The statement disagrees with its plan line: %s", " ".join(problems))
 
     def outcome(reason: str | None, attempted: bool = True) -> None:
@@ -313,7 +349,7 @@ async def check_grain(
 
     if not _room_for_rewrite(started, deadline):
         outcome("skipped: too little time before the deadline", attempted=False)
-        return result
+        return PlanCheck(result)
     try:
         repaired, new_plan = await repair_to_plan(
             result.sql,
@@ -329,19 +365,19 @@ async def check_grain(
     except Exception:  # noqa: BLE001 - the statement as written still answers
         _log.warning("Repairing a statement to its plan line failed.", exc_info=True)
         outcome("failed: the model call raised")
-        return result
+        return PlanCheck(result, asked_model=True)
     if not repaired.is_valid:
         outcome("rejected: refused by validation")
-        return result
+        return PlanCheck(result, asked_model=True)
     if _same_statement(repaired.sql, result.sql, dialect):
         outcome("rejected: returned unchanged")
-        return result
+        return PlanCheck(result, asked_model=True)
     try:
         still = mismatches(new_plan, repaired.sql, dialect, knowledge_base)
     except Exception:  # noqa: BLE001
         still = ["the repair could not be checked"]
     if still:
         outcome("rejected: still disagrees with its plan line")
-        return result
+        return PlanCheck(result, asked_model=True)
     outcome(None)
-    return repaired
+    return PlanCheck(repaired, asked_model=True)
