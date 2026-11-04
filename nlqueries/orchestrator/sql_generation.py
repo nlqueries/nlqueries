@@ -644,21 +644,40 @@ def _validate_columns(
     ``SELECT *`` is always accepted while explicit unknown column names are
     caught.  Returns ``None`` (pass) when the schema is empty or when qualify
     raises unexpected errors, to avoid false rejections on complex queries.
+
+    With the stars left unexpanded, a column read through one cannot be
+    resolved: ``SELECT price FROM (SELECT * FROM orders) o`` was refused as if
+    ``price`` did not exist. So a statement that fails and has a star is checked
+    again with its stars expanded, and that verdict stands. A statement that
+    passes is never checked twice, so nothing accepted before is refused now.
     """
     from sqlglot.optimizer.qualify import qualify  # noqa: PLC0415
 
     schema = _kb_to_sqlglot_schema(knowledge_base)
     if not schema:
         return None
-    try:
+
+    def check(expand_stars: bool) -> None:
         qualify(
             statement.copy(),
             schema=schema,
-            expand_stars=False,
+            expand_stars=expand_stars,
             qualify_columns=True,
             validate_qualify_columns=True,
             dialect=dialect,
         )
+
+    try:
+        check(expand_stars=False)
+        return None
+    except sqlglot.errors.OptimizeError as exc:
+        error = exc
+    except Exception:  # noqa: BLE001
+        return None  # be permissive — column validation is best-effort
+    if statement.find(exp.Star) is None:
+        return f"Column validation error: {error}"
+    try:
+        check(expand_stars=True)
         return None
     except sqlglot.errors.OptimizeError as exc:
         return f"Column validation error: {exc}"

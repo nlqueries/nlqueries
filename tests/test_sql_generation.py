@@ -474,6 +474,63 @@ def test_validate_columns_join_valid_columns_returns_none() -> None:
     assert _validate_columns(stmt, _make_kb(), "postgres") is None
 
 
+# A column read through a `SELECT *` could not be resolved while the stars were
+# left unexpanded, so valid SQL was refused as naming a column that does not
+# exist. Each shape here was refused before.
+_THROUGH_A_STAR = {
+    "a table": "SELECT total FROM (SELECT * FROM orders) o",
+    "a join": (
+        "SELECT email FROM (SELECT * FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j"
+    ),
+    "a qualified star": (
+        "SELECT email FROM (SELECT customers.* FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j"
+    ),
+    "a subquery": "SELECT label FROM (SELECT * FROM (SELECT 'big' AS label, id FROM orders) a) b",
+    "a union of subqueries": (
+        "SELECT label, id FROM ("
+        "SELECT * FROM (SELECT 'largest' AS label, id FROM orders ORDER BY total DESC LIMIT 1) a "
+        "UNION ALL "
+        "SELECT * FROM (SELECT 'newest' AS label, id FROM orders "
+        "ORDER BY created_at DESC LIMIT 1) b)"
+    ),
+    "a CTE": (
+        "WITH big AS (SELECT 'big' AS label FROM orders) SELECT label FROM (SELECT * FROM big) s"
+    ),
+}
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
+@pytest.mark.parametrize("shape", list(_THROUGH_A_STAR))
+def test_validate_columns_accepts_a_column_read_through_a_star(shape: str, dialect: str) -> None:
+    import sqlglot as sg
+
+    stmt = sg.parse_one(_THROUGH_A_STAR[shape], dialect=dialect)
+    assert _validate_columns(stmt, _make_kb(), dialect) is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT ghost_col FROM (SELECT * FROM orders) o",
+        "SELECT ghost_col FROM (SELECT * FROM (SELECT 'big' AS label FROM orders) a) b",
+    ],
+)
+def test_validate_columns_still_rejects_an_unknown_column_read_through_a_star(sql: str) -> None:
+    """Expanding the stars must not let a real mistake through."""
+    import sqlglot as sg
+
+    error = _validate_columns(sg.parse_one(sql, dialect="postgres"), _make_kb(), "postgres")
+    assert error is not None
+    assert "ghost_col" in error
+
+
+def test_validate_sql_accepts_a_union_of_star_subqueries() -> None:
+    """The whole check, not only the column step, for the shape that was refused."""
+    assert _validate_sql(_THROUGH_A_STAR["a union of subqueries"], _make_kb(), "sqlite") is None
+
+
 # ---------------------------------------------------------------------------
 # Phase 4B: _validate_sql includes column check
 # ---------------------------------------------------------------------------
