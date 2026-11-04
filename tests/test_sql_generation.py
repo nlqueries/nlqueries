@@ -474,6 +474,109 @@ def test_validate_columns_join_valid_columns_returns_none() -> None:
     assert _validate_columns(stmt, _make_kb(), "postgres") is None
 
 
+# A column read through a `SELECT *` could not be resolved while the stars were
+# left unexpanded, so valid SQL was refused as naming a column that does not
+# exist. Each shape here was refused before.
+_THROUGH_A_STAR = {
+    "a table": "SELECT total FROM (SELECT * FROM orders) o",
+    "a join": (
+        "SELECT email FROM (SELECT * FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j"
+    ),
+    "a qualified star": (
+        "SELECT email FROM (SELECT customers.* FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j"
+    ),
+    "a subquery": "SELECT label FROM (SELECT * FROM (SELECT 'big' AS label, id FROM orders) a) b",
+    "a union of subqueries": (
+        "SELECT label, id FROM ("
+        "SELECT * FROM (SELECT 'largest' AS label, id FROM orders ORDER BY total DESC LIMIT 1) a "
+        "UNION ALL "
+        "SELECT * FROM (SELECT 'newest' AS label, id FROM orders "
+        "ORDER BY created_at DESC LIMIT 1) b)"
+    ),
+    "a CTE": (
+        "WITH big AS (SELECT 'big' AS label FROM orders) SELECT label FROM (SELECT * FROM big) s"
+    ),
+}
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
+@pytest.mark.parametrize("shape", list(_THROUGH_A_STAR))
+def test_validate_columns_accepts_a_column_read_through_a_star(shape: str, dialect: str) -> None:
+    import sqlglot as sg
+
+    stmt = sg.parse_one(_THROUGH_A_STAR[shape], dialect=dialect)
+    assert _validate_columns(stmt, _make_kb(), dialect) is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT ghost_col FROM (SELECT * FROM orders) o",
+        "SELECT ghost_col FROM (SELECT * FROM (SELECT 'big' AS label FROM orders) a) b",
+    ],
+)
+def test_validate_columns_still_rejects_an_unknown_column_read_through_a_star(sql: str) -> None:
+    """Expanding the stars must not let a real mistake through."""
+    import sqlglot as sg
+
+    error = _validate_columns(sg.parse_one(sql, dialect="postgres"), _make_kb(), "postgres")
+    assert error is not None
+    assert "ghost_col" in error
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id FROM (SELECT * FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j",
+        "WITH j AS (SELECT * FROM orders JOIN customers ON customers.id = orders.customer_id) "
+        "SELECT id FROM j",
+    ],
+)
+def test_validate_columns_refuses_a_name_a_joined_star_repeats(sql: str) -> None:
+    """Both tables have an `id`; read through the star it is ambiguous, which
+    PostgreSQL refuses. The first check refused it before stars were expanded."""
+    import sqlglot as sg
+
+    error = _validate_columns(sg.parse_one(sql, dialect="postgres"), _make_kb(), "postgres")
+    assert error is not None
+    assert "'id' is ambiguous" in error
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # An outer star over the joined star generates both `id` columns
+        # itself; the statement names `total`, never `id`.
+        "SELECT * FROM (SELECT * FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j WHERE total > 100",
+        "WITH j AS (SELECT * FROM orders JOIN customers ON customers.id = orders.customer_id) "
+        "SELECT * FROM j WHERE total > 100",
+        # The alias `t` is the joined star only inside EXISTS; the outer `id`
+        # reads the other `t`, which has one.
+        "SELECT id FROM (SELECT * FROM orders) t WHERE EXISTS (SELECT 1 FROM (SELECT * "
+        "FROM orders JOIN customers ON customers.id = orders.customer_id) t)",
+        # Two derived tables in one scope: `a.id` reads `a`, which has one
+        # `id`; only `b` repeats it. The bare `id` inside `a` is written too,
+        # so the name alone does not settle it: the column's own source does.
+        # The bare `email`, only in `b`, is what fails the first check.
+        "SELECT a.id, email FROM (SELECT * FROM orders WHERE id > 0) a JOIN (SELECT * FROM "
+        "orders JOIN customers ON customers.id = orders.customer_id) b ON a.total = b.total",
+    ],
+)
+def test_validate_columns_accepts_a_repeated_name_the_statement_never_reads(sql: str) -> None:
+    import sqlglot as sg
+
+    assert _validate_columns(sg.parse_one(sql, dialect="postgres"), _make_kb(), "postgres") is None
+
+
+def test_validate_sql_accepts_a_union_of_star_subqueries() -> None:
+    """The whole check, not only the column step, for the shape that was refused."""
+    assert _validate_sql(_THROUGH_A_STAR["a union of subqueries"], _make_kb(), "sqlite") is None
+
+
 # ---------------------------------------------------------------------------
 # Phase 4B: _validate_sql includes column check
 # ---------------------------------------------------------------------------
