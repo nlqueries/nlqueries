@@ -526,6 +526,25 @@ def test_validate_columns_still_rejects_an_unknown_column_read_through_a_star(sq
     assert "ghost_col" in error
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id FROM (SELECT * FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j",
+        "WITH j AS (SELECT * FROM orders JOIN customers ON customers.id = orders.customer_id) "
+        "SELECT id FROM j",
+    ],
+)
+def test_validate_columns_refuses_a_name_a_joined_star_repeats(sql: str) -> None:
+    """Both tables have an `id`; read through the star it is ambiguous, which
+    PostgreSQL refuses. The first check refused it before stars were expanded."""
+    import sqlglot as sg
+
+    error = _validate_columns(sg.parse_one(sql, dialect="postgres"), _make_kb(), "postgres")
+    assert error is not None
+    assert "'id' is ambiguous" in error
+
+
 def test_validate_sql_accepts_a_union_of_star_subqueries() -> None:
     """The whole check, not only the column step, for the shape that was refused."""
     assert _validate_sql(_THROUGH_A_STAR["a union of subqueries"], _make_kb(), "sqlite") is None

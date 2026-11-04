@@ -657,8 +657,8 @@ def _validate_columns(
     if not schema:
         return None
 
-    def check(expand_stars: bool) -> None:
-        qualify(
+    def check(expand_stars: bool) -> exp.Expr:
+        return qualify(
             statement.copy(),
             schema=schema,
             expand_stars=expand_stars,
@@ -677,12 +677,39 @@ def _validate_columns(
     if statement.find(exp.Star) is None:
         return f"Column validation error: {error}"
     try:
-        check(expand_stars=True)
-        return None
+        expanded = check(expand_stars=True)
     except sqlglot.errors.OptimizeError as exc:
         return f"Column validation error: {exc}"
     except Exception:  # noqa: BLE001
         return None  # be permissive — column validation is best-effort
+    ambiguous = _read_through_a_repeated_name(expanded)
+    if ambiguous is not None:
+        return (
+            f"Column validation error: Column '{ambiguous}' is ambiguous: the derived "
+            "table it is read from has more than one column of that name."
+        )
+    return None
+
+
+def _read_through_a_repeated_name(tree: exp.Expr) -> str | None:
+    """A column read from a derived table or CTE with two outputs of its name.
+
+    Expanding ``SELECT * FROM orders JOIN customers`` gives two columns named
+    ``id``, and sqlglot resolves an outer ``id`` to the derived table without
+    complaint, where PostgreSQL refuses it as ambiguous. Before stars were
+    expanded the first check refused it, so the model was asked to correct it;
+    this keeps that. *tree* is qualified, so the outer column names its source.
+    """
+    repeated: dict[str, set[str]] = {}
+    for node in tree.find_all(exp.Subquery, exp.CTE):
+        names = [name.lower() for name in getattr(node.this, "named_selects", [])]
+        twice = {name for name in names if names.count(name) > 1}
+        if twice and node.alias:
+            repeated[node.alias.lower()] = twice
+    for column in tree.find_all(exp.Column):
+        if column.name.lower() in repeated.get(column.table.lower(), set()):
+            return column.name
+    return None
 
 
 # -- Phase 4B: EXPLAIN gate ------------------------------------------------
