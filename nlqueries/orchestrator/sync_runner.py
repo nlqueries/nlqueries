@@ -77,6 +77,11 @@ class AgentQueryResult:
     # it is a carrier so a wrapping layer and the CLI can surface the same
     # findings on the canonical result object.
     nexus_warnings: list[str] = field(default_factory=list)
+    #: What looks wrong about the rows, for the user to weigh: repeated rows, a
+    #: percentage outside 0 to 100, no rows from a filter. The orchestrator
+    #: already tried to correct what it could; these are what remain. Empty
+    #: when nothing looked wrong or nothing ran.
+    result_notes: list[str] = field(default_factory=list)
     # Answer provenance (SYL-1.1): how the answer was produced — route, capsules,
     # KB parts injected, cache hit/miss, validator warnings, timings. Populated
     # only when ``explain=True`` is passed to :func:`run_query`; ``None`` otherwise,
@@ -345,6 +350,7 @@ async def run_query(
         session_id=session_id,
         from_cache=from_cache,
         provenance=prov,
+        result_notes=[str(note) for note in chunk.get("result_notes") or []],
     )
 
 

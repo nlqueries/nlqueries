@@ -3541,6 +3541,7 @@ def query(
             "merged_answer": result.merged_answer,
             "latency_ms": result.latency_ms,
             "session_id": result.session_id,
+            "result_notes": result.result_notes,
         }
         if result.provenance is not None:
             output["provenance"] = result.provenance.to_dict()
@@ -3569,6 +3570,8 @@ def query(
                     f"[dim]{sql_result.row_count} row(s) "
                     f"in {sql_result.execution_time_ms:.1f} ms[/dim]"
                 )
+        for note in result.result_notes:
+            console.print(f"[yellow]Note       :[/yellow] {escape(note)}")
         # A hybrid answer has SQL and rows and a merged answer: the answer was
         # printed only when there were no rows, so it was never shown.
         if result.agent_type != "sql" and result.answer:
