@@ -27,6 +27,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   month") were refused for it. All three are now on SQLite's list of allowed
   functions, beside `datetime`, `julianday`, `time` and `unixepoch`, and the
   policy version is 7.
+- **No embedding daemon no longer costs two seconds per embedding on
+  Windows.** Windows refuses a connection to a port nobody listens on only
+  after about two seconds of retries, longer than
+  `EMBED_CLIENT_TIMEOUT_SECONDS`, so with no daemon running every embedding
+  call waited out the timeout and then warned that the daemon was failing (no
+  response) rather than not running. A connection not accepted in time now
+  counts as no daemon, and a process remembers that for
+  `EMBED_CLIENT_ABSENT_RECHECK_SECONDS` (default 30), embedding in-process
+  meanwhile without asking again. Not with `EMBED_SERVER_REQUIRED`, where the
+  daemon is expected and is asked every time. A daemon that accepts the
+  connection and does not answer in time is still reported as failing.
 - **Valid SQL that reads a column through `SELECT *` is no longer refused.**
   The column check left stars unexpanded, so a column taken from a derived
   table, CTE or `UNION` written with `SELECT *` could not be resolved:

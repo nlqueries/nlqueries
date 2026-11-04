@@ -223,6 +223,19 @@ def _no_process_surface(monkeypatch):
     monkeypatch.setattr(audit, "_process_context", None)
 
 
+@pytest.fixture(autouse=True)
+def _no_remembered_daemon_absence(monkeypatch):
+    """Start every test with no embedding daemon remembered as absent.
+
+    A process remembers an absent daemon for a while (`embedder._daemon_send`),
+    so a test that found none would otherwise make every test after it skip the
+    daemon, including those that stand one up or fake its replies.
+    """
+    from nlqueries.embeddings import embedder  # noqa: PLC0415
+
+    monkeypatch.setattr(embedder, "_daemon_absent_until", 0.0)
+
+
 def granted(connector):
     """Give *connector* permission to execute, explicitly.
 
