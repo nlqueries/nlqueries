@@ -226,3 +226,36 @@ def test_a_result_with_nothing_wrong_is_reported_as_before() -> None:
     assert llm.corrections == []
     assert _executed(connector) == [FIRST_SQL]
     assert "result_notes" not in frame
+
+
+def test_a_check_that_raises_leaves_the_rows_as_they_ran() -> None:
+    """The checks are advisory; one that fails must not turn rows into an error."""
+    llm = _LLM("<sql>SELECT 1</sql>")
+    with patch("nlqueries.orchestrator.orchestrator.check_result", side_effect=ValueError("boom")):
+        frame, connector = _run(llm, [_rows("Ann", "Ann")])
+
+    assert llm.corrections == []
+    assert frame["sql_table"]["error"] is None
+    assert frame["sql_table"]["rows"] == [["Ann"], ["Ann"]]
+    assert "result_notes" not in frame
+
+
+def test_a_check_of_the_correction_that_raises_keeps_the_first_result() -> None:
+    from nlqueries.orchestrator import result_checks
+
+    real = result_checks.check_result
+    calls = []
+
+    def first_only(sql: str, result: QueryResult, dialect: str) -> Any:
+        calls.append(sql)
+        if len(calls) > 1:
+            raise ValueError("boom")
+        return real(sql, result, dialect)
+
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    with patch("nlqueries.orchestrator.orchestrator.check_result", side_effect=first_only):
+        frame, _ = _run(llm, [_rows("Ann", "Ann"), _rows("Ann")])
+
+    assert frame["sql"] == FIRST_SQL
+    assert frame["sql_table"]["rows"] == [["Ann"], ["Ann"]]
+    assert frame["result_notes"]

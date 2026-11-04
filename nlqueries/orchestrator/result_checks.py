@@ -45,8 +45,9 @@ class ResultConcern:
 
 #: A column named as a percentage of a whole: 0 to 100. A change, growth or
 #: difference expressed in percent can rightly leave that range, so a name that
-#: says so is not checked.
-_PERCENT_NAME = re.compile(r"percent|pct|(^|_)perc($|_)", re.IGNORECASE)
+#: says so is not checked, and nor is a percentile (`latency_95th_percentile`),
+#: which is a value of the column it ranks, not a share.
+_PERCENT_NAME = re.compile(r"percent(?!ile)|pct|(^|_)perc($|_)", re.IGNORECASE)
 _CHANGE_NAME = re.compile(
     r"chang|growth|grow|increase|decrease|diff|delta|var|gain|loss|return|yoy|mom|lift",
     re.IGNORECASE,
@@ -66,7 +67,7 @@ def check_result(sql: str, result: QueryResult, dialect: str) -> list[ResultConc
         return []
     statement = _parse(sql, dialect)
     concerns = [
-        *_duplicate_rows(result),
+        *_duplicate_rows(statement, result),
         *_null_heads_a_ranking(sql, statement, result),
         *_percentage_out_of_range(result),
         *_empty_result(statement, result),
@@ -87,13 +88,17 @@ def _row_key(row: list[Any]) -> tuple[str, ...]:
     return tuple(repr(value) for value in row)
 
 
-def _duplicate_rows(result: QueryResult) -> list[ResultConcern]:
-    """Rows that repeat another exactly: usually a join that multiplied them.
+def _duplicate_rows(statement: exp.Expr | None, result: QueryResult) -> list[ResultConcern]:
+    """Rows that repeat another exactly, from a statement that joins: usually
+    the join multiplying them.
 
-    Repairable, and the model is told it may keep the statement: a list of
-    names can repeat a name that two different people share.
+    Only where the outer statement joins or reads a derived table. From one
+    table, repeats are the data -- two orders of the same amount -- and a
+    correction that removed them would drop real rows. Repairable, and the
+    model is told it may keep the statement: a list of names can repeat a name
+    two different people share.
     """
-    if len(result.rows) < 2:
+    if len(result.rows) < 2 or not _combines_rows(statement):
         return []
     seen: set[tuple[str, ...]] = set()
     repeats = 0
@@ -116,6 +121,19 @@ def _duplicate_rows(result: QueryResult) -> list[ResultConcern]:
             repairable=True,
         )
     ]
+
+
+def _combines_rows(statement: exp.Expr | None) -> bool:
+    """Whether the outer statement joins, or reads a derived table, so a row of
+    its result can stand for several rows of what it read."""
+    select = _outer_select(statement)
+    if select is None:
+        return False
+    # `from_` in current sqlglot, `from` in older releases.
+    source = select.args.get("from_") or select.args.get("from")
+    return bool(select.args.get("joins")) or (
+        source is not None and isinstance(source.this, exp.Subquery)
+    )
 
 
 def _outer_select(statement: exp.Expr | None) -> exp.Select | None:
@@ -176,7 +194,13 @@ def _projection_index(select: exp.Select, key: exp.Expression) -> int | None:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float | decimal.Decimal) and not isinstance(value, bool)
+    """A number that compares: not a bool, and not NaN, which a PostgreSQL
+    ``numeric`` can hold and which raises when a Decimal is ordered."""
+    if isinstance(value, bool) or not isinstance(value, int | float | decimal.Decimal):
+        return False
+    if isinstance(value, decimal.Decimal):
+        return not value.is_nan()
+    return value == value  # noqa: PLR0124 -- false only for a float NaN
 
 
 def _percentage_out_of_range(result: QueryResult) -> list[ResultConcern]:

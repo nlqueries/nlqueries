@@ -38,6 +38,21 @@ def test_repeated_rows_are_repairable() -> None:
     assert concerns[0].detail.startswith("2 of the 4 rows")
 
 
+def test_repeats_from_one_table_are_the_data() -> None:
+    """Two orders of the same amount: no join multiplied anything, and removing
+    the repeat would drop a real row."""
+    sql = "SELECT amount FROM orders WHERE customer_id = 5"
+    assert _kinds(sql, _result(["amount"], [[20], [20], [35]])) == {}
+
+
+def test_repeats_read_through_a_derived_table_are_repairable() -> None:
+    sql = (
+        "SELECT name FROM (SELECT c.name FROM customers c "
+        "JOIN orders o ON o.customer_id = c.id) AS buyers"
+    )
+    assert _kinds(sql, _result(["name"], [["Ann"], ["Ann"]])) == {"duplicate_rows": True}
+
+
 def test_distinct_rows_are_fine() -> None:
     sql = "SELECT name, city FROM customers"
     assert _kinds(sql, _result(["name", "city"], [["Ann", "Oslo"], ["Ann", "Rome"]])) == {}
@@ -45,7 +60,7 @@ def test_distinct_rows_are_fine() -> None:
 
 def test_rows_of_unhashable_values_are_compared() -> None:
     """A JSON column comes back as a dict or a list."""
-    sql = "SELECT profile FROM customers"
+    sql = "SELECT c.profile FROM customers c JOIN orders o ON o.customer_id = c.id"
     result = _result(["profile"], [[{"tier": "gold"}], [{"tier": "gold"}]])
     assert _kinds(sql, result) == {"duplicate_rows": True}
 
@@ -119,6 +134,19 @@ def test_a_change_in_percent_may_leave_the_range(column: str) -> None:
     assert _kinds(sql, _result(["region", column], [["North", 250.0]])) == {}
 
 
+@pytest.mark.parametrize("value", [Decimal("NaN"), float("nan")])
+def test_a_percentage_that_is_not_a_number_is_skipped(value: Any) -> None:
+    """A PostgreSQL numeric can hold NaN, and ordering a Decimal NaN raises."""
+    sql = "SELECT region, share_pct FROM shares"
+    assert _kinds(sql, _result(["region", "share_pct"], [["North", value]])) == {}
+
+
+@pytest.mark.parametrize("column", ["latency_95th_percentile", "revenue_percentile_90"])
+def test_a_percentile_is_not_a_percentage(column: str) -> None:
+    sql = f"SELECT service, {column} FROM latencies"
+    assert _kinds(sql, _result(["service", column], [["api", 450.0]])) == {}
+
+
 def test_a_percentage_in_range_is_fine() -> None:
     sql = "SELECT region, pct FROM shares"
     assert (
@@ -187,7 +215,7 @@ def test_a_failed_statement_is_not_judged() -> None:
     assert check_result("SELECT id FROM orders WHERE x = 1", result, "postgres") == []
 
 
-def test_a_statement_that_does_not_parse_is_judged_on_its_rows() -> None:
-    """The rows can still repeat; the statement-shaped checks have nothing to read."""
+def test_a_statement_that_does_not_parse_is_not_judged_on_its_shape() -> None:
+    """Repeats count only from a statement that joins, which cannot be told here."""
     result = _result(["name"], [["Ann"], ["Ann"]])
-    assert _kinds("SELECT ((( name FROM", result) == {"duplicate_rows": True}
+    assert _kinds("SELECT ((( name FROM", result) == {}

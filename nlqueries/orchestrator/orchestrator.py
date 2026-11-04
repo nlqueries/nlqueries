@@ -287,9 +287,14 @@ async def _second_look(
     looks wrong comes back as notes for the user, as do the signs a rule cannot
     judge, such as an empty result.
 
-    Returns the statement and result to report, and the notes.
+    Returns the statement and result to report, and the notes. The checks are
+    advisory: one that raises leaves the rows as they ran, with no notes.
     """
-    concerns = check_result(result.sql, qr, dialect)
+    try:
+        concerns = check_result(result.sql, qr, dialect)
+    except Exception:  # noqa: BLE001
+        _log.warning("Checking a result failed; reporting it unchecked.", exc_info=True)
+        return result, qr, []
     repairable = [c.detail for c in concerns if c.repairable]
     notes = [c.detail for c in concerns]
     if not repairable or not _correction_budget(timeout_seconds, deadline)[0]:
@@ -323,7 +328,11 @@ async def _second_look(
         return result, qr, notes
     if retried.error is not None:
         return result, qr, notes
-    after = check_result(corrected.sql, retried, dialect)
+    try:
+        after = check_result(corrected.sql, retried, dialect)
+    except Exception:  # noqa: BLE001
+        _log.warning("Checking a corrected result failed; keeping the first.", exc_info=True)
+        return result, qr, notes
     if any(c.repairable for c in after):
         return result, qr, notes
     return corrected, retried, [c.detail for c in after]
