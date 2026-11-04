@@ -19,6 +19,7 @@ import json
 import re
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -38,6 +39,7 @@ from nlqueries.orchestrator.plan_check import (
     check_plan,
     per_row_scans,
 )
+from nlqueries.orchestrator.provenance import Provenance, use_provenance
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "plans"
@@ -421,22 +423,38 @@ def _first(sql: str = _CORRELATED) -> SQLGenerationResult:
     )
 
 
+#: The provenance the last `_check` recorded.
+_RECORDED: dict[str, Provenance] = {}
+
+
 def _check(
-    connector: Any, llm: _LLM, *, may_rewrite: bool = True, sizes: dict[str, int] | None = None
+    connector: Any,
+    llm: _LLM,
+    *,
+    sizes: dict[str, int] | None = None,
+    started: float | None = None,
+    deadline: float | None = None,
 ) -> SQLGenerationResult:
     first = _first()
-    return asyncio.run(
-        check_plan(
-            first,
-            connector,
-            question="which orders are above their customer's average",
-            knowledge_base=_kb(_SQLITE_SIZES if sizes is None else sizes),
-            dialect="sqlite",
-            llm=llm,  # type: ignore[arg-type]
-            system="system",
-            may_rewrite=may_rewrite,
+    _RECORDED["last"] = collected = Provenance()
+    with use_provenance(collected):
+        return asyncio.run(
+            check_plan(
+                first,
+                connector,
+                question="which orders are above their customer's average",
+                knowledge_base=_kb(_SQLITE_SIZES if sizes is None else sizes),
+                dialect="sqlite",
+                llm=llm,  # type: ignore[arg-type]
+                system="system",
+                started=started,
+                deadline=deadline,
+            )
         )
-    )
+
+
+def _rewrite_record() -> dict[str, Any] | None:
+    return _RECORDED["last"].to_dict()["plan_rewrite"]
 
 
 def test_a_clean_rewrite_replaces_the_statement(sqlite_connector: Any) -> None:
@@ -452,6 +470,14 @@ def test_a_clean_rewrite_replaces_the_statement(sqlite_connector: Any) -> None:
     assert "10,000,000,000 rows read in all" in prompt
     # The answer-changing mistake the usual rewrite makes.
     assert "LEFT JOIN" in prompt
+    # Provenance keeps the statement as generated, beside why it was replaced.
+    assert _rewrite_record() == {
+        "attempted": True,
+        "changed": True,
+        "original_sql": _CORRELATED,
+        "findings": [PerRowScan("orders", 100_000, 100_000).describe()],
+        "reason": None,
+    }
 
 
 def test_the_rewrite_answers_as_the_original_did(sqlite_connector: Any) -> None:
@@ -463,25 +489,37 @@ def test_the_rewrite_answers_as_the_original_did(sqlite_connector: Any) -> None:
 
 
 @pytest.mark.parametrize(
-    "reply",
+    ("reply", "reason"),
     [
         # Still re-runs per row, written differently.
-        "<sql>SELECT o.id FROM orders o WHERE o.total > (SELECT AVG(i.total) FROM orders i "
-        "WHERE i.customer_id = o.customer_id AND i.total > 0)</sql>",
+        (
+            "<sql>SELECT o.id FROM orders o WHERE o.total > (SELECT AVG(i.total) FROM orders i "
+            "WHERE i.customer_id = o.customer_id AND i.total > 0)</sql>",
+            "rejected: still re-runs a subquery per row",
+        ),
         # Refused by validation: a table the knowledge base does not list.
-        "<sql>SELECT o.id FROM orders o JOIN averages g ON g.customer_id = o.customer_id</sql>",
+        (
+            "<sql>SELECT o.id FROM orders o JOIN averages g ON g.customer_id = o.customer_id</sql>",
+            "rejected: refused by validation",
+        ),
         # The same statement back.
-        f"<sql>{_CORRELATED}</sql>",
-        RuntimeError("provider unavailable"),
+        (f"<sql>{_CORRELATED}</sql>", "rejected: returned unchanged"),
+        (RuntimeError("provider unavailable"), "failed: the model call raised"),
     ],
     ids=["still-per-row", "invalid", "unchanged", "llm-failed"],
 )
-def test_otherwise_the_statement_runs_as_written(sqlite_connector: Any, reply: Any) -> None:
+def test_otherwise_the_statement_runs_as_written(
+    sqlite_connector: Any, reply: Any, reason: str
+) -> None:
     llm = _LLM(reply)
     checked = _check(sqlite_connector, llm)
     assert checked.sql == _CORRELATED
     assert checked.attempt_count == 1
     assert len(llm.calls) == 1
+    record = _rewrite_record()
+    assert record is not None
+    assert (record["attempted"], record["changed"], record["reason"]) == (True, False, reason)
+    assert record["original_sql"] == _CORRELATED
 
 
 def test_a_rewrite_whose_plan_cannot_be_read_is_not_run(sqlite_connector: Any) -> None:
@@ -503,12 +541,90 @@ def test_a_rewrite_whose_plan_cannot_be_read_is_not_run(sqlite_connector: Any) -
     llm = _LLM(f"<sql>{with_subquery}</sql>")
     assert _check(connector, llm).sql == _CORRELATED
     assert len(calls) == 2
+    record = _rewrite_record()
+    assert record is not None and record["reason"] == "rejected: its plan could not be read"
 
 
-def test_no_rewrite_is_asked_for_without_time_for_one(sqlite_connector: Any) -> None:
+def test_no_rewrite_starts_with_less_time_left_than_the_attempt_has_taken(
+    sqlite_connector: Any,
+) -> None:
+    # Three seconds left, ten already spent: a rewrite would outlast the deadline.
     llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
-    assert _check(sqlite_connector, llm, may_rewrite=False).sql == _CORRELATED
+    now = time.monotonic()
+    assert _check(sqlite_connector, llm, started=now - 10, deadline=now + 3).sql == _CORRELATED
     assert llm.calls == []
+    assert _rewrite_record() == {
+        "attempted": False,
+        "changed": False,
+        "original_sql": _CORRELATED,
+        "findings": [PerRowScan("orders", 100_000, 100_000).describe()],
+        "reason": "skipped: too little time before the deadline",
+    }
+
+
+def test_the_room_for_a_rewrite_is_judged_after_the_plan_is_read(
+    sqlite_connector: Any,
+) -> None:
+    # Room before the EXPLAIN (3 s left, none spent); none after it (1.6 s of
+    # it spent, 1.4 s left).
+    def slow(sql: str, *args: Any) -> QueryResult:
+        time.sleep(1.6)
+        return sqlite_connector.execute_query(sql, *args)
+
+    connector = MagicMock()
+    connector.execute_query.side_effect = slow
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
+    now = time.monotonic()
+    assert _check(connector, llm, started=now, deadline=now + 3).sql == _CORRELATED
+    assert llm.calls == []
+
+
+def test_no_rewrite_starts_under_a_second_before_the_deadline(sqlite_connector: Any) -> None:
+    # 1.3 s left when the plan is read, under a second once it has been.
+    def slow(sql: str, *args: Any) -> QueryResult:
+        time.sleep(0.5)
+        return sqlite_connector.execute_query(sql, *args)
+
+    connector = MagicMock()
+    connector.execute_query.side_effect = slow
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
+    assert _check(connector, llm, deadline=time.monotonic() + 1.3).sql == _CORRELATED
+    assert llm.calls == []
+
+
+def test_the_rewrite_plan_is_bounded_by_the_time_left_too(sqlite_connector: Any) -> None:
+    connector = MagicMock(wraps=sqlite_connector)
+    with_subquery = (
+        "SELECT o.id FROM orders o WHERE o.customer_id IN (SELECT customer_id FROM customers)"
+    )
+    llm = _LLM(f"<sql>{with_subquery}</sql>")
+    now = time.monotonic()
+    assert _check(connector, llm, started=now, deadline=now + 4).sql == with_subquery
+    explains = [c.args for c in connector.execute_query.call_args_list]
+    assert [a[0].split(" ", 3)[:3] for a in explains] == [["EXPLAIN", "QUERY", "PLAN"]] * 2
+    assert all(a[1] <= 4 for a in explains)
+
+
+def test_with_time_for_it_a_rewrite_starts(sqlite_connector: Any) -> None:
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
+    now = time.monotonic()
+    assert _check(sqlite_connector, llm, started=now - 2, deadline=now + 30).sql == _AS_A_JOIN
+
+
+def test_each_explain_is_bounded_by_the_time_left() -> None:
+    connector = MagicMock()
+    connector.execute_query.return_value = _plan_result()
+    _check(connector, _LLM(""), deadline=time.monotonic() + 2.5)
+    timeout = connector.execute_query.call_args.args[1]
+    assert 1.0 <= timeout <= 2.5
+    _check(connector, _LLM(""))
+    assert connector.execute_query.call_args.args[1] == 5.0
+
+
+def test_under_a_second_before_the_deadline_no_plan_is_read() -> None:
+    connector = MagicMock()
+    assert _check(connector, _LLM(""), deadline=time.monotonic() + 0.5).sql == _CORRELATED
+    connector.execute_query.assert_not_called()
 
 
 def test_below_the_limit_no_rewrite_is_asked_for(sqlite_connector: Any) -> None:
@@ -527,6 +643,11 @@ def test_switched_off_the_plan_is_not_read() -> None:
     connector.execute_query.assert_not_called()
 
 
+def test_nothing_is_recorded_when_no_rewrite_is_due(sqlite_connector: Any) -> None:
+    _check(sqlite_connector, _LLM(""), sizes={"orders": 10})
+    assert _rewrite_record() is None
+
+
 def test_describe_names_the_table_and_the_estimate() -> None:
     scan = PerRowScan("orders", 40_000, 40_000)
     assert scan.row_reads == 1_600_000_000
@@ -541,8 +662,16 @@ def test_describe_names_the_table_and_the_estimate() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _ask(connector: Any, llm: _LLM, *, deadline: float | None = None) -> tuple[dict, Any]:
+def _ask(
+    connector: Any, llm: _LLM, *, deadline: float | None = None, generating: float = 0.0
+) -> tuple[dict, Any]:
+    """Ask through the orchestrator; *generating* is how long generation takes."""
     first = _first()
+
+    async def generate(*_a: Any, **_kw: Any) -> SQLGenerationResult:
+        await asyncio.sleep(generating)
+        return first
+
     with tempfile.TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir)
         safe = re.sub(r"[^\w.-]", "_", "agent1")
@@ -552,7 +681,7 @@ def _ask(connector: Any, llm: _LLM, *, deadline: float | None = None) -> tuple[d
             patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=llm),
             patch(
                 "nlqueries.orchestrator.orchestrator.validate_and_repair",
-                new=AsyncMock(return_value=first),
+                new=AsyncMock(side_effect=generate),
             ),
             patch("nlqueries.connectors.loader.open_connector_for_agent", return_value=connector),
             patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
@@ -581,6 +710,11 @@ def _ask(connector: Any, llm: _LLM, *, deadline: float | None = None) -> tuple[d
     return json.loads(tokens[-1]), span
 
 
+def _ran(connector: MagicMock, sql: str) -> list[Any]:
+    """The timeouts *sql* was executed with."""
+    return [c.args[1] for c in connector.execute_query.call_args_list if c.args[0] == sql]
+
+
 def test_the_orchestrator_runs_the_rewrite_and_reports_it(sqlite_connector: Any) -> None:
     llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
     frame, span = _ask(sqlite_connector, llm)
@@ -590,14 +724,34 @@ def test_the_orchestrator_runs_the_rewrite_and_reports_it(sqlite_connector: Any)
     span.set_attribute.assert_any_call("plan_rewrite", True)
 
 
+def test_the_orchestrator_bounds_the_rewrite_by_the_time_left(sqlite_connector: Any) -> None:
+    connector = MagicMock(wraps=sqlite_connector)
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
+    frame, _span = _ask(connector, llm, deadline=time.monotonic() + 60)
+    assert frame["sql"] == _AS_A_JOIN
+    [timeout] = _ran(connector, _AS_A_JOIN)
+    # Not the 120 s statement timeout: what is left of the caller's 60.
+    assert timeout is not None and 50 < timeout <= 60
+
+
+def test_the_orchestrator_counts_the_time_generation_took(sqlite_connector: Any) -> None:
+    # Generation took 3 s and 2 s are left: a rewrite would take about as long
+    # as the attempt so far, so it is not started.
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
+    frame, _span = _ask(sqlite_connector, llm, deadline=time.monotonic() + 5, generating=3.0)
+    assert llm.calls == []
+    assert frame["sql"] == _CORRELATED
+
+
 def test_the_orchestrator_runs_the_statement_when_the_deadline_is_near(
     sqlite_connector: Any,
 ) -> None:
-    import time
-
+    connector = MagicMock(wraps=sqlite_connector)
     llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>")
-    frame, span = _ask(sqlite_connector, llm, deadline=time.monotonic() + 0.5)
+    frame, span = _ask(connector, llm, deadline=time.monotonic() + 0.5)
     assert llm.calls == []
     assert frame["sql"] == _CORRELATED
     assert frame["sql_table"]["rows"] == [[2]]
     assert ("plan_rewrite", True) not in [c.args for c in span.set_attribute.call_args_list]
+    # The statement as generated keeps its own timeout, as before the check.
+    assert _ran(connector, _CORRELATED) == [None]

@@ -510,14 +510,21 @@ class Orchestrator:
                             dialect=dialect,
                             llm=llm,
                             system=system,
-                            may_rewrite=_correction_budget(timeout_seconds, deadline)[0],
+                            started=attempt_started,
+                            deadline=deadline,
                         )
+                        run_timeout = timeout_seconds
                         if planned is not result:
                             span.set_attribute("plan_rewrite", True)
                             result = planned
                             span.set_attribute("attempt_count", result.attempt_count)
+                            # Started after a model call: bounded by the time
+                            # left, as a correction is.
+                            runnable, clamped = _correction_budget(timeout_seconds, deadline)
+                            if runnable:
+                                run_timeout = clamped
                         qr = await asyncio.to_thread(
-                            connector.execute_query, result.sql, timeout_seconds
+                            connector.execute_query, result.sql, run_timeout
                         )
                         # One correction when the database refuses the
                         # statement, on the same connector so the same row

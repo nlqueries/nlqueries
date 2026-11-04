@@ -49,6 +49,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,7 @@ from sqlglot.optimizer.scope import ScopeType, traverse_scope
 from nlqueries import config
 from nlqueries.llm import output_budget
 from nlqueries.orchestrator.literal_grounding import _row_counts
+from nlqueries.orchestrator.provenance import record_plan_rewrite
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
@@ -84,6 +86,11 @@ _EXPLAIN_PREFIX: dict[str, str] = {
 
 #: A plain EXPLAIN plans and returns; this bounds one that does not.
 _EXPLAIN_TIMEOUT_SECONDS = 5.0
+#: Below this much time before the caller's deadline no plan is read and no
+#: rewrite asked for: connectors take a statement timeout in whole seconds, so
+#: a shorter remainder cannot be enforced as one. The orchestrator's
+#: ``_MIN_CORRECTION_SECONDS`` is the same bound for the same reason.
+_MIN_SECONDS = 1.0
 #: Plan rows read back. A plan is a few dozen rows; this only bounds a strange one.
 _EXPLAIN_MAX_ROWS = 2000
 
@@ -339,9 +346,10 @@ async def per_row_scans(
     dialect: str,
     connector: Any,
     knowledge_base: dict[str, Any],
+    timeout: float = _EXPLAIN_TIMEOUT_SECONDS,
 ) -> list[PerRowScan] | None:
     """The tables *sql*'s plan reads in full once per outer row, or None when
-    the plan could not be read.
+    the plan could not be read. *timeout* bounds the ``EXPLAIN``.
 
     An empty list for a statement with no subquery inside an expression, which
     is not sent to the database at all. The statement is checked against the
@@ -361,7 +369,7 @@ async def per_row_scans(
         qr = await asyncio.to_thread(
             connector.execute_query,
             _EXPLAIN_PREFIX[engine] + statement,
-            _EXPLAIN_TIMEOUT_SECONDS,
+            timeout,
             _EXPLAIN_MAX_ROWS,
         )
     except Exception:  # noqa: BLE001
@@ -386,6 +394,34 @@ async def per_row_scans(
 
 def _over_limit(scans: list[PerRowScan] | None) -> list[PerRowScan]:
     return [s for s in scans or [] if s.row_reads >= config.PLAN_CHECK_MIN_ROW_READS]
+
+
+def _explain_timeout(deadline: float | None) -> float | None:
+    """The ``EXPLAIN``'s timeout: `_EXPLAIN_TIMEOUT_SECONDS`, or the time left
+    before *deadline* (a ``time.monotonic()`` value) when that is less. None
+    when less than `_MIN_SECONDS` is left, and then no plan is read."""
+    if deadline is None:
+        return _EXPLAIN_TIMEOUT_SECONDS
+    left = deadline - time.monotonic()
+    return None if left < _MIN_SECONDS else min(_EXPLAIN_TIMEOUT_SECONDS, left)
+
+
+def _room_for_rewrite(started: float | None, deadline: float | None) -> bool:
+    """Whether a rewrite may start: the orchestrator's `_retry_after_error` rule.
+
+    A rewrite is a model call, a second ``EXPLAIN`` and the execution, about
+    what this attempt has cost so far, so it starts only when at least that
+    much time is left before *deadline*, and at least `_MIN_SECONDS`. Asked
+    just before the call, after the first ``EXPLAIN`` has taken its share.
+    *started* is when the attempt began; with no *deadline* there is no limit.
+    """
+    if deadline is None:
+        return True
+    now = time.monotonic()
+    left = deadline - now
+    if left < _MIN_SECONDS:
+        return False
+    return started is None or left >= now - started
 
 
 async def rewrite_per_row_subqueries(
@@ -448,26 +484,46 @@ async def check_plan(
     dialect: str,
     llm: LLMClient,
     system: str | list[dict[str, Any]],
-    may_rewrite: bool,
+    started: float | None = None,
+    deadline: float | None = None,
 ) -> SQLGenerationResult:
     """The statement to run in place of *result*: a rewrite, or *result* itself.
 
     *result* comes back unchanged unless its plan re-runs a subquery per row
-    over more than ``PLAN_CHECK_MIN_ROW_READS`` rows, *may_rewrite* allows a
-    model call (the caller's deadline has room for one), and the rewrite is
-    valid, different, and its own plan shows no such subquery. Advisory
+    over more than ``PLAN_CHECK_MIN_ROW_READS`` rows, the caller's *deadline*
+    has room for a rewrite (`_room_for_rewrite`, with *started* when the
+    attempt began), and the rewrite is valid, different, and its own plan shows
+    no such subquery. Each ``EXPLAIN`` is bounded by the time left. Advisory
     throughout: whatever fails leaves *result* to run.
+
+    Whenever a rewrite is due, the outcome goes into the answer's provenance as
+    ``plan_rewrite``, with the statement as generated, since a structural
+    rewrite is the step after validation most likely to change an answer.
     """
     if not config.PLAN_CHECK or not result.is_valid:
         return result
-    flagged = _over_limit(await per_row_scans(result.sql, dialect, connector, knowledge_base))
+    timeout = _explain_timeout(deadline)
+    if timeout is None:
+        return result
+    flagged = _over_limit(
+        await per_row_scans(result.sql, dialect, connector, knowledge_base, timeout)
+    )
     if not flagged:
         return result
-    _log.info(
-        "The plan re-runs a subquery for every outer row: %s",
-        "; ".join(s.describe() for s in flagged),
-    )
-    if not may_rewrite:
+    findings = [s.describe() for s in flagged]
+    _log.info("The plan re-runs a subquery for every outer row: %s", "; ".join(findings))
+
+    def outcome(reason: str | None, attempted: bool = True) -> None:
+        record_plan_rewrite(
+            attempted=attempted,
+            changed=reason is None,
+            original_sql=result.sql,
+            findings=findings,
+            reason=reason,
+        )
+
+    if not _room_for_rewrite(started, deadline):
+        outcome("skipped: too little time before the deadline", attempted=False)
         return result
     try:
         rewritten = await rewrite_per_row_subqueries(
@@ -482,17 +538,31 @@ async def check_plan(
         )
     except Exception:  # noqa: BLE001 - the statement as written still answers
         _log.warning("Rewriting a per-row subquery failed; running it as written.", exc_info=True)
+        outcome("failed: the model call raised")
         return result
     if not rewritten.is_valid:
         _log.info(
             "A rewrite of a per-row subquery was refused by validation and not run: %s",
             rewritten.validation_error,
         )
+        outcome("rejected: refused by validation")
         return result
     if _same_statement(rewritten.sql, result.sql, dialect):
+        outcome("rejected: returned unchanged")
         return result
-    after = await per_row_scans(rewritten.sql, dialect, connector, knowledge_base)
-    if after is None or _over_limit(after):
+    timeout = _explain_timeout(deadline)
+    after = (
+        None
+        if timeout is None
+        else await per_row_scans(rewritten.sql, dialect, connector, knowledge_base, timeout)
+    )
+    if after is None:
+        _log.info("The plan of a rewrite could not be read; running the statement as written.")
+        outcome("rejected: its plan could not be read")
+        return result
+    if _over_limit(after):
         _log.info("A rewrite of a per-row subquery was no better; running it as written.")
+        outcome("rejected: still re-runs a subquery per row")
         return result
+    outcome(None)
     return rewritten

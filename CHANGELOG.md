@@ -30,8 +30,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   more (`NLQ_PLAN_CHECK_MIN_ROW_READS`), the model is asked once for the same
   statement with the subquery computed once. The rewrite runs only if it
   validates and its own plan is clean; otherwise the statement runs as
-  written. The answer shows the statement that ran. DuckDB does this rewrite
-  itself, and other engines are not checked.
+  written. The answer shows the statement that ran, and its provenance the
+  statement as generated (`plan_rewrite`). DuckDB does this rewrite itself,
+  and other engines are not checked.
 
 ### Changed
 
