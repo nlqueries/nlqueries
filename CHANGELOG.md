@@ -18,6 +18,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **SQLite's `strftime` with modifiers, and `timediff`, are no longer refused.**
+  sqlglot models `strftime(format, time)` but not the form with modifiers,
+  `strftime('%Y', 'now', '-1 day')`, which the SQL policy therefore refused as
+  an unrecognised function, while `date('now', '-1 day')` passed. Questions
+  about ages and relative dates ("last year", "the start of next month") were
+  refused for it. Both are now on SQLite's list of allowed functions, beside
+  `datetime`, `julianday`, `time` and `unixepoch`, and the policy version is 7.
 - **Self-consistency keeps its candidates on GPT-5 and the o-series.** These
   models accept only the default temperature while they reason, and LiteLLM
   refused the 0.4 and 0.8 that self-consistency asks for, so two of its three
