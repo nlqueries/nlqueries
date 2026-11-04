@@ -23,6 +23,7 @@ import functools
 import json as _json
 import logging
 import socket
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -49,6 +50,11 @@ _DAEMON_BASE = f"http://127.0.0.1:{_DAEMON_PORT}"
 #: mismatch if there was one. See `_require_daemon_model_agreement`.
 _daemon_model_checked = False
 _daemon_model_mismatch: str | None = None
+
+#: Until when (``time.monotonic()``) no daemon is assumed to be listening, so a
+#: call embeds in-process without asking. See `_daemon_send` and
+#: ``config.EMBED_CLIENT_ABSENT_RECHECK_SECONDS``.
+_daemon_absent_until = 0.0
 
 #: The width refusal, once raised, so it costs one model load rather than one
 #: per call. See `_get_model`.
@@ -139,13 +145,34 @@ def _daemon_send(request: urllib.request.Request, key: str | None = None) -> Any
     Factored out of ``_daemon_post`` so a GET is translated identically: the
     chain below is what tells a daemon that is absent from one that is failing,
     and a second copy of it would drift from this one.
+
+    An absent daemon is remembered for ``EMBED_CLIENT_ABSENT_RECHECK_SECONDS``,
+    and calls within that time are answered ABSENT without a request.
     """
+    global _daemon_absent_until  # noqa: PLW0603
+
     try:
         http_url(request.full_url)
     except NotAnHttpUrl as exc:
         raise EmbeddingServiceUnavailable(FAILING, str(exc)) from exc
+    if time.monotonic() < _daemon_absent_until:
+        raise EmbeddingServiceUnavailable(ABSENT, "nothing was listening when last checked")
     try:
-        with urllib.request.urlopen(  # noqa: S310 - scheme checked above
+        return _daemon_exchange(request, key)
+    except EmbeddingServiceUnavailable as exc:
+        # Remembered, so the calls that follow do not each wait to learn it
+        # again. Not with the daemon required: there it is expected, and a
+        # restart read as an absence would fail every call until the time ran
+        # out instead of only those made while it was down.
+        if exc.reason == ABSENT and not config.EMBED_SERVER_REQUIRED:
+            _daemon_absent_until = time.monotonic() + config.EMBED_CLIENT_ABSENT_RECHECK_SECONDS
+        raise
+
+
+def _daemon_exchange(request: urllib.request.Request, key: str | None) -> Any:
+    """One request to the daemon, every failure translated. See `_daemon_send`."""
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - scheme checked in _daemon_send
             request, timeout=config.EMBED_CLIENT_TIMEOUT_SECONDS
         ) as response:
             body = _json.loads(response.read())
@@ -165,15 +192,25 @@ def _daemon_send(request: urllib.request.Request, key: str | None = None) -> Any
         # It answered, so it exists — it is just not healthy.
         raise EmbeddingServiceUnavailable(FAILING, f"HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
-        # A refused connection means no daemon. A timeout means one that is too
-        # busy to answer — which is precisely when falling back to loading a
-        # model in this process does the most damage.
+        # urllib wraps what fails while connecting and sending; a timeout
+        # waiting for the reply arrives unwrapped, below. Either failure here
+        # means nothing is listening. A refused connection plainly. A
+        # connection not accepted in time too: the kernel accepts a connection
+        # to a listening socket on this host at once, however busy the process
+        # behind it, unless its queue of pending connections is full. Windows
+        # does not refuse a connection to a port nobody listens on straight
+        # away; it retries for about two seconds, longer than the default
+        # timeout, which made an absent daemon look like a hung one.
         if isinstance(exc.reason, TimeoutError | socket.timeout):
             raise EmbeddingServiceUnavailable(
-                FAILING, f"no response in {config.EMBED_CLIENT_TIMEOUT_SECONDS}s"
+                ABSENT,
+                f"nothing accepted the connection in {config.EMBED_CLIENT_TIMEOUT_SECONDS}s",
             ) from exc
         raise EmbeddingServiceUnavailable(ABSENT, str(exc.reason)) from exc
-    except TimeoutError as exc:  # raised directly by the socket on some platforms
+    except TimeoutError as exc:
+        # Connected, and no reply in time: a daemon too busy to answer, which
+        # is precisely when loading a model in this process does the most
+        # damage.
         raise EmbeddingServiceUnavailable(
             FAILING, f"no response in {config.EMBED_CLIENT_TIMEOUT_SECONDS}s"
         ) from exc
