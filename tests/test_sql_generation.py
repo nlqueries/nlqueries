@@ -545,6 +545,27 @@ def test_validate_columns_refuses_a_name_a_joined_star_repeats(sql: str) -> None
     assert "'id' is ambiguous" in error
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # An outer star over the joined star generates both `id` columns
+        # itself; the statement names `total`, never `id`.
+        "SELECT * FROM (SELECT * FROM orders JOIN customers "
+        "ON customers.id = orders.customer_id) j WHERE total > 100",
+        "WITH j AS (SELECT * FROM orders JOIN customers ON customers.id = orders.customer_id) "
+        "SELECT * FROM j WHERE total > 100",
+        # The alias `t` is the joined star only inside EXISTS; the outer `id`
+        # reads the other `t`, which has one.
+        "SELECT id FROM (SELECT * FROM orders) t WHERE EXISTS (SELECT 1 FROM (SELECT * "
+        "FROM orders JOIN customers ON customers.id = orders.customer_id) t)",
+    ],
+)
+def test_validate_columns_accepts_a_repeated_name_the_statement_never_reads(sql: str) -> None:
+    import sqlglot as sg
+
+    assert _validate_columns(sg.parse_one(sql, dialect="postgres"), _make_kb(), "postgres") is None
+
+
 def test_validate_sql_accepts_a_union_of_star_subqueries() -> None:
     """The whole check, not only the column step, for the shape that was refused."""
     assert _validate_sql(_THROUGH_A_STAR["a union of subqueries"], _make_kb(), "sqlite") is None

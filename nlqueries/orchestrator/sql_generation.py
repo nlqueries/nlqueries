@@ -682,7 +682,7 @@ def _validate_columns(
         return f"Column validation error: {exc}"
     except Exception:  # noqa: BLE001
         return None  # be permissive — column validation is best-effort
-    ambiguous = _read_through_a_repeated_name(expanded)
+    ambiguous = _read_through_a_repeated_name(expanded, statement)
     if ambiguous is not None:
         return (
             f"Column validation error: Column '{ambiguous}' is ambiguous: the derived "
@@ -691,24 +691,44 @@ def _validate_columns(
     return None
 
 
-def _read_through_a_repeated_name(tree: exp.Expr) -> str | None:
-    """A column read from a derived table or CTE with two outputs of its name.
+def _read_through_a_repeated_name(tree: exp.Expr, written: exp.Expr) -> str | None:
+    """A column the statement reads from a derived table or CTE that has two
+    outputs of its name.
 
     Expanding ``SELECT * FROM orders JOIN customers`` gives two columns named
     ``id``, and sqlglot resolves an outer ``id`` to the derived table without
     complaint, where PostgreSQL refuses it as ambiguous. Before stars were
     expanded the first check refused it, so the model was asked to correct it;
-    this keeps that. *tree* is qualified, so the outer column names its source.
+    this keeps that.
+
+    Only a column *written* in the statement counts: expanding an outer star
+    over such a table generates both ``id`` projections itself, and PostgreSQL
+    accepts that. *tree* is the qualified, expanded statement, read scope by
+    scope so a derived table is matched by its alias where that alias is in
+    force, not wherever the same alias appears; *written* is the statement as
+    it was parsed.
     """
-    repeated: dict[str, set[str]] = {}
-    for node in tree.find_all(exp.Subquery, exp.CTE):
-        names = [name.lower() for name in getattr(node.this, "named_selects", [])]
-        twice = {name for name in names if names.count(name) > 1}
-        if twice and node.alias:
-            repeated[node.alias.lower()] = twice
-    for column in tree.find_all(exp.Column):
-        if column.name.lower() in repeated.get(column.table.lower(), set()):
-            return column.name
+    from sqlglot.optimizer.scope import Scope, traverse_scope  # noqa: PLC0415
+
+    named = {
+        (column.table.lower(), column.name.lower())
+        for column in written.find_all(exp.Column)
+        if not isinstance(column.this, exp.Star)
+    }
+    for scope in traverse_scope(tree):
+        for alias, source in scope.sources.items():
+            if not isinstance(source, Scope):
+                continue
+            names = [name.lower() for name in getattr(source.expression, "named_selects", [])]
+            twice = {name for name in names if names.count(name) > 1}
+            for column in scope.columns:
+                name = column.name.lower()
+                if (
+                    column.table.lower() == alias.lower()
+                    and name in twice
+                    and ((alias.lower(), name) in named or ("", name) in named)
+                ):
+                    return column.name
     return None
 
 
