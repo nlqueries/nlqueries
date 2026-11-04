@@ -41,13 +41,28 @@ COLUMNS_PER_QUERY = 250
 
 _DATE_TYPE = re.compile(r"DATE|TIME|YEAR", re.IGNORECASE)
 
+#: Types that hold several values, or a structure: TRIM, LENGTH and MIN reject
+#: them, and one such column fails the statement for its whole table. A
+#: BigQuery REPEATED field is reported by its element type and cannot be seen
+#: here; the counts-only retry in `collect_column_profiles` covers it.
+_COMPOSITE_TYPE = re.compile(r"\[\]|ARRAY|LIST|REPEATED|STRUCT|RECORD|MAP\b", re.IGNORECASE)
+
+#: SQL Server's legacy large types, which TRIM, LEN and <> reject.
+_TSQL_LEGACY_TEXT = re.compile(r"^\s*N?TEXT\s*$", re.IGNORECASE)
+
 #: A share of NULLs below this is not worth a note.
 _NOTED_NULL_SHARE = 0.1
 
 
-def profile_kind(col_type: str) -> str:
+def profile_kind(col_type: str, dialect: str | None = None) -> str:
     """``"date"``, ``"text"`` or ``"plain"``: what to profile a column of
-    *col_type* for. A date first, since an untyped column reads as text."""
+    *col_type* for. A date first, since an untyped column reads as text. A
+    composite type, and SQL Server's ``text`` and ``ntext``, only have their
+    values counted."""
+    if col_type and _COMPOSITE_TYPE.search(col_type):
+        return "plain"
+    if (dialect or "").lower() in ("tsql", "mssql") and _TSQL_LEGACY_TEXT.match(col_type or ""):
+        return "plain"
     if col_type and _DATE_TYPE.search(col_type):
         return "date"
     if _is_text_type(col_type):
@@ -77,34 +92,57 @@ def collect_column_profiles(
     (:func:`too_large_for_values`): the statement reads every row, and on a
     warehouse billed by bytes read that is charged in full.
     """
-    from nlqueries.connectors.base import column_profile_sql  # noqa: PLC0415
 
     profiles: dict[str, dict[str, dict[str, Any]]] = {}
     for table in schema.tables:
         if too_large_for_values(table, max_rows):
             continue
         columns = [
-            (col.name, profile_kind(col.type))
+            (col.name, profile_kind(col.type, dialect))
             for col in table.columns
             if not _is_pii_column(col.name)
         ]
         for start in range(0, len(columns), COLUMNS_PER_QUERY):
             batch = columns[start : start + COLUMNS_PER_QUERY]
-            try:
-                result = connector.execute_query(
-                    column_profile_sql(table.name, table.schema, batch, dialect),
-                    _VALUES_TIMEOUT_S,
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("Profiling %s failed.", table.name, exc_info=True)
+            row = _profile_row(connector, table.name, table.schema, batch, dialect)
+            if row is None and any(kind != "plain" for _, kind in batch):
+                # One column the text or date aggregates do not take fails the
+                # statement for the whole batch. Counting each column's values
+                # works on any type, so the batch keeps its share of NULLs.
+                logger.info("Profiling %s failed; counting its columns' values only.", table.name)
+                batch = [(name, "plain") for name, _ in batch]
+                row = _profile_row(connector, table.name, table.schema, batch, dialect)
+            if row is None:
+                logger.info("Profiling %s failed; it has no profiles.", table.name)
                 break
-            if result.error or not result.rows:
-                logger.debug("Profiling %s failed: %s", table.name, result.error)
-                break
-            found = _read_profiles(batch, list(result.rows[0]))
+            found = _read_profiles(batch, row)
             if found:
                 profiles.setdefault(table.name, {}).update(found)
     return profiles
+
+
+def _profile_row(
+    connector: Any,
+    table: str,
+    schema: str | None,
+    batch: list[tuple[str, str]],
+    dialect: str | None,
+) -> list[Any] | None:
+    """The one row the profile statement for *batch* returns, or ``None`` when
+    it failed."""
+    from nlqueries.connectors.base import column_profile_sql  # noqa: PLC0415
+
+    try:
+        result = connector.execute_query(
+            column_profile_sql(table, schema, batch, dialect), _VALUES_TIMEOUT_S
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Profiling %s raised.", table, exc_info=True)
+        return None
+    if result.error or not result.rows:
+        logger.debug("Profiling %s failed: %s", table, result.error)
+        return None
+    return list(result.rows[0])
 
 
 def _read_profiles(batch: list[tuple[str, str]], row: list[Any]) -> dict[str, dict[str, Any]]:

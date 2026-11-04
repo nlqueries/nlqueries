@@ -182,10 +182,43 @@ def test_a_failed_statement_leaves_the_table_without_profiles() -> None:
         ("", "text"),
         ("INTEGER", "plain"),
         ("NUMERIC(10,2)", "plain"),
+        # Several values, or a structure: TRIM, LENGTH and MIN reject them.
+        ("VARCHAR[]", "plain"),
+        ("ARRAY<STRING>", "plain"),
+        ("STRUCT<a STRING>", "plain"),
+        ("DATE[]", "plain"),
     ],
 )
 def test_the_kind_of_profile_follows_the_type(col_type: str, kind: str) -> None:
     assert profile_kind(col_type) == kind
+
+
+@pytest.mark.parametrize(
+    ("col_type", "kind"), [("text", "plain"), ("NTEXT", "plain"), ("nvarchar(50)", "text")]
+)
+def test_sql_server_legacy_text_is_only_counted(col_type: str, kind: str) -> None:
+    assert profile_kind(col_type, "tsql") == kind
+    assert profile_kind("text", "postgres") == "text"
+
+
+def test_a_table_whose_aggregates_fail_still_has_its_nulls_counted(connector: Any) -> None:
+    """A column the aggregates reject fails the statement for the whole table,
+    as a BigQuery REPEATED field reported as STRING does; the retry counts
+    values only, so the table keeps its share of NULLs."""
+    seen: list[str] = []
+
+    class _Refuses:
+        def execute_query(self, sql: str, timeout: float) -> Any:
+            seen.append(sql)
+            if "TRIM(" in sql.upper():
+                raise RuntimeError("TRIM over an array")
+            return connector.execute_query(sql, timeout)
+
+    profiles = collect_column_profiles(_Refuses(), _schema(), "sqlite")
+
+    assert len(seen) == 2
+    assert profiles["credits"]["tagline"] == {"nulls": 0.9}
+    assert "padded" not in profiles["credits"].get("film_id", {})
 
 
 # ---------------------------------------------------------------------------
