@@ -686,26 +686,95 @@ def _validate_columns(
     ``SELECT *`` is always accepted while explicit unknown column names are
     caught.  Returns ``None`` (pass) when the schema is empty or when qualify
     raises unexpected errors, to avoid false rejections on complex queries.
+
+    With the stars left unexpanded, a column read through one cannot be
+    resolved: ``SELECT price FROM (SELECT * FROM orders) o`` was refused as if
+    ``price`` did not exist. So a statement that fails and has a star is checked
+    again with its stars expanded, and that verdict stands. A statement that
+    passes is never checked twice, so nothing accepted before is refused now.
     """
     from sqlglot.optimizer.qualify import qualify  # noqa: PLC0415
 
     schema = _kb_to_sqlglot_schema(knowledge_base)
     if not schema:
         return None
-    try:
-        qualify(
+
+    def check(expand_stars: bool) -> exp.Expr:
+        return qualify(
             statement.copy(),
             schema=schema,
-            expand_stars=False,
+            expand_stars=expand_stars,
             qualify_columns=True,
             validate_qualify_columns=True,
             dialect=dialect,
         )
+
+    try:
+        check(expand_stars=False)
         return None
+    except sqlglot.errors.OptimizeError as exc:
+        error = exc
+    except Exception:  # noqa: BLE001
+        return None  # be permissive — column validation is best-effort
+    if statement.find(exp.Star) is None:
+        return f"Column validation error: {error}"
+    try:
+        expanded = check(expand_stars=True)
     except sqlglot.errors.OptimizeError as exc:
         return f"Column validation error: {exc}"
     except Exception:  # noqa: BLE001
         return None  # be permissive — column validation is best-effort
+    ambiguous = _read_through_a_repeated_name(expanded, statement)
+    if ambiguous is not None:
+        return (
+            f"Column validation error: Column '{ambiguous}' is ambiguous: the derived "
+            "table it is read from has more than one column of that name."
+        )
+    return None
+
+
+def _read_through_a_repeated_name(tree: exp.Expr, written: exp.Expr) -> str | None:
+    """A column the statement reads from a derived table or CTE that has two
+    outputs of its name.
+
+    Expanding ``SELECT * FROM orders JOIN customers`` gives two columns named
+    ``id``, and sqlglot resolves an outer ``id`` to the derived table without
+    complaint, where PostgreSQL refuses it as ambiguous. Before stars were
+    expanded the first check refused it, so the model was asked to correct it;
+    this keeps that.
+
+    Only a column *written* in the statement counts: an outer star over such a
+    table would generate both ``id`` projections itself, and PostgreSQL accepts
+    that. sqlglot 30.x leaves such a star unexpanded, so the filter has nothing
+    to remove there today; it is kept for a release that expands it.
+
+    *tree* is the qualified, expanded statement, read scope by scope so a
+    derived table is matched by its alias where that alias is in force, not
+    wherever the same alias appears; *written* is the statement as it was
+    parsed.
+    """
+    from sqlglot.optimizer.scope import Scope, traverse_scope  # noqa: PLC0415
+
+    named = {
+        (column.table.lower(), column.name.lower())
+        for column in written.find_all(exp.Column)
+        if not isinstance(column.this, exp.Star)
+    }
+    for scope in traverse_scope(tree):
+        for alias, source in scope.sources.items():
+            if not isinstance(source, Scope):
+                continue
+            names = [name.lower() for name in getattr(source.expression, "named_selects", [])]
+            twice = {name for name in names if names.count(name) > 1}
+            for column in scope.columns:
+                name = column.name.lower()
+                if (
+                    column.table.lower() == alias.lower()
+                    and name in twice
+                    and ((alias.lower(), name) in named or ("", name) in named)
+                ):
+                    return column.name
+    return None
 
 
 # -- Phase 4B: EXPLAIN gate ------------------------------------------------

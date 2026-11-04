@@ -65,6 +65,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   given the whole budget. A repair that is cut off too reports that, naming
   `LLM_MAX_OUTPUT_TOKENS`, instead of a parse error, and a warning is logged
   when the first reply is cut off.
+- **Valid SQL that reads a column through `SELECT *` is no longer refused.**
+  The column check left stars unexpanded, so a column taken from a derived
+  table, CTE or `UNION` written with `SELECT *` could not be resolved:
+  `SELECT price FROM (SELECT * FROM orders) o` was refused as naming a column
+  that does not exist, and so were stars over joins. A statement that fails the
+  check and contains a star is now checked again with its stars expanded, and
+  that verdict stands. A column that really does not exist is still refused,
+  through a star or not, and nothing accepted before is refused now.
 - **Self-consistency keeps its candidates on GPT-5 and the o-series.** These
   models accept only the default temperature while they reason, and LiteLLM
   refused the 0.4 and 0.8 that self-consistency asks for, so two of its three
