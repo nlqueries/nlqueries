@@ -140,6 +140,33 @@ def test_repeated_rows_are_corrected_and_the_correction_reported() -> None:
     assert frame["sql"] == CORRECTED_SQL, "the frame names the statement behind the rows"
     assert frame["sql_table"]["rows"] == [["Ann"], ["Bo"]]
     assert frame["attempt_count"] == 2
+    # A correction for repeats cannot fail the repeat check, and the repeats
+    # may have been real records, so both counts are told.
+    (note,) = frame["result_notes"]
+    assert note.startswith("The statement first returned 3 rows, some of them identical; these 2 ")
+    assert "the first result was right" in note
+
+
+def test_a_kept_correction_for_another_doubt_carries_no_such_note() -> None:
+    first = "SELECT o.status, o.id FROM orders o ORDER BY o.status LIMIT 1"
+    corrected = (
+        "SELECT o.status, o.id FROM orders o WHERE o.status IS NOT NULL ORDER BY o.status LIMIT 1"
+    )
+
+    def _ranked(status: str | None) -> QueryResult:
+        return QueryResult(
+            columns=["status", "id"],
+            rows=[[status, 7]],
+            row_count=1,
+            execution_time_ms=1.0,
+            error=None,
+        )
+
+    llm = _LLM(f"<sql>{corrected}</sql>")
+    frame, connector = _run(llm, [_ranked(None), _ranked("open")], first_sql=first)
+
+    assert _executed(connector) == [first, corrected]
+    assert frame["sql"] == corrected
     assert "result_notes" not in frame
 
 

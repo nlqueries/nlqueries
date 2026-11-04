@@ -336,7 +336,24 @@ async def _second_look(
         return result, qr, notes
     if any(c.repairable for c in after):
         return result, qr, notes
-    return corrected, retried, [c.detail for c in after]
+    kept = [c.detail for c in after]
+    if any(c.kind == "duplicate_rows" for c in concerns if c.repairable):
+        # A correction for repeated rows always comes back without them, so
+        # passing the check says nothing about it, and the repeats may have
+        # been separate records a join made look alike. Both counts are told,
+        # so the user can judge which result is right.
+        kept.insert(0, _deduplicated_note(qr.row_count, retried.row_count))
+    return corrected, retried, kept
+
+
+def _deduplicated_note(before: int, after: int) -> str:
+    """The note kept beside a correction made for repeated rows."""
+    return (
+        f"The statement first returned {before} rows, some of them identical; these "
+        f"{after} come from a corrected statement that returns none twice. If the "
+        "identical rows were separate records, two orders of the same amount for "
+        "instance, the first result was right."
+    )
 
 
 def _json_default(obj: Any) -> Any:
