@@ -586,37 +586,130 @@ def _unreachable_port() -> int:
     return _free_port()
 
 
-def test_a_refused_connection_and_a_timeout_are_told_apart():
-    """They have different remedies — start the daemon, versus give it more
-    room — so "unavailable" is not a useful thing to be told."""
-    import urllib.error
+def _reason_for(error: BaseException) -> str:
+    """The reason `_daemon_post` gives when the request raises *error*."""
     from unittest.mock import patch as _patch
 
     from nlqueries.embeddings import embedder
 
-    with _patch.object(
-        embedder.urllib.request,
-        "urlopen",
-        side_effect=urllib.error.URLError(ConnectionRefusedError("refused")),
-    ):
+    embedder._daemon_absent_until = 0.0
+    with _patch.object(embedder.urllib.request, "urlopen", side_effect=error):
         try:
             embedder._daemon_post("/embed", {"text": "x"}, "vector")
-            raised = None
         except embedder.EmbeddingServiceUnavailable as exc:
-            raised = exc
-    assert raised is not None and raised.reason == embedder.ABSENT
+            return exc.reason
+    raise AssertionError("no EmbeddingServiceUnavailable")
 
-    with _patch.object(
-        embedder.urllib.request,
-        "urlopen",
-        side_effect=urllib.error.URLError(TimeoutError("timed out")),
-    ):
-        try:
+
+def test_a_daemon_that_is_not_there_and_one_that_does_not_answer_are_told_apart():
+    """They have different remedies — start the daemon, versus give it more
+    room — so "unavailable" is not a useful thing to be told.
+
+    urllib wraps a failure while connecting in URLError and lets a timeout
+    waiting for the reply through unwrapped. A connection not accepted in time
+    is a port nobody listens on, as much as a refused one is: Windows retries a
+    refused connection for about two seconds before giving up, so there it
+    arrives as a timeout, and was reported as a daemon that hung.
+    """
+    import urllib.error
+
+    from nlqueries.embeddings import embedder
+
+    assert _reason_for(urllib.error.URLError(ConnectionRefusedError("refused"))) == embedder.ABSENT
+    assert _reason_for(urllib.error.URLError(TimeoutError("timed out"))) == embedder.ABSENT
+    assert _reason_for(TimeoutError("timed out")) == embedder.FAILING
+
+
+def test_a_daemon_that_accepts_and_never_answers_is_failing(monkeypatch):
+    """The unit test above assumes how urllib reports a reply that never comes;
+    this checks it against a real socket that accepts and stays silent."""
+    import socket as _socket
+
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    with _socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        monkeypatch.setattr(embedder, "_DAEMON_BASE", f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(config, "EMBED_CLIENT_TIMEOUT_SECONDS", 0.3)
+
+        with pytest.raises(embedder.EmbeddingServiceUnavailable) as raised:
             embedder._daemon_post("/embed", {"text": "x"}, "vector")
-            raised = None
-        except embedder.EmbeddingServiceUnavailable as exc:
-            raised = exc
-    assert raised is not None and raised.reason == embedder.FAILING
+
+    assert raised.value.reason == embedder.FAILING
+    assert embedder._daemon_absent_until == 0.0, "a silent daemon is not an absent one"
+
+
+def _counting_refusals():
+    """An urlopen stand-in that refuses every request and counts them."""
+    import urllib.error
+
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append(request.full_url)
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    return calls, urlopen
+
+
+def test_an_absent_daemon_is_not_asked_again_until_the_recheck_time(monkeypatch):
+    """Each embedding call used to ask afresh, and on Windows each ask costs
+    about two seconds before the refusal arrives."""
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    calls, urlopen = _counting_refusals()
+    now = [1000.0]
+    monkeypatch.setattr(embedder.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(embedder.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", False)
+    monkeypatch.setattr(config, "EMBED_CLIENT_ABSENT_RECHECK_SECONDS", 30.0)
+
+    for _ in range(3):
+        with pytest.raises(embedder.EmbeddingServiceUnavailable) as raised:
+            embedder._daemon_post("/embed", {"text": "x"}, "vector")
+        assert raised.value.reason == embedder.ABSENT
+    assert len(calls) == 1, "asked again within the recheck time"
+
+    now[0] += 30.0
+    with pytest.raises(embedder.EmbeddingServiceUnavailable):
+        embedder._daemon_get("/healthz")
+    assert len(calls) == 2, "not asked again once the recheck time had passed"
+
+
+def test_an_absent_daemon_is_not_remembered_when_it_is_required(monkeypatch):
+    """Required, the daemon is expected; remembering would turn a restart into
+    a stretch of failed calls after it is back."""
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    calls, urlopen = _counting_refusals()
+    monkeypatch.setattr(embedder.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", True)
+    monkeypatch.setattr(config, "EMBED_CLIENT_ABSENT_RECHECK_SECONDS", 30.0)
+
+    for _ in range(3):
+        with pytest.raises(embedder.EmbeddingServiceUnavailable):
+            embedder._daemon_post("/embed", {"text": "x"}, "vector")
+    assert len(calls) == 3
+
+
+def test_a_recheck_time_of_zero_asks_every_time(monkeypatch):
+    from nlqueries import config
+    from nlqueries.embeddings import embedder
+
+    calls, urlopen = _counting_refusals()
+    monkeypatch.setattr(embedder.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(config, "EMBED_SERVER_REQUIRED", False)
+    monkeypatch.setattr(config, "EMBED_CLIENT_ABSENT_RECHECK_SECONDS", 0.0)
+
+    for _ in range(3):
+        with pytest.raises(embedder.EmbeddingServiceUnavailable):
+            embedder._daemon_post("/embed", {"text": "x"}, "vector")
+    assert len(calls) == 3
 
 
 def test_a_server_error_from_a_live_daemon_counts_as_failing():

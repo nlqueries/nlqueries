@@ -224,6 +224,19 @@ def _no_process_surface(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_daemon_absence(monkeypatch):
+    """Start every test with no embedding daemon remembered as absent.
+
+    A process remembers an absent daemon for a while (`embedder._daemon_send`),
+    so a test that found none would otherwise make every test after it skip the
+    daemon, including those that stand one up or fake its replies.
+    """
+    from nlqueries.embeddings import embedder  # noqa: PLC0415
+
+    monkeypatch.setattr(embedder, "_daemon_absent_until", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _no_reply_cut_off():
     """Start every test with no LLM reply recorded as cut off.
 
