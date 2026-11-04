@@ -1,0 +1,828 @@
+{
+ "engine": "16.15 (Debian 16.15-1.pgdg13+2)",
+ "tables": "a, b, c: 200,000 rows each; c has an index on k",
+ "plans": {
+  "correlated_scalar": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(b.v) FROM b WHERE b.k = a.k)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.0,
+      "Total Cost": 716506082.0,
+      "Plan Rows": 66667,
+      "Plan Width": 4,
+      "Filter": "(v > (SubPlan 1))",
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 3582.5,
+        "Total Cost": 3582.51,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "b",
+          "Alias": "b",
+          "Startup Cost": 0.0,
+          "Total Cost": 3582.0,
+          "Plan Rows": 200,
+          "Plan Width": 8,
+          "Filter": "(k = a.k)"
+         }
+        ]
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 11,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "correlated_in_select_list": {
+   "sql": "SELECT a.id, (SELECT COUNT(*) FROM b WHERE b.k = a.k) FROM a",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.0,
+      "Total Cost": 716505082.0,
+      "Plan Rows": 200000,
+      "Plan Width": 12,
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 3582.5,
+        "Total Cost": 3582.51,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "b",
+          "Alias": "b",
+          "Startup Cost": 0.0,
+          "Total Cost": 3582.0,
+          "Plan Rows": 200,
+          "Plan Width": 0,
+          "Filter": "(k = a.k)"
+         }
+        ]
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 8,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "correlated_after_join": {
+   "sql": "SELECT a.id FROM a JOIN c ON c.id = a.id WHERE c.v > 0.5 AND a.v > (SELECT AVG(b.v) FROM b WHERE b.k = a.k)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Nested Loop",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Join Type": "Inner",
+      "Startup Cost": 0.42,
+      "Total Cost": 359957105.56,
+      "Plan Rows": 33488,
+      "Plan Width": 4,
+      "Inner Unique": true,
+      "Plans": [
+       {
+        "Node Type": "Seq Scan",
+        "Parent Relationship": "Outer",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Relation Name": "c",
+        "Alias": "c",
+        "Startup Cost": 0.0,
+        "Total Cost": 3582.0,
+        "Plan Rows": 100462,
+        "Plan Width": 4,
+        "Filter": "(v > '0.5'::double precision)"
+       },
+       {
+        "Node Type": "Index Scan",
+        "Parent Relationship": "Inner",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Scan Direction": "Forward",
+        "Index Name": "a_pkey",
+        "Relation Name": "a",
+        "Alias": "a",
+        "Startup Cost": 0.42,
+        "Total Cost": 3583.02,
+        "Plan Rows": 1,
+        "Plan Width": 4,
+        "Index Cond": "(id = c.id)",
+        "Filter": "(v > (SubPlan 1))",
+        "Plans": [
+         {
+          "Node Type": "Aggregate",
+          "Strategy": "Plain",
+          "Partial Mode": "Simple",
+          "Parent Relationship": "SubPlan",
+          "Subplan Name": "SubPlan 1",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 3582.5,
+          "Total Cost": 3582.51,
+          "Plan Rows": 1,
+          "Plan Width": 8,
+          "Plans": [
+           {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Relation Name": "b",
+            "Alias": "b",
+            "Startup Cost": 0.0,
+            "Total Cost": 3582.0,
+            "Plan Rows": 200,
+            "Plan Width": 8,
+            "Filter": "(k = a.k)"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 15,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "correlated_in_list": {
+   "sql": "SELECT a.id FROM a WHERE a.k IN (SELECT b.k FROM b WHERE b.v = a.v)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.0,
+      "Total Cost": 358203832.0,
+      "Plan Rows": 100000,
+      "Plan Width": 4,
+      "Filter": "(SubPlan 1)",
+      "Plans": [
+       {
+        "Node Type": "Seq Scan",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Relation Name": "b",
+        "Alias": "b",
+        "Startup Cost": 0.0,
+        "Total Cost": 3582.0,
+        "Plan Rows": 1,
+        "Plan Width": 4,
+        "Filter": "(v = a.v)"
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 12,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "correlated_exists": {
+   "sql": "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND b.v > 0.3)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Hash Join",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Join Type": "Inner",
+      "Startup Cost": 3954.56,
+      "Total Cost": 9786.56,
+      "Plan Rows": 200000,
+      "Plan Width": 4,
+      "Inner Unique": true,
+      "Hash Cond": "(a.k = b.k)",
+      "Plans": [
+       {
+        "Node Type": "Seq Scan",
+        "Parent Relationship": "Outer",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Relation Name": "a",
+        "Alias": "a",
+        "Startup Cost": 0.0,
+        "Total Cost": 3082.0,
+        "Plan Rows": 200000,
+        "Plan Width": 8
+       },
+       {
+        "Node Type": "Hash",
+        "Parent Relationship": "Inner",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 3942.06,
+        "Total Cost": 3942.06,
+        "Plan Rows": 1000,
+        "Plan Width": 4,
+        "Plans": [
+         {
+          "Node Type": "Aggregate",
+          "Strategy": "Hashed",
+          "Partial Mode": "Simple",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 3932.06,
+          "Total Cost": 3942.06,
+          "Plan Rows": 1000,
+          "Plan Width": 4,
+          "Group Key": [
+           "b.k"
+          ],
+          "Planned Partitions": 0,
+          "Plans": [
+           {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Relation Name": "b",
+            "Alias": "b",
+            "Startup Cost": 0.0,
+            "Total Cost": 3582.0,
+            "Plan Rows": 140023,
+            "Plan Width": 4,
+            "Filter": "(v > '0.3'::double precision)"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "uncorrelated_not_in": {
+   "sql": "SELECT a.id FROM a WHERE a.k NOT IN (SELECT b.k FROM b WHERE b.v > 0.3)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 3932.06,
+      "Total Cost": 7514.06,
+      "Plan Rows": 100000,
+      "Plan Width": 4,
+      "Filter": "(NOT (hashed SubPlan 1))",
+      "Plans": [
+       {
+        "Node Type": "Seq Scan",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Relation Name": "b",
+        "Alias": "b",
+        "Startup Cost": 0.0,
+        "Total Cost": 3582.0,
+        "Plan Rows": 140023,
+        "Plan Width": 4,
+        "Filter": "(v > '0.3'::double precision)"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "uncorrelated_scalar": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(v) FROM b)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 3582.01,
+      "Total Cost": 7164.01,
+      "Plan Rows": 66667,
+      "Plan Width": 4,
+      "Filter": "(v > $0)",
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "InitPlan",
+        "Subplan Name": "InitPlan 1 (returns $0)",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 3582.0,
+        "Total Cost": 3582.01,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "b",
+          "Alias": "b",
+          "Startup Cost": 0.0,
+          "Total Cost": 3082.0,
+          "Plan Rows": 200000,
+          "Plan Width": 8
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "correlated_indexed": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(c.v) FROM c WHERE c.k = a.k)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.0,
+      "Total Cost": 103448572.49,
+      "Plan Rows": 66667,
+      "Plan Width": 4,
+      "Filter": "(v > (SubPlan 1))",
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 517.21,
+        "Total Cost": 517.22,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Bitmap Heap Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "c",
+          "Alias": "c",
+          "Startup Cost": 5.84,
+          "Total Cost": 516.71,
+          "Plan Rows": 200,
+          "Plan Width": 8,
+          "Recheck Cond": "(k = a.k)",
+          "Plans": [
+           {
+            "Node Type": "Bitmap Index Scan",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Index Name": "ck",
+            "Startup Cost": 0.0,
+            "Total Cost": 5.79,
+            "Plan Rows": 200,
+            "Plan Width": 0,
+            "Index Cond": "(k = a.k)"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 11,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "rewritten_as_join": {
+   "sql": "SELECT a.id FROM a JOIN (SELECT k, AVG(v) AS m FROM b GROUP BY k) AS g ON g.k = a.k WHERE a.v > g.m",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Hash Join",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Join Type": "Inner",
+      "Startup Cost": 3986.71,
+      "Total Cost": 7594.62,
+      "Plan Rows": 66667,
+      "Plan Width": 4,
+      "Inner Unique": true,
+      "Hash Cond": "(a.k = b.k)",
+      "Join Filter": "(a.v > (avg(b.v)))",
+      "Plans": [
+       {
+        "Node Type": "Seq Scan",
+        "Parent Relationship": "Outer",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Relation Name": "a",
+        "Alias": "a",
+        "Startup Cost": 0.0,
+        "Total Cost": 3082.0,
+        "Plan Rows": 200000,
+        "Plan Width": 16
+       },
+       {
+        "Node Type": "Hash",
+        "Parent Relationship": "Inner",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 3974.21,
+        "Total Cost": 3974.21,
+        "Plan Rows": 1000,
+        "Plan Width": 12,
+        "Plans": [
+         {
+          "Node Type": "Aggregate",
+          "Strategy": "Hashed",
+          "Partial Mode": "Finalize",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 3961.71,
+          "Total Cost": 3974.21,
+          "Plan Rows": 1000,
+          "Plan Width": 12,
+          "Group Key": [
+           "b.k"
+          ],
+          "Planned Partitions": 0,
+          "Plans": [
+           {
+            "Node Type": "Gather",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 3846.71,
+            "Total Cost": 3956.71,
+            "Plan Rows": 1000,
+            "Plan Width": 36,
+            "Workers Planned": 1,
+            "Single Copy": false,
+            "Plans": [
+             {
+              "Node Type": "Aggregate",
+              "Strategy": "Hashed",
+              "Partial Mode": "Partial",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 2846.71,
+              "Total Cost": 2856.71,
+              "Plan Rows": 1000,
+              "Plan Width": 36,
+              "Group Key": [
+               "b.k"
+              ],
+              "Planned Partitions": 0,
+              "Plans": [
+               {
+                "Node Type": "Seq Scan",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": true,
+                "Async Capable": false,
+                "Relation Name": "b",
+                "Alias": "b",
+                "Startup Cost": 0.0,
+                "Total Cost": 2258.47,
+                "Plan Rows": 117647,
+                "Plan Width": 12
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "correlated_with_hashed_join_inside": {
+   "sql": "SELECT a.id, (SELECT COUNT(*) FROM b JOIN c ON c.v = b.v WHERE b.k = a.k) FROM a",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.0,
+      "Total Cost": 1483805082.0,
+      "Plan Rows": 200000,
+      "Plan Width": 12,
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 7419.0,
+        "Total Cost": 7419.01,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Hash Join",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 3584.5,
+          "Total Cost": 7418.5,
+          "Plan Rows": 200,
+          "Plan Width": 0,
+          "Inner Unique": false,
+          "Hash Cond": "(c.v = b.v)",
+          "Plans": [
+           {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Relation Name": "c",
+            "Alias": "c",
+            "Startup Cost": 0.0,
+            "Total Cost": 3082.0,
+            "Plan Rows": 200000,
+            "Plan Width": 8
+           },
+           {
+            "Node Type": "Hash",
+            "Parent Relationship": "Inner",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 3582.0,
+            "Total Cost": 3582.0,
+            "Plan Rows": 200,
+            "Plan Width": 8,
+            "Plans": [
+             {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "b",
+              "Alias": "b",
+              "Startup Cost": 0.0,
+              "Total Cost": 3582.0,
+              "Plan Rows": 200,
+              "Plan Width": 8,
+              "Filter": "(k = a.k)"
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 17,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "correlated_nested": {
+   "sql": "SELECT a.id FROM a WHERE a.v > (SELECT AVG(b.v) FROM b WHERE b.k = a.k AND b.v < (SELECT MAX(b2.v) FROM b AS b2 WHERE b2.k = b.k))",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.0,
+      "Total Cost": 143301216439582.03,
+      "Plan Rows": 66667,
+      "Plan Width": 4,
+      "Filter": "(v > (SubPlan 2))",
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 2",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 716506082.17,
+        "Total Cost": 716506082.18,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "b",
+          "Alias": "b",
+          "Startup Cost": 0.0,
+          "Total Cost": 716506082.0,
+          "Plan Rows": 67,
+          "Plan Width": 8,
+          "Filter": "((k = a.k) AND (v < (SubPlan 1)))",
+          "Plans": [
+           {
+            "Node Type": "Aggregate",
+            "Strategy": "Plain",
+            "Partial Mode": "Simple",
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 3582.5,
+            "Total Cost": 3582.51,
+            "Plan Rows": 1,
+            "Plan Width": 8,
+            "Plans": [
+             {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "b",
+              "Alias": "b2",
+              "Startup Cost": 0.0,
+              "Total Cost": 3582.0,
+              "Plan Rows": 200,
+              "Plan Width": 8,
+              "Filter": "(k = b.k)"
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "JIT": {
+      "Functions": 18,
+      "Options": {
+       "Inlining": true,
+       "Optimization": true,
+       "Expressions": true,
+       "Deforming": true
+      }
+     }
+    }
+   ]
+  },
+  "correlated_one_outer_row": {
+   "sql": "SELECT a.id FROM a WHERE a.id = 7 AND a.v > (SELECT AVG(b.v) FROM b WHERE b.k = a.k)",
+   "plan": [
+    {
+     "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "a_pkey",
+      "Relation Name": "a",
+      "Alias": "a",
+      "Startup Cost": 0.42,
+      "Total Cost": 3590.95,
+      "Plan Rows": 1,
+      "Plan Width": 4,
+      "Index Cond": "(id = 7)",
+      "Filter": "(v > (SubPlan 1))",
+      "Plans": [
+       {
+        "Node Type": "Aggregate",
+        "Strategy": "Plain",
+        "Partial Mode": "Simple",
+        "Parent Relationship": "SubPlan",
+        "Subplan Name": "SubPlan 1",
+        "Parallel Aware": false,
+        "Async Capable": false,
+        "Startup Cost": 3582.5,
+        "Total Cost": 3582.51,
+        "Plan Rows": 1,
+        "Plan Width": 8,
+        "Plans": [
+         {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "b",
+          "Alias": "b",
+          "Startup Cost": 0.0,
+          "Total Cost": 3582.0,
+          "Plan Rows": 200,
+          "Plan Width": 8,
+          "Filter": "(k = a.k)"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

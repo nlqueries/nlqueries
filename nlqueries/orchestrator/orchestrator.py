@@ -37,6 +37,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
+from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
 from nlqueries.orchestrator.result_checks import check_result
@@ -577,8 +578,33 @@ class Orchestrator:
                         open_connector_for_agent, agent_id, execution
                     )
                     if connector is not None:
+                        # Before it runs, its plan is read for a subquery the
+                        # database would re-run for every outer row over a
+                        # large table; a rewrite replaces it only when its own
+                        # plan shows none. See `plan_check`.
+                        planned = await check_plan(
+                            result,
+                            connector,
+                            question=prompt.user_content(),
+                            knowledge_base=kb,
+                            dialect=dialect,
+                            llm=llm,
+                            system=system,
+                            started=attempt_started,
+                            deadline=deadline,
+                        )
+                        run_timeout = timeout_seconds
+                        if planned is not result:
+                            span.set_attribute("plan_rewrite", True)
+                            result = planned
+                            span.set_attribute("attempt_count", result.attempt_count)
+                            # Started after a model call: bounded by the time
+                            # left, as a correction is.
+                            runnable, clamped = _correction_budget(timeout_seconds, deadline)
+                            if runnable:
+                                run_timeout = clamped
                         qr = await asyncio.to_thread(
-                            connector.execute_query, result.sql, timeout_seconds
+                            connector.execute_query, result.sql, run_timeout
                         )
                         # One correction when the database refuses the
                         # statement, on the same connector so the same row

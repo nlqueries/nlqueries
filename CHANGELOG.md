@@ -19,6 +19,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   stored. The statement reads every row, so tables over `--values-max-rows`
   are skipped, and `--no-profile` turns it off. Profiles appear at the next
   `export-kb`.
+- **A subquery re-run for every row is rewritten before it runs
+  (`NLQ_PLAN_CHECK`, on by default).** `WHERE o.total > (SELECT AVG(total)
+  FROM orders WHERE customer_id = o.customer_id)` is how the question reads,
+  and on PostgreSQL, MySQL, MariaDB and SQLite it runs as a loop that reads
+  `orders` again for every order: on SQLite, 40,000 rows took 41 s where the
+  same question as a join to a grouped derived table took 0.04 s. A statement
+  with a subquery in an expression now has its plan read first, with a plain
+  `EXPLAIN` that runs nothing; when the re-runs would read a billion rows or
+  more (`NLQ_PLAN_CHECK_MIN_ROW_READS`), the model is asked once for the same
+  statement with the subquery computed once. The rewrite runs only if it
+  validates and its own plan is clean; otherwise the statement runs as
+  written. The answer shows the statement that ran, and its provenance the
+  statement as generated (`plan_rewrite`). DuckDB does this rewrite itself,
+  and other engines are not checked.
 - **A second look at what a statement returned.** A statement can run without
   error and still miss the question. After it runs, the SQL agent now reads
   the result for signs of that: rows repeated exactly, a ranking
