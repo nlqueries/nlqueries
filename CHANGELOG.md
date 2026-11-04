@@ -54,6 +54,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   meanwhile without asking again. Not with `EMBED_SERVER_REQUIRED`, where the
   daemon is expected and is asked every time. A daemon that accepts the
   connection and does not answer in time is still reported as failing.
+- **A statement cut off by the output budget is written again, with room.** A
+  reply that ran out of output budget part-way through its SQL was returned as
+  it stood: the statement failed to parse and was corrected as a mistake,
+  within the correction tier's half of the budget, so a long statement was cut
+  off a second time; and one cut off at a clause boundary could parse and run,
+  answering another question. Clients now record that a reply was cut off
+  (`nlqueries.llm.output_was_cut_off()`), and a statement cut off before its
+  `</sql>` goes straight to the repair, which is told it ran out of room and
+  given the whole budget. A repair that is cut off too reports that, naming
+  `LLM_MAX_OUTPUT_TOKENS`, instead of a parse error, and a warning is logged
+  when the first reply is cut off.
 - **Valid SQL that reads a column through `SELECT *` is no longer refused.**
   The column check left stars unexpanded, so a column taken from a derived
   table, CTE or `UNION` written with `SELECT *` could not be resolved:

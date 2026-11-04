@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nlqueries.orchestrator.sql_generation import (
@@ -929,3 +929,117 @@ def test_the_repair_step_sends_the_projection_rule() -> None:
     assert result.attempt_count == 2, "the LLM repair must have run"
     assert len(seen) == 1
     assert "SELECT only the columns the question asks for" in seen[0]
+
+
+# ---------------------------------------------------------------------------
+# A statement the output budget cut off
+#
+# It ends mid-clause, or, cut at a clause boundary, parses and answers another
+# question. Either way it needs writing whole, with room to write it: the
+# correction tier's share of the budget cut a long statement off a second time.
+# ---------------------------------------------------------------------------
+
+
+def _recording_llm(reply: str, *, cut_off: bool = False) -> tuple[MagicMock, list[dict[str, Any]]]:
+    """An LLM whose repair returns *reply*, recording each call; *cut_off* makes
+    it finish the way a client does when the budget ran out."""
+    from nlqueries.llm.client import note_finish
+
+    calls: list[dict[str, Any]] = []
+    llm = MagicMock()
+    llm.supports_prompt_caching = False
+
+    async def _acomplete(system: Any, user: str, **kw: Any) -> str:
+        calls.append({"user": user, **kw})
+        note_finish("max_tokens" if cut_off else "end_turn", reply)
+        return reply
+
+    llm.acomplete = _acomplete
+    return llm, calls
+
+
+def _repair(sql: str, llm: MagicMock, *, cut_off: bool) -> SQLGenerationResult:
+    async def _run() -> SQLGenerationResult:
+        return await validate_and_repair(sql, _make_kb(), "postgres", llm, cut_off=cut_off)
+
+    with patch("nlqueries.config.SELF_CONSISTENCY", "all"):
+        return asyncio.run(_run())
+
+
+def test_a_cut_off_statement_that_parses_is_written_again_not_accepted() -> None:
+    """`SELECT id, total FROM orders` is valid, and is not what was asked: the
+    WHERE clause was still to come."""
+    from nlqueries.llm import output_budget
+
+    llm, calls = _recording_llm("<sql>SELECT id, total FROM orders WHERE total > 100</sql>")
+    with patch(
+        "nlqueries.orchestrator.candidates.generate_candidates",
+        side_effect=AssertionError("candidates are written on the smaller budget"),
+    ):
+        result = _repair("SELECT id, total FROM orders", llm, cut_off=True)
+
+    assert result.is_valid
+    assert "WHERE total > 100" in result.sql
+    assert result.attempt_count == 2
+    assert len(calls) == 1
+    assert calls[0]["max_tokens"] == output_budget("answer")
+    assert "ran out of room before the statement was complete" in calls[0]["user"]
+
+
+def test_an_invalid_statement_not_cut_off_keeps_the_correction_budget() -> None:
+    from nlqueries.llm import output_budget
+
+    llm, calls = _recording_llm("<sql>SELECT id FROM orders</sql>")
+    with patch("nlqueries.config.SELF_CONSISTENCY", "off"):
+
+        async def _run() -> SQLGenerationResult:
+            return await validate_and_repair(
+                "SELECT * FROM ghost_table", _make_kb(), "postgres", llm
+            )
+
+        result = asyncio.run(_run())
+
+    assert result.is_valid
+    assert calls[0]["max_tokens"] == output_budget("correction")
+    assert "ran out of room" not in calls[0]["user"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "<sql>SELECT id FROM orders WHERE total >",  # does not parse
+        "<sql>SELECT id FROM orders",  # parses, and is not complete
+    ],
+)
+def test_a_repair_cut_off_as_well_says_so(reply: str) -> None:
+    llm, _ = _recording_llm(reply, cut_off=True)
+    result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
+
+    assert not result.is_valid
+    assert result.validation_error is not None
+    assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
+
+
+def test_a_repair_cut_off_after_its_statement_closed_is_kept() -> None:
+    """Out of room in what followed </sql>; the statement itself is whole."""
+    llm, _ = _recording_llm(
+        "<sql>SELECT id FROM orders WHERE total > 100</sql> This lists", cut_off=True
+    )
+    result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
+
+    assert result.is_valid
+    assert "WHERE total > 100" in result.sql
+
+
+def test_a_fallback_repair_cut_off_says_so_too() -> None:
+    """Self-consistency that returns no candidate falls back to one reply; that
+    reply is checked for a cut-off like any other."""
+    llm, _ = _recording_llm("<sql>SELECT id FROM orders", cut_off=True)
+    with patch(
+        "nlqueries.orchestrator.candidates.generate_candidates", new=AsyncMock(return_value=[])
+    ):
+        result = _repair("SELECT * FROM ghost_table", llm, cut_off=False)
+
+    assert not result.is_valid
+    assert result.validation_error is not None
+    assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
