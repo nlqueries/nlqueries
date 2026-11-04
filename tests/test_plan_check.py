@@ -402,14 +402,20 @@ def test_a_plan_that_cannot_be_read_is_not_checked(outcome: Any) -> None:
 class _LLM:
     supports_prompt_caching = False
 
-    def __init__(self, reply: str | Exception, delay: float = 0.0) -> None:
+    def __init__(
+        self, reply: str | Exception, delay: float = 0.0, until: float | None = None
+    ) -> None:
+        """*delay* is how long the call takes; *until*, a ``time.monotonic()``
+        value, makes it last until then instead, however long setup took."""
         self._reply = reply
         self._delay = delay
+        self._until = until
         self.calls: list[str] = []
 
     async def acomplete(self, system: Any, user: str, **_kw: Any) -> str:
         self.calls.append(user)
-        await asyncio.sleep(self._delay)
+        delay = self._delay if self._until is None else self._until - time.monotonic()
+        await asyncio.sleep(max(0.0, delay))
         if isinstance(self._reply, Exception):
             raise self._reply
         return self._reply
@@ -619,9 +625,9 @@ def test_with_time_for_it_a_rewrite_starts(sqlite_connector: Any) -> None:
 def test_each_explain_is_bounded_by_the_time_left() -> None:
     connector = MagicMock()
     connector.execute_query.return_value = _plan_result()
-    _check(connector, _LLM(""), deadline=time.monotonic() + 2.5)
+    _check(connector, _LLM(""), deadline=time.monotonic() + 4)
     timeout = connector.execute_query.call_args.args[1]
-    assert 1.0 <= timeout <= 2.5
+    assert 1.0 <= timeout <= 4 < 5.0
     _check(connector, _LLM(""))
     assert connector.execute_query.call_args.args[1] == 5.0
 
@@ -759,10 +765,13 @@ def test_whatever_runs_after_the_rewrite_call_is_bounded_by_the_time_left(
 def test_with_under_a_second_left_after_the_rewrite_call_nothing_runs(
     sqlite_connector: Any,
 ) -> None:
-    # Room for the call when it starts (3 s left, none spent); 0.5 s after it.
+    # Room for the call when it starts (8 s left, far less spent); the call
+    # ends half a second before the deadline. Timed against the deadline, not
+    # from the start, so a slow setup cannot take the room away first.
     connector = MagicMock(wraps=sqlite_connector)
-    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>", delay=2.5)
-    frame, _span = _ask(connector, llm, deadline=time.monotonic() + 3)
+    deadline = time.monotonic() + 8
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>", until=deadline - 0.5)
+    frame, _span = _ask(connector, llm, deadline=deadline)
     assert len(llm.calls) == 1
     assert _ran(connector, _CORRELATED) == [] and _ran(connector, _AS_A_JOIN) == []
     assert frame["sql_table"]["error"].startswith("Not run: the caller's deadline")
