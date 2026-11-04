@@ -107,6 +107,15 @@ _MYSQL_OUTER = frozenset({"PRIMARY", "SIMPLE"})
 
 
 @dataclass(frozen=True)
+class PlanCheck:
+    """What `check_plan` decided: the statement to run, and whether a model
+    call was made on the way, which the caller's deadline has to account for."""
+
+    result: SQLGenerationResult
+    asked_model: bool = False
+
+
+@dataclass(frozen=True)
 class PerRowScan:
     """A table a subquery reads in full, once for each row of the outer query."""
 
@@ -486,7 +495,7 @@ async def check_plan(
     system: str | list[dict[str, Any]],
     started: float | None = None,
     deadline: float | None = None,
-) -> SQLGenerationResult:
+) -> PlanCheck:
     """The statement to run in place of *result*: a rewrite, or *result* itself.
 
     *result* comes back unchanged unless its plan re-runs a subquery per row
@@ -494,22 +503,24 @@ async def check_plan(
     has room for a rewrite (`_room_for_rewrite`, with *started* when the
     attempt began), and the rewrite is valid, different, and its own plan shows
     no such subquery. Each ``EXPLAIN`` is bounded by the time left. Advisory
-    throughout: whatever fails leaves *result* to run.
+    throughout: whatever fails leaves *result* to run. The caller learns too
+    whether the model was asked (`PlanCheck.asked_model`), since whatever
+    runs after that call starts later than the caller planned for.
 
     Whenever a rewrite is due, the outcome goes into the answer's provenance as
     ``plan_rewrite``, with the statement as generated, since a structural
     rewrite is the step after validation most likely to change an answer.
     """
     if not config.PLAN_CHECK or not result.is_valid:
-        return result
+        return PlanCheck(result)
     timeout = _explain_timeout(deadline)
     if timeout is None:
-        return result
+        return PlanCheck(result)
     flagged = _over_limit(
         await per_row_scans(result.sql, dialect, connector, knowledge_base, timeout)
     )
     if not flagged:
-        return result
+        return PlanCheck(result)
     findings = [s.describe() for s in flagged]
     _log.info("The plan re-runs a subquery for every outer row: %s", "; ".join(findings))
 
@@ -524,7 +535,7 @@ async def check_plan(
 
     if not _room_for_rewrite(started, deadline):
         outcome("skipped: too little time before the deadline", attempted=False)
-        return result
+        return PlanCheck(result)
     try:
         rewritten = await rewrite_per_row_subqueries(
             result.sql,
@@ -539,17 +550,17 @@ async def check_plan(
     except Exception:  # noqa: BLE001 - the statement as written still answers
         _log.warning("Rewriting a per-row subquery failed; running it as written.", exc_info=True)
         outcome("failed: the model call raised")
-        return result
+        return PlanCheck(result, asked_model=True)
     if not rewritten.is_valid:
         _log.info(
             "A rewrite of a per-row subquery was refused by validation and not run: %s",
             rewritten.validation_error,
         )
         outcome("rejected: refused by validation")
-        return result
+        return PlanCheck(result, asked_model=True)
     if _same_statement(rewritten.sql, result.sql, dialect):
         outcome("rejected: returned unchanged")
-        return result
+        return PlanCheck(result, asked_model=True)
     timeout = _explain_timeout(deadline)
     after = (
         None
@@ -559,10 +570,10 @@ async def check_plan(
     if after is None:
         _log.info("The plan of a rewrite could not be read; running the statement as written.")
         outcome("rejected: its plan could not be read")
-        return result
+        return PlanCheck(result, asked_model=True)
     if _over_limit(after):
         _log.info("A rewrite of a per-row subquery was no better; running it as written.")
         outcome("rejected: still re-runs a subquery per row")
-        return result
+        return PlanCheck(result, asked_model=True)
     outcome(None)
-    return rewritten
+    return PlanCheck(rewritten, asked_model=True)

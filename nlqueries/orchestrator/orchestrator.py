@@ -260,6 +260,14 @@ def _correction_budget(
     return True, remaining if budget <= 0 else min(budget, remaining)
 
 
+class _DeadlineSpent(RuntimeError):
+    """Too little of the caller's deadline is left to start the statement.
+
+    Raised inside the execution block, whose handler reports it as the
+    frame's error, as any failure to run is reported.
+    """
+
+
 def _json_default(obj: Any) -> Any:
     """Coerce DB-driver types that json.dumps can't handle."""
     if isinstance(obj, decimal.Decimal):
@@ -324,9 +332,12 @@ class Orchestrator:
                       section). Core stays agnostic to its content.
             deadline: When the caller stops waiting for the whole turn, as a
                       ``time.monotonic()`` value, for a caller that bounds the
-                      turn with its own wall clock. It gates only the one
-                      correction after a database error (see
-                      ``_retry_after_error``); ``None`` leaves it ungated.
+                      turn with its own wall clock. It gates the two model
+                      calls that can follow generation, the plan check's
+                      rewrite (see ``plan_check``) and the one correction
+                      after a database error (see ``_retry_after_error``),
+                      and bounds what runs after either by the time left;
+                      ``None`` leaves them ungated.
 
         Yields:
             String tokens from the LLM reasoning response, then a final JSON
@@ -502,7 +513,7 @@ class Orchestrator:
                         # database would re-run for every outer row over a
                         # large table; a rewrite replaces it only when its own
                         # plan shows none. See `plan_check`.
-                        planned = await check_plan(
+                        checked = await check_plan(
                             result,
                             connector,
                             question=prompt.user_content(),
@@ -514,15 +525,23 @@ class Orchestrator:
                             deadline=deadline,
                         )
                         run_timeout = timeout_seconds
-                        if planned is not result:
+                        if checked.result is not result:
                             span.set_attribute("plan_rewrite", True)
-                            result = planned
+                            result = checked.result
                             span.set_attribute("attempt_count", result.attempt_count)
-                            # Started after a model call: bounded by the time
-                            # left, as a correction is.
+                        if checked.asked_model:
+                            # Whatever runs after the rewrite call, the rewrite
+                            # or the statement it did not replace, is bounded
+                            # by the time left, as a correction is, and with
+                            # too little left it does not start: no one would
+                            # be waiting for it.
                             runnable, clamped = _correction_budget(timeout_seconds, deadline)
-                            if runnable:
-                                run_timeout = clamped
+                            if not runnable:
+                                raise _DeadlineSpent(
+                                    "Not run: the caller's deadline left too little time "
+                                    "after the plan check's rewrite request."
+                                )
+                            run_timeout = clamped
                         qr = await asyncio.to_thread(
                             connector.execute_query, result.sql, run_timeout
                         )

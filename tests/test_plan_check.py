@@ -402,12 +402,14 @@ def test_a_plan_that_cannot_be_read_is_not_checked(outcome: Any) -> None:
 class _LLM:
     supports_prompt_caching = False
 
-    def __init__(self, reply: str | Exception) -> None:
+    def __init__(self, reply: str | Exception, delay: float = 0.0) -> None:
         self._reply = reply
+        self._delay = delay
         self.calls: list[str] = []
 
     async def acomplete(self, system: Any, user: str, **_kw: Any) -> str:
         self.calls.append(user)
+        await asyncio.sleep(self._delay)
         if isinstance(self._reply, Exception):
             raise self._reply
         return self._reply
@@ -423,8 +425,9 @@ def _first(sql: str = _CORRELATED) -> SQLGenerationResult:
     )
 
 
-#: The provenance the last `_check` recorded.
+#: The provenance the last `_check` recorded, and whether it asked the model.
 _RECORDED: dict[str, Provenance] = {}
+_ASKED: dict[str, bool] = {}
 
 
 def _check(
@@ -438,7 +441,7 @@ def _check(
     first = _first()
     _RECORDED["last"] = collected = Provenance()
     with use_provenance(collected):
-        return asyncio.run(
+        checked = asyncio.run(
             check_plan(
                 first,
                 connector,
@@ -451,6 +454,8 @@ def _check(
                 deadline=deadline,
             )
         )
+    _ASKED["last"] = checked.asked_model
+    return checked.result
 
 
 def _rewrite_record() -> dict[str, Any] | None:
@@ -732,6 +737,60 @@ def test_the_orchestrator_bounds_the_rewrite_by_the_time_left(sqlite_connector: 
     [timeout] = _ran(connector, _AS_A_JOIN)
     # Not the 120 s statement timeout: what is left of the caller's 60.
     assert timeout is not None and 50 < timeout <= 60
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [(f"<sql>{_AS_A_JOIN}</sql>", _AS_A_JOIN), ("<sql>SELECT id FROM ghost</sql>", _CORRELATED)],
+    ids=["rewrite-kept", "rewrite-refused"],
+)
+def test_whatever_runs_after_the_rewrite_call_is_bounded_by_the_time_left(
+    sqlite_connector: Any, reply: str, expected: str
+) -> None:
+    # Kept or refused, the statement starts after a model call the caller's
+    # 60 s also had to pay for.
+    connector = MagicMock(wraps=sqlite_connector)
+    frame, _span = _ask(connector, _LLM(reply), deadline=time.monotonic() + 60)
+    assert frame["sql"] == expected
+    [timeout] = _ran(connector, expected)
+    assert timeout is not None and 50 < timeout <= 60
+
+
+def test_with_under_a_second_left_after_the_rewrite_call_nothing_runs(
+    sqlite_connector: Any,
+) -> None:
+    # Room for the call when it starts (3 s left, none spent); 0.5 s after it.
+    connector = MagicMock(wraps=sqlite_connector)
+    llm = _LLM(f"<sql>{_AS_A_JOIN}</sql>", delay=2.5)
+    frame, _span = _ask(connector, llm, deadline=time.monotonic() + 3)
+    assert len(llm.calls) == 1
+    assert _ran(connector, _CORRELATED) == [] and _ran(connector, _AS_A_JOIN) == []
+    assert frame["sql_table"]["error"].startswith("Not run: the caller's deadline")
+
+
+@pytest.mark.parametrize(
+    ("sizes", "reply", "asked"),
+    [
+        ({"orders": 10}, "", False),
+        (None, f"<sql>{_AS_A_JOIN}</sql>", True),
+        (None, f"<sql>{_CORRELATED}</sql>", True),
+        (None, RuntimeError("provider unavailable"), True),
+    ],
+    ids=["no-rewrite-due", "kept", "unchanged", "llm-failed"],
+)
+def test_the_caller_is_told_whether_the_model_was_asked(
+    sqlite_connector: Any, sizes: Any, reply: Any, asked: bool
+) -> None:
+    _check(sqlite_connector, _LLM(reply), sizes=sizes)
+    assert _ASKED["last"] is asked
+
+
+def test_the_caller_is_told_the_model_was_not_asked_when_time_ran_short(
+    sqlite_connector: Any,
+) -> None:
+    now = time.monotonic()
+    _check(sqlite_connector, _LLM(f"<sql>{_AS_A_JOIN}</sql>"), started=now - 10, deadline=now + 3)
+    assert _ASKED["last"] is False
 
 
 def test_the_orchestrator_counts_the_time_generation_took(sqlite_connector: Any) -> None:
