@@ -58,31 +58,31 @@ def test_rows_of_unhashable_values_are_compared() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT name, born FROM drivers ORDER BY born ASC LIMIT 1",
-        "SELECT name, born AS birth FROM drivers ORDER BY birth LIMIT 3",
-        "SELECT name, MIN(born) FROM drivers GROUP BY name ORDER BY MIN(born) LIMIT 1",
+        "SELECT name, joined FROM members ORDER BY joined ASC LIMIT 1",
+        "SELECT name, joined AS since FROM members ORDER BY since LIMIT 3",
+        "SELECT name, MIN(joined) FROM members GROUP BY name ORDER BY MIN(joined) LIMIT 1",
     ],
 )
 def test_a_ranking_headed_by_null_is_repairable(sql: str) -> None:
-    result = _result(["name", "born"], [["Ray", None], ["Ann", "1950-01-01"]])
+    result = _result(["name", "joined"], [["Kim", None], ["Ann", "1950-01-01"]])
     assert _kinds(sql, result) == {"null_heads_a_ranking": True}
 
 
 def test_a_ranking_headed_by_a_value_is_fine() -> None:
-    sql = "SELECT name, born FROM drivers ORDER BY born ASC LIMIT 1"
-    assert _kinds(sql, _result(["name", "born"], [["Ann", "1950-01-01"]])) == {}
+    sql = "SELECT name, joined FROM members ORDER BY joined ASC LIMIT 1"
+    assert _kinds(sql, _result(["name", "joined"], [["Ann", "1950-01-01"]])) == {}
 
 
 def test_nulls_first_asked_for_in_so_many_words_is_fine() -> None:
-    sql = "SELECT name, born FROM drivers ORDER BY born DESC NULLS FIRST LIMIT 1"
-    assert _kinds(sql, _result(["name", "born"], [["Ray", None]])) == {}
+    sql = "SELECT name, joined FROM members ORDER BY joined DESC NULLS FIRST LIMIT 1"
+    assert _kinds(sql, _result(["name", "joined"], [["Kim", None]])) == {}
 
 
 def test_nulls_first_by_default_is_still_checked() -> None:
     """PostgreSQL sorts NULL first in a descending sort without being asked; sqlglot
     records that default as though it were written, so it is not trusted."""
-    sql = "SELECT name, score FROM drivers ORDER BY score DESC LIMIT 1"
-    assert _kinds(sql, _result(["name", "score"], [["Ray", None]])) == {
+    sql = "SELECT name, score FROM members ORDER BY score DESC LIMIT 1"
+    assert _kinds(sql, _result(["name", "score"], [["Kim", None]])) == {
         "null_heads_a_ranking": True
     }
 
@@ -90,12 +90,12 @@ def test_nulls_first_by_default_is_still_checked() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT name FROM drivers ORDER BY born LIMIT 1",  # key not returned
-        "SELECT name, born FROM drivers ORDER BY born",  # no LIMIT: not a ranking
+        "SELECT name FROM members ORDER BY joined LIMIT 1",  # key not returned
+        "SELECT name, joined FROM members ORDER BY joined",  # no LIMIT: not a ranking
     ],
 )
 def test_a_ranking_whose_key_cannot_be_seen_is_not_judged(sql: str) -> None:
-    assert _kinds(sql, _result(["name", "born"], [[None, None]])) == {}
+    assert _kinds(sql, _result(["name", "joined"], [[None, None]])) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ def test_a_ranking_whose_key_cannot_be_seen_is_not_judged(sql: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", [988424.0, -3, Decimal("100.5")])
+@pytest.mark.parametrize("value", [2500.0, -3, Decimal("100.5")])
 def test_a_percentage_out_of_range_is_repairable(value: Any) -> None:
     sql = "SELECT region, share_percent FROM shares"
     result = _result(["region", "share_percent"], [["North", 40], ["South", value]])
