@@ -188,6 +188,7 @@ class _Recorder:
             latency_ms=1,
             session_id=None,
             provenance=None,
+            result_notes=[],
         )
 
     def orchestrator(self) -> Any:

@@ -40,10 +40,13 @@ from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
+from nlqueries.orchestrator.result_checks import check_result
 from nlqueries.orchestrator.sql_generation import (
+    SQLGenerationResult,
     _extract_sql,
     _same_statement,
     repair_after_execution_error,
+    repair_after_suspicious_result,
     validate_and_repair,
 )
 from nlqueries.state_files import agent_storage_id
@@ -258,6 +261,99 @@ def _correction_budget(
         budget = timeout_seconds
     # Zero or less is the connectors' "no timeout": the deadline is the only bound.
     return True, remaining if budget <= 0 else min(budget, remaining)
+
+
+async def _second_look(
+    result: SQLGenerationResult,
+    qr: QueryResult,
+    *,
+    connector: Any,
+    question: str,
+    kb: dict[str, Any],
+    dialect: str,
+    llm: Any,
+    system: Any,
+    timeout_seconds: float | None,
+    deadline: float | None,
+) -> tuple[SQLGenerationResult, QueryResult, list[str]]:
+    """Check what a statement returned, and correct it once if it looks wrong.
+
+    `check_result` reads the result for signs the statement missed the
+    question. For one it can name with confidence -- repeated rows, a ranking
+    headed by a row with no value, a percentage outside 0 to 100 -- the model
+    is asked once to correct the statement, and the correction runs on the same
+    connector, so the same row filters apply. It replaces the original only if
+    it runs without error and its own result shows none of those signs; an
+    answer that only trades one doubt for another is not better. Whatever still
+    looks wrong comes back as notes for the user, as do the signs a rule cannot
+    judge, such as an empty result.
+
+    Returns the statement and result to report, and the notes. The checks are
+    advisory: one that raises leaves the rows as they ran, with no notes.
+    """
+    try:
+        concerns = check_result(result.sql, qr, dialect)
+    except Exception:  # noqa: BLE001
+        _log.warning("Checking a result failed; reporting it unchecked.", exc_info=True)
+        return result, qr, []
+    repairable = [c.detail for c in concerns if c.repairable]
+    notes = [c.detail for c in concerns]
+    if not repairable or not _correction_budget(timeout_seconds, deadline)[0]:
+        return result, qr, notes
+    try:
+        corrected = await repair_after_suspicious_result(
+            result.sql, repairable, question, kb, dialect, llm, system, result.attempt_count
+        )
+    except Exception:  # noqa: BLE001
+        # The rows are an answer; a failed second look must not replace them.
+        _log.warning("Correcting SQL after a doubtful result failed.", exc_info=True)
+        return result, qr, notes
+    if not corrected.is_valid:
+        _log.info(
+            "A correction after a doubtful result was refused by validation and not run: %s",
+            corrected.validation_error,
+        )
+        return result, qr, notes
+    if _same_statement(corrected.sql, result.sql, dialect):
+        # The model judged the result right for the question.
+        return result, qr, notes
+    runnable, correction_timeout = _correction_budget(timeout_seconds, deadline)
+    if not runnable:
+        return result, qr, notes
+    try:
+        retried = await asyncio.to_thread(
+            connector.execute_query, corrected.sql, correction_timeout
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("A correction after a doubtful result could not be run.", exc_info=True)
+        return result, qr, notes
+    if retried.error is not None:
+        return result, qr, notes
+    try:
+        after = check_result(corrected.sql, retried, dialect)
+    except Exception:  # noqa: BLE001
+        _log.warning("Checking a corrected result failed; keeping the first.", exc_info=True)
+        return result, qr, notes
+    if any(c.repairable for c in after):
+        return result, qr, notes
+    kept = [c.detail for c in after]
+    if any(c.kind == "duplicate_rows" for c in concerns if c.repairable):
+        # A correction for repeated rows always comes back without them, so
+        # passing the check says nothing about it, and the repeats may have
+        # been separate records a join made look alike. Both counts are told,
+        # so the user can judge which result is right.
+        kept.insert(0, _deduplicated_note(qr.row_count, retried.row_count))
+    return corrected, retried, kept
+
+
+def _deduplicated_note(before: int, after: int) -> str:
+    """The note kept beside a correction made for repeated rows."""
+    return (
+        f"The statement first returned {before} rows, some of them identical; these "
+        f"{after} come from a corrected statement that returns none twice. If the "
+        "identical rows were separate records, two orders of the same amount for "
+        "instance, the first result was right."
+    )
 
 
 def _json_default(obj: Any) -> Any:
@@ -489,6 +585,7 @@ class Orchestrator:
             # opposite default would execute model output against a customer's
             # database.
             sql_table: dict[str, Any] = {}
+            result_notes: list[str] = []
             if result.is_valid and execution.may_execute:
                 from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
 
@@ -619,6 +716,22 @@ class Orchestrator:
                                         # Set before execution above; re-set so
                                         # the span agrees with the frame.
                                         span.set_attribute("attempt_count", result.attempt_count)
+                        checked, qr, result_notes = await _second_look(
+                            result,
+                            qr,
+                            connector=connector,
+                            question=prompt.user_content(),
+                            kb=kb,
+                            dialect=dialect,
+                            llm=llm,
+                            system=system,
+                            timeout_seconds=timeout_seconds,
+                            deadline=deadline,
+                        )
+                        if checked is not result:
+                            span.set_attribute("result_repaired", True)
+                            result = checked
+                            span.set_attribute("attempt_count", result.attempt_count)
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
@@ -629,22 +742,24 @@ class Orchestrator:
             query_latency.record(elapsed_ms, {"dialect": dialect, "agent_type": "sql"})
             record_timing("sql_ms", elapsed_ms)  # provenance (SYL-1.1)
 
-            yield json.dumps(
-                {
-                    "type": "sql",
-                    "sql": result.sql,
-                    "is_valid": result.is_valid,
-                    # What the request was actually permitted to do, so a caller
-                    # can tell "no rows because nothing ran" from "no rows in
-                    # the table" without guessing from an empty result.
-                    "execution_mode": execution.mode.value,
-                    "validation_error": result.validation_error,
-                    "dialect": result.dialect,
-                    "attempt_count": result.attempt_count,
-                    "sql_table": sql_table or None,
-                },
-                default=_json_default,
-            )
+            frame: dict[str, Any] = {
+                "type": "sql",
+                "sql": result.sql,
+                "is_valid": result.is_valid,
+                # What the request was actually permitted to do, so a caller
+                # can tell "no rows because nothing ran" from "no rows in the
+                # table" without guessing from an empty result.
+                "execution_mode": execution.mode.value,
+                "validation_error": result.validation_error,
+                "dialect": result.dialect,
+                "attempt_count": result.attempt_count,
+                "sql_table": sql_table or None,
+            }
+            # Only when there is something to say, so every other frame is as
+            # it was. What still looks wrong about the rows: see `_second_look`.
+            if result_notes:
+                frame["result_notes"] = result_notes
+            yield json.dumps(frame, default=_json_default)
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:
         """Load and return the YAML knowledge base for *agent_id*.
