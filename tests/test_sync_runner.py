@@ -271,6 +271,40 @@ class TestExtraDynamicContext:
             result = asyncio.run(run_query("q?", "agent1"))
         assert result.nexus_warnings == []
 
+    def test_result_notes_are_carried_from_the_chunk(self) -> None:
+        chunk = json.loads(_SQL_FINAL_CHUNK)
+        chunk["result_notes"] = ["No rows matched."]
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory([json.dumps(chunk)])
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.resolve_followup",
+                return_value=_NO_FOLLOWUP,
+            ),
+        ):
+            result = asyncio.run(run_query("q?", "agent1"))
+        assert result.result_notes == ["No rows matched."]
+
+    def test_result_notes_default_empty(self) -> None:
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory([_SQL_FINAL_CHUNK])
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.resolve_followup",
+                return_value=_NO_FOLLOWUP,
+            ),
+        ):
+            result = asyncio.run(run_query("q?", "agent1"))
+        assert result.result_notes == []
+
 
 class TestTruncationSurvivesTheChunk:
     """The `sql_table` frame is JSON on the way out and a QueryResult on the way

@@ -22,6 +22,7 @@ def _make_result(
     sql_result: Any = None,
     citations: list[Any] | None = None,
     latency_ms: int = 250,
+    result_notes: list[str] | None = None,
 ) -> MagicMock:
     r = MagicMock()
     r.answer = answer
@@ -31,6 +32,7 @@ def _make_result(
     r.citations = citations or []
     r.latency_ms = latency_ms
     r.provenance = None  # default (no --explain); matches real AgentQueryResult
+    r.result_notes = result_notes or []  # a list, as on AgentQueryResult
     return r
 
 
@@ -104,6 +106,35 @@ class TestListAgents:
 
 
 class TestQuery:
+    @pytest.mark.anyio
+    async def test_result_notes_follow_the_rows(self) -> None:
+        """What still looked wrong about the rows reaches the assistant."""
+        from nlqueries.mcp_server.server import query
+
+        note = "No rows matched. If you expected some, a filter may be narrower than intended."
+        result = _make_result(result_notes=[note])
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            return_value=result,
+        ):
+            out = await query("How many lost orders?", "sales")
+
+        assert f"**Note**\n- {note}" in out
+
+    @pytest.mark.anyio
+    async def test_no_note_heading_without_notes(self) -> None:
+        from nlqueries.mcp_server.server import query
+
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            return_value=_make_result(),
+        ):
+            out = await query("How many orders?", "sales")
+
+        assert "**Note**" not in out
+
     @pytest.mark.anyio
     async def test_answer_always_present(self) -> None:
         from nlqueries.mcp_server.server import query

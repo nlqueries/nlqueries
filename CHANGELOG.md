@@ -4,6 +4,24 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Added
+
+- **A second look at what a statement returned.** A statement can run without
+  error and still miss the question. After it runs, the SQL agent now reads
+  the result for signs of that: rows repeated exactly, a ranking
+  (`ORDER BY ... LIMIT`) headed by a row with no value for its key, and a
+  column named as a percentage holding a value outside 0 to 100. For these it
+  asks the model once to correct the statement, telling it what looks wrong
+  and that it may keep the statement if the question means it, and runs the
+  correction; it is kept only if its own result shows none of those signs.
+  What still looks wrong, and what a rule cannot judge -- no rows from a
+  filter, totals that came back zero -- is returned as `result_notes` on the
+  frame and on `AgentQueryResult`, printed by `nlqueries query` after the rows
+  (and in its `--json`), and added to the MCP `query` reply. Only when the
+  request may execute; generate-only requests are unchanged. The checks run
+  no query and call no model; a correction costs one model call and one
+  statement, within the request's deadline.
+
 ### Changed
 
 - **OpenAI defaults to GPT-5.** With only `OPENAI_API_KEY` set, `LLM_MODEL`
