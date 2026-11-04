@@ -769,13 +769,17 @@ ANSWER_RULE_PHRASES = [
     "id column stays where the question names it, never moved to the front",
     "A field, count, total, average or rank the question names is a requested column",
     "with no breakdown asked for returns a single number with no grouping column",
-    # A per-entity figure says which entity each row is about: the column the
-    # question names, else a name, else the whole key.
+    # A per-entity figure is grouped by what tells the entities apart, the
+    # column the question names or else the whole key, never by a name two
+    # entities can share; and it says which entity each row is about.
     "When the question asks for a figure for each entity",
-    "return what names the entity beside the",
-    "so each row says what it is about",
+    "group by the column the question names for it",
     '("in each city" names the city column)',
-    "else its name or title, else its key (every column",
+    "else by the entity's key (every column of it, where it has more than one)",
+    "since two entities can share a name",
+    "Return beside the figure what names the entity",
+    "so each row says what it is about",
+    "that column, else its name or title, else its key",
     "Never add an id beside a name",
     "never return a url or a code in place of a name it asked for",
     "A person's full name is the first name and the last name, as two columns",
@@ -812,6 +816,7 @@ ANSWER_RULE_PHRASES = [
     "When the question orders, compares or adds a text column that holds numbers",
     "cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery)",
     "Return the column as stored: for its largest value, keep the",
+    "rather than returning MAX(CAST(...)) itself",
     "A plain cast reads only digits and a decimal point: where the values shown carry",
     "(a decimal comma becomes a point, not removed: '1,5' is 1.5)",
     "When the question only asks for the value, do not",

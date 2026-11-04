@@ -193,14 +193,16 @@ def _excerpt_block(label: str, text: str) -> str:
 #: a key leading its row. Its net effect is not yet measured; the re-run after
 #: these rule changes is that measurement.
 #:
-#: The per-entity rule: a figure given per entity says which entity each row is
-#: about, by the column the question names for it, else a name or title, else
-#: the whole key. Rows of bare figures, or of keys, are right and useless to the
+#: The per-entity rule: a figure given per entity is grouped by the column the
+#: question names for the entity, else by the entity's whole key, and says which
+#: entity each row is about, by that column, else a name or title, else the key.
+#: Grouping and label are separate: grouped by a name, two customers who share
+#: it are added together, and grouped by half of a two-column key, distinct
+#: entities are. Rows of bare figures, or of keys, are right and useless to the
 #: person who asked. Added anywhere else, an id crowded out the columns asked
-#: for, or a url came back in place of the name the question wanted. The whole
-#: key, since half of a two-column key groups distinct entities together. The
-#: first rule names this as its one exception, so the two are not weighed afresh
-#: each time.
+#: for, or a url came back in place of the name the question wanted. The first
+#: rule names this as its one exception, so the two are not weighed afresh each
+#: time.
 #:
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
@@ -251,10 +253,11 @@ exception, what names the entity a figure is given for, is set out below.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \
 returns a single number with no grouping column.
 - When the question asks for a figure for each entity ("how many orders each customer \
-placed", "the average price per category"), return what names the entity beside the \
-figure, so each row says what it is about: the column the question names for it ("in \
-each city" names the city column), else its name or title, else its key (every column \
-of it, where it has more than one). Never add an id beside a name, and never return a \
+placed", "the average price per category"), group by the column the question names for \
+it ("in each city" names the city column), else by the entity's key (every column of it, \
+where it has more than one), since two entities can share a name. Return beside the \
+figure what names the entity, so each row says what it is about: that column, else its \
+name or title, else its key. Never add an id beside a name, and never return a \
 url or a code in place of a name it asked for: "who" asks for the name.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
@@ -278,8 +281,9 @@ counts as 0 where a count is asked for. If unsure, use an inner join.
 - When the question orders, compares or adds a text column that holds numbers, use its \
 cast to a numeric type the dialect accepts (REAL in SQLite, FLOAT64 in BigQuery): as \
 text, '9' sorts above '10'. Return the column as stored: for its largest value, keep the \
-rows whose cast equals the largest cast, not MAX(CAST(...)), since a converted copy is \
-not the value asked for. A plain cast reads only digits and a decimal point: \
+rows whose cast equals the largest cast, compared in a subquery, rather than returning \
+MAX(CAST(...)) itself, since a converted copy is not the value asked for. A plain cast \
+reads only digits and a decimal point: \
 where the values shown carry \
 anything else, remove it inside the cast (a decimal comma becomes a point, not removed: \
 '1,5' is 1.5), or the cast gives 0 or the leading digits on \
