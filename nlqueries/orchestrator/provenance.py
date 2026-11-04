@@ -76,6 +76,10 @@ class Provenance:
     # is False when the deadline left no room for the call; "reason" says why a
     # rewrite did not replace the statement.
     plan_rewrite: dict[str, Any] | None = None
+    # The statement checked against the model's plan line, when they disagreed:
+    # {"plan": str, "mismatches": [...], "attempted": bool, "changed": bool,
+    # "reason": str | None}, or None when they agreed or there was no plan line.
+    grain_check: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +109,11 @@ class Provenance:
                 None
                 if self.plan_rewrite is None
                 else {**self.plan_rewrite, "findings": list(self.plan_rewrite["findings"])}
+            ),
+            "grain_check": (
+                None
+                if self.grain_check is None
+                else {**self.grain_check, "mismatches": list(self.grain_check["mismatches"])}
             ),
         }
 
@@ -209,6 +218,27 @@ def record_plan_rewrite(
             "changed": changed,
             "original_sql": original_sql,
             "findings": list(findings),
+            "reason": reason,
+        }
+
+
+def record_grain_check(
+    *,
+    plan: str,
+    mismatches: list[str],
+    attempted: bool,
+    changed: bool,
+    reason: str | None = None,
+) -> None:
+    """The statement disagreed with the model's *plan* line (*mismatches*);
+    *changed* when the repair replaced it, and *reason* why not."""
+    p = _collector.get()
+    if p is not None:
+        p.grain_check = {
+            "plan": plan,
+            "mismatches": list(mismatches),
+            "attempted": attempted,
+            "changed": changed,
             "reason": reason,
         }
 

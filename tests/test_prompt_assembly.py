@@ -902,7 +902,7 @@ def test_the_answer_rules_sit_in_the_instructions_block() -> None:
     instructions = static.index("## Instructions")
     first = static.index("SELECT only the columns the question asks for")
     last = static.index("not a boolean expression")
-    assert instructions < first < last < static.index("First, briefly explain your reasoning")
+    assert instructions < first < last < static.index("Then briefly explain your reasoning")
 
 
 def test_static_system_with_the_rule_is_identical_across_questions() -> None:

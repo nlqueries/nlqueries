@@ -497,7 +497,12 @@ def _sql_format_rules(answer_rules: str) -> str:
 - Generate only a single SELECT SQL statement.
 - Use only tables and columns present in the schema above.
 {answer_rules}
-- First, briefly explain your reasoning in 2-4 sentences (plain text).
+- First, write one line saying what the answer is made of, in this form:
+Plan: rows = one <thing> per row, key <table.column>; counted = <thing>, once each by \
+<table.column>; filters = <conditions>
+Write rows = a single row when the answer is one number or value, counted = none when \
+nothing is counted, and filters = none when nothing is filtered.
+- Then briefly explain your reasoning in 2-4 sentences (plain text).
 - Then output the SQL between EXACTLY these markers — nothing before or after:
 
 <sql>

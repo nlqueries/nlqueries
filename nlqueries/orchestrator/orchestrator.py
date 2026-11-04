@@ -37,6 +37,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
+from nlqueries.orchestrator.grain_check import check_grain
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
@@ -576,6 +577,24 @@ class Orchestrator:
                 question=question,
                 cut_off=cut_off,
             )
+            # The statement checked against the plan line the model wrote
+            # before it, which says what one row is and what is counted; a
+            # disagreement gets one repair. See `grain_check`. Before execution,
+            # so a generate-only request gets the same statement.
+            grain = await check_grain(
+                result,
+                "".join(all_tokens),
+                question=prompt.user_content(),
+                knowledge_base=kb,
+                dialect=dialect,
+                llm=llm,
+                system=system,
+                started=attempt_started,
+                deadline=deadline,
+            )
+            if grain.result is not result:
+                span.set_attribute("grain_repair", True)
+                result = grain.result
 
             span.set_attribute("sql_valid", result.is_valid)
             span.set_attribute("attempt_count", result.attempt_count)
@@ -626,17 +645,17 @@ class Orchestrator:
                             span.set_attribute("plan_rewrite", True)
                             result = plan.result
                             span.set_attribute("attempt_count", result.attempt_count)
-                        if plan.asked_model:
-                            # Whatever runs after the rewrite call, the rewrite
-                            # or the statement it did not replace, is bounded
-                            # by the time left, as a correction is, and with
-                            # too little left it does not start: no one would
-                            # be waiting for it.
+                        if grain.asked_model or plan.asked_model:
+                            # Whatever runs after a repair or rewrite call, the
+                            # new statement or the one it did not replace, is
+                            # bounded by the time left, as a correction is, and
+                            # with too little left it does not start: no one
+                            # would be waiting for it.
                             runnable, clamped = _correction_budget(timeout_seconds, deadline)
                             if not runnable:
                                 raise _DeadlineSpent(
                                     "Not run: the caller's deadline left too little time "
-                                    "after the plan check's rewrite request."
+                                    "after a request to the model to rewrite the statement."
                                 )
                             run_timeout = clamped
                         qr = await asyncio.to_thread(
