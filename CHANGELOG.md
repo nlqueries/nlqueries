@@ -18,6 +18,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **No embedding daemon no longer costs two seconds per embedding on
+  Windows.** Windows refuses a connection to a port nobody listens on only
+  after about two seconds of retries, longer than
+  `EMBED_CLIENT_TIMEOUT_SECONDS`, so with no daemon running every embedding
+  call waited out the timeout and then warned that the daemon was failing (no
+  response) rather than not running. A connection not accepted in time now
+  counts as no daemon, and a process remembers that for
+  `EMBED_CLIENT_ABSENT_RECHECK_SECONDS` (default 30), embedding in-process
+  meanwhile without asking again. Not with `EMBED_SERVER_REQUIRED`, where the
+  daemon is expected and is asked every time. A daemon that accepts the
+  connection and does not answer in time is still reported as failing.
 - **Self-consistency keeps its candidates on GPT-5 and the o-series.** These
   models accept only the default temperature while they reason, and LiteLLM
   refused the 0.4 and 0.8 that self-consistency asks for, so two of its three
