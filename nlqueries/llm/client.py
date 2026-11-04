@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
+from contextvars import ContextVar
 from typing import Any
 
 from nlqueries.llm.override import output_budget
@@ -149,6 +150,36 @@ def exhausted(finish_reason: object, content: str) -> bool:
     A reply whose finish reason is unknown is treated as an ordinary reply.
     """
     return str(finish_reason) in TRUNCATED and not content.strip()
+
+
+#: Whether the last call made in this context ran out of output budget part-way
+#: through its answer. See `output_was_cut_off`.
+_cut_off: ContextVar[bool] = ContextVar("llm_output_cut_off", default=False)
+
+
+def note_finish(finish_reason: object, content: str) -> None:
+    """Record how a call that produced *content* finished, for `output_was_cut_off`.
+
+    Every client method calls this when its reply is complete. A reply with no
+    content at all is `exhausted` instead, and raised.
+    """
+    _cut_off.set(str(finish_reason) in TRUNCATED and bool(content.strip()))
+
+
+def output_was_cut_off() -> bool:
+    """Whether the last call completed in this context stopped at its output
+    budget part-way through its answer.
+
+    A reply cut off with nothing written raises `OutputBudgetExhausted`; one cut
+    off after it had begun returned what it had, and only this says so. For
+    SQL that matters: the statement ends mid-clause, fails to parse, and reads
+    as a mistake to correct rather than a lack of room.
+
+    Read from a context variable, so a caller asks after its own call without
+    the client's methods changing shape. A call made in another task or thread
+    does not affect it.
+    """
+    return _cut_off.get()
 
 
 # System parameter type: plain string OR a list of typed blocks (Anthropic format).

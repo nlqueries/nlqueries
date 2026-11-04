@@ -18,6 +18,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A statement cut off by the output budget is written again, with room.** A
+  reply that ran out of output budget part-way through its SQL was returned as
+  it stood: the statement failed to parse and was corrected as a mistake,
+  within the correction tier's half of the budget, so a long statement was cut
+  off a second time; and one cut off at a clause boundary could parse and run,
+  answering another question. Clients now record that a reply was cut off
+  (`nlqueries.llm.output_was_cut_off()`), and a statement cut off before its
+  `</sql>` goes straight to the repair, which is told it ran out of room and
+  given the whole budget. A repair that is cut off too reports that, naming
+  `LLM_MAX_OUTPUT_TOKENS`, instead of a parse error, and a warning is logged
+  when the first reply is cut off.
 - **Self-consistency keeps its candidates on GPT-5 and the o-series.** These
   models accept only the default temperature while they reason, and LiteLLM
   refused the 0.4 and 0.8 that self-consistency asks for, so two of its three

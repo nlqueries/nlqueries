@@ -21,6 +21,7 @@ from nlqueries.llm.client import (
     SystemParam,
     exhausted,
     looks_like_timeout,
+    note_finish,
 )
 from nlqueries.llm.endpoint import warn_if_plain_http
 from nlqueries.llm.override import output_budget
@@ -249,6 +250,7 @@ class AnthropicClient(LLMClient):
                 text = _text_of(response)
                 if exhausted(getattr(response, "stop_reason", None), text):
                     raise OutputBudgetExhausted(self._model, budget)
+                note_finish(getattr(response, "stop_reason", None), text)
                 return text
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
@@ -292,6 +294,7 @@ class AnthropicClient(LLMClient):
             and str(getattr(final, "stop_reason", None)) in TRUNCATED
         ):
             raise OutputBudgetExhausted(self._model, budget)
+        note_finish(getattr(final, "stop_reason", None), "".join(collected))
 
     # ------------------------------------------------------------------
     # Native async API — no thread overhead, no event-loop blocking.
@@ -322,6 +325,7 @@ class AnthropicClient(LLMClient):
                 text = _text_of(response)
                 if exhausted(getattr(response, "stop_reason", None), text):
                     raise OutputBudgetExhausted(self._model, budget)
+                note_finish(getattr(response, "stop_reason", None), text)
                 return text
             except anthropic.RateLimitError:
                 if attempt < _MAX_RETRIES:
@@ -357,3 +361,4 @@ class AnthropicClient(LLMClient):
             and str(getattr(final, "stop_reason", None)) in TRUNCATED
         ):
             raise OutputBudgetExhausted(self._model, budget)
+        note_finish(getattr(final, "stop_reason", None), "".join(collected))

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from nlqueries.llm import OutputBudgetExhausted
 from nlqueries.llm.anthropic_client import AnthropicClient
-from nlqueries.llm.client import exhausted
+from nlqueries.llm.client import exhausted, output_was_cut_off
 from nlqueries.llm.litellm_client import LiteLLMClient
 
 
@@ -665,3 +665,132 @@ def test_mcp_health_reports_ok_on_the_reasoning_model_400() -> None:
     assert llm_line.startswith("✅")
     assert "16-token probe budget" in llm_line
     assert client.complete.call_args.kwargs["max_tokens"] == 16
+
+
+# ---------------------------------------------------------------------------
+# An answer cut off part-way is returned, and said to be cut off
+#
+# Returning it is right (above), but for SQL a statement that ends mid-clause
+# fails to parse and reads as a mistake to correct, not a lack of room. Every
+# client method records how its reply finished so a caller can ask. Async calls
+# are asked inside the coroutine: the record is per context, and `asyncio.run`
+# runs the coroutine in a copy of the caller's.
+# ---------------------------------------------------------------------------
+
+
+class _LiteLLMAsyncChunks:
+    def __init__(self, pieces: list[str | None], finish_reason: str) -> None:
+        self._it = iter(_chunks(pieces, finish_reason))
+
+    def __aiter__(self) -> _LiteLLMAsyncChunks:
+        return self
+
+    async def __anext__(self) -> SimpleNamespace:
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+
+def _litellm_cut_off(method: str, finish: str) -> bool:
+    """Run *method* on a LiteLLM client whose reply "Some text" finished with
+    *finish*, and say whether it then reports the reply cut off."""
+    client = LiteLLMClient(model="m", api_key="k")
+    if method == "complete":
+        with patch("litellm.completion", return_value=_reply("Some text", finish)):
+            client.complete("sys", "user")
+        return output_was_cut_off()
+    if method == "stream":
+        with patch("litellm.completion", return_value=_chunks(["Some ", "text"], finish)):
+            list(client.stream("sys", "user"))
+        return output_was_cut_off()
+
+    async def reply(**_kwargs: object) -> object:
+        if method == "acomplete":
+            return _reply("Some text", finish)
+        return _LiteLLMAsyncChunks(["Some ", "text"], finish)
+
+    async def go() -> bool:
+        if method == "acomplete":
+            await client.acomplete("sys", "user")
+        else:
+            [t async for t in client.astream("sys", "user")]
+        return output_was_cut_off()
+
+    with patch("litellm.acompletion", side_effect=reply):
+        return asyncio.run(go())
+
+
+def _anthropic_cut_off(monkeypatch: pytest.MonkeyPatch, method: str, finish: str) -> bool:
+    """The same for an Anthropic client."""
+    client = _anthropic(monkeypatch)
+    client._client = MagicMock()
+    client._aclient = MagicMock()
+    if method == "complete":
+        client._client.messages.create.return_value = _message([_block("Some text")], finish)
+        client.complete("sys", "user")
+        return output_was_cut_off()
+    if method == "stream":
+        client._client.messages.stream.return_value = _FakeStream(["Some ", "text"], finish)
+        list(client.stream("sys", "user"))
+        return output_was_cut_off()
+
+    async def create(**_kwargs: object) -> SimpleNamespace:
+        return _message([_block("Some text")], finish)
+
+    client._aclient.messages.create = create
+    client._aclient.messages.stream.return_value = _FakeAsyncStream(["Some ", "text"], finish)
+
+    async def go() -> bool:
+        if method == "acomplete":
+            await client.acomplete("sys", "user")
+        else:
+            [t async for t in client.astream("sys", "user")]
+        return output_was_cut_off()
+
+    return asyncio.run(go())
+
+
+_METHODS = ["complete", "acomplete", "stream", "astream"]
+
+
+@pytest.mark.parametrize("method", _METHODS)
+def test_litellm_says_an_answer_was_cut_off(method: str) -> None:
+    assert _litellm_cut_off(method, "length") is True
+    assert _litellm_cut_off(method, "stop") is False
+
+
+@pytest.mark.parametrize("method", _METHODS)
+def test_anthropic_says_an_answer_was_cut_off(monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+    assert _anthropic_cut_off(monkeypatch, method, "max_tokens") is True
+    assert _anthropic_cut_off(monkeypatch, method, "end_turn") is False
+
+
+def test_a_finished_call_clears_an_earlier_cut_off() -> None:
+    """The record is the last call's, not a latch."""
+    client = LiteLLMClient(model="m", api_key="k")
+    with patch("litellm.completion", return_value=_reply("half", "length")):
+        client.complete("sys", "user")
+    assert output_was_cut_off() is True
+    with patch("litellm.completion", return_value=_reply("whole", "stop")):
+        client.complete("sys", "user")
+    assert output_was_cut_off() is False
+
+
+@pytest.mark.parametrize(
+    ("finish", "content", "expected"),
+    [
+        ("length", "half an answer", True),
+        ("max_tokens", "half an answer", True),  # the Anthropic spelling
+        ("length", "  \n ", False),  # whitespace: no answer had begun
+        ("stop", "a whole answer", False),
+        (None, "an answer", False),  # a provider that omits the reason
+    ],
+)
+def test_note_finish_records_an_answer_cut_off_part_way(
+    finish: str | None, content: str, expected: bool
+) -> None:
+    from nlqueries.llm.client import note_finish
+
+    note_finish(finish, content)
+    assert output_was_cut_off() is expected
