@@ -487,6 +487,7 @@ def generate_knowledge_base(
     column_samples: dict[str, dict[str, list[str]]] | None = None,
     dbt_docs: dict[str, Any] | None = None,
     column_values_complete: dict[str, set[str]] | None = None,
+    column_profiles: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build a structured knowledge-base dict from a schema and query capsules.
 
@@ -545,6 +546,7 @@ def generate_knowledge_base(
     llm_descs = llm_column_descriptions or {}
     col_samples_map = column_samples or {}
     complete_map = column_values_complete or {}
+    profiles_map = column_profiles or {}
     dbt = dbt_docs or {}
 
     # Collect foreign-key relationships for the M-Schema FK section.
@@ -590,6 +592,11 @@ def generate_knowledge_base(
                         col_dict["values_complete"] = True
                     else:
                         col_dict["samples"] = [str(s) for s in raw_samples[:5]]
+                # What the whole column holds (`column_profiles`): counts,
+                # lengths and a date column's range, never a text value.
+                profile = profiles_map.get(table.name, {}).get(col.name)
+                if profile:
+                    col_dict["profile"] = dict(profile)
 
             if col.is_foreign_key and col.references:
                 foreign_keys.append({"from": f"{table.name}.{col.name}", "to": col.references})

@@ -2424,6 +2424,16 @@ def process_history(
     ),
 )
 @click.option(
+    "--profile/--no-profile",
+    default=True,
+    show_default=True,
+    help=(
+        "Profile each column: how often it is empty, how many text values have spaces "
+        "around them, a date column's range. One aggregate per table, which reads every "
+        "row; tables over --values-max-rows are skipped."
+    ),
+)
+@click.option(
     "--describe-columns/--no-describe-columns",
     default=False,
     show_default=True,
@@ -2451,6 +2461,7 @@ def export_kb(
     include_samples: bool,
     sample_rows: int,
     values_max_rows: int,
+    profile: bool,
     describe_columns: bool,
     include_anonymous: bool,
 ) -> None:
@@ -2559,6 +2570,14 @@ def export_kb(
             # the rest. Keys and personal-data columns get none.
             column_samples: dict[str, dict[str, list[str]]] | None = None
             column_values_complete: dict[str, set[str]] | None = None
+            column_profiles: dict[str, dict[str, dict[str, Any]]] | None = None
+            # The generic connector's db_type names no grammar; its URL names
+            # the engine. For the value and profile statements below.
+            values_dialect: str | None = cfg.get("db_type") or None
+            if (values_dialect or "").lower() == "sqlalchemy":
+                from nlqueries.sql_policy import dialect_from_url  # noqa: PLC0415
+
+                values_dialect = dialect_from_url(str(cfg.get("url") or ""))
             if include_samples and sample_rows > 0:
                 from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
                 from nlqueries.knowledge.kb_generator import (  # noqa: PLC0415
@@ -2566,13 +2585,6 @@ def export_kb(
                     too_large_for_values,
                 )
 
-                # The generic connector's db_type names no grammar; its URL
-                # names the engine.
-                values_dialect: str | None = cfg.get("db_type") or None
-                if (values_dialect or "").lower() == "sqlalchemy":
-                    from nlqueries.sql_policy import dialect_from_url  # noqa: PLC0415
-
-                    values_dialect = dialect_from_url(str(cfg.get("url") or ""))
                 connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
                 column_samples, column_values_complete = collect_column_values(
                     connector, schema, sample_rows, values_dialect, values_max_rows
@@ -2591,6 +2603,24 @@ def export_kb(
                         f"  [dim]No values for {skipped} table(s) of more than "
                         f"{values_max_rows:,} rows (--values-max-rows).[/dim]"
                     )
+
+            # What each whole column holds, beyond the samples: one aggregate
+            # per table, skipped over the same row cap as the values.
+            if profile:
+                from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+                from nlqueries.knowledge.column_profiles import (  # noqa: PLC0415
+                    collect_column_profiles,
+                )
+
+                connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
+                column_profiles = collect_column_profiles(
+                    connector, schema, values_dialect, values_max_rows
+                )
+                profiled = sum(len(cols) for cols in column_profiles.values())
+                console.print(
+                    f"  [dim]Profiled {profiled} column(s) in "
+                    f"{len(column_profiles)} table(s).[/dim]"
+                )
 
             # Both row caps decide from the size the connector reports. The
             # generic SQLAlchemy connector reports none, so on MySQL, MariaDB,
@@ -2667,6 +2697,7 @@ def export_kb(
                 llm_column_descriptions=llm_column_descriptions,
                 column_samples=column_samples,
                 column_values_complete=column_values_complete,
+                column_profiles=column_profiles,
             )
             save_knowledge_base(kb, str(out_path))
 
