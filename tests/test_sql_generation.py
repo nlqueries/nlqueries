@@ -558,6 +558,12 @@ def test_validate_columns_refuses_a_name_a_joined_star_repeats(sql: str) -> None
         # reads the other `t`, which has one.
         "SELECT id FROM (SELECT * FROM orders) t WHERE EXISTS (SELECT 1 FROM (SELECT * "
         "FROM orders JOIN customers ON customers.id = orders.customer_id) t)",
+        # Two derived tables in one scope: `a.id` reads `a`, which has one
+        # `id`; only `b` repeats it. The bare `id` inside `a` is written too,
+        # so the name alone does not settle it: the column's own source does.
+        # The bare `email`, only in `b`, is what fails the first check.
+        "SELECT a.id, email FROM (SELECT * FROM orders WHERE id > 0) a JOIN (SELECT * FROM "
+        "orders JOIN customers ON customers.id = orders.customer_id) b ON a.total = b.total",
     ],
 )
 def test_validate_columns_accepts_a_repeated_name_the_statement_never_reads(sql: str) -> None:

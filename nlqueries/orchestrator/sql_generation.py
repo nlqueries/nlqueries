@@ -701,12 +701,15 @@ def _read_through_a_repeated_name(tree: exp.Expr, written: exp.Expr) -> str | No
     expanded the first check refused it, so the model was asked to correct it;
     this keeps that.
 
-    Only a column *written* in the statement counts: expanding an outer star
-    over such a table generates both ``id`` projections itself, and PostgreSQL
-    accepts that. *tree* is the qualified, expanded statement, read scope by
-    scope so a derived table is matched by its alias where that alias is in
-    force, not wherever the same alias appears; *written* is the statement as
-    it was parsed.
+    Only a column *written* in the statement counts: an outer star over such a
+    table would generate both ``id`` projections itself, and PostgreSQL accepts
+    that. sqlglot 30.x leaves such a star unexpanded, so the filter has nothing
+    to remove there today; it is kept for a release that expands it.
+
+    *tree* is the qualified, expanded statement, read scope by scope so a
+    derived table is matched by its alias where that alias is in force, not
+    wherever the same alias appears; *written* is the statement as it was
+    parsed.
     """
     from sqlglot.optimizer.scope import Scope, traverse_scope  # noqa: PLC0415
 
