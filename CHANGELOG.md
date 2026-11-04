@@ -4,6 +4,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ## [Unreleased]
 
+### Added
+
+- **`export-kb` profiles each column (`--profile`, on by default).** Samples
+  show the first rows, and miss what is wrong across a whole column: a join
+  key whose values nearly all start with a space, so an equality join matches
+  nothing; a year column holding `'c. 2009'` beside `'2009'`; a date table
+  that ends years before the data does; a column empty in nine rows of ten. One aggregate per
+  table now records the share of NULLs, the number of padded text values, a
+  text column's shortest and longest value and a date column's range, stored
+  on the column as `profile` and shown in the prompt and by the MCP
+  `get_agent_schema` tool as short notes, such as `compare TRIM(film_id)`.
+  Keys are profiled; personal-data columns are not, and no text value is
+  stored. The statement reads every row, so tables over `--values-max-rows`
+  are skipped, and `--no-profile` turns it off. Profiles appear at the next
+  `export-kb`.
+
 ### Changed
 
 - **OpenAI defaults to GPT-5.** With only `OPENAI_API_KEY` set, `LLM_MODEL`
