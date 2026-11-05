@@ -56,6 +56,7 @@ unaffected, and the default is the same path it always was.
 #: ignored, so keys, URLs and timeouts stay in the environment and ``.env``.
 QUERY_SETTING_VARS: tuple[str, ...] = (
     "NLQ_MATCH_MODE",
+    "NLQ_AMBIGUITY",
     "NLQ_RESULT_CHECKS",
     "NLQ_GRAIN_CHECK",
     "NLQ_PLAN_CHECK",
@@ -589,6 +590,24 @@ if MATCH_MODE not in MATCH_MODES:
         "NLQ_MATCH_MODE=%r is not one of %s; using 'loose'.", MATCH_MODE, ", ".join(MATCH_MODES)
     )
     MATCH_MODE = "loose"
+
+#: What happens when a value the question names is part of several different stored
+#: values (with ``NLQ_MATCH_MODE=contains``).
+AMBIGUITY_MODES: tuple[str, ...] = ("pick", "ask")
+
+AMBIGUITY: str = os.getenv("NLQ_AMBIGUITY", "pick").strip().lower()
+"""What happens when a value the question names is part of several different stored
+values, as 'Schools' is of 'Juvenile Court Schools' and 'Special Education Schools'
+with values matched by ``contains``. ``pick`` (the default): the closest is used and
+the answer names the others, so nothing waits on the user. ``ask``: nothing runs; the
+answer lists the stored values to choose from, the CLI asks which was meant, and the
+MCP ``query`` tool and other callers ask again with the choice. An unknown value is
+logged and ``pick`` used."""
+if AMBIGUITY not in AMBIGUITY_MODES:
+    logging.getLogger(__name__).warning(
+        "NLQ_AMBIGUITY=%r is not one of %s; using 'pick'.", AMBIGUITY, ", ".join(AMBIGUITY_MODES)
+    )
+    AMBIGUITY = "pick"
 
 RESULT_CHECKS: bool = os.getenv("NLQ_RESULT_CHECKS", "true").lower() in ("1", "true", "yes")
 """After a statement runs, read its result for signs it missed the question (rows

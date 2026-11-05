@@ -60,6 +60,7 @@ from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 from nlqueries.orchestrator.followup_resolver import aresolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, aclassify_intent, coerce_intent
+from nlqueries.orchestrator.match_notes import any_chosen
 from nlqueries.orchestrator.orchestrator import Orchestrator, _json_default, sql_table_chunk
 from nlqueries.orchestrator.provenance import (
     record_cache,
@@ -238,6 +239,17 @@ async def drain_background_tasks() -> None:
     """
     if _background_tasks:
         await asyncio.gather(*list(_background_tasks), return_exceptions=True)
+
+
+def _asks_for_a_choice(tokens: list[str]) -> bool:
+    """Whether the SQL agent's final frame in *tokens* leaves the user a choice."""
+    for token in reversed(tokens):
+        if _is_final_chunk(token):
+            try:
+                return bool(json.loads(token).get("choices"))
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                return False
+    return False
 
 
 def _schedule_cache_write(
@@ -805,7 +817,9 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            if use_cache:
+            # Not an answer that waits on a choice, nor one worked out with values
+            # the user chose: either replayed would skip asking the next user.
+            if use_cache and not any_chosen() and not _asks_for_a_choice(seen):
                 _schedule_cache_write(
                     _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
                 )

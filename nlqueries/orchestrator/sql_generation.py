@@ -35,7 +35,7 @@ from nlqueries.orchestrator.literal_grounding import (
     ground_literals,
     string_literals,
 )
-from nlqueries.orchestrator.match_notes import add_match_note
+from nlqueries.orchestrator.match_notes import Choice, add_choice, add_match_note
 from nlqueries.orchestrator.prompt_assembly import (
     _PARTIAL_COLUMNS_NOTE,
     _columns_omitted,
@@ -163,6 +163,7 @@ async def validate_and_repair(
     # carries them (see `_finish`).
     kept: list[tuple[str, str, str, str]] = []
     kept_notes: list[tuple[str, tuple[str, ...]]] = []
+    kept_choices: list[Choice] = []
 
     async def _ground(statement_sql: str) -> tuple[str, GroundingResult | None]:
         """*statement_sql* with its literals grounded, or unchanged, and what
@@ -176,12 +177,15 @@ async def validate_and_repair(
             return statement_sql, grounded
         kept.extend(grounded.substitutions)
         kept_notes.extend(grounded.match_notes)
+        kept_choices.extend(grounded.choices)
         return grounded.sql, grounded
 
     async def _finish(result: SQLGenerationResult) -> SQLGenerationResult:
         _record_substitutions(kept, result.sql, dialect)
         for note, values in kept_notes:
             add_match_note(note, values)
+        for choice in kept_choices:
+            add_choice(choice)
         return await _apply_explain_gate(result, connector, explain_check, dialect)
 
     async def _ground_valid(statement_sql: str) -> str:

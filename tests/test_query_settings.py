@@ -111,6 +111,22 @@ def test_where_the_file_is_read_from(tmp_path: Path) -> None:
     assert (seen["file"], seen["match"]) == (str(named), "exact")
 
 
+def test_an_unknown_ambiguity_is_reported_and_pick_used(tmp_path: Path) -> None:
+    code_env = {"NLQ_AMBIGUITY": "sometimes"}
+    clean = {k: v for k, v in os.environ.items() if k not in config.QUERY_SETTING_VARS}
+    clean.update({"NLQ_STATE_DIR": str(tmp_path / "state"), "PYTHONPATH": str(_ROOT), **code_env})
+    out = subprocess.run(
+        [sys.executable, "-c", "from nlqueries import config as c; print(c.AMBIGUITY)"],
+        cwd=tmp_path,
+        env=clean,
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+    )
+    assert out.stdout.strip().splitlines()[-1] == "pick"
+
+
 def test_an_unknown_match_mode_is_reported_and_loose_used(tmp_path: Path) -> None:
     assert _load_in_a_fresh_process(tmp_path, {"NLQ_MATCH_MODE": "fuzzy"})["match"] == "loose"
 
@@ -186,6 +202,7 @@ def test_an_override_is_applied_by_name() -> None:
         ({"plan_check_min_row_reads": -1}, "must not be negative"),
         ({"match_mode": "fuzzy"}, "match_mode must be one of exact, loose"),
         ({"match_mode": 1}, "match_mode must be text"),
+        ({"ambiguity": "maybe"}, "ambiguity must be one of pick, ask"),
     ],
 )
 def test_a_wrong_override_is_refused(values: dict[str, Any], says: str) -> None:

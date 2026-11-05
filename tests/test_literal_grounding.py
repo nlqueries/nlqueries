@@ -2435,3 +2435,109 @@ def test_a_spelling_note_reaches_the_answer(src: _Source) -> None:
     )
     assert frame["sql"] == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
     assert frame["result_notes"][0].startswith("'active' is stored as 'Active', 'ACTIVE'")
+
+
+# --- Asking which value was meant (NLQ_AMBIGUITY=ask) --------------------------------
+
+
+def _contains_ask() -> QuerySettings:
+    return QuerySettings(match_mode="contains", ambiguity="ask")
+
+
+def test_asked_for_a_choice_the_literal_is_left_and_the_options_given(src: _Source) -> None:
+    from nlqueries.orchestrator.match_notes import Choice
+
+    with use_query_settings(_contains_ask()):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
+    assert result.match_notes == [] and result.substitutions == []
+    assert result.choices == [
+        Choice(
+            key="schools.soc:Schools",
+            column="soc",
+            asked="Schools",
+            options=("Juvenile Court Schools", "Special Education Schools"),
+        )
+    ]
+
+
+@pytest.mark.parametrize("ambiguity", ["ask", "pick"])
+def test_a_value_the_user_chose_is_used(src: _Source, ambiguity: str) -> None:
+    from nlqueries.orchestrator.match_notes import use_chosen_values
+
+    settings = QuerySettings(match_mode="contains", ambiguity=ambiguity)
+    with (
+        use_query_settings(settings),
+        use_chosen_values({"schools.soc:Schools": "Special Education Schools"}),
+    ):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Special Education Schools'"
+    assert result.choices == []
+    [(note, values)] = result.match_notes
+    assert note == "'Schools' was taken as 'Special Education Schools', as chosen."
+    assert values == ("Special Education Schools",)
+
+
+def test_a_choice_that_is_not_one_of_the_options_is_asked_again(src: _Source) -> None:
+    from nlqueries.orchestrator.match_notes import use_chosen_values
+
+    with (
+        use_query_settings(_contains_ask()),
+        use_chosen_values({"schools.soc:Schools": "Some Other Schools"}),
+    ):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
+    assert [c.key for c in result.choices] == ["schools.soc:Schools"]
+
+
+def test_asking_leaves_one_spelling_of_one_value_alone(src: _Source) -> None:
+    """Spellings are one value, not a choice: compared with all of them, ask or not."""
+    with use_query_settings(_contains_ask()):
+        result = _ground("SELECT id FROM schools WHERE status = 'active'", src)
+    assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
+    assert result.choices == []
+
+
+def test_validation_hands_the_choice_to_whoever_collects_choices(src: _Source) -> None:
+    from nlqueries.orchestrator.match_notes import collect_choices
+
+    with use_query_settings(_contains_ask()), collect_choices() as choices:
+        result = _validate("SELECT id FROM schools WHERE soc = 'Schools'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
+    assert [c.key for c in choices] == ["schools.soc:Schools"]
+
+
+def test_a_value_in_two_spellings_is_one_option(tmp_path: Path) -> None:
+    source = _spelled_twice_db(tmp_path, "Special Education Schools")
+    with use_query_settings(_contains_ask()):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", source)
+    [choice] = result.choices
+    assert choice.options == ("JUVENILE COURT SCHOOLS", "Special Education Schools")
+
+
+def test_a_chosen_value_is_used_in_every_spelling(tmp_path: Path) -> None:
+    from nlqueries.orchestrator.match_notes import use_chosen_values
+
+    source = _spelled_twice_db(tmp_path, "Special Education Schools")
+    # Answered in another case than the option it names: the same value.
+    with (
+        use_query_settings(_contains_ask()),
+        use_chosen_values({"schools.soc:Schools": "juvenile court schools"}),
+    ):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", source)
+    assert result.choices == []
+    assert result.sql == (
+        "SELECT id FROM schools WHERE soc IN ('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools')"
+    )
+    [(note, _values)] = result.match_notes
+    assert note == (
+        "'Schools' was taken as every spelling of 'JUVENILE COURT SCHOOLS' "
+        "('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools'), as chosen."
+    )
+
+
+def test_one_value_in_two_spellings_is_not_asked_about(tmp_path: Path) -> None:
+    with use_query_settings(_contains_ask()):
+        result = _ground("SELECT id FROM schools WHERE soc = 'court'", _spelled_twice_db(tmp_path))
+    assert result.choices == []
+    assert "IN ('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools')" in result.sql

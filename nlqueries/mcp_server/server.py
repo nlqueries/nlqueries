@@ -238,6 +238,7 @@ async def query(
     dialect: str | None = None,
     explain: bool = False,
     paraphrase: bool = False,
+    choices: dict[str, str] | None = None,
 ) -> str:
     """Ask a natural-language question to an NLQueries agent.
 
@@ -257,6 +258,11 @@ async def query(
                    cache hit/miss, knowledge injected, checks, timings).
         paraphrase: When true, append a deterministic plain-English rendering of
                    the generated SQL (no LLM), so you can confirm what it does.
+        choices:   When an earlier answer said a value needs choosing (the
+                   server matches values with NLQ_AMBIGUITY=ask), the value
+                   meant for each, by the key that answer gave:
+                   {"<key>": "<one of its options>"}. Ask the same question
+                   again with it.
 
     Returns:
         Formatted string containing the natural-language answer, generated SQL
@@ -322,6 +328,7 @@ async def query(
                 execution=ExecutionPolicy.execute_read_only(),
                 timeout_seconds=_STATEMENT_BUDGET_SECONDS,
                 deadline=deadline,
+                chosen_values=choices or None,
             )
     except TimeoutError:
         return (
@@ -393,6 +400,19 @@ async def query(
         parts.append("\n\n**Note**")
         for note in result.result_notes:
             parts.append(f"\n- {note}")
+
+    if result.choices:
+        parts.append(
+            "\n\n**A value needs choosing**: nothing ran. Ask the user which value "
+            "was meant, then call query again with the same question and "
+            "choices={key: value}."
+        )
+        for choice in result.choices:
+            options = ", ".join(repr(o) for o in choice["options"])
+            parts.append(
+                f"\n- {choice['asked']!r} is part of several {choice['column']} values: "
+                f"{options}. Key: {choice['key']!r}"
+            )
 
     if result.citations:
         parts.append("\n\n**Sources**")
