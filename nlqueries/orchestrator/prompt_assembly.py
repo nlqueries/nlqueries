@@ -201,16 +201,17 @@ def _excerpt_block(label: str, text: str) -> str:
 #: entities are. Rows of bare figures, or of keys, are right and useless to the
 #: person who asked. Added anywhere else, an id crowded out the columns asked
 #: for, or a url came back in place of the name the question wanted. The first
-#: rule names this as its one exception, so the two are not weighed afresh each
-#: time.
+#: rule names this as one of its two exceptions, so the two are not weighed
+#: afresh each time.
 #:
 #: The lookup-label rule (2026-11-05): a value asked for several named entities,
 #: or a range of them, says whose each is, as a figure per entity does; three
 #: statuses for three orders came back with no order beside them, in an order
 #: nothing guaranteed. The "which ... and details" clause returns the thing a
 #: question asks about: "which region ..." answered with the stores alone left
-#: out the region. Both are named in the first rule's exceptions, for the reason
-#: the per-entity rule is.
+#: out the region. The lookup rule is the first rule's second exception, named
+#: there for the reason the per-entity rule is; the "which" clause needs no
+#: exception, since it makes the thing asked about a requested column.
 #:
 #: The comparison-set rule (2026-11-05): "products above the average price in
 #: 2024" compared 2024 rows with an average over every year, and "of the online
