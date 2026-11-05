@@ -376,19 +376,37 @@ def _apply(
         return True
     if outcome.kind == "many":
         chosen = _closest(literal, outcome.values)
-        literal_node.set("this", chosen)
-        result.substitutions.append((table.name, column.name, literal, chosen))
-        rest = [v for v in outcome.values if v != chosen]
-        others = ", ".join(_quote_stored(v) for v in rest[: _MAX_NEARBY - 1])
-        if len(rest) > _MAX_NEARBY - 1:
-            others += f" and {len(rest) - (_MAX_NEARBY - 1)} more"
-        result.match_notes.append(
-            (
-                f"{_quote(literal)} is part of several {column.name} values; the answer "
-                f"uses {_quote_stored(chosen)}, the closest. The others: {others}.",
-                (chosen,),
+        # The values found can hold the closest in more than one spelling: it
+        # is one value, so every spelling is compared with, as for "variants".
+        kept = tuple(v for v in outcome.values if _fold(v) == _fold(chosen))
+        if len(kept) > 1 and _compare_with_each(literal_node, kept):
+            listed = ", ".join(_quote_stored(v) for v in kept)
+            used = f"every spelling of {_quote_stored(chosen)} ({listed})"
+        else:
+            kept = (chosen,)
+            literal_node.set("this", chosen)
+            used = _quote_stored(chosen)
+        result.substitutions.extend((table.name, column.name, literal, v) for v in kept)
+        # Each other value named once, by its spelling ranked first.
+        firsts: dict[str, str] = {}
+        for v in outcome.values:
+            if _fold(v) != _fold(chosen):
+                firsts.setdefault(_fold(v), v)
+        rest = list(firsts.values())
+        if not rest:
+            note = (
+                f"{_quote(literal)} is part of a {column.name} value stored in several "
+                f"spellings; the answer uses {used}."
             )
-        )
+        else:
+            others = ", ".join(_quote_stored(v) for v in rest[: _MAX_NEARBY - 1])
+            if len(rest) > _MAX_NEARBY - 1:
+                others += f" and {len(rest) - (_MAX_NEARBY - 1)} more"
+            note = (
+                f"{_quote(literal)} is part of several {column.name} values; the answer "
+                f"uses {used}, the closest. The others: {others}."
+            )
+        result.match_notes.append((note, kept))
         return True
     if outcome.kind == "variants":
         # A LIKE, which an IN cannot stand in for: left to the repair, as a

@@ -2151,6 +2151,66 @@ def test_contains_matching_compares_every_value_it_found(tmp_path: Path) -> None
     assert note.endswith(" and 1 more.")
 
 
+def _spelled_twice_db(tmp_path: Path, *extra: str) -> _Source:
+    socs = ["Juvenile Court Schools", "JUVENILE COURT SCHOOLS", *extra]
+    rows = [(i, "Legal", "x", soc, "A1", 1) for i, soc in enumerate(socs, start=1)]
+    return _Source(_schools_db(tmp_path / "twice.db", rows))
+
+
+def test_contains_matching_uses_every_spelling_of_the_closest(tmp_path: Path) -> None:
+    source = _spelled_twice_db(tmp_path, "Special Education Schools")
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", source)
+    assert result.sql == (
+        "SELECT id FROM schools WHERE soc IN ('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools')"
+    )
+    assert result.substitutions == [
+        ("schools", "soc", "Schools", "JUVENILE COURT SCHOOLS"),
+        ("schools", "soc", "Schools", "Juvenile Court Schools"),
+    ]
+    [(note, values)] = result.match_notes
+    assert values == ("JUVENILE COURT SCHOOLS", "Juvenile Court Schools")
+    assert note == (
+        "'Schools' is part of several soc values; the answer uses every spelling of "
+        "'JUVENILE COURT SCHOOLS' ('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools'), "
+        "the closest. The others: 'Special Education Schools'."
+    )
+
+
+def test_contains_matching_names_each_other_value_once(tmp_path: Path) -> None:
+    # 'Courts' is closest; the other value, in two spellings, is named once.
+    source = _spelled_twice_db(tmp_path, "Courts")
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'court'", source)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Courts'"
+    [(note, _values)] = result.match_notes
+    assert note.endswith("The others: 'JUVENILE COURT SCHOOLS'.")
+
+
+def test_contains_matching_on_one_value_in_two_spellings_uses_both(tmp_path: Path) -> None:
+    source = _spelled_twice_db(tmp_path)
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'court'", source)
+    assert "IN ('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools')" in result.sql
+    [(note, _values)] = result.match_notes
+    assert note.startswith("'court' is part of a soc value stored in several spellings;")
+
+
+def test_contains_matching_from_a_stored_list_uses_every_spelling_too(src: _Source) -> None:
+    kb = json.loads(json.dumps(KB))
+    for col in kb["schema"]["tables"][0]["columns"]:
+        if col["name"] == "soc":
+            col["samples"] = [
+                "Special Education Schools",
+                "Juvenile Court Schools",
+                "JUVENILE COURT SCHOOLS",
+            ]
+            col["values_complete"] = True
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Court Schools'", src, kb)
+    assert "IN ('JUVENILE COURT SCHOOLS', 'Juvenile Court Schools')" in result.sql
+
+
 def test_contains_matching_picks_nothing_from_a_cut_query(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
