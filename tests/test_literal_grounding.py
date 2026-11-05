@@ -32,6 +32,7 @@ from nlqueries.orchestrator import literal_grounding
 from nlqueries.orchestrator.literal_grounding import GroundingResult, _fold, ground_literals
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult, validate_and_repair
+from nlqueries.query_settings import QuerySettings, use_query_settings
 from sqlglot import exp
 
 KB: dict[str, Any] = {
@@ -1171,7 +1172,6 @@ def test_four_concurrent_run_query_calls_on_their_own_loops_all_finish(
         patch("nlqueries.orchestrator.prompt_assembly._search_verified", return_value=[]),
     ):
         cfg.KB_PATH = kb_dir
-        cfg.LITERAL_GROUNDING = True
         cfg.CONNECTOR_STATEMENT_TIMEOUT_SECONDS = 30.0
         faulthandler.dump_traceback_later(60, exit=True, file=sys.__stderr__)
         try:
@@ -1787,7 +1787,6 @@ def _drive(
                 p.start()
             try:
                 cfg.KB_PATH = Path(tmpdir)
-                cfg.LITERAL_GROUNDING = grounding
                 cfg.CONNECTOR_STATEMENT_TIMEOUT_SECONDS = 30.0
 
                 async def collect() -> None:
@@ -1797,7 +1796,8 @@ def _drive(
                         if token.startswith("{") and '"type": "sql"' in token:
                             frames.append(json.loads(token))
 
-                asyncio.run(collect())
+                with use_query_settings(QuerySettings(literal_grounding=grounding)):
+                    asyncio.run(collect())
             finally:
                 for p in extra:
                     p.stop()

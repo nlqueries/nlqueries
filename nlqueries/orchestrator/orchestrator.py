@@ -50,6 +50,7 @@ from nlqueries.orchestrator.sql_generation import (
     repair_after_suspicious_result,
     validate_and_repair,
 )
+from nlqueries.query_settings import current as current_settings
 from nlqueries.state_files import agent_storage_id
 from nlqueries.telemetry import get_tracer, query_counter, query_latency
 
@@ -292,6 +293,8 @@ async def _second_look(
     Returns the statement and result to report, and the notes. The checks are
     advisory: one that raises leaves the rows as they ran, with no notes.
     """
+    if not current_settings().result_checks:
+        return result, qr, []
     try:
         concerns = check_result(result.sql, qr, dialect)
     except Exception:  # noqa: BLE001
@@ -562,7 +565,7 @@ class Orchestrator:
             from nlqueries.connectors.loader import lookup_source  # noqa: PLC0415
 
             lookups = None
-            if config.LITERAL_GROUNDING:
+            if current_settings().grounds_literals:
                 try:
                     lookups = await asyncio.to_thread(lookup_source, agent_id)
                 except Exception:  # noqa: BLE001

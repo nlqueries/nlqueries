@@ -51,7 +51,6 @@ import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
 
-from nlqueries import config
 from nlqueries.llm import output_budget
 from nlqueries.orchestrator.plan_check import PlanCheck, _room_for_rewrite
 from nlqueries.orchestrator.provenance import record_grain_check
@@ -61,6 +60,7 @@ from nlqueries.orchestrator.sql_generation import (
     _same_statement,
     _validate_sql,
 )
+from nlqueries.query_settings import current as current_settings
 
 if TYPE_CHECKING:
     from nlqueries.llm.client import LLMClient
@@ -380,7 +380,7 @@ async def check_grain(
     Like `check_plan`, it says whether the model was asked, since whatever
     runs after that call starts later than the caller planned for.
     """
-    if not config.GRAIN_CHECK or not result.is_valid:
+    if not current_settings().grain_check or not result.is_valid:
         return PlanCheck(result)
     plan = parse_plan(output)
     if plan is None:

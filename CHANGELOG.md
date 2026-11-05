@@ -6,6 +6,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Query settings in `query_config.env`, and exact matching
+  (`NLQ_MATCH_MODE`).** How a value the question names is matched, and which
+  checks shape an answer, can be kept in a file of their own: `./query_config.env`,
+  `~/.nlqueries/query_config.env`, or the path `NLQ_QUERY_CONFIG` names. Only
+  those settings are read from it, and the environment wins.
+  `nlqueries query-config` shows each value in effect and where it came from,
+  and `--init` writes a starting file. `NLQ_MATCH_MODE=exact` matches values as
+  stored: no literal is replaced and no `TRIM` is suggested, for users who need
+  `'APG'` not to find `' APG'`. `loose` stays the default. Result checks can now
+  be turned off (`NLQ_RESULT_CHECKS=false`). A program serving several users can
+  give each request its own settings (`nlqueries.query_settings`).
+
 - **The model says what one row is and what is counted, and the statement is
   checked against it (`NLQ_GRAIN_CHECK`, on by default).** Its reasoning now
   opens with a plan line, such as `Plan: rows = one customer per row, key

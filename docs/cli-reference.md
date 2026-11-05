@@ -141,6 +141,19 @@ nlqueries extract-schema <connector-or-alias>
 
 ---
 
+## query-config
+
+Shows the [query settings](configuration.md#query-settings-query_configenv) in effect: how a value the question names is matched, and which answer checks run. Each setting is listed with where its value came from: `query_config.env`, `environment` (the shell or `.env`) or `default`. The file's path is shown too.
+
+```bash
+nlqueries query-config          # the settings in effect
+nlqueries query-config --init   # write query_config.env with the defaults, commented out
+```
+
+`--init` writes the file where it would be read from and leaves an existing one as it is. A line in the file that is not a query setting is named as ignored.
+
+---
+
 ## health
 
 Probes every dependent service and prints a pass/fail summary. Run after a fresh install or in a CI health gate. Exit code `0` if all checks pass, `1` otherwise.

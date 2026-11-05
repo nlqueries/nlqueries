@@ -29,7 +29,6 @@ import yaml
 from nlqueries.connectors.base import QueryResult
 from nlqueries.connectors.sqlite import SQLiteConnector
 from nlqueries.execution import ExecutionPolicy
-from nlqueries.orchestrator import plan_check
 from nlqueries.orchestrator.orchestrator import Orchestrator
 from nlqueries.orchestrator.plan_check import (
     PerRowScan,
@@ -41,6 +40,7 @@ from nlqueries.orchestrator.plan_check import (
 )
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult
+from nlqueries.query_settings import QuerySettings, use_query_settings
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "plans"
 
@@ -643,13 +643,13 @@ def test_below_the_limit_no_rewrite_is_asked_for(sqlite_connector: Any) -> None:
     # 31,622 x 31,622 is just under a billion row reads.
     assert _check(sqlite_connector, llm, sizes={"orders": 31_622}).sql == _CORRELATED
     assert llm.calls == []
-    with patch.object(plan_check.config, "PLAN_CHECK_MIN_ROW_READS", 31_622 * 31_622):
+    with use_query_settings(QuerySettings(plan_check_min_row_reads=31_622 * 31_622)):
         assert _check(sqlite_connector, llm, sizes={"orders": 31_622}).sql == _AS_A_JOIN
 
 
 def test_switched_off_the_plan_is_not_read() -> None:
     connector = MagicMock()
-    with patch.object(plan_check.config, "PLAN_CHECK", False):
+    with use_query_settings(QuerySettings(plan_check=False)):
         assert _check(connector, _LLM("")).sql == _CORRELATED
     connector.execute_query.assert_not_called()
 

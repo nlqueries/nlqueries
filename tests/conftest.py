@@ -51,6 +51,10 @@ import pytest
 _TEST_STATE_DIR = tempfile.mkdtemp(prefix="nlq-test-state-")
 if not os.environ.get("NLQ_STATE_DIR"):
     os.environ["NLQ_STATE_DIR"] = _TEST_STATE_DIR
+# The query settings file, pinned to one that does not exist: a developer's
+# ./query_config.env, or one NLQ_QUERY_CONFIG names, would otherwise change how
+# every test's statement is matched and checked.
+os.environ["NLQ_QUERY_CONFIG"] = os.path.join(_TEST_STATE_DIR, "no-query-config.env")
 atexit.register(shutil.rmtree, _TEST_STATE_DIR, ignore_errors=True)
 
 # And the per-path variables are SET to their redirected paths -- not removed.
