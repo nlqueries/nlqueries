@@ -765,7 +765,18 @@ ANSWER_RULE_PHRASES = [
     "SELECT only the columns the question asks for",
     "in the order the question or its hint lists them",
     "Do not add the column you sorted, filtered or ranked by",
-    "the one exception, what names the entity a figure is given for, is set out below",
+    "the two exceptions, what names the entity a figure is given for and what names each",
+    "entities a value is looked up for, are set out below",
+    # The thing a "which ... and details" question asks about is returned too.
+    'So is the thing a "which" question asks about when it also asks for details of it',
+    # A value looked up for several named entities says whose each is.
+    "When the question asks for a value of several entities it names, or of a range of",
+    "return beside each value what names the entity it belongs to",
+    "A value looked up for one entity is returned alone",
+    # A figure things are compared with is over the same set they come from.
+    "When the question compares things with an average, total or other figure over a set",
+    "work that figure out over the same set the compared things come from",
+    "unless it says the figure is over everything",
     "id column stays where the question names it, never moved to the front",
     "A field, count, total, average or rank the question names is a requested column",
     "with no breakdown asked for returns a single number with no grouping column",
