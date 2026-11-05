@@ -140,8 +140,8 @@ class GroundingResult:
     substitutions: list[tuple[str, str, str, str]] = field(default_factory=list)
     #: One line per literal no stored value matched, for the repair prompt.
     notes: list[str] = field(default_factory=list)
-    #: Whether a literal that matched no stored value came with nearby ones:
-    #: the case a repair can act on.
+    #: Whether a note came with stored values a repair can choose from: nearby
+    #: ones for a literal no value matched, or the several a literal is part of.
     offers_nearby: bool = False
     #: Where the literals a note was written for stand among the string
     #: literals of :attr:`sql`, counted as :func:`string_literals` lists them:
@@ -160,6 +160,9 @@ class _Outcome:
     values: tuple[str, ...] = ()
     #: For "none": :attr:`values` is every value the column holds.
     complete: bool = False
+    #: For "many": :attr:`values` contain the literal, rather than equal it
+    #: ignoring case, spacing and punctuation at either end.
+    contained: bool = False
 
 
 # Keyed by the source's key and the row scope first, so two databases, or two
@@ -353,6 +356,13 @@ def _apply(
         else:
             tail = f"; nearby values: {listed}." if listed else "."
         result.notes.append(f"No row has {column.name} = {_quote(literal)}" + tail)
+    elif outcome.kind == "many" and outcome.contained:
+        result.offers_nearby = True
+        several = ", ".join(_quote_stored(v) for v in outcome.values)
+        result.notes.append(
+            f"No row has {column.name} = {_quote(literal)}; ignoring case, it is part "
+            f"of several stored values: {several}."
+        )
     elif outcome.kind == "many":
         several = ", ".join(_quote_stored(v) for v in outcome.values)
         result.notes.append(
@@ -777,13 +787,17 @@ async def _look_up(
             return _Outcome("one", (same[0],))
         if len(same) > 1:
             return _Outcome("many", tuple(same[:_MAX_NEARBY]))
-        # Fourth, asked for by name: a stored value the literal is part of.
-        # `containing` holds up to `_MAX_CONTAINING` of them, so one is one;
-        # the length is the one the fold has just been held to.
-        if mode == "contains" and containing:
-            if len(containing) == 1:
-                return _Outcome("one", (containing[0],))
-            return _Outcome("many", tuple(containing[:_MAX_NEARBY]))
+        # Fourth, asked for by name: a stored value the literal is part of; the
+        # length is the one the fold has just been held to. Checked again here,
+        # since LIKE reads a `%` or `_` in the literal as a wildcard and can
+        # return values that do not contain it; and one is one only when the
+        # query was not cut at `_MAX_CONTAINING`, which such values can fill.
+        if mode == "contains":
+            inside = [v for v in containing if folded in v.lower()]
+            if len(inside) == 1 and len(containing) < _MAX_CONTAINING:
+                return _Outcome("one", (inside[0],))
+            if len(inside) > 1:
+                return _Outcome("many", tuple(inside[:_MAX_NEARBY]), contained=True)
 
     nearby = await _nearby(session, dialect, source, col, literal, containing)
     # Not "none" without its nearby values: cached, the note would stay that
@@ -867,7 +881,7 @@ def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outco
         if len(inside) == 1:
             return _Outcome("one", (inside[0],))
         if inside:
-            return _Outcome("many", tuple(inside[:_MAX_NEARBY]))
+            return _Outcome("many", tuple(inside[:_MAX_NEARBY]), contained=True)
     if 0 < len(distinct) <= _MAX_COMPLETE_LIST:
         return _Outcome("none", tuple(distinct), complete=True)
     found = [v for v in distinct if needle in v.lower()][:_MAX_NEARBY]

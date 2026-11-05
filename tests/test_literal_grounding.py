@@ -2055,8 +2055,54 @@ def test_contains_matching_leaves_a_phrase_several_values_hold(src: _Source) -> 
         result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
     assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
     [note] = result.notes
-    assert "matches several stored values" in note
+    assert "it is part of several stored values" in note
+    assert "matches several" not in note, "not said to be the same value"
     assert "'Juvenile Court Schools'" in note and "'Special Education Schools'" in note
+    assert result.offers_nearby
+
+
+def test_contains_matching_hands_a_phrase_several_values_hold_to_the_repair(
+    src: _Source,
+) -> None:
+    sql = "SELECT id FROM schools WHERE soc = 'Schools'"
+    fixed = "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
+    llm = _replying(f"<sql>{fixed}</sql>")
+
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result, _collected = _repair(sql, src, llm, "Which juvenile court schools are there?")
+
+    assert llm.acomplete.call_count == 1
+    assert "it is part of several stored values" in llm.acomplete.call_args.args[1]
+    assert result.sql == fixed
+
+
+@pytest.mark.parametrize("literal", ["A_th", "A%th"])
+def test_contains_matching_reads_no_wildcard_in_the_literal(src: _Source, literal: str) -> None:
+    # LIKE '%a_th%' and '%a%th%' both match 'Youth Authority Facilities', which
+    # holds neither literal: not taken for it.
+    sql = f"SELECT id FROM schools WHERE soc = '{literal}'"
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground(sql, src)
+    assert result.sql == sql
+    assert result.substitutions == []
+
+
+def test_contains_matching_takes_no_one_value_from_a_cut_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # LIKE '%plan_a%' matches all three; two contain 'plan_a'. Cut at two, the
+    # query can return one of those beside 'PlanXA1', which does not show
+    # there is no other.
+    rows = [
+        (i, "Legal", "x", soc, "A1", 1)
+        for i, soc in enumerate(["Plan_A1", "PlanXA1", "Plan_A2"], start=1)
+    ]
+    src = _Source(_schools_db(tmp_path / "plans.db", rows))
+    monkeypatch.setattr(literal_grounding, "_MAX_CONTAINING", 2)
+    sql = "SELECT id FROM schools WHERE soc = 'plan_a'"
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground(sql, src)
+    assert result.substitutions == []
 
 
 def test_contains_matching_needs_three_characters(src: _Source) -> None:
@@ -2108,7 +2154,8 @@ def test_contains_matching_from_a_stored_list_leaves_a_phrase_several_hold(
         result = _ground("SELECT id FROM schools WHERE soc = 'schools'", src, _listed_soc())
     assert result.sql == "SELECT id FROM schools WHERE soc = 'schools'"
     [note] = result.notes
-    assert "matches several stored values" in note
+    assert "it is part of several stored values" in note
+    assert result.offers_nearby
 
 
 def test_contains_matching_from_a_stored_list_needs_three_characters(src: _Source) -> None:
