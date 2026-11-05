@@ -22,7 +22,11 @@ disagreements are caught here without a model call:
   together;
 - each counted thing is counted once by a key, and the statement counts with a
   plain COUNT across a join to a table whose foreign key references that key,
-  where each counted row appears once per row that refers to it.
+  where each counted row appears once per row that refers to it;
+- the rows are told apart by a column the knowledge base says is not a key of
+  its table, and the statement neither groups nor uses DISTINCT, so a value
+  held by several of the table's rows comes back once for each of them ("the
+  five cities with the fewest pupils" listing a city once per school).
 
 The second needs the foreign key in the knowledge base (``references``), so it
 is checked only where the knowledge base says which side of a join repeats.
@@ -122,6 +126,31 @@ def _references(knowledge_base: dict[str, Any]) -> dict[tuple[str, str], tuple[s
     return out
 
 
+def _unique_columns(knowledge_base: dict[str, Any]) -> dict[tuple[str, str], bool]:
+    """``{(table, column): whether it alone tells the table's rows apart}``,
+    lower case, for the columns of each table the knowledge base records a
+    primary key for: true for a primary key of one column, false for any other
+    column, a part of a two-column key among them.
+
+    A table with no primary key recorded is left out, its columns unknown, not
+    known not to be keys: a view, a table without a declared key, a connector
+    that reports none (BigQuery's) and a knowledge base written before keys were
+    recorded all look the same, and on them every column would otherwise read as
+    not a key, so a correct statement keyed by the real id would be "repaired"."""
+    out: dict[tuple[str, str], bool] = {}
+    for table in knowledge_base.get("schema", {}).get("tables", []) or []:
+        name = str(table.get("name") or "").lower()
+        columns = table.get("columns", []) or []
+        keys = [c for c in columns if c.get("is_primary_key")]
+        if not keys:
+            continue
+        for col in columns:
+            out[(name, str(col.get("name") or "").lower())] = bool(
+                col.get("is_primary_key") and len(keys) == 1
+            )
+    return out
+
+
 def _sources(select: exp.Select) -> dict[str, str]:
     """``{alias or name: table name}``, lower case, for the tables this
     select reads directly (not through a derived table or CTE)."""
@@ -202,6 +231,30 @@ def _grouped_without_the_key(
     )
 
 
+def _listed_without_grouping(
+    select: exp.Select,
+    key: tuple[str, str],
+    sources: dict[str, str],
+    unique: dict[tuple[str, str], bool],
+) -> str | None:
+    if select.args.get("group") is not None or select.args.get("distinct") is not None:
+        return None
+    if key[0] not in sources.values() or unique.get(key) is not False:
+        return None
+    for projection in select.expressions:
+        for agg in projection.find_all(exp.AggFunc):
+            # An aggregate of this select, not of a subquery or a window over
+            # its rows, makes the answer one row.
+            if agg.find_ancestor(exp.Select) is select and agg.find_ancestor(exp.Window) is None:
+                return None
+    table, column = key
+    return (
+        f"The plan tells the rows apart by {table}.{column}, which is not a key of "
+        f"{table}, but the statement neither groups by it nor uses DISTINCT, so a "
+        f"{column} held by several {table} rows comes back once for each of them."
+    )
+
+
 def _counted_through_a_repeating_join(
     select: exp.Select,
     key: tuple[str, str],
@@ -251,6 +304,9 @@ def mismatches(
     found = []
     if plan.row_key is not None:
         found.append(_grouped_without_the_key(tree, plan.row_key, sources))
+        found.append(
+            _listed_without_grouping(tree, plan.row_key, sources, _unique_columns(knowledge_base))
+        )
     if plan.count_key is not None:
         found.append(
             _counted_through_a_repeating_join(
