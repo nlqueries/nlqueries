@@ -1137,8 +1137,12 @@ class TestExtensionPointSeams:
                 return MockCache.return_value
 
         cache = asyncio.run(run())
-        assert cache.get.call_args.kwargs["payload_filter"] == ctx
-        assert cache.put.call_args.kwargs["payload_extra"] == ctx
+        # The caller's context, beside the query settings it ran under.
+        from nlqueries.query_settings import current
+
+        scoped = {**ctx, "query_settings": current().fingerprint()}
+        assert cache.get.call_args.kwargs["payload_filter"] == scoped
+        assert cache.put.call_args.kwargs["payload_extra"] == scoped
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,7 @@ from nlqueries.orchestrator.provenance import (
     record_route,
 )
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
+from nlqueries.query_settings import current as current_settings
 from nlqueries.sql_policy import evaluate
 
 _log = logging.getLogger(__name__)
@@ -669,6 +670,15 @@ class MultiAgentOrchestrator:
         # Bound to this agent, connector, dialect, schema and policy version, so a
         # forged or stale entry does not verify and is treated as a miss.
         _cache = SemanticCache(agent_id, binding=binding_for_agent(agent_id, dialect))
+        # And by the query settings, as a cache context: the context is part of an
+        # entry's point id and an exact filter on every read, so requests under
+        # different settings neither overwrite each other's entry for a question
+        # nor crowd each other out of the similarity search. The binding's
+        # fingerprint alone made such an entry fail to verify, after the fact.
+        cache_context = {
+            **(cache_context or {}),
+            "query_settings": current_settings().fingerprint(),
+        }
         # Use caller-supplied cache_key when provided. run_query passes the
         # resolved question, the same text it hands in as *question*, so the key
         # and the question agree. The remaining reason to override is a caller

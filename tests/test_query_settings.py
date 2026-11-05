@@ -370,3 +370,89 @@ def test_an_answer_cached_under_loose_matching_is_a_miss_under_exact() -> None:
     signed = sign(payload, loose, key)
     assert verify(signed, loose, key)
     assert not verify(signed, exact, key)
+
+
+def _cache_calls(settings: QuerySettings, context: dict[str, str] | None = None) -> tuple[Any, Any]:
+    """The context the router reads the semantic cache with, and writes it with."""
+    from unittest.mock import MagicMock, patch
+
+    from nlqueries.orchestrator.intent_classifier import IntentType
+    from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+
+    sql = MagicMock()
+
+    async def gen(*_a: Any, **_kw: Any) -> Any:
+        yield json.dumps({"type": "sql", "sql": "SELECT 1"})
+
+    sql.handle_question = gen
+    cache = MagicMock()
+    cache.get.return_value = None
+
+    async def run() -> None:
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
+                return_value=MagicMock(intent=IntentType.sql, confidence=1.0),
+            ),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator", return_value=sql),
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache", return_value=cache
+            ),
+            use_query_settings(settings),
+        ):
+            async for _ in MultiAgentOrchestrator().handle_question(
+                "flights from APG", "agent1", available_types=["sql"], cache_context=context
+            ):
+                pass
+
+    with patch("nlqueries.orchestrator.multi_agent_orchestrator._schedule_cache_write") as write:
+        asyncio.run(run())
+    return cache.get.call_args.kwargs["payload_filter"], write.call_args.args[-1]
+
+
+def test_the_cache_is_read_and_written_in_the_settings_own_context() -> None:
+    loose_read, loose_write = _cache_calls(QuerySettings())
+    exact_read, exact_write = _cache_calls(QuerySettings(match_mode="exact"))
+    assert loose_read == loose_write == {"query_settings": QuerySettings().fingerprint()}
+    assert exact_read == {"query_settings": QuerySettings(match_mode="exact").fingerprint()}
+    assert loose_read != exact_read
+
+
+def test_a_callers_own_cache_context_is_kept_beside_the_settings() -> None:
+    read, write = _cache_calls(QuerySettings(), {"tenant": "t1"})
+    assert read == write == {"tenant": "t1", "query_settings": QuerySettings().fingerprint()}
+
+
+def test_one_question_under_two_settings_has_two_cache_entries() -> None:
+    from nlqueries.cache.semantic_cache import _point_id_for_question
+
+    loose = {"query_settings": QuerySettings().fingerprint()}
+    exact = {"query_settings": QuerySettings(match_mode="exact").fingerprint()}
+    assert _point_id_for_question("q", loose) != _point_id_for_question("q", exact)
+
+
+@pytest.mark.parametrize("value", ["-5", "lots"])
+def test_a_bad_row_reads_limit_is_reported_and_the_default_used(tmp_path: Path, value: str) -> None:
+    clean = {k: v for k, v in os.environ.items() if k not in config.QUERY_SETTING_VARS}
+    clean.update(
+        {
+            "NLQ_STATE_DIR": str(tmp_path / "state"),
+            "PYTHONPATH": str(_ROOT),
+            "NLQ_PLAN_CHECK_MIN_ROW_READS": value,
+        }
+    )
+    code = (
+        "from nlqueries import config as c; from nlqueries.query_settings import current; "
+        "print(c.PLAN_CHECK_MIN_ROW_READS, current().plan_check_min_row_reads)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=clean,
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+    )
+    assert out.stdout.strip().splitlines()[-1] == "1000000000 1000000000"
+    assert "NLQ_PLAN_CHECK_MIN_ROW_READS" in out.stderr

@@ -658,12 +658,26 @@ it validates and agrees with its own plan line. Recorded in provenance as
 ``grain_check``. The plan line itself is always asked for; this setting turns off only
 the check. On by default; set NLQ_GRAIN_CHECK=false to turn it off."""
 
-PLAN_CHECK_MIN_ROW_READS: int = int(os.getenv("NLQ_PLAN_CHECK_MIN_ROW_READS", "1000000000"))
+_DEFAULT_PLAN_CHECK_MIN_ROW_READS = 1_000_000_000
+try:
+    PLAN_CHECK_MIN_ROW_READS: int = int(
+        os.getenv("NLQ_PLAN_CHECK_MIN_ROW_READS", str(_DEFAULT_PLAN_CHECK_MIN_ROW_READS))
+    )
+except ValueError:
+    PLAN_CHECK_MIN_ROW_READS = -1
 """How many rows a subquery re-run per row must be expected to read, across all its runs,
 before the plan check asks for a rewrite. At the default, a billion, a correlated subquery
 that scans 40,000 rows for each of 40,000 outer rows qualifies (1.6 billion), which takes
 tens of seconds or more on the engines checked; well below it, a rewrite would cost about
-as long as it saves."""
+as long as it saves. A value that is not a whole number of zero or more is logged and the
+default used: read per request, a bad one would otherwise fail every question."""
+if PLAN_CHECK_MIN_ROW_READS < 0:
+    logging.getLogger(__name__).warning(
+        "NLQ_PLAN_CHECK_MIN_ROW_READS=%r is not a whole number of zero or more; using %d.",
+        os.getenv("NLQ_PLAN_CHECK_MIN_ROW_READS"),
+        _DEFAULT_PLAN_CHECK_MIN_ROW_READS,
+    )
+    PLAN_CHECK_MIN_ROW_READS = _DEFAULT_PLAN_CHECK_MIN_ROW_READS
 
 # ---------------------------------------------------------------------------
 # Embedding daemon
