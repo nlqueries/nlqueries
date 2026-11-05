@@ -571,7 +571,7 @@ LLM_MODEL_FAST: str = _detect_fast_model(LLM_PROVIDER)
 """Fast/cheap LLM model for short-output auxiliary calls (classifier, resolver)."""
 
 #: How a value the question names is matched to what a column stores.
-MATCH_MODES: tuple[str, ...] = ("exact", "loose")
+MATCH_MODES: tuple[str, ...] = ("exact", "loose", "contains")
 
 MATCH_MODE: str = os.getenv("NLQ_MATCH_MODE", "loose").strip().lower()
 """How a value the question names ('Alameda', 'shipped') is matched to what a column
@@ -579,7 +579,10 @@ stores. ``loose`` (the default): ignoring case and the spaces around it, so lite
 grounding replaces 'legal' with the stored 'Legal', and a column whose values carry
 spaces is compared trimmed. ``exact``: as stored, character for character, as a
 user who needs exact matches asks for: no literal is replaced, no TRIM is suggested,
-and a value the question quotes is compared as written. Set it in query_config.env
+and a value the question quotes is compared as written. ``contains``: as ``loose``,
+and failing that, a literal of three characters or more that exactly one stored
+value contains, ignoring case, is replaced with that value ('Ford' for 'Ford Motor
+Company'); several leave it to the repair. Set it in query_config.env
 or the environment; an unknown value is logged and ``loose`` used."""
 if MATCH_MODE not in MATCH_MODES:
     logging.getLogger(__name__).warning(
