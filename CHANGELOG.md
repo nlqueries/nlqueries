@@ -14,7 +14,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `nlqueries query-config` shows each value in effect and where it came from,
   and `--init` writes a starting file. `NLQ_MATCH_MODE=exact` matches values as
   stored: no literal is replaced and no `TRIM` is suggested, for users who need
-  `'APG'` not to find `' APG'`. `loose` stays the default. Result checks can now
+  `'APG'` not to find `' APG'`. `NLQ_MATCH_MODE=contains` also takes the one
+  stored value a phrase is part of (`'Ford'` for `'Ford Motor Company'`).
+  `loose` stays the default. When a literal matches nothing in a column of 20
+  values or fewer, the repair is now offered every one of them, so a hint's
+  `'-'` can find a stored `'negative'`. Result checks can now
   be turned off (`NLQ_RESULT_CHECKS=false`). A program serving several users can
   give each request its own settings (`nlqueries.query_settings`).
 

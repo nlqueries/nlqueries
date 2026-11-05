@@ -125,7 +125,8 @@ class QuerySettings:
 _DESCRIPTIONS: dict[str, str] = {
     "match_mode": (
         "How a value the question names is matched to what a column stores: "
-        "loose (ignore case and surrounding spaces) or exact (as stored)."
+        "loose (ignore case and surrounding spaces), exact (as stored), or contains "
+        "(as loose, then a stored value the phrase is part of)."
     ),
     "result_checks": "Check each result for signs it missed the question, and correct it once.",
     "grain_check": "Check the statement against the model's plan line of what one row is.",

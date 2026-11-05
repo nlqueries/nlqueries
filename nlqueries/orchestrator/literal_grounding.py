@@ -13,8 +13,16 @@ statement runs, each such comparison is checked against the database:
   or failing that, also ignoring punctuation at either end (see
   :func:`_fold`): the literal is replaced with that value, and the
   substitution is recorded in provenance;
+- with values matched by ``contains`` (``NLQ_MATCH_MODE``), failing those,
+  exactly one stored value containing it, ignoring case: replaced the same way;
 - none, or several: the statement is left alone, and a note lists up to five
-  nearby stored values for the LLM repair step, if one runs.
+  nearby stored values for the LLM repair step, if one runs. Where the column
+  holds no more than ``_MAX_COMPLETE_LIST`` distinct values, the note lists
+  them all, since a hint's ``'-'`` for a column that stores ``'negative'`` is
+  near no value by spelling and plain to see beside the whole list.
+
+With values matched ``exact``, grounding does not run at all (see
+:attr:`~nlqueries.query_settings.QuerySettings.grounds_literals`).
 
 Read-only and bounded per call: at most ``_MAX_LITERALS`` comparisons,
 ``_LOOKUP_TIMEOUT_S`` per lookup, ``_TOTAL_BUDGET_S`` for the call.
@@ -79,6 +87,7 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from nlqueries.connectors.base import PermittedConnector
 from nlqueries.knowledge.kb_generator import is_pii_column
+from nlqueries.query_settings import current as current_settings
 
 if TYPE_CHECKING:
     from nlqueries.connectors.loader import LookupSource
@@ -96,6 +105,8 @@ _TOTAL_BUDGET_S = 3.0
 _MAX_LITERAL_CHARS = 100
 #: Nearby values offered in a note.
 _MAX_NEARBY = 5
+#: At most this many distinct values, a note lists the column's every value.
+_MAX_COMPLETE_LIST = 20
 #: Longest stored value quoted in a note; a longer one is cut and marked. Notes
 #: go into repair prompts, and a free-text column could otherwise fill one.
 _MAX_NOTE_VALUE_CHARS = 100
@@ -106,7 +117,8 @@ _MAX_CONTAINING = 20
 #: What :func:`_fold` strips from either end of a value, besides whitespace.
 _FOLD_ENDS = ".,;:!?'\"()[]{}-"
 #: Shorter than this once folded, a literal is matched exactly or not at all:
-#: "?" or "-" folds to nothing, and "nothing" is not a match.
+#: "?" or "-" folds to nothing, and "nothing" is not a match; nor by
+#: containment, since "an" is inside too many values to stand for one.
 _MIN_FOLDED_CHARS = 3
 
 #: Outcomes kept, across databases; the least recently used goes first.
@@ -146,11 +158,13 @@ class _Outcome:
 
     kind: str  # "found" | "one" | "none" | "many"
     values: tuple[str, ...] = ()
+    #: For "none": :attr:`values` is every value the column holds.
+    complete: bool = False
 
 
 # Keyed by the source's key and the row scope first, so two databases, or two
 # row scopes on one database, never share an answer.
-_CacheKey = tuple[str, str, str, str, str]
+_CacheKey = tuple[str, str, str, str, str, str]
 _cache: OrderedDict[_CacheKey, tuple[float, _Outcome]] = OrderedDict()
 # Threading, not asyncio: callers run on different event loops in different
 # threads. Held around the dict operations alone, never around a database call.
@@ -209,6 +223,7 @@ async def ground_literals(
     from nlqueries import config as _cfg  # noqa: PLC0415
 
     cap = _cfg.LITERAL_GROUNDING_MAX_ROWS
+    mode = current_settings().match_mode
 
     result = GroundingResult(sql=sql)
     flagged: list[exp.Literal] = []
@@ -242,10 +257,10 @@ async def ground_literals(
                 stored = None
             outcome: _Outcome | None
             if too_large:
-                outcome = _from_values(literal, stored) if stored is not None else None
+                outcome = _from_values(literal, stored, mode) if stored is not None else None
             else:
                 outcome = await _outcome(
-                    session, scope, dialect, table_node, column_node, literal, stored
+                    session, scope, dialect, table_node, column_node, literal, stored, mode
                 )
             if outcome is not None:
                 changed |= _apply(result, outcome, table_node, column_node, literal_node, flagged)
@@ -284,17 +299,20 @@ async def _outcome(
     column: exp.Column,
     literal: str,
     stored: list[str] | None = None,
+    mode: str = "loose",
 ) -> _Outcome | None:
     """What *table*.*column* holds for *literal*, from the cache or the database;
     ``None`` when the lookup failed or ran out of time, which is not cached.
     With no *scope*, the cache is neither read nor written. *stored* is the
     column's complete list, if the knowledge base has one (see :func:`_look_up`)."""
-    key = (session.key, scope or "", _table_key(table), column.name, literal)
+    # The mode is part of the key: 'Sun' contains-matches 'Sunday' only when
+    # that mode is asked for.
+    key = (session.key, scope or "", _table_key(table), column.name, literal, mode)
     outcome = _cached(key) if scope is not None else None
     if outcome is not None:
         return outcome
     try:
-        outcome = await _look_up(session, dialect, table, column, literal, stored)
+        outcome = await _look_up(session, dialect, table, column, literal, stored, mode)
     except Exception:  # noqa: BLE001
         _log.debug(
             "Literal grounding skipped %s.%s = %r: the lookup failed.",
@@ -329,11 +347,12 @@ def _apply(
         flagged.append(literal_node)
     if outcome.kind == "none":
         result.offers_nearby = result.offers_nearby or bool(outcome.values)
-        nearby = ", ".join(_quote_stored(v) for v in outcome.values)
-        result.notes.append(
-            f"No row has {column.name} = {_quote(literal)}"
-            + (f"; nearby values: {nearby}." if nearby else ".")
-        )
+        listed = ", ".join(_quote_stored(v) for v in outcome.values)
+        if outcome.complete:
+            tail = f"; the column holds only these values: {listed}."
+        else:
+            tail = f"; nearby values: {listed}." if listed else "."
+        result.notes.append(f"No row has {column.name} = {_quote(literal)}" + tail)
     elif outcome.kind == "many":
         several = ", ".join(_quote_stored(v) for v in outcome.values)
         result.notes.append(
@@ -704,6 +723,7 @@ async def _look_up(
     column: exp.Column,
     literal: str,
     stored: list[str] | None = None,
+    mode: str = "loose",
 ) -> _Outcome | None:
     """What *table*.*column* holds for *literal*; ``None`` if time ran out.
 
@@ -720,7 +740,7 @@ async def _look_up(
     if found:
         return _Outcome("found")
     if stored is not None:
-        return _from_values(literal, stored)
+        return _from_values(literal, stored, mode)
 
     loose = (
         exp.select(col.copy())
@@ -757,11 +777,18 @@ async def _look_up(
             return _Outcome("one", (same[0],))
         if len(same) > 1:
             return _Outcome("many", tuple(same[:_MAX_NEARBY]))
+        # Fourth, asked for by name: a stored value the literal is part of.
+        # `containing` holds up to `_MAX_CONTAINING` of them, so one is one;
+        # the length is the one the fold has just been held to.
+        if mode == "contains" and containing:
+            if len(containing) == 1:
+                return _Outcome("one", (containing[0],))
+            return _Outcome("many", tuple(containing[:_MAX_NEARBY]))
 
     nearby = await _nearby(session, dialect, source, col, literal, containing)
     # Not "none" without its nearby values: cached, the note would stay that
     # way for as long as the outcome is kept.
-    return None if nearby is None else _Outcome("none", nearby)
+    return None if nearby is None else _Outcome("none", nearby[0], complete=nearby[1])
 
 
 async def _nearby(
@@ -771,11 +798,12 @@ async def _nearby(
     col: exp.Column,
     literal: str,
     containing: list[str] | None = None,
-) -> tuple[str, ...] | None:
+) -> tuple[tuple[str, ...], bool] | None:
     """Up to five stored values near *literal*: containing it, then similar to
-    it. *containing* is the first pass's values when the caller has already
-    fetched them, so the query is not run twice. ``None`` if time ran out
-    before the first pass."""
+    it; or every value, where the column holds no more than
+    ``_MAX_COMPLETE_LIST``, with ``True`` beside them. *containing* is the
+    first pass's values when the caller has already fetched them, so the query
+    is not run twice. ``None`` if time ran out before the first pass."""
     if containing is None:
         rows = await session.run(
             _containing(source, col, literal.strip().lower(), _MAX_NEARBY, dialect),
@@ -787,7 +815,7 @@ async def _nearby(
         containing = [str(v) for v in rows if v is not None]
     found = list(containing[:_MAX_NEARBY])
     if len(found) >= _MAX_NEARBY:
-        return tuple(found[:_MAX_NEARBY])
+        return tuple(found[:_MAX_NEARBY]), False
 
     every = (
         exp.select(col.copy())
@@ -797,9 +825,11 @@ async def _nearby(
     )
     rows = await session.run(every, dialect, _MAX_DISTINCT_FOR_SIMILARITY + 1)
     values = [str(v) for v in rows or () if v is not None]
+    if rows is not None and 0 < len(values) <= _MAX_COMPLETE_LIST:
+        return tuple(values), True
     if rows is not None and len(values) <= _MAX_DISTINCT_FOR_SIMILARITY:
         _add_similar(found, literal, values)
-    return tuple(found[:_MAX_NEARBY])
+    return tuple(found[:_MAX_NEARBY]), False
 
 
 def _add_similar(found: list[str], literal: str, values: list[str]) -> None:
@@ -813,12 +843,14 @@ def _add_similar(found: list[str], literal: str, values: list[str]) -> None:
             found.append(by_lower[close])
 
 
-def _from_values(literal: str, values: list[str]) -> _Outcome:
+def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outcome:
     """What a column whose complete list is *values* holds for *literal*, which
     is not among them: the passes of :func:`_look_up` after the exact match,
     run over the list instead of the database. One value equal ignoring case
     and surrounding spaces, or failing that also punctuation at either end, is
-    the match; several are left to the repair; none gives the nearby values."""
+    the match; several are left to the repair; none gives the nearby values,
+    or every value of a short list. With *mode* ``contains``, one value the
+    literal is part of is the match too."""
     distinct = list(dict.fromkeys(values))
     loose = [v for v in distinct if v.strip().lower() == literal.strip().lower()]
     needle = literal.strip().lower()
@@ -830,6 +862,14 @@ def _from_values(literal: str, values: list[str]) -> _Outcome:
         return _Outcome("one", (loose[0],))
     if loose:
         return _Outcome("many", tuple(loose[:_MAX_NEARBY]))
+    if mode == "contains" and len(folded) >= _MIN_FOLDED_CHARS:
+        inside = [v for v in distinct if folded in v.lower()]
+        if len(inside) == 1:
+            return _Outcome("one", (inside[0],))
+        if inside:
+            return _Outcome("many", tuple(inside[:_MAX_NEARBY]))
+    if 0 < len(distinct) <= _MAX_COMPLETE_LIST:
+        return _Outcome("none", tuple(distinct), complete=True)
     found = [v for v in distinct if needle in v.lower()][:_MAX_NEARBY]
     _add_similar(found, literal, distinct)
     return _Outcome("none", tuple(found[:_MAX_NEARBY]))

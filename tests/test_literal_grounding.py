@@ -1709,7 +1709,11 @@ def test_with_the_setting_off_no_repair_call_is_made(
         "SELECT id FROM schools WHERE status = 'active'",
     ],
 )
-def test_notes_without_nearby_values_make_no_call(src: _Source, sql: str) -> None:
+def test_notes_without_nearby_values_make_no_call(
+    src: _Source, sql: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A column too long to list whole: nothing near the literal, nothing offered.
+    monkeypatch.setattr(literal_grounding, "_MAX_COMPLETE_LIST", 0)
     llm = _replying(f"<sql>{CORRECTED}</sql>")
 
     result, collected = _repair(sql, src, llm)
@@ -1985,3 +1989,137 @@ def test_literals_grounded_reaches_the_run_query_result(src: _Source) -> None:
     assert result.provenance is not None
     assert result.provenance.literals_grounded == expected
     assert dataclasses.asdict(result.provenance)["literals_grounded"] == expected
+
+
+# --- A short column's every value, and matching by containment ---------------------
+
+
+def test_a_short_column_offers_every_value_it_holds(src: _Source) -> None:
+    # Near nothing by spelling, but the column has three values to choose from.
+    result = _ground("SELECT id FROM schools WHERE soc = 'zzzz qqqq'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'zzzz qqqq'"
+    [note] = result.notes
+    assert note.startswith("No row has soc = 'zzzz qqqq'; the column holds only these values: ")
+    for value in (
+        "Youth Authority Facilities",
+        "Juvenile Court Schools",
+        "Special Education Schools",
+    ):
+        assert f"'{value}'" in note
+    assert note.count("'Youth Authority Facilities'") == 1, "each value once"
+    assert result.offers_nearby is True
+
+
+def test_a_longer_column_still_offers_only_nearby_values(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(literal_grounding, "_MAX_COMPLETE_LIST", 2)
+    result = _ground("SELECT id FROM schools WHERE soc = 'Youth Authority'", src)
+    [note] = result.notes
+    assert "the column holds only" not in note
+    assert "nearby values: 'Youth Authority Facilities'" in note
+
+
+def test_a_short_stored_list_offers_every_value_too(src: _Source) -> None:
+    kb = json.loads(json.dumps(KB))
+    for col in kb["schema"]["tables"][0]["columns"]:
+        if col["name"] == "soc":
+            col["samples"] = ["Youth Authority Facilities", "Juvenile Court Schools"]
+            col["values_complete"] = True
+    result = _ground("SELECT id FROM schools WHERE soc = 'zzzz qqqq'", src, kb)
+    [note] = result.notes
+    assert "the column holds only these values: 'Youth Authority Facilities', " in note
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("loose", "SELECT id FROM schools WHERE soc = 'Youth Authority'"),
+        ("contains", "SELECT id FROM schools WHERE soc = 'Youth Authority Facilities'"),
+    ],
+)
+def test_contains_matching_takes_the_one_stored_value_the_literal_is_part_of(
+    src: _Source, mode: str, expected: str
+) -> None:
+    with use_query_settings(QuerySettings(match_mode=mode)):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Youth Authority'", src)
+    assert result.sql == expected
+    if mode == "contains":
+        assert result.substitutions == [
+            ("schools", "soc", "Youth Authority", "Youth Authority Facilities")
+        ]
+
+
+def test_contains_matching_leaves_a_phrase_several_values_hold(src: _Source) -> None:
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
+    [note] = result.notes
+    assert "matches several stored values" in note
+    assert "'Juvenile Court Schools'" in note and "'Special Education Schools'" in note
+
+
+def test_contains_matching_needs_three_characters(src: _Source) -> None:
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'Yo'", src)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Yo'"
+
+
+def test_contains_matching_from_a_stored_list(src: _Source) -> None:
+    kb = json.loads(json.dumps(KB))
+    for col in kb["schema"]["tables"][0]["columns"]:
+        if col["name"] == "soc":
+            col["samples"] = ["Youth Authority Facilities", "Juvenile Court Schools"]
+            col["values_complete"] = True
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'juvenile court'", src, kb)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
+
+
+def test_outcomes_are_cached_per_match_mode(src: _Source) -> None:
+    sql = "SELECT id FROM schools WHERE soc = 'Youth Authority'"
+    assert _ground(sql, src).sql == sql
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        assert "'Youth Authority Facilities'" in _ground(sql, src).sql
+    assert _ground(sql, src).sql == sql, "the loose outcome is still the loose one"
+
+
+def _listed_soc(kb: dict[str, Any] = KB, rows: int | None = None) -> dict[str, Any]:
+    """*kb* with the soc column's complete value list, and the table's size."""
+    out = json.loads(json.dumps(kb))
+    table = out["schema"]["tables"][0]
+    if rows is not None:
+        table["row_count"] = rows
+    for col in table["columns"]:
+        if col["name"] == "soc":
+            col["samples"] = [
+                "Youth Authority Facilities",
+                "Juvenile Court Schools",
+                "Special Education Schools",
+            ]
+            col["values_complete"] = True
+    return out
+
+
+def test_contains_matching_from_a_stored_list_leaves_a_phrase_several_hold(
+    src: _Source,
+) -> None:
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'schools'", src, _listed_soc())
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'schools'"
+    [note] = result.notes
+    assert "matches several stored values" in note
+
+
+def test_contains_matching_from_a_stored_list_needs_three_characters(src: _Source) -> None:
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'yo'", src, _listed_soc())
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'yo'"
+
+
+def test_contains_matching_on_a_table_too_large_to_query_uses_its_list(src: _Source) -> None:
+    # Over LITERAL_GROUNDING_MAX_ROWS: only the stored list answers, in the mode asked for.
+    kb = _listed_soc(rows=10_000_000)
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'juvenile court'", src, kb)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
