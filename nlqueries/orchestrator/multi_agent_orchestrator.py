@@ -708,7 +708,11 @@ class MultiAgentOrchestrator:
                 vector = _embed_text(effective_question)
             except Exception:  # noqa: BLE001, S110 — a missing embedder degrades to a text-only lookup
                 pass
-            if not use_cache:
+            # With a value the user chose, not read either: an answer worked out
+            # with one is never cached, and an entry from before the choice,
+            # written for a statement the model filled in for itself, would
+            # replay rows that have nothing to do with it.
+            if not use_cache or any_chosen():
                 return vector, None
             # A cache that cannot be read is a miss, not a failed question: the
             # cache only saves work that a miss goes on to do anyway.
@@ -863,6 +867,24 @@ class MultiAgentOrchestrator:
                 execution,
                 deadline=deadline,
             )
+            pending = _final_sql_chunk(sql_tokens) or {}
+            if pending.get("choices"):
+                # A value waits on the user's choice and nothing ran: no answer
+                # is merged from the bare statement and the documents. The
+                # choice goes back as the SQL route gives it, and the question
+                # asked again with it runs both agents again.
+                yield json.dumps(
+                    {
+                        "type": "hybrid",
+                        "agent_type": "hybrid",
+                        "merged_answer": None,
+                        "sql": pending.get("sql"),
+                        "sql_table": None,
+                        "citations": [],
+                        "choices": pending["choices"],
+                    }
+                )
+                return
             hybrid_result = _merge_hybrid(
                 effective_question, agent_id, sql_tokens, citations, document_collection
             )

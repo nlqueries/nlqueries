@@ -234,6 +234,61 @@ def test_an_answer_with_nothing_to_choose_is_cached_as_before() -> None:
     _through_the_router({"type": "sql", "sql": "SELECT 1"}).assert_called_once()
 
 
+def _lookups(chosen: dict[str, str] | None) -> MagicMock:
+    """The semantic cache's reads for one question through the router."""
+    cache = MagicMock()
+    cache.get.return_value = None
+    with patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache", return_value=cache):
+        _through_the_router({"type": "sql", "sql": "SELECT 1"}, chosen)
+    return cache.get
+
+
+def test_a_question_asked_with_a_chosen_value_is_not_answered_from_the_cache() -> None:
+    _lookups({_CHOICE.key: "Special Education Schools"}).assert_not_called()
+    _lookups(None).assert_called_once()
+
+
+def test_the_hybrid_route_gives_the_choice_back_and_merges_nothing() -> None:
+    from nlqueries.orchestrator.intent_classifier import IntentType
+    from nlqueries.orchestrator.multi_agent_orchestrator import MultiAgentOrchestrator
+
+    sql_frame = {
+        "type": "sql",
+        "agent_type": "sql",
+        "sql": _ASKED_SQL,
+        "sql_table": None,
+        "choices": [_CHOICE.as_dict()],
+    }
+    ran = AsyncMock(return_value=([json.dumps(sql_frame)], [], None, "docs"))
+    classified = MagicMock(intent=IntentType.hybrid, confidence=1.0)
+
+    async def run() -> list[str]:
+        with (
+            patch(
+                "nlqueries.orchestrator.multi_agent_orchestrator.aclassify_intent",
+                return_value=classified,
+            ),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator._run_hybrid", new=ran),
+            patch("nlqueries.orchestrator.multi_agent_orchestrator._merge_hybrid") as merge,
+        ):
+            frames = [
+                tok
+                async for tok in MultiAgentOrchestrator().handle_question(
+                    "students in schools",
+                    "agent1",
+                    available_types=["sql", "document", "hybrid"],
+                    use_cache=False,
+                )
+            ]
+        merge.assert_not_called()
+        return frames
+
+    final = json.loads(asyncio.run(run())[-1])
+    assert final["type"] == "hybrid"
+    assert final["choices"] == [_CHOICE.as_dict()]
+    assert final["merged_answer"] is None and final["sql"] == _ASKED_SQL
+
+
 # ---------------------------------------------------------------------------
 # The CLI and the MCP tool
 # ---------------------------------------------------------------------------
