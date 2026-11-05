@@ -230,7 +230,7 @@ How a value the question names is matched, and which of the checks and repairs t
 | `NLQ_PLAN_CHECK`, `NLQ_PLAN_CHECK_MIN_ROW_READS` | `true`, `1000000000` | See the table above. |
 | `NLQ_LITERAL_GROUNDING`, `NLQ_LITERAL_GROUNDING_REPAIR` | `true`, `true` | See the table above. |
 
-A program that serves several users, with different needs, can give one request its own settings. It binds a `QuerySettings` (`nlqueries.query_settings`) with `use_query_settings`, and every step of that request reads it. The binding is a context variable, so it reaches the request's threads and tasks and no other request. `QuerySettings.overridden({...})` applies values by setting name, such as `match_mode` or `grain_check`, and refuses an unknown name or a value of the wrong kind.
+A program that serves several users, with different needs, can give one request its own settings. It binds a `QuerySettings` (`nlqueries.query_settings`) with `use_query_settings`, and every step of that request reads it. The binding is a context variable, so it reaches the request's threads and tasks and no other request. `QuerySettings.overridden({...})` applies values by setting name, such as `match_mode` or `grain_check`, and refuses an unknown name or a value of the wrong kind. The semantic cache keeps answers apart by these settings, so an answer worked out with values matched loosely is never served to a request that matches them exactly; changing a setting starts those answers afresh.
 
 ---
 

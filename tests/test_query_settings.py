@@ -336,3 +336,37 @@ def test_query_config_shows_the_settings_and_writes_a_template(
     again = runner.invoke(cli, ["query-config", "--init"])
     assert "already exists; not overwritten" in again.output
     assert target.read_text(encoding="utf-8") == "NLQ_MATCH_MODE=exact\n"
+
+
+# ---------------------------------------------------------------------------
+# The semantic cache keeps answers apart by settings
+# ---------------------------------------------------------------------------
+
+
+def test_the_fingerprint_changes_with_any_setting() -> None:
+    base = QuerySettings()
+    assert base.fingerprint() == QuerySettings().fingerprint()
+    others = {
+        QuerySettings(match_mode="exact").fingerprint(),
+        QuerySettings(result_checks=False).fingerprint(),
+        QuerySettings(grain_check=False).fingerprint(),
+        QuerySettings(plan_check=False).fingerprint(),
+        QuerySettings(plan_check_min_row_reads=5).fingerprint(),
+        QuerySettings(literal_grounding=False).fingerprint(),
+        QuerySettings(literal_grounding_repair=False).fingerprint(),
+    }
+    assert len(others) == 7 and base.fingerprint() not in others
+
+
+def test_an_answer_cached_under_loose_matching_is_a_miss_under_exact() -> None:
+    from nlqueries.cache.envelope import binding_for_agent, sign, verify
+
+    key = b"k" * 32
+    payload = {"question": "flights from APG", "answer": "a", "sql": "SELECT 1", "kind": "answer"}
+    loose = binding_for_agent("agent1", "sqlite")
+    with use_query_settings(QuerySettings(match_mode="exact")):
+        exact = binding_for_agent("agent1", "sqlite")
+    assert loose.settings_fingerprint != exact.settings_fingerprint
+    signed = sign(payload, loose, key)
+    assert verify(signed, loose, key)
+    assert not verify(signed, exact, key)

@@ -111,7 +111,9 @@ class CacheBinding:
 
     An entry that verifies under one binding does not verify under another, so a
     cached answer cannot be replayed against a different agent, connector,
-    dialect or schema.
+    dialect or schema, nor under different query settings: an answer worked out
+    with values matched loosely is not the one a request matching them exactly
+    would get (see :meth:`~nlqueries.query_settings.QuerySettings.fingerprint`).
     """
 
     agent_id: str
@@ -119,6 +121,7 @@ class CacheBinding:
     dialect: str
     schema_fingerprint: str
     policy_version: str
+    settings_fingerprint: str = ""
 
     def canonical(self) -> str:
         return json.dumps(
@@ -128,6 +131,7 @@ class CacheBinding:
                 "dialect": self.dialect.lower(),
                 "schema_fingerprint": self.schema_fingerprint,
                 "policy_version": self.policy_version,
+                "settings_fingerprint": self.settings_fingerprint,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -533,6 +537,7 @@ def binding_for_agent(agent_id: str, dialect: str) -> CacheBinding:
     additional binding.
     """
     from nlqueries import config  # noqa: PLC0415
+    from nlqueries.query_settings import current as current_settings  # noqa: PLC0415
     from nlqueries.sql_policy import POLICY_VERSION  # noqa: PLC0415
     from nlqueries.state_files import agent_storage_id  # noqa: PLC0415
 
@@ -558,4 +563,5 @@ def binding_for_agent(agent_id: str, dialect: str) -> CacheBinding:
         dialect=dialect,
         schema_fingerprint=schema_fp,
         policy_version=POLICY_VERSION,
+        settings_fingerprint=current_settings().fingerprint(),
     )

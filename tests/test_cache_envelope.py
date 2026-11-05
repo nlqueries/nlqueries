@@ -82,6 +82,7 @@ def test_hit_count_is_not_signed() -> None:
         {"dialect": "mysql"},
         {"schema_fingerprint": "other"},
         {"policy_version": "2"},
+        {"settings_fingerprint": "other"},
     ],
     ids=lambda c: next(iter(c)),
 )

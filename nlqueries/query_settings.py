@@ -21,6 +21,8 @@ and tasks the request runs on, and never another request.
 from __future__ import annotations
 
 import contextvars
+import hashlib
+import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
@@ -102,6 +104,13 @@ class QuerySettings:
                 raise ValueError(f"{name} must be text, not {value!r}")
             coerced[name] = value.strip().lower() if isinstance(value, str) else value
         return replace(self, **coerced)
+
+    def fingerprint(self) -> str:
+        """A short digest of every setting, for keying what was worked out under
+        them: the semantic cache binds an entry to it, so an answer cached under
+        loose matching is not served to a request that matches exactly."""
+        canonical = json.dumps(self.as_env(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
     def as_env(self) -> dict[str, str]:
         """``{environment variable: value}``, as ``query_config.env`` writes them."""
