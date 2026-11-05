@@ -456,3 +456,29 @@ def test_a_bad_row_reads_limit_is_reported_and_the_default_used(tmp_path: Path, 
     )
     assert out.stdout.strip().splitlines()[-1] == "1000000000 1000000000"
     assert "NLQ_PLAN_CHECK_MIN_ROW_READS" in out.stderr
+
+
+def test_the_mcp_schema_tool_follows_the_match_mode_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fourth rendering of the schema, the one an MCP client's model reads."""
+    import yaml
+    from nlqueries.mcp_server.server import get_agent_schema
+
+    kb = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "flights",
+                    "columns": [{"name": "code", "type": "TEXT", "profile": {"padded": 3}}],
+                }
+            ]
+        }
+    }
+    (tmp_path / "agent1.yaml").write_text(yaml.dump(kb), encoding="utf-8")
+    monkeypatch.setattr(config, "KB_PATH", tmp_path)
+    loose = get_agent_schema("agent1")
+    with use_query_settings(QuerySettings(match_mode="exact")):
+        exact = get_agent_schema("agent1")
+    assert "compare TRIM(code)" in loose
+    assert "compare TRIM(code)" not in exact and "3 values have spaces around them" in exact
