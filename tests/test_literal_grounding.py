@@ -2453,7 +2453,7 @@ def test_asked_for_a_choice_the_literal_is_left_and_the_options_given(src: _Sour
     assert result.match_notes == [] and result.substitutions == []
     assert result.choices == [
         Choice(
-            key="schools.soc:Schools",
+            key="schools.soc:schools",
             column="soc",
             asked="Schools",
             options=("Juvenile Court Schools", "Special Education Schools"),
@@ -2487,7 +2487,7 @@ def test_a_choice_that_is_not_one_of_the_options_is_asked_again(src: _Source) ->
     ):
         result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
     assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
-    assert [c.key for c in result.choices] == ["schools.soc:Schools"]
+    assert [c.key for c in result.choices] == ["schools.soc:schools"]
 
 
 def test_asking_leaves_one_spelling_of_one_value_alone(src: _Source) -> None:
@@ -2504,7 +2504,21 @@ def test_validation_hands_the_choice_to_whoever_collects_choices(src: _Source) -
     with use_query_settings(_contains_ask()), collect_choices() as choices:
         result = _validate("SELECT id FROM schools WHERE soc = 'Schools'", src)
     assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
-    assert [c.key for c in choices] == ["schools.soc:Schools"]
+    assert [c.key for c in choices] == ["schools.soc:schools"]
+
+
+def test_a_choice_reaches_the_statement_asked_again_in_other_case(src: _Source) -> None:
+    """The second run is a new statement: its table and literal can be written
+    in another case than the first's, and the choice still applies."""
+    from nlqueries.orchestrator.match_notes import use_chosen_values
+
+    with (
+        use_query_settings(_contains_ask()),
+        use_chosen_values({"schools.soc:Schools": "Special Education Schools"}),
+    ):
+        result = _ground("SELECT id FROM SCHOOLS WHERE soc = 'schools'", src)
+    assert result.choices == []
+    assert result.sql == "SELECT id FROM SCHOOLS WHERE soc = 'Special Education Schools'"
 
 
 def test_a_value_in_two_spellings_is_one_option(tmp_path: Path) -> None:

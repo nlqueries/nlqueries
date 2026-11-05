@@ -25,6 +25,7 @@ from nlqueries.orchestrator.match_notes import (
     Choice,
     add_choice,
     any_chosen,
+    choice_key,
     choices_for,
     chosen_value,
     use_chosen_values,
@@ -33,7 +34,7 @@ from nlqueries.orchestrator.sql_generation import SQLGenerationResult
 from nlqueries.orchestrator.sync_runner import AgentQueryResult
 
 _CHOICE = Choice(
-    key="schools.soc:Schools",
+    key="schools.soc:schools",
     column="soc",
     asked="Schools",
     options=("Juvenile Court Schools", "Special Education Schools"),
@@ -56,9 +57,15 @@ def test_chosen_values_are_seen_inside_and_not_after() -> None:
     assert chosen_value(_CHOICE.key) is None and not any_chosen()
 
 
+def test_a_choice_key_is_the_same_however_the_statement_writes_it() -> None:
+    assert choice_key("SCHOOLS", "Soc", "  Juvenile   Court ") == "schools.soc:juvenile court"
+    with use_chosen_values({"Schools.SOC:Juvenile Court": "x"}):
+        assert chosen_value(choice_key("schools", "soc", "juvenile court")) == "x"
+
+
 def test_a_choice_is_given_as_its_key_column_value_and_options() -> None:
     assert _CHOICE.as_dict() == {
-        "key": "schools.soc:Schools",
+        "key": "schools.soc:schools",
         "column": "soc",
         "asked": "Schools",
         "options": ["Juvenile Court Schools", "Special Education Schools"],
@@ -349,7 +356,7 @@ def test_the_cli_says_what_to_choose_when_no_one_is_at_the_terminal() -> None:
     assert run.call_count == 1
     assert "Choose" in out.output and "Juvenile Court Schools" in out.output
     # Rich wraps at the terminal's width: compared with the line breaks taken out.
-    assert "--choose 'schools.soc:Schools' \"<value>\"" in " ".join(out.output.split())
+    assert '--choose "schools.soc:schools" "<value>"' in " ".join(out.output.split())
 
 
 def test_the_cli_asks_at_the_terminal_and_answers_with_the_choice() -> None:
@@ -358,6 +365,13 @@ def test_the_cli_asks_at_the_terminal_and_answers_with_the_choice() -> None:
     assert run.call_count == 2
     assert run.call_args.kwargs["chosen_values"] == {_CHOICE.key: "Special Education Schools"}
     assert "Which did you mean?" in out.output
+
+
+def test_the_cli_quotes_a_key_with_a_double_quote_in_it() -> None:
+    from nlqueries.cli.main import _double_quoted
+
+    assert _double_quoted('t.c:say "hi"') == '"t.c:say \\"hi\\""'
+    assert _double_quoted("t.c:o'neil") == '"t.c:o\'neil"'
 
 
 def test_the_cli_json_carries_the_choices() -> None:
@@ -381,4 +395,4 @@ def test_the_mcp_tool_gives_the_key_and_passes_choices_back() -> None:
         )
     assert run.call_args.kwargs["chosen_values"] == {_CHOICE.key: "x"}
     assert "**A value needs choosing**" in reply
-    assert "Key: 'schools.soc:Schools'" in reply and "'Special Education Schools'" in reply
+    assert "Key: 'schools.soc:schools'" in reply and "'Special Education Schools'" in reply

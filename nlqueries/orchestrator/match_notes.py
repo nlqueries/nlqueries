@@ -99,8 +99,21 @@ class Choice:
 
 
 def choice_key(table: str, column: str, literal: str) -> str:
-    """The key a :class:`Choice` for *literal* in *table*.*column* is known by."""
-    return f"{table}.{column}:{literal}"
+    """The key a :class:`Choice` for *literal* in *table*.*column* is known by.
+
+    Lowercased, its runs of whitespace one space: the question asked again
+    with the user's choice is a new statement, which can write ``Schools`` or
+    ``'schools'`` where the first wrote ``schools`` and ``'Schools'``, and the
+    choice still has to find it. A key typed back by hand is read the same way
+    (see :func:`use_chosen_values`)."""
+    return _normal_key(f"{table}.{column}:{literal}")
+
+
+def _normal_key(key: str) -> str:
+    # The table and column, before the first colon, hold no spaces; the
+    # literal, after it, keeps one between words.
+    name, colon, literal = key.partition(":")
+    return "".join(name.lower().split()) + colon + " ".join(literal.lower().split())
 
 
 _choices: contextvars.ContextVar[list[Choice] | None] = contextvars.ContextVar(
@@ -149,7 +162,7 @@ def choices_for(choices: list[Choice], sql: str, dialect: str) -> list[Choice]:
 def use_chosen_values(chosen: Mapping[str, str]) -> Iterator[None]:
     """Answer the enclosed question with the values the user chose, by
     :attr:`Choice.key`."""
-    token = _chosen.set(dict(chosen))
+    token = _chosen.set({_normal_key(k): v for k, v in chosen.items()})
     try:
         yield
     finally:
@@ -157,7 +170,8 @@ def use_chosen_values(chosen: Mapping[str, str]) -> Iterator[None]:
 
 
 def chosen_value(key: str) -> str | None:
-    """The value the user chose for the choice known by *key*, if any."""
+    """The value the user chose for the choice known by *key*, as
+    :func:`choice_key` makes it, if any."""
     chosen = _chosen.get()
     return None if chosen is None else chosen.get(key)
 

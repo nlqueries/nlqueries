@@ -3389,6 +3389,14 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
 # ---------------------------------------------------------------------------
 
 
+def _double_quoted(text: str) -> str:
+    """*text* in double quotes, a double quote in it escaped as ``\\"``: one
+    argument in POSIX shells and in cmd.exe alike, where single quotes are no
+    quotes at all. (A ``$`` or a backquote would still mean something to a
+    POSIX shell; category values seldom hold either.)"""
+    return '"' + text.replace('"', '\\"') + '"'
+
+
 def _interactive() -> bool:
     """Whether someone is at the terminal to answer a question."""
     return sys.stdin.isatty()
@@ -3657,7 +3665,8 @@ def query(
             console.print(
                 f"[yellow]Choose     :[/yellow] {escape(repr(choice['asked']))} is part of "
                 f"several {escape(choice['column'])} values: {escape(options)}. Nothing ran; "
-                f'ask again with --choose {escape(repr(choice["key"]))} "<value>".'
+                f"ask again with --choose {escape(_double_quoted(choice['key']))} "
+                '"<value>".'
             )
         # A hybrid answer has SQL and rows and a merged answer: the answer was
         # printed only when there were no rows, so it was never shown.
