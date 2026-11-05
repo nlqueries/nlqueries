@@ -22,8 +22,10 @@ of the answer.
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any
 
 import sqlglot
 import sqlglot.expressions as exp
@@ -67,3 +69,113 @@ def notes_for(notes: list[_Note], sql: str, dialect: str) -> list[str]:
     except Exception:  # noqa: BLE001 - unparsable: nothing is shown to be there
         return []
     return [note for note, values in notes if all(v in present for v in values)]
+
+
+# ---------------------------------------------------------------------------
+# Choices: when the user is asked which value was meant
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Choice:
+    """A value the question named that is part of several different stored
+    values, left for the user to choose between (``NLQ_AMBIGUITY=ask``)."""
+
+    #: What the caller passes back with the chosen value: ``table.column:value``.
+    key: str
+    column: str
+    #: The value as the question named it.
+    asked: str
+    #: The stored values it is part of.
+    options: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "column": self.column,
+            "asked": self.asked,
+            "options": list(self.options),
+        }
+
+
+def choice_key(table: str, column: str, literal: str) -> str:
+    """The key a :class:`Choice` for *literal* in *table*.*column* is known by.
+
+    Lowercased, its runs of whitespace one space: the question asked again
+    with the user's choice is a new statement, which can write ``Schools`` or
+    ``'schools'`` where the first wrote ``schools`` and ``'Schools'``, and the
+    choice still has to find it. A key typed back by hand is read the same way
+    (see :func:`use_chosen_values`)."""
+    return _normal_key(f"{table}.{column}:{literal}")
+
+
+def _normal_key(key: str) -> str:
+    # The table and column, before the first colon, hold no spaces; the
+    # literal, after it, keeps one between words.
+    name, colon, literal = key.partition(":")
+    return "".join(name.lower().split()) + colon + " ".join(literal.lower().split())
+
+
+_choices: contextvars.ContextVar[list[Choice] | None] = contextvars.ContextVar(
+    "nlqueries_match_choices", default=None
+)
+_chosen: contextvars.ContextVar[Mapping[str, str] | None] = contextvars.ContextVar(
+    "nlqueries_chosen_values", default=None
+)
+
+
+@contextmanager
+def collect_choices() -> Iterator[list[Choice]]:
+    """Collect, into the list it yields, the choices left for the user within."""
+    choices: list[Choice] = []
+    token = _choices.set(choices)
+    try:
+        yield choices
+    finally:
+        _choices.reset(token)
+
+
+def add_choice(choice: Choice) -> None:
+    """Add *choice* to the open collection, once."""
+    choices = _choices.get()
+    if choices is not None and choice not in choices:
+        choices.append(choice)
+
+
+def choices_for(choices: list[Choice], sql: str, dialect: str) -> list[Choice]:
+    """The choices of *choices* whose value *sql* still compares with as the
+    question named it: one a later step settled is no longer the user's to make."""
+    if not choices:
+        return []
+    try:
+        present = {
+            node.this
+            for node in sqlglot.parse_one(sql, read=dialect).find_all(exp.Literal)
+            if node.is_string
+        }
+    except Exception:  # noqa: BLE001 - unparsable: nothing is shown to be there
+        return []
+    return [c for c in choices if c.asked in present]
+
+
+@contextmanager
+def use_chosen_values(chosen: Mapping[str, str]) -> Iterator[None]:
+    """Answer the enclosed question with the values the user chose, by
+    :attr:`Choice.key`."""
+    token = _chosen.set({_normal_key(k): v for k, v in chosen.items()})
+    try:
+        yield
+    finally:
+        _chosen.reset(token)
+
+
+def chosen_value(key: str) -> str | None:
+    """The value the user chose for the choice known by *key*, as
+    :func:`choice_key` makes it, if any."""
+    chosen = _chosen.get()
+    return None if chosen is None else chosen.get(key)
+
+
+def any_chosen() -> bool:
+    """Whether this question is being answered with values the user chose."""
+    return bool(_chosen.get())

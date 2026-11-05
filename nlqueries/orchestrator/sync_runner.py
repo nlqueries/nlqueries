@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +41,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 from nlqueries.orchestrator.conversation import ConversationTurn
 from nlqueries.orchestrator.document_retrieval import Citation
 from nlqueries.orchestrator.followup_resolver import resolve_followup
+from nlqueries.orchestrator.match_notes import use_chosen_values
 from nlqueries.orchestrator.multi_agent_orchestrator import (
     MultiAgentOrchestrator,
     drain_background_tasks,
@@ -84,6 +85,12 @@ class AgentQueryResult:
     #: 100, no rows from a filter. The orchestrator already tried to correct what
     #: it could; these are what remain. Empty when there is nothing to say.
     result_notes: list[str] = field(default_factory=list)
+    #: Values the user is asked to choose between before the question runs
+    #: (``NLQ_AMBIGUITY=ask``), one dict each: ``key``, ``column``, ``asked``
+    #: (the value as the question named it) and ``options`` (the stored values
+    #: it is part of). Pass ``{key: chosen option}`` back as ``chosen_values``.
+    #: Empty when nothing waits on the user; when not, no statement ran.
+    choices: list[dict[str, Any]] = field(default_factory=list)
     # Answer provenance (SYL-1.1): how the answer was produced — route, capsules,
     # KB parts injected, cache hit/miss, validator warnings, timings. Populated
     # only when ``explain=True`` is passed to :func:`run_query`; ``None`` otherwise,
@@ -236,6 +243,7 @@ async def run_query(
     execution: ExecutionPolicy = DEFAULT_POLICY,
     deadline: float | None = None,
     use_cache: bool = True,
+    chosen_values: Mapping[str, str] | None = None,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -276,6 +284,8 @@ async def run_query(
                          of it remains. ``None`` leaves that ungated.
         use_cache:       ``False`` neither reads nor writes the semantic cache,
                          so the answer is always generated (``nlqueries eval``).
+        chosen_values:   The user's choices for a previous answer's
+                         :attr:`AgentQueryResult.choices`, ``{key: value}``.
 
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
@@ -297,7 +307,7 @@ async def run_query(
     orchestrator = MultiAgentOrchestrator()
     tokens: list[str] = []
     prov: Provenance | None = Provenance() if explain else None
-    with use_provenance(prov):
+    with use_provenance(prov), use_chosen_values(chosen_values or {}):
         async for token in orchestrator.handle_question(
             resolved_question,
             agent_id,
@@ -353,6 +363,7 @@ async def run_query(
         from_cache=from_cache,
         provenance=prov,
         result_notes=[str(note) for note in chunk.get("result_notes") or []],
+        choices=[dict(c) for c in chunk.get("choices") or [] if isinstance(c, dict)],
     )
 
 

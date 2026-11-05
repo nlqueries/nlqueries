@@ -18,8 +18,11 @@ statement runs, each such comparison is checked against the database:
   answer says so (:mod:`~nlqueries.orchestrator.match_notes`);
 - with values matched by ``contains`` (``NLQ_MATCH_MODE``), failing those,
   exactly one stored value containing it, ignoring case: replaced the same way;
-  several are different values, and the closest is taken (:func:`_closest`),
-  the answer naming the others;
+  several are different values: with ``NLQ_AMBIGUITY=pick`` (the default)
+  the closest is taken (:func:`_closest`), the answer naming the others, and
+  with ``ask`` the literal is left as a :class:`~nlqueries.orchestrator.
+  match_notes.Choice` for the user, unless the user has already chosen one of
+  them for it;
 - none, or several: the statement is left alone, and a note lists up to five
   nearby stored values for the LLM repair step, if one runs. Where the column
   holds no more than ``_MAX_COMPLETE_LIST`` distinct values, the note lists
@@ -92,6 +95,7 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from nlqueries.connectors.base import PermittedConnector
 from nlqueries.knowledge.kb_generator import is_pii_column
+from nlqueries.orchestrator.match_notes import Choice, choice_key, chosen_value
 from nlqueries.query_settings import current as current_settings
 
 if TYPE_CHECKING:
@@ -161,6 +165,8 @@ class GroundingResult:
     #: for them, and the stored values the note is about, so the caller tells
     #: it only if the statement it returns still compares with them.
     match_notes: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    #: Values the user is asked to choose between (``NLQ_AMBIGUITY=ask``).
+    choices: list[Choice] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -375,10 +381,25 @@ def _apply(
         )
         return True
     if outcome.kind == "many":
-        chosen = _closest(literal, outcome.values)
-        # The values found can hold the closest in more than one spelling: it
-        # is one value, so every spelling is compared with, as for "variants".
-        kept = tuple(v for v in outcome.values if _fold(v) == _fold(chosen))
+        # One entry per value, in rank order, each with every spelling found:
+        # the values found can hold one value in more than one spelling, and
+        # it is one value to choose and to answer with, as for "variants".
+        groups: dict[str, list[str]] = {}
+        for v in outcome.values:
+            groups.setdefault(_fold(v), []).append(v)
+        options = tuple(spellings[0] for spellings in groups.values())
+        key = choice_key(table.name, column.name, literal)
+        picked = chosen_value(key)
+        if picked is not None and _fold(picked) in groups:
+            chosen = groups[_fold(picked)][0]
+        elif current_settings().ambiguity == "ask" and len(options) > 1:
+            # Not run until the user says which was meant: the literal stays as
+            # the question named it, and the caller is told the options.
+            result.choices.append(Choice(key, column.name, literal, options))
+            return False
+        else:
+            chosen = _closest(literal, options)
+        kept = tuple(groups[_fold(chosen)])
         if len(kept) > 1 and _compare_with_each(literal_node, kept):
             listed = ", ".join(_quote_stored(v) for v in kept)
             used = f"every spelling of {_quote_stored(chosen)} ({listed})"
@@ -387,13 +408,10 @@ def _apply(
             literal_node.set("this", chosen)
             used = _quote_stored(chosen)
         result.substitutions.extend((table.name, column.name, literal, v) for v in kept)
-        # Each other value named once, by its spelling ranked first.
-        firsts: dict[str, str] = {}
-        for v in outcome.values:
-            if _fold(v) != _fold(chosen):
-                firsts.setdefault(_fold(v), v)
-        rest = list(firsts.values())
-        if not rest:
+        rest = [o for o in options if o != chosen]
+        if picked is not None and _fold(picked) in groups:
+            note = f"{_quote(literal)} was taken as {used}, as chosen."
+        elif not rest:
             note = (
                 f"{_quote(literal)} is part of a {column.name} value stored in several "
                 f"spellings; the answer uses {used}."

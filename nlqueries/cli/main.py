@@ -3389,6 +3389,37 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
 # ---------------------------------------------------------------------------
 
 
+def _double_quoted(text: str) -> str:
+    """*text* in double quotes, a double quote in it escaped as ``\\"``: one
+    argument in POSIX shells and in cmd.exe alike, where single quotes are no
+    quotes at all. (A ``$`` or a backquote would still mean something to a
+    POSIX shell; category values seldom hold either.)"""
+    return '"' + text.replace('"', '\\"') + '"'
+
+
+def _interactive() -> bool:
+    """Whether someone is at the terminal to answer a question."""
+    return sys.stdin.isatty()
+
+
+def _ask_choices(choices: list[dict[str, Any]]) -> dict[str, str]:
+    """Ask at the terminal which stored value each choice meant; ``{key: value}``."""
+    from rich.markup import escape  # noqa: PLC0415
+
+    picked: dict[str, str] = {}
+    for choice in choices:
+        options = list(choice["options"])
+        console.print(
+            f"{escape(repr(choice['asked']))} is part of several "
+            f"{escape(choice['column'])} values. Which did you mean?"
+        )
+        for number, option in enumerate(options, 1):
+            console.print(f"  {number}. {escape(option)}")
+        n = click.prompt("Choose", type=click.IntRange(1, len(options)))
+        picked[choice["key"]] = options[n - 1]
+    return picked
+
+
 @cli.command("query")
 @click.argument("agent_id")
 @click.argument("question")
@@ -3442,6 +3473,15 @@ def doc_sync_notion(source_id: str, page_id: str, since_ts: str | None, allow_em
     help="Render the generated SQL back into one plain-English sentence "
     "(deterministic, no LLM) and print it / include it in the --json output.",
 )
+@click.option(
+    "--choose",
+    "choose",
+    nargs=2,
+    multiple=True,
+    metavar="KEY VALUE",
+    help="With NLQ_AMBIGUITY=ask, the stored value meant for a choice an earlier "
+    "answer listed, by its key. Repeat for several.",
+)
 def query(
     agent_id: str,
     question: str,
@@ -3452,6 +3492,7 @@ def query(
     new_session: bool,
     explain: bool,
     paraphrase: bool,
+    choose: tuple[tuple[str, str], ...],
 ) -> None:
     """Run a synchronous agent query and print the result.
 
@@ -3502,8 +3543,10 @@ def query(
         ExecutionPolicy.execute_read_only() if execute_sql else ExecutionPolicy.generate_only()
     )
 
-    try:
-        result: AgentQueryResult = run_query_sync(
+    chosen = dict(choose)
+
+    def _run() -> AgentQueryResult:
+        return run_query_sync(
             question,
             agent_id,
             # Documents too, for an agent that lists document sources.
@@ -3512,7 +3555,16 @@ def query(
             history=history,
             explain=explain,
             execution=execution,
+            chosen_values=chosen,
         )
+
+    try:
+        result: AgentQueryResult = _run()
+        # A value the user is to choose (NLQ_AMBIGUITY=ask): asked here when
+        # someone is at the terminal, then answered with their choice.
+        if result.choices and not output_json and _interactive():
+            chosen.update(_ask_choices(result.choices))
+            result = _run()
     except Exception as exc:  # noqa: BLE001
         err_console.print(f"[bold red]✗ Query failed:[/bold red] {exc}")
         sys.exit(1)
@@ -3577,6 +3629,7 @@ def query(
             "latency_ms": result.latency_ms,
             "session_id": result.session_id,
             "result_notes": result.result_notes,
+            "choices": result.choices,
         }
         if result.provenance is not None:
             output["provenance"] = result.provenance.to_dict()
@@ -3607,6 +3660,14 @@ def query(
                 )
         for note in result.result_notes:
             console.print(f"[yellow]Note       :[/yellow] {escape(note)}")
+        for choice in result.choices:
+            options = ", ".join(repr(o) for o in choice["options"])
+            console.print(
+                f"[yellow]Choose     :[/yellow] {escape(repr(choice['asked']))} is part of "
+                f"several {escape(choice['column'])} values: {escape(options)}. Nothing ran; "
+                f"ask again with --choose {escape(_double_quoted(choice['key']))} "
+                '"<value>".'
+            )
         # A hybrid answer has SQL and rows and a merged answer: the answer was
         # printed only when there were no rows, so it was never shown.
         if result.agent_type != "sql" and result.answer:

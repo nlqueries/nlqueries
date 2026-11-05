@@ -141,6 +141,18 @@ nlqueries extract-schema <connector-or-alias>
 
 ---
 
+## Choosing a value (`query --choose`)
+
+With `NLQ_AMBIGUITY=ask`, a value the question names that is part of several different stored values is asked about before anything runs. At a terminal, `nlqueries query` lists the stored values, asks which was meant, and answers with it. Elsewhere it prints them with the key to answer with:
+
+```bash
+nlqueries query agent1 "pupils in schools" --choose "schools.soc:schools" "Juvenile Court Schools"
+```
+
+`--choose KEY VALUE` can be repeated, and `--json` includes the `choices` an answer is waiting on.
+
+---
+
 ## query-config
 
 Shows the [query settings](configuration.md#query-settings-query_configenv) in effect: how a value the question names is matched, and which answer checks run. Each setting is listed with where its value came from: `query_config.env`, `environment` (the shell or `.env`) or `default`. The file's path is shown too.

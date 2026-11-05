@@ -189,6 +189,7 @@ class _Recorder:
             session_id=None,
             provenance=None,
             result_notes=[],
+            choices=[],
         )
 
     def orchestrator(self) -> Any:

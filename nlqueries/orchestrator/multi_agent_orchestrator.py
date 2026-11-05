@@ -60,6 +60,7 @@ from nlqueries.orchestrator.document_orchestrator import DocumentOrchestrator
 from nlqueries.orchestrator.document_retrieval import Citation, DocumentRetrievalResult
 from nlqueries.orchestrator.followup_resolver import aresolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, aclassify_intent, coerce_intent
+from nlqueries.orchestrator.match_notes import any_chosen
 from nlqueries.orchestrator.orchestrator import Orchestrator, _json_default, sql_table_chunk
 from nlqueries.orchestrator.provenance import (
     record_cache,
@@ -238,6 +239,17 @@ async def drain_background_tasks() -> None:
     """
     if _background_tasks:
         await asyncio.gather(*list(_background_tasks), return_exceptions=True)
+
+
+def _asks_for_a_choice(tokens: list[str]) -> bool:
+    """Whether the SQL agent's final frame in *tokens* leaves the user a choice."""
+    for token in reversed(tokens):
+        if _is_final_chunk(token):
+            try:
+                return bool(json.loads(token).get("choices"))
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                return False
+    return False
 
 
 def _schedule_cache_write(
@@ -696,7 +708,11 @@ class MultiAgentOrchestrator:
                 vector = _embed_text(effective_question)
             except Exception:  # noqa: BLE001, S110 — a missing embedder degrades to a text-only lookup
                 pass
-            if not use_cache:
+            # With a value the user chose, not read either: an answer worked out
+            # with one is never cached, and an entry from before the choice,
+            # written for a statement the model filled in for itself, would
+            # replay rows that have nothing to do with it.
+            if not use_cache or any_chosen():
                 return vector, None
             # A cache that cannot be read is a miss, not a failed question: the
             # cache only saves work that a miss goes on to do anyway.
@@ -805,7 +821,9 @@ class MultiAgentOrchestrator:
                         yield token
                 else:
                     yield token
-            if use_cache:
+            # Not an answer that waits on a choice, nor one worked out with values
+            # the user chose: either replayed would skip asking the next user.
+            if use_cache and not any_chosen() and not _asks_for_a_choice(seen):
                 _schedule_cache_write(
                     _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
                 )
@@ -849,6 +867,24 @@ class MultiAgentOrchestrator:
                 execution,
                 deadline=deadline,
             )
+            pending = _final_sql_chunk(sql_tokens) or {}
+            if pending.get("choices"):
+                # A value waits on the user's choice and nothing ran: no answer
+                # is merged from the bare statement and the documents. The
+                # choice goes back as the SQL route gives it, and the question
+                # asked again with it runs both agents again.
+                yield json.dumps(
+                    {
+                        "type": "hybrid",
+                        "agent_type": "hybrid",
+                        "merged_answer": None,
+                        "sql": pending.get("sql"),
+                        "sql_table": None,
+                        "citations": [],
+                        "choices": pending["choices"],
+                    }
+                )
+                return
             hybrid_result = _merge_hybrid(
                 effective_question, agent_id, sql_tokens, citations, document_collection
             )

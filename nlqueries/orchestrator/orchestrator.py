@@ -38,7 +38,12 @@ if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's 
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
 from nlqueries.orchestrator.grain_check import check_grain
-from nlqueries.orchestrator.match_notes import collect_match_notes, notes_for
+from nlqueries.orchestrator.match_notes import (
+    choices_for,
+    collect_choices,
+    collect_match_notes,
+    notes_for,
+)
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
@@ -571,7 +576,7 @@ class Orchestrator:
                     lookups = await asyncio.to_thread(lookup_source, agent_id)
                 except Exception:  # noqa: BLE001
                     _log.debug("No lookups for literal grounding.", exc_info=True)
-            with collect_match_notes() as match_notes:
+            with collect_match_notes() as match_notes, collect_choices() as choices:
                 result = await validate_and_repair(
                     sql_buf.strip(),
                     kb,
@@ -621,7 +626,12 @@ class Orchestrator:
             # database.
             sql_table: dict[str, Any] = {}
             result_notes: list[str] = []
-            if result.is_valid and execution.may_execute:
+            # A value the user is to choose (NLQ_AMBIGUITY=ask): nothing runs
+            # until they have, since any value taken for them would be a guess.
+            awaiting = choices_for(choices, result.sql, dialect)
+            if awaiting:
+                span.set_attribute("choices_pending", len(awaiting))
+            if result.is_valid and execution.may_execute and not awaiting:
                 from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
 
                 connector = None
@@ -805,6 +815,8 @@ class Orchestrator:
             told = notes_for(match_notes, result.sql, dialect)
             if told or result_notes:
                 frame["result_notes"] = [*told, *result_notes]
+            if awaiting:
+                frame["choices"] = [c.as_dict() for c in awaiting]
             yield json.dumps(frame, default=_json_default)
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:

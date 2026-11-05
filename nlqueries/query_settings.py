@@ -33,6 +33,7 @@ from nlqueries import config
 #: Each setting's environment variable, in the order they are documented.
 ENV_VARS: dict[str, str] = {
     "match_mode": "NLQ_MATCH_MODE",
+    "ambiguity": "NLQ_AMBIGUITY",
     "result_checks": "NLQ_RESULT_CHECKS",
     "grain_check": "NLQ_GRAIN_CHECK",
     "plan_check": "NLQ_PLAN_CHECK",
@@ -47,6 +48,7 @@ class QuerySettings:
     """The answer-behaviour settings for one request. See ``docs/configuration.md``."""
 
     match_mode: str = "loose"
+    ambiguity: str = "pick"
     result_checks: bool = True
     grain_check: bool = True
     plan_check: bool = True
@@ -59,6 +61,11 @@ class QuerySettings:
             raise ValueError(
                 f"match_mode must be one of {', '.join(config.MATCH_MODES)}, "
                 f"not {self.match_mode!r}"
+            )
+        if self.ambiguity not in config.AMBIGUITY_MODES:
+            raise ValueError(
+                f"ambiguity must be one of {', '.join(config.AMBIGUITY_MODES)}, "
+                f"not {self.ambiguity!r}"
             )
         if self.plan_check_min_row_reads < 0:
             raise ValueError("plan_check_min_row_reads must not be negative")
@@ -74,6 +81,7 @@ class QuerySettings:
         """The process's configuration, as :mod:`nlqueries.config` holds it now."""
         return cls(
             match_mode=config.MATCH_MODE,
+            ambiguity=config.AMBIGUITY,
             result_checks=config.RESULT_CHECKS,
             grain_check=config.GRAIN_CHECK,
             plan_check=config.PLAN_CHECK,
@@ -127,6 +135,10 @@ _DESCRIPTIONS: dict[str, str] = {
         "How a value the question names is matched to what a column stores: "
         "loose (ignore case and surrounding spaces), exact (as stored), or contains "
         "(as loose, then a stored value the phrase is part of)."
+    ),
+    "ambiguity": (
+        "When a value is part of several stored values (contains matching): pick the "
+        "closest and say so, or ask which was meant before running."
     ),
     "result_checks": "Check each result for signs it missed the question, and correct it once.",
     "grain_check": "Check the statement against the model's plan line of what one row is.",
