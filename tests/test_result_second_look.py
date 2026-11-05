@@ -286,3 +286,110 @@ def test_a_check_of_the_correction_that_raises_keeps_the_first_result() -> None:
     assert frame["sql"] == FIRST_SQL
     assert frame["sql_table"]["rows"] == [["Ann"], ["Ann"]]
     assert frame["result_notes"]
+
+
+# ---------------------------------------------------------------------------
+# A correction for repeats keeps every row the first result had
+# ---------------------------------------------------------------------------
+
+
+def test_a_correction_for_repeats_that_leaves_out_an_empty_value_is_not_kept() -> None:
+    # The customer with no name is a row the question listed; filtering it out
+    # answers another question.
+    dropped = CORRECTED_SQL + " WHERE c.name IS NOT NULL"
+    llm = _LLM(f"<sql>{dropped}</sql>")
+    frame, connector = _run(llm, [_rows("Ann", None, "Ann"), _rows("Ann")])
+
+    assert _executed(connector) == [FIRST_SQL, dropped]
+    assert frame["sql"] == FIRST_SQL
+    assert frame["sql_table"]["rows"] == [["Ann"], [None], ["Ann"]]
+    (note,) = frame["result_notes"]
+    assert "repeat another row exactly" in note, "the repeats are still told"
+
+
+def test_a_correction_for_repeats_that_collapses_rows_is_not_kept() -> None:
+    collapsed = "SELECT MAX(c.name) AS name FROM customers c JOIN orders o ON o.customer_id = c.id"
+    llm = _LLM(f"<sql>{collapsed}</sql>")
+    frame, _connector = _run(llm, [_rows("Ann", "Bo", "Ann"), _rows("Bo")])
+    assert frame["sql"] == FIRST_SQL
+    assert frame["sql_table"]["rows"] == [["Ann"], ["Bo"], ["Ann"]]
+
+
+def test_a_correction_for_repeats_that_changes_the_columns_is_not_kept() -> None:
+    widened = "SELECT DISTINCT c.name, c.id FROM customers c JOIN orders o ON o.customer_id = c.id"
+    named = QueryResult(
+        columns=["name", "id"],
+        rows=[["Ann", 1], ["Bo", 2]],
+        row_count=2,
+        execution_time_ms=1.0,
+        error=None,
+    )
+    llm = _LLM(f"<sql>{widened}</sql>")
+    frame, _connector = _run(llm, [_rows("Ann", "Bo", "Ann"), named])
+    assert frame["sql"] == FIRST_SQL
+
+
+def test_a_correction_for_repeats_that_reaches_further_under_a_limit_is_kept() -> None:
+    # Three rows asked for, in order, one of them a repeat: without it the
+    # limit reaches one more, and every row the first had is still there.
+    first = FIRST_SQL + " ORDER BY c.name LIMIT 3"
+    corrected = CORRECTED_SQL + " ORDER BY c.name LIMIT 3"
+    llm = _LLM(f"<sql>{corrected}</sql>")
+    frame, _connector = _run(
+        llm, [_rows("Ann", "Bo", "Ann"), _rows("Ann", "Bo", "Cy")], first_sql=first
+    )
+    assert frame["sql"] == corrected
+    assert frame["sql_table"]["rows"] == [["Ann"], ["Bo"], ["Cy"]]
+
+
+def test_a_correction_for_repeats_and_another_doubt_may_change_the_rows() -> None:
+    # Headed by a row with no name as well as repeating: the correction for the
+    # ranking rightly leaves that row out, so only a repeats-only correction is
+    # held to keeping every row.
+    first = FIRST_SQL + " ORDER BY c.name LIMIT 3"
+    corrected = CORRECTED_SQL + " WHERE c.name IS NOT NULL ORDER BY c.name LIMIT 3"
+    llm = _LLM(f"<sql>{corrected}</sql>")
+    frame, _connector = _run(llm, [_rows(None, "Ann", "Ann"), _rows("Ann")], first_sql=first)
+    assert frame["sql"] == corrected
+
+
+def test_repeats_in_a_result_cut_at_the_row_budget_are_only_noted() -> None:
+    # Part of the answer: another statement's first rows need not be these, so
+    # whether a correction kept every row cannot be told, and none is asked for.
+    cut = _rows("Ann", "Bo", "Ann")
+    cut.truncated = True
+    llm = _LLM(f"<sql>{CORRECTED_SQL}</sql>")
+    frame, connector = _run(llm, [cut])
+    assert llm.corrections == []
+    assert _executed(connector) == [FIRST_SQL]
+    assert frame["sql"] == FIRST_SQL
+    (note,) = frame["result_notes"]
+    assert "repeat another row exactly" in note
+
+
+def test_repeats_under_a_limit_in_no_set_order_are_only_noted() -> None:
+    first = FIRST_SQL + " LIMIT 3"
+    llm = _LLM(f"<sql>{CORRECTED_SQL} LIMIT 3</sql>")
+    frame, connector = _run(llm, [_rows("Ann", "Bo", "Ann")], first_sql=first)
+    assert llm.corrections == []
+    assert _executed(connector) == [first]
+    assert frame["sql"] == first
+
+
+def test_another_doubt_in_a_cut_result_is_still_corrected() -> None:
+    # Only a correction for repeats is held to keeping every row; one for a
+    # ranking headed by no value needs no whole result to be judged.
+    first = "SELECT o.status, o.id FROM orders o ORDER BY o.status LIMIT 1"
+    corrected = (
+        "SELECT o.status, o.id FROM orders o WHERE o.status IS NOT NULL ORDER BY o.status LIMIT 1"
+    )
+    cut = QueryResult(
+        columns=["status", "id"], rows=[[None, 7]], row_count=1, execution_time_ms=1.0, error=None
+    )
+    cut.truncated = True
+    ranked = QueryResult(
+        columns=["status", "id"], rows=[["open", 7]], row_count=1, execution_time_ms=1.0, error=None
+    )
+    llm = _LLM(f"<sql>{corrected}</sql>")
+    frame, _connector = _run(llm, [cut, ranked], first_sql=first)
+    assert frame["sql"] == corrected

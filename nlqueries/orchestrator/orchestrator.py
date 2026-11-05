@@ -47,7 +47,7 @@ from nlqueries.orchestrator.match_notes import (
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
-from nlqueries.orchestrator.result_checks import check_result
+from nlqueries.orchestrator.result_checks import check_result, is_whole_result, keeps_every_row
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
@@ -310,6 +310,14 @@ async def _second_look(
     notes = [c.detail for c in concerns]
     if not repairable or not _correction_budget(timeout_seconds, deadline)[0]:
         return result, qr, notes
+    # A correction asked for only because rows repeated is kept only if it
+    # returns each row the first result had (below), which can be told only
+    # when the first result is every row its statement selects. Cut at the row
+    # budget, or a LIMIT over rows in no set order, it is not, so no correction
+    # is asked for: the rows are reported as they ran, with the note.
+    only_repeats = all(c.kind == "duplicate_rows" for c in concerns if c.repairable)
+    if only_repeats and not is_whole_result(result.sql, qr, dialect):
+        return result, qr, notes
     try:
         corrected = await repair_after_suspicious_result(
             result.sql, repairable, question, kb, dialect, llm, system, result.attempt_count
@@ -345,6 +353,13 @@ async def _second_look(
         _log.warning("Checking a corrected result failed; keeping the first.", exc_info=True)
         return result, qr, notes
     if any(c.repairable for c in after):
+        return result, qr, notes
+    if only_repeats and not keeps_every_row(qr, retried):
+        # Asked only because rows repeated, a correction answers the same
+        # question only if it returns each row the first result had. One that
+        # leaves rows out -- a filter on empty values, one row per entity where
+        # the question listed several -- answers another, and is not kept.
+        _log.info("A correction for repeated rows left rows out; keeping the first result.")
         return result, qr, notes
     kept = [c.detail for c in after]
     if any(c.kind == "duplicate_rows" for c in concerns if c.repairable):

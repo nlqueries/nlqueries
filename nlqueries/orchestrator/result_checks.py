@@ -88,6 +88,28 @@ def _row_key(row: list[Any]) -> tuple[str, ...]:
     return tuple(repr(value) for value in row)
 
 
+def is_whole_result(sql: str, result: QueryResult, dialect: str) -> bool:
+    """Whether *result* is every row *sql* selects, so another statement's rows
+    can be held against it: not cut at the connector's row budget, and not a
+    LIMIT taken from rows in no set order, where a second statement that differs
+    only in DISTINCT can meet other rows first. Unsure is no."""
+    if result.truncated:
+        return False
+    select = _outer_select(_parse(sql, dialect))
+    if select is None:
+        return False
+    return select.args.get("limit") is None or select.args.get("order") is not None
+
+
+def keeps_every_row(before: QueryResult, after: QueryResult) -> bool:
+    """Whether *after* holds every distinct row of *before*, value for value in
+    the same columns: what a statement that only stopped rows repeating returns.
+    More rows are allowed, as when a limit that counted the repeats now reaches
+    further; a row with other columns never matches."""
+    have = {_row_key(row) for row in after.rows}
+    return all(_row_key(row) in have for row in before.rows)
+
+
 def _duplicate_rows(statement: exp.Expr | None, result: QueryResult) -> list[ResultConcern]:
     """Rows that repeat another exactly, from a statement that joins: usually
     the join multiplying them.
