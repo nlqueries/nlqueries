@@ -35,6 +35,7 @@ from nlqueries.orchestrator.literal_grounding import (
     ground_literals,
     string_literals,
 )
+from nlqueries.orchestrator.match_notes import add_match_note
 from nlqueries.orchestrator.prompt_assembly import (
     _PARTIAL_COLUMNS_NOTE,
     _columns_omitted,
@@ -157,9 +158,11 @@ async def validate_and_repair(
     """
     from nlqueries import config as _cfg  # noqa: PLC0415
 
-    # Substitutions in statements kept along the way; recorded at the end only
-    # if the statement returned still carries them (see `_finish`).
+    # Substitutions in statements kept along the way, and what the user is told
+    # about them; recorded at the end only if the statement returned still
+    # carries them (see `_finish`).
     kept: list[tuple[str, str, str, str]] = []
+    kept_notes: list[tuple[str, tuple[str, ...]]] = []
 
     async def _ground(statement_sql: str) -> tuple[str, GroundingResult | None]:
         """*statement_sql* with its literals grounded, or unchanged, and what
@@ -172,10 +175,13 @@ async def validate_and_repair(
         if grounded.sql != statement_sql and _validate_sql(grounded.sql, knowledge_base, dialect):
             return statement_sql, grounded
         kept.extend(grounded.substitutions)
+        kept_notes.extend(grounded.match_notes)
         return grounded.sql, grounded
 
     async def _finish(result: SQLGenerationResult) -> SQLGenerationResult:
         _record_substitutions(kept, result.sql, dialect)
+        for note, values in kept_notes:
+            add_match_note(note, values)
         return await _apply_explain_gate(result, connector, explain_check, dialect)
 
     async def _ground_valid(statement_sql: str) -> str:

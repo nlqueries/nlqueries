@@ -13,8 +13,13 @@ statement runs, each such comparison is checked against the database:
   or failing that, also ignoring punctuation at either end (see
   :func:`_fold`): the literal is replaced with that value, and the
   substitution is recorded in provenance;
+- several do (``'Active'`` and ``'ACTIVE'``): they are one value spelled
+  differently, so an ``=`` or ``IN`` compares with every one of them, and the
+  answer says so (:mod:`~nlqueries.orchestrator.match_notes`);
 - with values matched by ``contains`` (``NLQ_MATCH_MODE``), failing those,
   exactly one stored value containing it, ignoring case: replaced the same way;
+  several are different values, and the closest is taken (:func:`_closest`),
+  the answer naming the others;
 - none, or several: the statement is left alone, and a note lists up to five
   nearby stored values for the LLM repair step, if one runs. Where the column
   holds no more than ``_MAX_COMPLETE_LIST`` distinct values, the note lists
@@ -112,6 +117,8 @@ _MAX_COMPLETE_LIST = 20
 _MAX_NOTE_VALUE_CHARS = 100
 #: Above this many distinct values, no similarity pass over the column.
 _MAX_DISTINCT_FOR_SIMILARITY = 2000
+#: Spellings of one value compared with at most; more are not looked for.
+_MAX_VARIANTS = 10
 #: Stored values containing the literal that the punctuation pass compares.
 _MAX_CONTAINING = 20
 #: What :func:`_fold` strips from either end of a value, besides whitespace.
@@ -140,8 +147,8 @@ class GroundingResult:
     substitutions: list[tuple[str, str, str, str]] = field(default_factory=list)
     #: One line per literal no stored value matched, for the repair prompt.
     notes: list[str] = field(default_factory=list)
-    #: Whether a note came with stored values a repair can choose from: nearby
-    #: ones for a literal no value matched, or the several a literal is part of.
+    #: Whether a literal that matched no stored value came with nearby ones:
+    #: the case a repair can act on.
     offers_nearby: bool = False
     #: Where the literals a note was written for stand among the string
     #: literals of :attr:`sql`, counted as :func:`string_literals` lists them:
@@ -150,19 +157,24 @@ class GroundingResult:
     #: elsewhere in the statement that happens to hold a flagged value is not
     #: flagged with it.
     flagged: list[int] = field(default_factory=list)
+    #: ``(note, values)``: what the user should be told about a value matched
+    #: for them, and the stored values the note is about, so the caller tells
+    #: it only if the statement it returns still compares with them.
+    match_notes: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class _Outcome:
     """What a column holds for one literal."""
 
-    kind: str  # "found" | "one" | "none" | "many"
+    #: "found", "one", "none", "variants" (one value spelled several ways) or
+    #: "many" (different values: a containment several share).
+    kind: str
     values: tuple[str, ...] = ()
-    #: For "none": :attr:`values` is every value the column holds.
+    #: For "none": :attr:`values` is every value the column holds. For
+    #: "variants": every spelling it holds, not the first of more than
+    #: ``_MAX_VARIANTS`` or of a lookup cut at its limit.
     complete: bool = False
-    #: For "many": :attr:`values` contain the literal, rather than equal it
-    #: ignoring case, spacing and punctuation at either end.
-    contained: bool = False
 
 
 # Keyed by the source's key and the row scope first, so two databases, or two
@@ -346,6 +358,60 @@ def _apply(
         literal_node.set("this", stored)
         result.substitutions.append((table.name, column.name, literal, stored))
         return True
+    if outcome.kind == "variants" and _compare_with_each(literal_node, outcome.values):
+        result.substitutions.extend((table.name, column.name, literal, v) for v in outcome.values)
+        spellings = ", ".join(_quote_stored(v) for v in outcome.values)
+        uses = (
+            "all of them"
+            if outcome.complete
+            else "these; it may be stored in more spellings, not looked for"
+        )
+        result.match_notes.append(
+            (
+                f"{_quote(literal)} is stored as {spellings} in {column.name}: one value "
+                f"spelled differently, so the answer uses {uses}.",
+                outcome.values,
+            )
+        )
+        return True
+    if outcome.kind == "many":
+        chosen = _closest(literal, outcome.values)
+        # The values found can hold the closest in more than one spelling: it
+        # is one value, so every spelling is compared with, as for "variants".
+        kept = tuple(v for v in outcome.values if _fold(v) == _fold(chosen))
+        if len(kept) > 1 and _compare_with_each(literal_node, kept):
+            listed = ", ".join(_quote_stored(v) for v in kept)
+            used = f"every spelling of {_quote_stored(chosen)} ({listed})"
+        else:
+            kept = (chosen,)
+            literal_node.set("this", chosen)
+            used = _quote_stored(chosen)
+        result.substitutions.extend((table.name, column.name, literal, v) for v in kept)
+        # Each other value named once, by its spelling ranked first.
+        firsts: dict[str, str] = {}
+        for v in outcome.values:
+            if _fold(v) != _fold(chosen):
+                firsts.setdefault(_fold(v), v)
+        rest = list(firsts.values())
+        if not rest:
+            note = (
+                f"{_quote(literal)} is part of a {column.name} value stored in several "
+                f"spellings; the answer uses {used}."
+            )
+        else:
+            others = ", ".join(_quote_stored(v) for v in rest[: _MAX_NEARBY - 1])
+            if len(rest) > _MAX_NEARBY - 1:
+                others += f" and {len(rest) - (_MAX_NEARBY - 1)} more"
+            note = (
+                f"{_quote(literal)} is part of several {column.name} values; the answer "
+                f"uses {used}, the closest. The others: {others}."
+            )
+        result.match_notes.append((note, kept))
+        return True
+    if outcome.kind == "variants":
+        # A LIKE, which an IN cannot stand in for: left to the repair, as a
+        # match on several values always was.
+        outcome = _Outcome("many", outcome.values)
     if outcome.kind in ("none", "many"):
         flagged.append(literal_node)
     if outcome.kind == "none":
@@ -356,13 +422,6 @@ def _apply(
         else:
             tail = f"; nearby values: {listed}." if listed else "."
         result.notes.append(f"No row has {column.name} = {_quote(literal)}" + tail)
-    elif outcome.kind == "many" and outcome.contained:
-        result.offers_nearby = True
-        several = ", ".join(_quote_stored(v) for v in outcome.values)
-        result.notes.append(
-            f"No row has {column.name} = {_quote(literal)}; ignoring case, it is part "
-            f"of several stored values: {several}."
-        )
     elif outcome.kind == "many":
         several = ", ".join(_quote_stored(v) for v in outcome.values)
         result.notes.append(
@@ -757,16 +816,20 @@ async def _look_up(
         .distinct()
         .from_(source.copy())
         .where(_loose_match(col.copy(), value.copy(), dialect))
-        .limit(2)
+        .limit(_MAX_VARIANTS + 1)
     )
-    rows = await session.run(loose, dialect, max_rows=2)
+    rows = await session.run(loose, dialect, max_rows=_MAX_VARIANTS + 1)
     if rows is None:
         return None
     matches = [str(v) for v in rows if v is not None]
     if len(matches) == 1:
         return _Outcome("one", (matches[0],))
     if len(matches) > 1:
-        return _Outcome("many", tuple(matches))
+        return _Outcome(
+            "variants",
+            tuple(matches[:_MAX_VARIANTS]),
+            complete=len(matches) <= _MAX_VARIANTS,
+        )
 
     # Third pass: the stored value differs by punctuation at an end, as a
     # title stored with its question mark does from the same title quoted
@@ -786,18 +849,25 @@ async def _look_up(
         if len(same) == 1:
             return _Outcome("one", (same[0],))
         if len(same) > 1:
-            return _Outcome("many", tuple(same[:_MAX_NEARBY]))
+            # `containing` cut at its limit may have left a spelling out.
+            return _Outcome(
+                "variants",
+                tuple(same[:_MAX_VARIANTS]),
+                complete=len(containing) < _MAX_CONTAINING and len(same) <= _MAX_VARIANTS,
+            )
         # Fourth, asked for by name: a stored value the literal is part of; the
         # length is the one the fold has just been held to. Checked again here,
         # since LIKE reads a `%` or `_` in the literal as a wildcard and can
-        # return values that do not contain it; and one is one only when the
-        # query was not cut at `_MAX_CONTAINING`, which such values can fill.
-        if mode == "contains":
+        # return values that do not contain it. Taken, the one or the closest
+        # of several, only when the query was not cut at `_MAX_CONTAINING`:
+        # the rows past it, in no set order, could hold another or a closer
+        # one. Cut, the values go to the repair as nearby ones.
+        if mode == "contains" and len(containing) < _MAX_CONTAINING:
             inside = [v for v in containing if folded in v.lower()]
-            if len(inside) == 1 and len(containing) < _MAX_CONTAINING:
+            if len(inside) == 1:
                 return _Outcome("one", (inside[0],))
             if len(inside) > 1:
-                return _Outcome("many", tuple(inside[:_MAX_NEARBY]), contained=True)
+                return _Outcome("many", _ranked(literal, inside))
 
     nearby = await _nearby(session, dialect, source, col, literal, containing)
     # Not "none" without its nearby values: cached, the note would stay that
@@ -875,18 +945,60 @@ def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outco
     if len(loose) == 1:
         return _Outcome("one", (loose[0],))
     if loose:
-        return _Outcome("many", tuple(loose[:_MAX_NEARBY]))
+        return _Outcome(
+            "variants", tuple(loose[:_MAX_VARIANTS]), complete=len(loose) <= _MAX_VARIANTS
+        )
     if mode == "contains" and len(folded) >= _MIN_FOLDED_CHARS:
         inside = [v for v in distinct if folded in v.lower()]
         if len(inside) == 1:
             return _Outcome("one", (inside[0],))
-        if inside:
-            return _Outcome("many", tuple(inside[:_MAX_NEARBY]), contained=True)
+        # More than the database path compares are left to the repair, as there.
+        if 1 < len(inside) <= _MAX_CONTAINING:
+            return _Outcome("many", _ranked(literal, inside))
     if 0 < len(distinct) <= _MAX_COMPLETE_LIST:
         return _Outcome("none", tuple(distinct), complete=True)
     found = [v for v in distinct if needle in v.lower()][:_MAX_NEARBY]
     _add_similar(found, literal, distinct)
     return _Outcome("none", tuple(found[:_MAX_NEARBY]))
+
+
+def _compare_with_each(literal_node: exp.Literal, values: tuple[str, ...]) -> bool:
+    """Make the comparison *literal_node* is in compare with every one of
+    *values*: ``col = 'x'`` becomes ``col IN (...)``, and ``'x'`` in an IN list
+    becomes all of them. ``False``, changing nothing, for a comparison it cannot
+    stand in for (a LIKE)."""
+    parent = literal_node.parent
+    literals = [exp.Literal.string(v) for v in values]
+    if isinstance(parent, exp.EQ):
+        column = parent.expression if parent.this is literal_node else parent.this
+        parent.replace(exp.In(this=column.copy(), expressions=literals))
+        return True
+    if isinstance(parent, exp.In):
+        at = next(i for i, e in enumerate(parent.expressions) if e is literal_node)
+        rest = [e for e in parent.expressions if e is not literal_node]
+        kept = [lit for lit in literals if lit.this not in {e.this for e in rest}]
+        parent.set("expressions", rest[:at] + kept + rest[at:])
+        return True
+    return False
+
+
+def _ranked(literal: str, values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """*values*, the most like *literal* first, ignoring case and the ends'
+    punctuation; a tie goes to the shorter, then to the first alphabetically,
+    so the same values come in the same order however they were fetched."""
+    target = _fold(literal)
+    return tuple(
+        sorted(
+            values,
+            key=lambda v: (-difflib.SequenceMatcher(None, target, _fold(v)).ratio(), len(v), v),
+        )
+    )
+
+
+def _closest(literal: str, values: tuple[str, ...]) -> str:
+    """The one of *values* most like *literal*, as :func:`_ranked` orders them,
+    so the same question takes the same value every time."""
+    return _ranked(literal, values)[0]
 
 
 def _quote(value: str) -> str:

@@ -77,10 +77,12 @@ class AgentQueryResult:
     # it is a carrier so a wrapping layer and the CLI can surface the same
     # findings on the canonical result object.
     nexus_warnings: list[str] = field(default_factory=list)
-    #: What looks wrong about the rows, for the user to weigh: repeated rows, a
-    #: percentage outside 0 to 100, no rows from a filter. The orchestrator
-    #: already tried to correct what it could; these are what remain. Empty
-    #: when nothing looked wrong or nothing ran.
+    #: For the user to weigh beside the rows: how a value the question named was
+    #: matched, where literal grounding decided for them (every spelling of one
+    #: value used, or the closest of several values a phrase is part of); then
+    #: what looks wrong about the rows: repeated rows, a percentage outside 0 to
+    #: 100, no rows from a filter. The orchestrator already tried to correct what
+    #: it could; these are what remain. Empty when there is nothing to say.
     result_notes: list[str] = field(default_factory=list)
     # Answer provenance (SYL-1.1): how the answer was produced — route, capsules,
     # KB parts injected, cache hit/miss, validator warnings, timings. Populated
