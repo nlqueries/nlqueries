@@ -171,7 +171,9 @@ class _Outcome:
     #: "many" (different values: a containment several share).
     kind: str
     values: tuple[str, ...] = ()
-    #: For "none": :attr:`values` is every value the column holds.
+    #: For "none": :attr:`values` is every value the column holds. For
+    #: "variants": every spelling it holds, not the first of more than
+    #: ``_MAX_VARIANTS`` or of a lookup cut at its limit.
     complete: bool = False
 
 
@@ -359,10 +361,15 @@ def _apply(
     if outcome.kind == "variants" and _compare_with_each(literal_node, outcome.values):
         result.substitutions.extend((table.name, column.name, literal, v) for v in outcome.values)
         spellings = ", ".join(_quote_stored(v) for v in outcome.values)
+        uses = (
+            "all of them"
+            if outcome.complete
+            else "these; it may be stored in more spellings, not looked for"
+        )
         result.match_notes.append(
             (
                 f"{_quote(literal)} is stored as {spellings} in {column.name}: one value "
-                "spelled differently, so the answer uses all of them.",
+                f"spelled differently, so the answer uses {uses}.",
                 outcome.values,
             )
         )
@@ -791,16 +798,20 @@ async def _look_up(
         .distinct()
         .from_(source.copy())
         .where(_loose_match(col.copy(), value.copy(), dialect))
-        .limit(_MAX_VARIANTS)
+        .limit(_MAX_VARIANTS + 1)
     )
-    rows = await session.run(loose, dialect, max_rows=_MAX_VARIANTS)
+    rows = await session.run(loose, dialect, max_rows=_MAX_VARIANTS + 1)
     if rows is None:
         return None
     matches = [str(v) for v in rows if v is not None]
     if len(matches) == 1:
         return _Outcome("one", (matches[0],))
     if len(matches) > 1:
-        return _Outcome("variants", tuple(matches))
+        return _Outcome(
+            "variants",
+            tuple(matches[:_MAX_VARIANTS]),
+            complete=len(matches) <= _MAX_VARIANTS,
+        )
 
     # Third pass: the stored value differs by punctuation at an end, as a
     # title stored with its question mark does from the same title quoted
@@ -820,7 +831,12 @@ async def _look_up(
         if len(same) == 1:
             return _Outcome("one", (same[0],))
         if len(same) > 1:
-            return _Outcome("variants", tuple(same[:_MAX_VARIANTS]))
+            # `containing` cut at its limit may have left a spelling out.
+            return _Outcome(
+                "variants",
+                tuple(same[:_MAX_VARIANTS]),
+                complete=len(containing) < _MAX_CONTAINING and len(same) <= _MAX_VARIANTS,
+            )
         # Fourth, asked for by name: a stored value the literal is part of; the
         # length is the one the fold has just been held to. Checked again here,
         # since LIKE reads a `%` or `_` in the literal as a wildcard and can
@@ -911,7 +927,9 @@ def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outco
     if len(loose) == 1:
         return _Outcome("one", (loose[0],))
     if loose:
-        return _Outcome("variants", tuple(loose[:_MAX_VARIANTS]))
+        return _Outcome(
+            "variants", tuple(loose[:_MAX_VARIANTS]), complete=len(loose) <= _MAX_VARIANTS
+        )
     if mode == "contains" and len(folded) >= _MIN_FOLDED_CHARS:
         inside = [v for v in distinct if folded in v.lower()]
         if len(inside) == 1:

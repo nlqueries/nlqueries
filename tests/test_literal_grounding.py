@@ -2287,6 +2287,68 @@ def test_every_spelling_is_used_not_only_two(tmp_path: Path) -> None:
     assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE', 'active ')"
 
 
+_THREE_SPELLINGS = [
+    (1, "Active", "x", "y", "A1", 1),
+    (2, "ACTIVE", "x", "y", "A2", 1),
+    (3, "active ", "x", "y", "A3", 1),
+]
+
+
+def test_a_note_says_all_spellings_are_used_only_when_all_were_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _Source(_schools_db(tmp_path / "three.db", _THREE_SPELLINGS))
+    sql = "SELECT id FROM schools WHERE status = 'aCTIVE'"
+    [(note, _values)] = _ground(sql, source).match_notes
+    assert note.endswith("so the answer uses all of them.")
+
+    # Two looked for, three stored: the two are used, and the note says so.
+    literal_grounding._cache.clear()
+    monkeypatch.setattr(literal_grounding, "_MAX_VARIANTS", 2)
+    result = _ground(sql, source)
+    assert result.sql.startswith("SELECT id FROM schools WHERE status IN (")
+    [(note, values)] = result.match_notes
+    assert len(values) == 2
+    assert "uses these; it may be stored in more spellings, not looked for." in note
+
+
+def test_a_punctuation_match_from_a_cut_lookup_says_it_may_have_missed_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        (1, "Active?", "x", "y", "A1", 1),
+        (2, "Active!", "x", "y", "A2", 1),
+        (3, "Inactive", "x", "y", "A3", 1),
+    ]
+    source = _Source(_schools_db(tmp_path / "marks.db", rows))
+    sql = "SELECT id FROM schools WHERE status = 'active.'"
+    [(note, _values)] = _ground(sql, source).match_notes
+    assert note.endswith("so the answer uses all of them.")
+
+    # The containing lookup cut at two: a third spelling could be past it.
+    literal_grounding._cache.clear()
+    monkeypatch.setattr(literal_grounding, "_MAX_CONTAINING", 2)
+    [(note, _values)] = _ground(sql, source).match_notes
+    assert "it may be stored in more spellings, not looked for." in note
+
+
+def test_a_stored_list_with_more_spellings_than_looked_for_says_so(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kb = json.loads(json.dumps(KB))
+    for col in kb["schema"]["tables"][0]["columns"]:
+        if col["name"] == "status":
+            col["samples"] = ["Active", "ACTIVE", "active "]
+            col["values_complete"] = True
+    sql = "SELECT id FROM schools WHERE status = 'aCTIVE'"
+    [(note, _values)] = _ground(sql, src, kb).match_notes
+    assert note.endswith("so the answer uses all of them.")
+    literal_grounding._cache.clear()
+    monkeypatch.setattr(literal_grounding, "_MAX_VARIANTS", 2)
+    [(note, _values)] = _ground(sql, src, kb).match_notes
+    assert "it may be stored in more spellings, not looked for." in note
+
+
 # --- The notes reach the answer -----------------------------------------------------
 
 
