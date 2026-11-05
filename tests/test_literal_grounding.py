@@ -345,17 +345,20 @@ def test_a_literal_differing_in_case_and_end_punctuation_is_grounded(tmp_path: P
     assert result.sql == "SELECT id FROM posts WHERE title = '(The Art of Statistics)'"
 
 
-def test_several_values_equal_once_folded_are_left_alone_with_a_note(tmp_path: Path) -> None:
+def test_several_values_equal_once_folded_are_all_compared_with(tmp_path: Path) -> None:
+    """One value spelled two ways, by the punctuation at its end: both are used."""
     src = _posts(tmp_path, "Why use R?", "Why use R!", "Why use Rust?")
     sql = "SELECT id FROM posts WHERE title = 'why use r'"
 
     result = _ground(sql, src, POSTS_KB)
 
-    assert result.sql == sql and result.substitutions == []
-    assert len(result.notes) == 1
-    assert "several stored values" in result.notes[0]
-    assert "'Why use R?'" in result.notes[0] and "'Why use R!'" in result.notes[0]
-    assert "Rust" not in result.notes[0]
+    assert result.sql == "SELECT id FROM posts WHERE title IN ('Why use R?', 'Why use R!')"
+    assert result.notes == [] and result.flagged == []
+    [(note, values)] = result.match_notes
+    assert values == ("Why use R?", "Why use R!")
+    assert note.startswith("'why use r' is stored as 'Why use R?', 'Why use R!' in title")
+    assert "one value spelled differently, so the answer uses all of them" in note
+    assert "Rust" not in note
 
 
 def test_a_literal_under_three_characters_once_folded_is_not_folded(tmp_path: Path) -> None:
@@ -390,8 +393,8 @@ def test_several_long_matches_are_cut_in_the_note(tmp_path: Path) -> None:
     result = _ground(f"SELECT id FROM posts WHERE title = '{literal}'", src, POSTS_KB)
 
     assert len(literal) == 100
-    assert result.notes and "several stored values" in result.notes[0]
-    assert result.notes[0].count("[cut]") == 2, result.notes[0]
+    [(note, _values)] = result.match_notes
+    assert note.count("[cut]") == 2, note
 
 
 def test_with_no_match_the_containing_values_are_fetched_once_for_the_note(
@@ -410,17 +413,42 @@ def test_with_no_match_the_containing_values_are_fetched_once_for_the_note(
 # --- Left alone, with a note ------------------------------------------------------
 
 
-def test_an_ambiguous_match_is_left_alone_with_a_note(src: _Source) -> None:
-    """'active' matches both 'Active' and 'ACTIVE': not ours to pick."""
+def test_one_value_spelled_several_ways_is_compared_with_every_spelling(src: _Source) -> None:
+    """'active' is stored as 'Active' and 'ACTIVE': one value, so both, not a pick."""
     sql = "SELECT id FROM schools WHERE status = 'active'"
 
     result = _ground(sql, src)
 
-    assert result.sql == sql
-    assert result.substitutions == []
-    assert len(result.notes) == 1
-    assert "status = 'active'" in result.notes[0]
-    assert "'Active'" in result.notes[0] and "'ACTIVE'" in result.notes[0]
+    assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
+    assert result.substitutions == [
+        ("schools", "status", "active", "Active"),
+        ("schools", "status", "active", "ACTIVE"),
+    ]
+    assert result.notes == []
+    [(note, values)] = result.match_notes
+    assert values == ("Active", "ACTIVE")
+    assert note.startswith("'active' is stored as 'Active', 'ACTIVE' in status")
+
+
+def test_a_spelling_in_an_in_list_becomes_every_spelling(src: _Source) -> None:
+    result = _ground("SELECT id FROM schools WHERE status IN ('active', 'Legal')", src)
+    assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE', 'Legal')"
+
+
+def test_a_spelling_already_in_the_in_list_is_not_repeated(src: _Source) -> None:
+    result = _ground("SELECT id FROM schools WHERE status IN ('active', 'ACTIVE')", src)
+    assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
+
+
+def test_a_like_with_several_spellings_is_left_with_a_note(src: _Source) -> None:
+    """An IN cannot stand in for a LIKE: left to the repair, as before."""
+    sql = "SELECT id FROM schools WHERE status LIKE 'active'"
+
+    result = _ground(sql, src)
+
+    assert result.sql == sql and result.match_notes == []
+    [note] = result.notes
+    assert "several stored values" in note and "'Active'" in note and "'ACTIVE'" in note
 
 
 def test_a_missing_value_is_left_alone_with_the_nearest_stored_values(src: _Source) -> None:
@@ -650,13 +678,13 @@ def test_samples_that_are_not_the_complete_list_are_not_trusted(src: _Source) ->
     assert len(src.statements) > 1
 
 
-def test_several_values_the_list_matches_are_left_with_a_note(src: _Source) -> None:
+def test_several_spellings_the_list_holds_are_all_compared_with(src: _Source) -> None:
     sql = "SELECT id FROM schools WHERE status = 'active'"
 
     result = _ground(sql, src, _kb(status=STATUS_LIST))
 
-    assert result.sql == sql and result.flagged == [0]
-    assert "'Active'" in result.notes[0] and "'ACTIVE'" in result.notes[0]
+    assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
+    assert result.flagged == [] and result.notes == []
 
 
 @pytest.mark.parametrize(
@@ -1594,11 +1622,14 @@ def test_a_repair_that_changes_a_literal_that_matched_is_rejected(src: _Source) 
     )
 
 
-def test_a_repair_may_settle_a_literal_several_values_match(src: _Source) -> None:
-    """'active' matches both 'Active' and 'ACTIVE': flagged, so the repair may
-    choose between them while it corrects the soc literal."""
+def test_a_repair_keeps_the_spellings_and_corrects_the_flagged_literal(src: _Source) -> None:
+    """'active' becomes both its spellings; only the soc literal, which matches
+    nothing, is left for the repair to correct."""
     sql = "SELECT id FROM schools WHERE status = 'active' AND soc = 'Youth Authority School'"
-    fixed = "SELECT id FROM schools WHERE status = 'ACTIVE' AND soc = 'Special Education Schools'"
+    fixed = (
+        "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE') "
+        "AND soc = 'Special Education Schools'"
+    )
     llm = MagicMock()
     llm.acomplete = AsyncMock(return_value=f"<sql>{fixed}</sql>")
 
@@ -1705,8 +1736,9 @@ def test_with_the_setting_off_no_repair_call_is_made(
     [
         # No row has it, and nothing near it: a note with no values to offer.
         "SELECT id FROM schools WHERE soc = 'zzzz qqqq'",
-        # Several values match: grounding leaves it, and so does the repair.
-        "SELECT id FROM schools WHERE status = 'active'",
+        # Several spellings, under a LIKE an IN cannot stand in for: left, and
+        # no values to offer.
+        "SELECT id FROM schools WHERE status LIKE 'active'",
     ],
 )
 def test_notes_without_nearby_values_make_no_call(
@@ -2050,30 +2082,19 @@ def test_contains_matching_takes_the_one_stored_value_the_literal_is_part_of(
         ]
 
 
-def test_contains_matching_leaves_a_phrase_several_values_hold(src: _Source) -> None:
+def test_contains_matching_picks_the_closest_of_several_values(src: _Source) -> None:
+    """'Schools' is part of two different values: the closer is used, and the
+    answer names the other."""
     with use_query_settings(QuerySettings(match_mode="contains")):
         result = _ground("SELECT id FROM schools WHERE soc = 'Schools'", src)
-    assert result.sql == "SELECT id FROM schools WHERE soc = 'Schools'"
-    [note] = result.notes
-    assert "it is part of several stored values" in note
-    assert "matches several" not in note, "not said to be the same value"
-    assert "'Juvenile Court Schools'" in note and "'Special Education Schools'" in note
-    assert result.offers_nearby
-
-
-def test_contains_matching_hands_a_phrase_several_values_hold_to_the_repair(
-    src: _Source,
-) -> None:
-    sql = "SELECT id FROM schools WHERE soc = 'Schools'"
-    fixed = "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
-    llm = _replying(f"<sql>{fixed}</sql>")
-
-    with use_query_settings(QuerySettings(match_mode="contains")):
-        result, _collected = _repair(sql, src, llm, "Which juvenile court schools are there?")
-
-    assert llm.acomplete.call_count == 1
-    assert "it is part of several stored values" in llm.acomplete.call_args.args[1]
-    assert result.sql == fixed
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
+    assert result.notes == []
+    [(note, values)] = result.match_notes
+    assert values == ("Juvenile Court Schools",)
+    assert note == (
+        "'Schools' is part of several soc values; the answer uses 'Juvenile Court Schools', "
+        "the closest. The others: 'Special Education Schools'."
+    )
 
 
 @pytest.mark.parametrize("literal", ["A_th", "A%th"])
@@ -2147,15 +2168,14 @@ def _listed_soc(kb: dict[str, Any] = KB, rows: int | None = None) -> dict[str, A
     return out
 
 
-def test_contains_matching_from_a_stored_list_leaves_a_phrase_several_hold(
+def test_contains_matching_from_a_stored_list_picks_the_closest_too(
     src: _Source,
 ) -> None:
     with use_query_settings(QuerySettings(match_mode="contains")):
         result = _ground("SELECT id FROM schools WHERE soc = 'schools'", src, _listed_soc())
-    assert result.sql == "SELECT id FROM schools WHERE soc = 'schools'"
-    [note] = result.notes
-    assert "it is part of several stored values" in note
-    assert result.offers_nearby
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
+    [(note, _values)] = result.match_notes
+    assert "The others: 'Special Education Schools'." in note
 
 
 def test_contains_matching_from_a_stored_list_needs_three_characters(src: _Source) -> None:
@@ -2170,3 +2190,56 @@ def test_contains_matching_on_a_table_too_large_to_query_uses_its_list(src: _Sou
     with use_query_settings(QuerySettings(match_mode="contains")):
         result = _ground("SELECT id FROM schools WHERE soc = 'juvenile court'", src, kb)
     assert result.sql == "SELECT id FROM schools WHERE soc = 'Juvenile Court Schools'"
+
+
+def test_the_closest_value_is_chosen_the_same_way_every_time() -> None:
+    from nlqueries.orchestrator.literal_grounding import _closest
+
+    # Equally close: the shorter, then the first alphabetically.
+    assert _closest("ab", ("abd", "abc", "abcd")) == "abc"
+    assert _closest("ab", ("abcd", "abc", "abd")) == "abc"
+    assert _closest("court", ("Supreme Court", "Court")) == "Court"
+    # Equally alike (2/3 each) and of different lengths: the shorter.
+    assert _closest("ab", ("abxy", "a")) == "a"
+
+
+def test_every_spelling_is_used_not_only_two(tmp_path: Path) -> None:
+    rows = [
+        (1, "Active", "x", "y", "A1", 1),
+        (2, "ACTIVE", "x", "y", "A2", 1),
+        (3, "active ", "x", "y", "A3", 1),
+    ]
+    source = _Source(_schools_db(tmp_path / "three.db", rows))
+    result = _ground("SELECT id FROM schools WHERE status = 'Active'", source)
+    # 'Active' exists as written: left alone, as an exact match always is.
+    assert result.sql == "SELECT id FROM schools WHERE status = 'Active'"
+    result = _ground("SELECT id FROM schools WHERE status = 'aCTIVE'", source)
+    assert result.sql == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE', 'active ')"
+
+
+# --- The notes reach the answer -----------------------------------------------------
+
+
+def test_match_notes_are_told_only_about_the_statement_answered_with() -> None:
+    from nlqueries.orchestrator.match_notes import add_match_note, collect_match_notes, notes_for
+
+    with collect_match_notes() as notes:
+        add_match_note("used both spellings", ("Active", "ACTIVE"))
+        add_match_note("used both spellings", ("Active", "ACTIVE"))
+        add_match_note("picked one", ("Juvenile Court Schools",))
+    assert len(notes) == 2, "the same note once"
+    final = "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
+    assert notes_for(notes, final, "sqlite") == ["used both spellings"]
+    assert notes_for(notes, "SELECT 1 FROM", "sqlite") == []
+    # Outside a collection a note goes nowhere.
+    add_match_note("nobody is listening", ("x",))
+
+
+def test_a_spelling_note_reaches_the_answer(src: _Source) -> None:
+    frame, _finder, _opener = _drive(
+        ExecutionPolicy.generate_only(),
+        generated="SELECT id FROM schools WHERE status = 'active'",
+        source=src.source,
+    )
+    assert frame["sql"] == "SELECT id FROM schools WHERE status IN ('Active', 'ACTIVE')"
+    assert frame["result_notes"][0].startswith("'active' is stored as 'Active', 'ACTIVE'")

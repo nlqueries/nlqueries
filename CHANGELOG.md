@@ -16,7 +16,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   stored: no literal is replaced and no `TRIM` is suggested, for users who need
   `'APG'` not to find `' APG'`. `NLQ_MATCH_MODE=contains` also takes the one
   stored value a phrase is part of (`'Ford'` for `'Ford Motor Company'`).
-  `loose` stays the default. When a literal matches nothing in a column of 20
+  `loose` stays the default. A value stored in several spellings (`'Active'`
+  and `'ACTIVE'`) is now matched in all of them (`status IN ('Active',
+  'ACTIVE')`) instead of being left to the repair, and under `contains` a
+  phrase several values hold takes the closest; either way the answer says so
+  in a note beside the rows. When a literal matches nothing in a column of 20
   values or fewer, the repair is now offered every one of them, so a hint's
   `'-'` can find a stored `'negative'`. Result checks can now
   be turned off (`NLQ_RESULT_CHECKS=false`). A program serving several users can

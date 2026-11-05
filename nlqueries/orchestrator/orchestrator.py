@@ -38,6 +38,7 @@ if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's 
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
 from nlqueries.orchestrator.grain_check import check_grain
+from nlqueries.orchestrator.match_notes import collect_match_notes, notes_for
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
@@ -570,16 +571,17 @@ class Orchestrator:
                     lookups = await asyncio.to_thread(lookup_source, agent_id)
                 except Exception:  # noqa: BLE001
                     _log.debug("No lookups for literal grounding.", exc_info=True)
-            result = await validate_and_repair(
-                sql_buf.strip(),
-                kb,
-                dialect,
-                llm,
-                system,
-                lookups=lookups,
-                question=question,
-                cut_off=cut_off,
-            )
+            with collect_match_notes() as match_notes:
+                result = await validate_and_repair(
+                    sql_buf.strip(),
+                    kb,
+                    dialect,
+                    llm,
+                    system,
+                    lookups=lookups,
+                    question=question,
+                    cut_off=cut_off,
+                )
             # The statement checked against the plan line the model wrote
             # before it, which says what one row is and what is counted; a
             # disagreement gets one repair. See `grain_check`. Before execution,
@@ -798,8 +800,11 @@ class Orchestrator:
             }
             # Only when there is something to say, so every other frame is as
             # it was. What still looks wrong about the rows: see `_second_look`.
-            if result_notes:
-                frame["result_notes"] = result_notes
+            # How values the question named were matched, then what looks wrong
+            # about the rows: both are for the user to weigh.
+            told = notes_for(match_notes, result.sql, dialect)
+            if told or result_notes:
+                frame["result_notes"] = [*told, *result_notes]
             yield json.dumps(frame, default=_json_default)
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:
