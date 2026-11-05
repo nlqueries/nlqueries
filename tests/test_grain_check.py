@@ -55,7 +55,15 @@ def _kb(*, references: bool = True) -> dict[str, Any]:
     return {
         "schema": {
             "tables": [
-                {"name": "customers", "columns": [_col("id", pk=True), _col("name")]},
+                {
+                    "name": "customers",
+                    "columns": [_col("id", pk=True), _col("name"), _col("city")],
+                },
+                # A key of two columns: neither alone tells the rows apart.
+                {
+                    "name": "shipments",
+                    "columns": [_col("order_id", pk=True), _col("line_no", pk=True)],
+                },
                 {
                     "name": "orders",
                     "columns": [
@@ -200,6 +208,65 @@ def test_rows_grouped_without_their_key_are_flagged(sql: str, flagged: bool) -> 
     if flagged:
         assert found[0].startswith("The plan tells the rows apart by customers.id")
         assert "groups customers by name without it" in found[0]
+
+
+# ---------------------------------------------------------------------------
+# Rows told apart by a column that is not a key
+# ---------------------------------------------------------------------------
+
+
+def _rows_by(table: str, column: str) -> GrainPlan:
+    return GrainPlan(text="", row_key=(table, column), count_key=None)
+
+
+@pytest.mark.parametrize(
+    ("key", "sql", "flagged"),
+    [
+        # A city once per customer in it, where the plan says one row a city.
+        (("customers", "city"), "SELECT c.city FROM customers c ORDER BY c.id LIMIT 5", True),
+        (
+            ("customers", "city"),
+            "SELECT c.city FROM customers c JOIN orders o "
+            "ON o.customer_id = c.id ORDER BY o.id LIMIT 5",
+            True,
+        ),
+        # An aggregate in a window or a subquery leaves the rows as they are.
+        (("customers", "city"), "SELECT c.city, COUNT(*) OVER () FROM customers c", True),
+        (
+            ("customers", "city"),
+            "SELECT c.city FROM customers c "
+            "WHERE c.id IN (SELECT MAX(o.customer_id) FROM orders o)",
+            True,
+        ),
+        # Half of a two-column key does not tell the rows apart.
+        # An aggregate in a scalar subquery of the select list is that subquery's.
+        (
+            ("customers", "city"),
+            "SELECT c.city, (SELECT MAX(o.id) FROM orders o) FROM customers c",
+            True,
+        ),
+        (("shipments", "order_id"), "SELECT s.order_id FROM shipments s", True),
+        (("customers", "city"), "SELECT DISTINCT c.city FROM customers c", False),
+        (("customers", "city"), "SELECT c.city, COUNT(*) FROM customers c GROUP BY c.city", False),
+        # One aggregate row.
+        (("customers", "city"), "SELECT COUNT(*) FROM customers c", False),
+        # A key of one column tells the rows apart.
+        (("customers", "id"), "SELECT c.id, c.name FROM customers c", False),
+        # A column the knowledge base does not list is not judged.
+        (("customers", "region"), "SELECT c.region FROM customers c", False),
+        # Nor a key whose table the statement does not read.
+        (("customers", "city"), "SELECT o.status FROM orders o", False),
+    ],
+)
+def test_rows_keyed_by_a_non_unique_column_need_grouping(
+    key: tuple[str, str], sql: str, flagged: bool
+) -> None:
+    found = mismatches(_rows_by(*key), sql, "sqlite", _kb())
+    assert bool(found) is flagged
+    if flagged:
+        table, column = key
+        assert found[0].startswith(f"The plan tells the rows apart by {table}.{column}, which")
+        assert "neither groups by it nor uses DISTINCT" in found[0]
 
 
 # ---------------------------------------------------------------------------
@@ -592,3 +659,15 @@ def test_the_form_the_prompt_shows_is_one_the_parser_reads() -> None:
     plan = parse_plan(filled)
     assert plan is not None
     assert (plan.row_key, plan.count_key) == (("customers", "id"), ("orders", "id"))
+
+
+def test_a_list_keyed_by_a_non_unique_column_is_repaired_to_group() -> None:
+    by_city = "Plan: rows = one city per row, key customers.city; counted = none; filters = none"
+    listed = "SELECT c.city FROM customers c ORDER BY c.id LIMIT 5"
+    grouped = "SELECT c.city FROM customers c GROUP BY c.city ORDER BY MIN(c.id) LIMIT 5"
+    llm = _LLM(f"{by_city}\n<sql>{grouped}</sql>")
+    assert _check(llm, sql=listed, output=by_city).sql == grouped
+    [prompt] = llm.calls
+    assert "which is not a key of customers" in prompt
+    record = _record()
+    assert record is not None and record["changed"] is True
