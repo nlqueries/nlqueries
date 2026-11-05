@@ -204,6 +204,20 @@ def _excerpt_block(label: str, text: str) -> str:
 #: rule names this as its one exception, so the two are not weighed afresh each
 #: time.
 #:
+#: The lookup-label rule (2026-11-05): a value asked for several named entities,
+#: or a range of them, says whose each is, as a figure per entity does; three
+#: statuses for three orders came back with no order beside them, in an order
+#: nothing guaranteed. The "which ... and details" clause returns the thing a
+#: question asks about: "which region ..." answered with the stores alone left
+#: out the region. Both are named in the first rule's exceptions, for the reason
+#: the per-entity rule is.
+#:
+#: The comparison-set rule (2026-11-05): "products above the average price in
+#: 2024" compared 2024 rows with an average over every year, and "of the online
+#: orders, those above their average" the other way round, every order with the
+#: online average. Both sides take the question's filters unless it says the
+#: figure is over everything.
+#:
 #: The definitions rule: a user who spells out how a metric is worked out wants
 #: that calculation, not the textbook one the term usually names.
 #:
@@ -246,10 +260,13 @@ _ANSWER_RULES = """\
 hint lists them: "street, city, state and zip" is four columns in that order. A key or \
 id column stays where the question names it, never moved to the front: "the city, the \
 store id and the opening date" puts the id second. Do not add the column you sorted, \
-filtered or ranked by, an id, or a name, label or count column for context; the one \
-exception, what names the entity a figure is given for, is set out below.
+filtered or ranked by, an id, or a name, label or count column for context; the two \
+exceptions, what names the entity a figure is given for and what names each of several \
+entities a value is looked up for, are set out below.
 - A field, count, total, average or rank the question names is a requested column: \
-"the top five cities and their number of stores" returns the city and the count.
+"the top five cities and their number of stores" returns the city and the count. So is \
+the thing a "which" question asks about when it also asks for details of it: "which \
+region has the most stores, and the name of each store" returns the region too.
 - "How many", or "what is the total" or "the average", with no breakdown asked for \
 returns a single number with no grouping column.
 - When the question asks for a figure for each entity ("how many orders each customer \
@@ -259,6 +276,11 @@ where it has more than one), since two entities can share a name. Return beside 
 figure what names the entity, so each row says what it is about: that column, else its \
 name or title, else its key. Never add an id beside a name, and never return a \
 url or a code in place of a name it asked for: "who" asks for the name.
+- When the question asks for a value of several entities it names, or of a range of \
+them ("the status of orders 1001, 1002 and 1003", "the prices of products 10 to 20"), \
+return beside each value what names the entity it belongs to, as for a figure per \
+entity: values in a list with nothing to say whose they are cannot be read. A value \
+looked up for one entity is returned alone.
 - A person's full name is the first name and the last name, as two columns in that \
 order. "The name" means one set of name columns, not every numbered variant (Name1, \
 Name2, Name3).
@@ -293,6 +315,11 @@ cast it.
 - Do not parse dates written as free text (month names, mixed formats) with CASE ladders \
 or chains of SUBSTR. Unless the knowledge base documents the format, order by the column \
 as stored, and where you explain your reasoning, say so.
+- When the question compares things with an average, total or other figure over a set \
+("products above the average price in 2024", "of the online orders, those above their \
+average value"), work that figure out over the same set the compared things come from: \
+the question's filters on them apply to both sides, unless it says the figure is over \
+everything ("above the overall average").
 - Prefer joins, GROUP BY and window functions to a subquery that refers to the outer \
 row, which some databases run once per row of the outer query: on a large table that \
 can take minutes.
