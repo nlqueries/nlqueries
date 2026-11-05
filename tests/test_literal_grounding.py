@@ -2126,6 +2126,74 @@ def test_contains_matching_takes_no_one_value_from_a_cut_query(
     assert result.substitutions == []
 
 
+#: Six values holding 'court', the closest to it last, where a query in table
+#: order or a list in stored order would put it.
+_COURTS = [
+    "Juvenile Court Schools",
+    "County Court Annex",
+    "Court of Appeals Building",
+    "Supreme Court House",
+    "Court Services Office",
+    "Courts",
+]
+
+
+def _courts_db(tmp_path: Path) -> _Source:
+    rows = [(i, "Legal", "x", soc, "A1", 1) for i, soc in enumerate(_COURTS, start=1)]
+    return _Source(_schools_db(tmp_path / "courts.db", rows))
+
+
+def test_contains_matching_compares_every_value_it_found(tmp_path: Path) -> None:
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'court'", _courts_db(tmp_path))
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Courts'"
+    [(note, _values)] = result.match_notes
+    assert note.endswith(" and 1 more.")
+
+
+def test_contains_matching_picks_nothing_from_a_cut_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Cut at three of six: the closest may be past the cut, so nothing is
+    # picked, and the values found go to the repair as nearby ones.
+    monkeypatch.setattr(literal_grounding, "_MAX_CONTAINING", 3)
+    sql = "SELECT id FROM schools WHERE soc = 'court'"
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground(sql, _courts_db(tmp_path))
+    assert result.sql == sql
+    assert result.match_notes == []
+    assert result.offers_nearby
+    [note] = result.notes
+    assert "'Courts'" in note, "every value is there for the repair"
+
+
+def test_contains_matching_compares_every_value_of_a_stored_list(src: _Source) -> None:
+    kb = json.loads(json.dumps(KB))
+    for col in kb["schema"]["tables"][0]["columns"]:
+        if col["name"] == "soc":
+            col["samples"] = list(_COURTS)
+            col["values_complete"] = True
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground("SELECT id FROM schools WHERE soc = 'court'", src, kb)
+    assert result.sql == "SELECT id FROM schools WHERE soc = 'Courts'"
+
+
+def test_contains_matching_picks_nothing_from_too_long_a_stored_list(
+    src: _Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(literal_grounding, "_MAX_CONTAINING", 3)
+    kb = json.loads(json.dumps(KB))
+    for col in kb["schema"]["tables"][0]["columns"]:
+        if col["name"] == "soc":
+            col["samples"] = list(_COURTS)
+            col["values_complete"] = True
+    sql = "SELECT id FROM schools WHERE soc = 'court'"
+    with use_query_settings(QuerySettings(match_mode="contains")):
+        result = _ground(sql, src, kb)
+    assert result.sql == sql
+    assert result.match_notes == []
+
+
 def test_contains_matching_needs_three_characters(src: _Source) -> None:
     with use_query_settings(QuerySettings(match_mode="contains")):
         result = _ground("SELECT id FROM schools WHERE soc = 'Yo'", src)
@@ -2201,6 +2269,8 @@ def test_the_closest_value_is_chosen_the_same_way_every_time() -> None:
     assert _closest("court", ("Supreme Court", "Court")) == "Court"
     # Equally alike (2/3 each) and of different lengths: the shorter.
     assert _closest("ab", ("abxy", "a")) == "a"
+    # ... even where the shorter comes later alphabetically (2/3 each again).
+    assert _closest("abcdef", ("abcdxx", "def")) == "def"
 
 
 def test_every_spelling_is_used_not_only_two(tmp_path: Path) -> None:

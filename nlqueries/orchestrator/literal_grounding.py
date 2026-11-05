@@ -371,7 +371,10 @@ def _apply(
         chosen = _closest(literal, outcome.values)
         literal_node.set("this", chosen)
         result.substitutions.append((table.name, column.name, literal, chosen))
-        others = ", ".join(_quote_stored(v) for v in outcome.values if v != chosen)
+        rest = [v for v in outcome.values if v != chosen]
+        others = ", ".join(_quote_stored(v) for v in rest[: _MAX_NEARBY - 1])
+        if len(rest) > _MAX_NEARBY - 1:
+            others += f" and {len(rest) - (_MAX_NEARBY - 1)} more"
         result.match_notes.append(
             (
                 f"{_quote(literal)} is part of several {column.name} values; the answer "
@@ -821,14 +824,16 @@ async def _look_up(
         # Fourth, asked for by name: a stored value the literal is part of; the
         # length is the one the fold has just been held to. Checked again here,
         # since LIKE reads a `%` or `_` in the literal as a wildcard and can
-        # return values that do not contain it; and one is one only when the
-        # query was not cut at `_MAX_CONTAINING`, which such values can fill.
-        if mode == "contains":
+        # return values that do not contain it. Taken, the one or the closest
+        # of several, only when the query was not cut at `_MAX_CONTAINING`:
+        # the rows past it, in no set order, could hold another or a closer
+        # one. Cut, the values go to the repair as nearby ones.
+        if mode == "contains" and len(containing) < _MAX_CONTAINING:
             inside = [v for v in containing if folded in v.lower()]
-            if len(inside) == 1 and len(containing) < _MAX_CONTAINING:
+            if len(inside) == 1:
                 return _Outcome("one", (inside[0],))
             if len(inside) > 1:
-                return _Outcome("many", tuple(inside[:_MAX_NEARBY]))
+                return _Outcome("many", _ranked(literal, inside))
 
     nearby = await _nearby(session, dialect, source, col, literal, containing)
     # Not "none" without its nearby values: cached, the note would stay that
@@ -911,8 +916,9 @@ def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outco
         inside = [v for v in distinct if folded in v.lower()]
         if len(inside) == 1:
             return _Outcome("one", (inside[0],))
-        if inside:
-            return _Outcome("many", tuple(inside[:_MAX_NEARBY]))
+        # More than the database path compares are left to the repair, as there.
+        if 1 < len(inside) <= _MAX_CONTAINING:
+            return _Outcome("many", _ranked(literal, inside))
     if 0 < len(distinct) <= _MAX_COMPLETE_LIST:
         return _Outcome("none", tuple(distinct), complete=True)
     found = [v for v in distinct if needle in v.lower()][:_MAX_NEARBY]
@@ -940,15 +946,23 @@ def _compare_with_each(literal_node: exp.Literal, values: tuple[str, ...]) -> bo
     return False
 
 
-def _closest(literal: str, values: tuple[str, ...]) -> str:
-    """The one of *values* most like *literal*, ignoring case and the ends'
+def _ranked(literal: str, values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """*values*, the most like *literal* first, ignoring case and the ends'
     punctuation; a tie goes to the shorter, then to the first alphabetically,
-    so the same question takes the same value every time."""
+    so the same values come in the same order however they were fetched."""
     target = _fold(literal)
-    return max(
-        sorted(values),
-        key=lambda v: (difflib.SequenceMatcher(None, target, _fold(v)).ratio(), -len(v)),
+    return tuple(
+        sorted(
+            values,
+            key=lambda v: (-difflib.SequenceMatcher(None, target, _fold(v)).ratio(), len(v), v),
+        )
     )
+
+
+def _closest(literal: str, values: tuple[str, ...]) -> str:
+    """The one of *values* most like *literal*, as :func:`_ranked` orders them,
+    so the same question takes the same value every time."""
+    return _ranked(literal, values)[0]
 
 
 def _quote(value: str) -> str:
