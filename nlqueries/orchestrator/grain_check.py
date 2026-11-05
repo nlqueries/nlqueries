@@ -128,14 +128,22 @@ def _references(knowledge_base: dict[str, Any]) -> dict[tuple[str, str], tuple[s
 
 def _unique_columns(knowledge_base: dict[str, Any]) -> dict[tuple[str, str], bool]:
     """``{(table, column): whether it alone tells the table's rows apart}``,
-    lower case, for every column the knowledge base lists: true for a primary
-    key of one column, false for any other column, a part of a two-column key
-    among them."""
+    lower case, for the columns of each table the knowledge base records a
+    primary key for: true for a primary key of one column, false for any other
+    column, a part of a two-column key among them.
+
+    A table with no primary key recorded is left out, its columns unknown, not
+    known not to be keys: a view, a table without a declared key, a connector
+    that reports none (BigQuery's) and a knowledge base written before keys were
+    recorded all look the same, and on them every column would otherwise read as
+    not a key, so a correct statement keyed by the real id would be "repaired"."""
     out: dict[tuple[str, str], bool] = {}
     for table in knowledge_base.get("schema", {}).get("tables", []) or []:
         name = str(table.get("name") or "").lower()
         columns = table.get("columns", []) or []
         keys = [c for c in columns if c.get("is_primary_key")]
+        if not keys:
+            continue
         for col in columns:
             out[(name, str(col.get("name") or "").lower())] = bool(
                 col.get("is_primary_key") and len(keys) == 1

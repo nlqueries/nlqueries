@@ -59,6 +59,8 @@ def _kb(*, references: bool = True) -> dict[str, Any]:
                     "name": "customers",
                     "columns": [_col("id", pk=True), _col("name"), _col("city")],
                 },
+                # No primary key recorded: a view, or a connector that reports none.
+                {"name": "visits", "columns": [_col("id"), _col("city")]},
                 # A key of two columns: neither alone tells the rows apart.
                 {
                     "name": "shipments",
@@ -252,6 +254,9 @@ def _rows_by(table: str, column: str) -> GrainPlan:
         (("customers", "city"), "SELECT COUNT(*) FROM customers c", False),
         # A key of one column tells the rows apart.
         (("customers", "id"), "SELECT c.id, c.name FROM customers c", False),
+        # A table with no key recorded is not judged: its id may well be one.
+        (("visits", "id"), "SELECT v.id, v.city FROM visits v", False),
+        (("visits", "city"), "SELECT v.city FROM visits v", False),
         # A column the knowledge base does not list is not judged.
         (("customers", "region"), "SELECT c.region FROM customers c", False),
         # Nor a key whose table the statement does not read.
