@@ -195,8 +195,12 @@ def _number(value: Any) -> float | None:
         return None
 
 
-def profile_notes(column: dict[str, Any]) -> list[str]:
+def profile_notes(column: dict[str, Any], *, trim_hint: bool = True) -> list[str]:
     """What the prompt says about *column*'s ``profile``, if anything.
+
+    *trim_hint* adds to a padded column's note that it is compared trimmed;
+    without it the note only says the values carry spaces, for a request that
+    matches values exactly as stored.
 
     A length range is said only where it contradicts the samples: every
     sample one length and the column not. That is a fixed format with values
@@ -213,7 +217,11 @@ def profile_notes(column: dict[str, Any]) -> list[str]:
     padded = profile.get("padded")
     if isinstance(padded, int) and padded > 0:
         name = column.get("name", "column")
-        notes.append(f"{padded} values have spaces around them: compare TRIM({name})")
+        notes.append(
+            f"{padded} values have spaces around them: compare TRIM({name})"
+            if trim_hint
+            else f"{padded} values have spaces around them"
+        )
     length = profile.get("length")
     samples = [str(s) for s in column.get("samples") or []]
     if (

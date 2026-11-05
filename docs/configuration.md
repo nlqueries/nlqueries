@@ -216,6 +216,24 @@ Anthropic key in its environment for something else keeps going to Bedrock.
 
 ---
 
+## Query settings (`query_config.env`)
+
+How a value the question names is matched, and which of the checks and repairs that shape an answer run, can be kept in a file of their own, `query_config.env`, apart from keys and endpoints. It is read from the path `NLQ_QUERY_CONFIG` names; else from `./query_config.env` in the working directory; else from `~/.nlqueries/query_config.env` (under `NLQ_STATE_DIR`). Only the settings below are read from it. Any other line, an API key say, is ignored and named in a warning, so infrastructure stays in the environment and `.env`. A value already set in the environment, or in `.env`, wins over the file.
+
+`nlqueries query-config` shows the value of each setting in effect and where it came from (`query_config.env`, `environment` or `default`). `nlqueries query-config --init` writes a file with every setting at its default, commented out, where it would be read from; an existing file is left alone.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `NLQ_MATCH_MODE` | `loose` | How a value the question names is matched to what a column stores. `loose`: ignoring case and the spaces around it, so literal grounding replaces `'legal'` with a stored `'Legal'`, and a column whose values carry spaces is compared trimmed. `exact`: as stored, character for character. No literal is replaced, so literal grounding and its repair do nothing; a padded column's profile note no longer suggests `TRIM`, though it still says the values carry spaces; and a value the question quotes is compared as written. An unknown value is logged and `loose` used. |
+| `NLQ_RESULT_CHECKS` | `true` | After a statement runs, read its result for signs it missed the question, correct it once where one is found, and return what still looks wrong as `result_notes`. `false` returns results as they ran, with no notes. |
+| `NLQ_GRAIN_CHECK` | `true` | See the table above. |
+| `NLQ_PLAN_CHECK`, `NLQ_PLAN_CHECK_MIN_ROW_READS` | `true`, `1000000000` | See the table above. |
+| `NLQ_LITERAL_GROUNDING`, `NLQ_LITERAL_GROUNDING_REPAIR` | `true`, `true` | See the table above. |
+
+A program that serves several users, with different needs, can give one request its own settings. It binds a `QuerySettings` (`nlqueries.query_settings`) with `use_query_settings`, and every step of that request reads it. The binding is a context variable, so it reaches the request's threads and tasks and no other request. `QuerySettings.overridden({...})` applies values by setting name, such as `match_mode` or `grain_check`, and refuses an unknown name or a value of the wrong kind.
+
+---
+
 ## Audit events
 
 Two events go to the `nlqueries.audit` logger, and to `NLQ_AUDIT_LOG` when it is set: `authorization`, one per decision the MCP guard makes (see [What gets recorded](mcp-authentication.md#what-gets-recorded)), and `query_execution`, one per statement sent to a database for an agent. Each is a JSON object with sorted keys, rendered on one line: control characters and non-ASCII text are escaped, so no field can break a record across lines. The log message is the event's words (`authorization allowed`, `query executed`) followed by that JSON, and the record is attached as `extra={"audit": ...}` as well.

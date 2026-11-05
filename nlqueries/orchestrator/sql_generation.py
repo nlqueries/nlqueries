@@ -42,6 +42,7 @@ from nlqueries.orchestrator.prompt_assembly import (
     answer_rules_for,
 )
 from nlqueries.orchestrator.provenance import record_literal_grounded, record_literal_repair
+from nlqueries.query_settings import current as current_settings
 from nlqueries.sql_policy import _sqlglot_dialect, evaluate
 
 if TYPE_CHECKING:
@@ -163,7 +164,7 @@ async def validate_and_repair(
     async def _ground(statement_sql: str) -> tuple[str, GroundingResult | None]:
         """*statement_sql* with its literals grounded, or unchanged, and what
         grounding found; ``None`` when it did not run."""
-        if lookups is None or not _cfg.LITERAL_GROUNDING:
+        if lookups is None or not current_settings().grounds_literals:
             return statement_sql, None
         grounded = await ground_literals(statement_sql, knowledge_base, dialect, lookups)
         # Only a literal's value changes, but the statement is re-rendered: a
@@ -180,7 +181,11 @@ async def validate_and_repair(
     async def _ground_valid(statement_sql: str) -> str:
         """Grounding on a valid path, then the literal repair if it applies."""
         grounded_sql, grounded = await _ground(statement_sql)
-        if grounded is None or not grounded.offers_nearby or not _cfg.LITERAL_GROUNDING_REPAIR:
+        if (
+            grounded is None
+            or not grounded.offers_nearby
+            or not current_settings().literal_grounding_repair
+        ):
             return grounded_sql
         prefix = system if system is not None else _build_sql_system_prompt(knowledge_base, dialect)
         corrected = await _repair_literals(
@@ -233,7 +238,7 @@ async def validate_and_repair(
     # no row holds is worth telling the repair about, with what the column does
     # hold, so the corrected statement does not keep it.
     value_notes: list[str] = []
-    if lookups is not None and _cfg.LITERAL_GROUNDING:
+    if lookups is not None and current_settings().grounds_literals:
         value_notes = (await ground_literals(sql, knowledge_base, dialect, lookups)).notes
     correction_user = (
         "Your SQL had a validation error and needs correction.\n\n"

@@ -47,6 +47,73 @@ are set, so an existing deployment that overrides ``KB_PATH`` alone is
 unaffected, and the default is the same path it always was.
 """
 
+# ---------------------------------------------------------------------------
+# Query settings file
+# ---------------------------------------------------------------------------
+#: The answer-behaviour settings a user may keep in ``query_config.env``: how a
+#: value the question names is matched, and the checks and repairs that shape an
+#: answer. Only these are read from it; anything else there is reported and
+#: ignored, so keys, URLs and timeouts stay in the environment and ``.env``.
+QUERY_SETTING_VARS: tuple[str, ...] = (
+    "NLQ_MATCH_MODE",
+    "NLQ_RESULT_CHECKS",
+    "NLQ_GRAIN_CHECK",
+    "NLQ_PLAN_CHECK",
+    "NLQ_PLAN_CHECK_MIN_ROW_READS",
+    "NLQ_LITERAL_GROUNDING",
+    "NLQ_LITERAL_GROUNDING_REPAIR",
+)
+
+
+def query_config_file() -> Path:
+    """Where ``query_config.env`` is read from: ``NLQ_QUERY_CONFIG`` when set,
+    else ``./query_config.env`` when the working directory has one, else
+    ``query_config.env`` in the state directory."""
+    named = os.getenv("NLQ_QUERY_CONFIG")
+    if named:
+        return Path(named)
+    local = Path.cwd() / "query_config.env"
+    return local if local.is_file() else STATE_DIR / "query_config.env"
+
+
+QUERY_CONFIG_FILE: Path = query_config_file()
+"""The query settings file in use; it need not exist."""
+
+#: Keys in the query settings file that are not query settings, reported once.
+QUERY_CONFIG_IGNORED: list[str] = []
+#: The query settings the file supplied, the environment not having set them.
+QUERY_CONFIG_APPLIED: list[str] = []
+
+
+def _load_query_config(path: Path) -> None:
+    """Set the query settings *path* holds, where the environment does not
+    already set them: the environment, ``.env`` included, wins, as it does for
+    ``.env``. A key that is not a query setting is ignored, and logged."""
+    if not path.is_file():
+        return
+    from dotenv import dotenv_values  # noqa: PLC0415
+
+    for key, value in dotenv_values(path).items():
+        if key not in QUERY_SETTING_VARS:
+            QUERY_CONFIG_IGNORED.append(key)
+            continue
+        if value is not None and key not in os.environ:
+            os.environ[key] = value
+            QUERY_CONFIG_APPLIED.append(key)
+    if QUERY_CONFIG_IGNORED:
+        logging.getLogger(__name__).warning(
+            "%s: ignored %s, which %s; keys, URLs and other infrastructure belong in "
+            "the environment or .env.",
+            path,
+            ", ".join(QUERY_CONFIG_IGNORED),
+            "is not a query setting"
+            if len(QUERY_CONFIG_IGNORED) == 1
+            else "are not query settings",
+        )
+
+
+_load_query_config(QUERY_CONFIG_FILE)
+
 
 # ---------------------------------------------------------------------------
 # Embedding model
@@ -502,6 +569,30 @@ def _detect_fast_model(provider: str) -> str:
 
 LLM_MODEL_FAST: str = _detect_fast_model(LLM_PROVIDER)
 """Fast/cheap LLM model for short-output auxiliary calls (classifier, resolver)."""
+
+#: How a value the question names is matched to what a column stores.
+MATCH_MODES: tuple[str, ...] = ("exact", "loose")
+
+MATCH_MODE: str = os.getenv("NLQ_MATCH_MODE", "loose").strip().lower()
+"""How a value the question names ('Alameda', 'shipped') is matched to what a column
+stores. ``loose`` (the default): ignoring case and the spaces around it, so literal
+grounding replaces 'legal' with the stored 'Legal', and a column whose values carry
+spaces is compared trimmed. ``exact``: as stored, character for character, as a
+user who needs exact matches asks for: no literal is replaced, no TRIM is suggested,
+and a value the question quotes is compared as written. Set it in query_config.env
+or the environment; an unknown value is logged and ``loose`` used."""
+if MATCH_MODE not in MATCH_MODES:
+    logging.getLogger(__name__).warning(
+        "NLQ_MATCH_MODE=%r is not one of %s; using 'loose'.", MATCH_MODE, ", ".join(MATCH_MODES)
+    )
+    MATCH_MODE = "loose"
+
+RESULT_CHECKS: bool = os.getenv("NLQ_RESULT_CHECKS", "true").lower() in ("1", "true", "yes")
+"""After a statement runs, read its result for signs it missed the question (rows
+repeated exactly, a ranking headed by a row with no value, a percentage outside 0 to
+100), correct it once where one is found, and return what still looks wrong as
+``result_notes``. On by default; set NLQ_RESULT_CHECKS=false to return results as
+they ran, with no notes."""
 
 LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
     "1",

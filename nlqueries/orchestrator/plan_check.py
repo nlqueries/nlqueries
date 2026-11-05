@@ -58,7 +58,6 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
-from nlqueries import config
 from nlqueries.llm import output_budget
 from nlqueries.orchestrator.literal_grounding import _row_counts
 from nlqueries.orchestrator.provenance import record_plan_rewrite
@@ -68,6 +67,7 @@ from nlqueries.orchestrator.sql_generation import (
     _same_statement,
     _validate_sql,
 )
+from nlqueries.query_settings import current as current_settings
 from nlqueries.sql_policy import _sqlglot_dialect, evaluate
 
 if TYPE_CHECKING:
@@ -402,7 +402,8 @@ async def per_row_scans(
 
 
 def _over_limit(scans: list[PerRowScan] | None) -> list[PerRowScan]:
-    return [s for s in scans or [] if s.row_reads >= config.PLAN_CHECK_MIN_ROW_READS]
+    limit = current_settings().plan_check_min_row_reads
+    return [s for s in scans or [] if s.row_reads >= limit]
 
 
 def _explain_timeout(deadline: float | None) -> float | None:
@@ -511,7 +512,7 @@ async def check_plan(
     ``plan_rewrite``, with the statement as generated, since a structural
     rewrite is the step after validation most likely to change an answer.
     """
-    if not config.PLAN_CHECK or not result.is_valid:
+    if not current_settings().plan_check or not result.is_valid:
         return PlanCheck(result)
     timeout = _explain_timeout(deadline)
     if timeout is None:

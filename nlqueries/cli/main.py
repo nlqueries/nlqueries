@@ -1767,6 +1767,41 @@ def promote_feedback_cmd(agent_id: str, include_anonymous: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+@cli.command("query-config")
+@click.option(
+    "--init",
+    is_flag=True,
+    help="Write a query_config.env with every setting at its default, commented out, "
+    "where it is read from. An existing file is left as it is.",
+)
+def query_config(init: bool) -> None:
+    """Show the query settings in effect, and where each one came from."""
+    from rich.table import Table as _Table
+
+    from nlqueries import config as _config
+    from nlqueries.query_settings import ENV_VARS, QuerySettings, source_of, template
+
+    path = _config.QUERY_CONFIG_FILE
+    if init:
+        if path.exists():
+            console.print(f"[yellow]{path} already exists; not overwritten.[/yellow]")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(template(), encoding="utf-8")
+            console.print(f"Wrote {path}")
+    values = QuerySettings.from_config().as_env()
+    tbl = _Table(show_header=True, header_style="bold cyan")
+    tbl.add_column("Setting")
+    tbl.add_column("Value")
+    tbl.add_column("From")
+    for var in ENV_VARS.values():
+        tbl.add_row(var, values[var], source_of(var))
+    console.print(tbl)
+    console.print(f"[dim]File: {path}{'' if path.exists() else ' (not present)'}[/dim]")
+    for key in _config.QUERY_CONFIG_IGNORED:
+        console.print(f"[yellow]Ignored in the file: {key} is not a query setting.[/yellow]")
+
+
 @cli.command("connectors")
 def list_connectors() -> None:
     """List all registered connectors and their aliases."""

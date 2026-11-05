@@ -25,7 +25,6 @@ import pytest
 import yaml
 from nlqueries.connectors.base import QueryResult
 from nlqueries.execution import ExecutionPolicy
-from nlqueries.orchestrator import grain_check
 from nlqueries.orchestrator.grain_check import (
     GrainPlan,
     check_grain,
@@ -35,6 +34,7 @@ from nlqueries.orchestrator.grain_check import (
 from nlqueries.orchestrator.orchestrator import Orchestrator
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult
+from nlqueries.query_settings import QuerySettings, use_query_settings
 
 
 def _col(name: str, *, pk: bool = False, ref: str | None = None) -> dict[str, Any]:
@@ -402,7 +402,7 @@ def test_nothing_is_asked_or_recorded_without_a_disagreement(sql: str, output: s
 
 def test_switched_off_the_statement_is_not_checked() -> None:
     llm = _LLM(f"<sql>{_RIGHT}</sql>")
-    with patch.object(grain_check.config, "GRAIN_CHECK", False):
+    with use_query_settings(QuerySettings(grain_check=False)):
         assert _check(llm).sql == _WRONG
     assert llm.calls == []
 
@@ -448,7 +448,6 @@ def _ask(
         ):
             cfg.KB_PATH = kb_path
             cfg.CONNECTOR_STATEMENT_TIMEOUT_SECONDS = 120.0
-            cfg.LITERAL_GROUNDING = False
             span = tracer.return_value.start_as_current_span.return_value.__enter__.return_value
 
             async def collect() -> list[str]:
@@ -463,7 +462,9 @@ def _ask(
                     )
                 ]
 
-            tokens = asyncio.run(collect())
+            # No literal lookups: the agent has no connector to look in.
+            with use_query_settings(QuerySettings(literal_grounding=False)):
+                tokens = asyncio.run(collect())
     return json.loads(tokens[-1]), span
 
 

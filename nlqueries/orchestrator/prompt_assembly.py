@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from nlqueries.knowledge.column_profiles import profile_notes
 from nlqueries.knowledge.concept_hierarchy import GlossaryHierarchy, build_glossary_hierarchy
 from nlqueries.orchestrator.provenance import record_capsule, record_prompt_section
+from nlqueries.query_settings import current as current_settings
 
 if TYPE_CHECKING:
     from nlqueries.orchestrator.document_retrieval import DocumentRetrievalResult
@@ -330,6 +331,18 @@ false?", answer with the text 'YES' or 'NO', or 'True' or 'False', not a boolean
 expression. A question that only asks whether something holds ("is the order \
 shipped?") returns the value the data stores for it."""
 
+#: The quoted-value rule's clause about spaces, and what replaces it when the
+#: request matches values exactly: as stored, a padded value is not the trimmed
+#: one, and a user who asked for exact matches is not given the trimmed rows.
+_TRIM_QUOTED = (
+    "spaces around it are not part of it, so trim it and do not build a LIKE pattern "
+    "around the spaces."
+)
+_EXACT_QUOTED = (
+    "compare it exactly as written, character for character, with no TRIM and no "
+    "change of case, and do not build a LIKE pattern around it."
+)
+
 #: A number with at most a short prefix, a short suffix ('%', ' min', '/yr') and
 #: separators inside its digits ('1,200', '1.234,56'). A prefix is a currency sign
 #: ('$', '€') or up to four letters set off by a space or a period ('I 2008',
@@ -449,9 +462,14 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
 
     :data:`_ANSWER_RULES` holds for every database. A rule that depends on what
     a column holds is added only where the knowledge base shows it, so it does
-    not fire on columns it was never about. Depends on the knowledge base
-    alone, so the cached block stays identical across questions.
+    not fire on columns it was never about. Depends on the knowledge base and
+    the request's match mode alone, so the cached block stays identical across
+    questions: with values matched exactly, a value the question quotes is
+    compared as written, not trimmed (:data:`_TRIM_QUOTED`).
     """
+    rules = _ANSWER_RULES
+    if current_settings().match_mode == "exact":
+        rules = rules.replace(_TRIM_QUOTED, _EXACT_QUOTED)
     extra: list[str] = []
     decorated = _decorated_number_columns(knowledge_base)
     if decorated:
@@ -487,7 +505,7 @@ def answer_rules_for(knowledge_base: dict[str, Any]) -> str:
             "holds within a period, and a span of periods adds up each period's last value. "
             "Where you explain your reasoning, say which you used."
         )
-    return "\n".join([_ANSWER_RULES, *extra])
+    return "\n".join([rules, *extra])
 
 
 def _sql_format_rules(answer_rules: str) -> str:
@@ -840,7 +858,7 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
                         shown = shown[:5]
                     sample_str = ", ".join(_quote_sample(s) for s in shown)
                     flags.append(f"samples: [{sample_str}]")
-            flags.extend(profile_notes(col))
+            flags.extend(profile_notes(col, trim_hint=current_settings().match_mode != "exact"))
 
             inner = f"{col_name}:{col_type}"
             if flags:
