@@ -88,6 +88,15 @@ def _row_key(row: list[Any]) -> tuple[str, ...]:
     return tuple(repr(value) for value in row)
 
 
+def keeps_every_row(before: QueryResult, after: QueryResult) -> bool:
+    """Whether *after* holds every distinct row of *before*, value for value in
+    the same columns: what a statement that only stopped rows repeating returns.
+    More rows are allowed, as when a limit that counted the repeats now reaches
+    further; a row with other columns never matches."""
+    have = {_row_key(row) for row in after.rows}
+    return all(_row_key(row) in have for row in before.rows)
+
+
 def _duplicate_rows(statement: exp.Expr | None, result: QueryResult) -> list[ResultConcern]:
     """Rows that repeat another exactly, from a statement that joins: usually
     the join multiplying them.

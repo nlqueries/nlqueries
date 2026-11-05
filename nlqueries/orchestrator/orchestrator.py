@@ -47,7 +47,7 @@ from nlqueries.orchestrator.match_notes import (
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
-from nlqueries.orchestrator.result_checks import check_result
+from nlqueries.orchestrator.result_checks import check_result, keeps_every_row
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
@@ -345,6 +345,15 @@ async def _second_look(
         _log.warning("Checking a corrected result failed; keeping the first.", exc_info=True)
         return result, qr, notes
     if any(c.repairable for c in after):
+        return result, qr, notes
+    if all(c.kind == "duplicate_rows" for c in concerns if c.repairable) and not keeps_every_row(
+        qr, retried
+    ):
+        # Asked only because rows repeated, a correction answers the same
+        # question only if it returns each row the first result had. One that
+        # leaves rows out -- a filter on empty values, one row per entity where
+        # the question listed several -- answers another, and is not kept.
+        _log.info("A correction for repeated rows left rows out; keeping the first result.")
         return result, qr, notes
     kept = [c.detail for c in after]
     if any(c.kind == "duplicate_rows" for c in concerns if c.repairable):
