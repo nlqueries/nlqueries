@@ -41,6 +41,15 @@ def test_no_system_packages_are_installed_over_the_base() -> None:
     assert not [i for i in _instructions() if re.search(r"\b(apt-get|apt|apk)\b", i)]
 
 
+def test_pip_is_removed_after_its_last_use() -> None:
+    """pip's own copies of certifi, urllib3, msgpack and setuptools are what the
+    image scan finds behind the lock's; the application never runs pip."""
+    uses = [n for n, i in enumerate(_instructions()) if re.search(r"\bpip\b", i)]
+    assert uses
+    last = _instructions()[uses[-1]]
+    assert last.endswith("&& python -m pip uninstall --yes pip"), last
+
+
 def test_the_healthcheck_is_python() -> None:
     (check,) = [i for i in _instructions() if i.startswith("HEALTHCHECK ")]
     assert " CMD python " in check
