@@ -390,12 +390,21 @@ class _DeadlineSpent(RuntimeError):
 
 
 def _json_default(obj: Any) -> Any:
-    """Coerce DB-driver types that json.dumps can't handle."""
+    """Coerce DB-driver types that json.dumps can't handle.
+
+    Any other value goes out as its text, as the CLI's JSON output gives it: a
+    `uuid` column, a `time`, an `interval` or an address raised TypeError here,
+    which failed the whole answer, rows and all, over one value. Bytes are the
+    exception, because their Python text is no use to anyone (`<memory at
+    0x...>` for psycopg2's `bytea`): they go out as PostgreSQL shows them.
+    """
     if isinstance(obj, decimal.Decimal):
         return float(obj)
     if isinstance(obj, (datetime.date, datetime.datetime)):
         return obj.isoformat()
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return "\\x" + bytes(obj).hex()
+    return str(obj)
 
 
 class Orchestrator:
