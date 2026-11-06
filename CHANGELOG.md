@@ -111,6 +111,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **An answer whose rows hold a UUID, a time, an interval, an address or bytes
+  no longer fails.** The answer's frame is JSON, and its encoder knew only
+  numerics and dates: any other value raised `TypeError`, and the whole answer
+  was lost over one column, so a PostgreSQL table keyed by `uuid` could not be
+  asked about at all. Such a value now goes out as its text, as the CLI's JSON
+  output already gives it (a `time` in ISO form), and bytes as PostgreSQL
+  shows them (`\x01ab`).
 - **SQLite's `date` and `strftime` with modifiers, and `timediff`, are no longer
   refused.** sqlglot models `strftime(format, time)` but not the form with
   modifiers, `strftime('%Y', 'now', '-1 day')`, which the SQL policy therefore
