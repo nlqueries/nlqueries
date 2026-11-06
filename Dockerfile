@@ -48,10 +48,19 @@ RUN pip install --no-cache-dir "pip==26.2" \
 
 # The package itself. --no-deps because the closure above already satisfies it;
 # stub the source so hatchling can build the metadata without the full tree.
+#
+# pip goes once this is installed. The application never runs it, and it
+# carries its own copies of certifi, urllib3, msgpack and setuptools, which
+# nothing else loads and which lag the lock's: the image scan reports each of
+# their advisories against the image, and no pip release has yet caught up
+# with all four. An image built on this one that needs pip gets it back with
+# `python -m ensurepip`, which installs the pip 24.0 the base image bundles;
+# upgrade it before installing anything.
 COPY pyproject.toml LICENSE README.md ./
 RUN mkdir -p nlqueries && touch nlqueries/__init__.py \
  && pip install --no-cache-dir --no-deps -e . \
- && rm -rf nlqueries
+ && rm -rf nlqueries \
+ && python -m pip uninstall --yes pip
 
 # ── application source ────────────────────────────────────────────────────────
 COPY nlqueries/ ./nlqueries/

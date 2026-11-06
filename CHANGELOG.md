@@ -109,6 +109,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   (`us.anthropic.claude-sonnet-5-5`, `us.anthropic.claude-haiku-5-5`), in the
   docs and in the model a misconfigured Bedrock tier is told to use.
 
+### Security
+
+- **The image no longer carries pip.** pip has its own copies of certifi,
+  urllib3, msgpack and setuptools, older than the lock's and loaded by nothing
+  but pip; the image scan reported their advisories against the image
+  (GHSA-6q48-6c7w-9gw2 in certifi, CVE-2026-97687 and CVE-2026-97689 in urllib3,
+  GHSA-6v7p-g79w-8964 and CVE-2026-114613 in msgpack, CVE-2025-47273 in
+  setuptools). The `Dockerfile` now removes pip once the lock and the package
+  are installed. The application never runs pip. An image built on
+  `nlqueries/core` that installs packages gets pip back with `python -m
+  ensurepip`, which installs the base image's pip 24.0; upgrade it before
+  installing anything.
+
 ### Fixed
 
 - **An answer whose rows hold a UUID, a time, an interval, an address or bytes
