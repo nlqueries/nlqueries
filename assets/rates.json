@@ -1,7 +1,7 @@
 {
  "format": "nlq-rates-v1",
- "effective_from": "2026-11-07",
- "published": "2026-11-07",
+ "effective_from": "2026-11-08",
+ "published": "2026-11-08",
  "models": {
   "abliteration/abliterated-model": {
    "cache_read_input_token_cost": 1e-07,
@@ -12521,6 +12521,12 @@
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05
   },
+  "moonshot/kimi-k3.1-pro-highspeed": {
+   "cache_creation_input_token_cost": 4e-06,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 4e-06,
+   "output_cost_per_token": 2e-05
+  },
   "moonshot/moonshot-v1-128k": {
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 5e-06
@@ -16022,6 +16028,10 @@
    "input_cost_per_token": 3e-07,
    "output_cost_per_token": 1.2e-06
   },
+  "together_ai/essentialai/rnj-1-instruct": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 1.5e-07
+  },
   "together_ai/google/gemma-4-31B-it": {
    "input_cost_per_token": 3.9e-07,
    "output_cost_per_token": 9.7e-07
@@ -16215,9 +16225,9 @@
    "output_cost_per_token": 3e-06
   },
   "together_ai/Qwen/Qwen3.7-Max": {
-   "cache_read_input_token_cost": 3e-07,
-   "input_cost_per_token": 1.5e-06,
-   "output_cost_per_token": 4.5e-06
+   "cache_read_input_token_cost": 5e-07,
+   "input_cost_per_token": 2.5e-06,
+   "output_cost_per_token": 7.5e-06
   },
   "together_ai/Qwen/Qwen3.7-Plus": {
    "input_cost_per_token": 3.2e-07,
