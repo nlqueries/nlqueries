@@ -120,8 +120,14 @@ def _streamed_rows(conn: Any, result: Any, deadline: float | None) -> Iterator[A
 #: not the smallest one. ``pg_settings.setting`` is in milliseconds whatever
 #: unit the role's value was written in; `set_config` returns the value in
 #: display units ("2min"), so the number is computed once and returned itself.
+#:
+#: ``set_config`` comes first in the select list so that query history drops
+#: this statement as it drops the per-batch reset: it runs once for every query,
+#: so it would otherwise rank first in ``pg_stat_statements`` and be mined as
+#: one of the database's own query patterns. ``query_filter`` recognises a
+#: SELECT that opens with ``set_config``.
 _LOWER_STATEMENT_TIMEOUT = text(
-    "SELECT lowered.ms, set_config('statement_timeout', lowered.ms::text, true) "
+    "SELECT set_config('statement_timeout', lowered.ms::text, true), lowered.ms "
     "FROM (SELECT CASE WHEN s.setting::bigint = 0 THEN CAST(:ms AS bigint) "
     "ELSE LEAST(s.setting::bigint, CAST(:ms AS bigint)) END AS ms "
     "FROM pg_settings s WHERE s.name = 'statement_timeout') AS lowered"
@@ -135,8 +141,8 @@ def _lower_statement_timeout(conn: Any, budget_ms: int) -> int:
     already had, so Core's 120 s default loosened an operator's 30 s backstop
     inside the very query it was meant to bound. Core now only ever lowers it.
     """
-    applied = conn.execute(_LOWER_STATEMENT_TIMEOUT, {"ms": budget_ms}).scalar()
-    return int(applied) if applied is not None else budget_ms
+    row = conn.execute(_LOWER_STATEMENT_TIMEOUT, {"ms": budget_ms}).first()
+    return int(row[1]) if row is not None and row[1] is not None else budget_ms
 
 
 def _returns_rows(sql: str) -> bool:

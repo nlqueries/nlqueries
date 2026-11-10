@@ -49,7 +49,7 @@ class _Result:
     def __iter__(self) -> Any:
         return iter(())
 
-    def scalar(self) -> Any:
+    def first(self) -> Any:
         return None
 
 

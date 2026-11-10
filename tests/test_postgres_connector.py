@@ -1158,3 +1158,15 @@ def test_resetting_the_timeout_per_batch_leaves_one_history_row(history_credenti
     assert sets == []
     assert lowered == [2]  # once per read
     assert resets and resets[0] >= 6  # at least three batches in each read
+
+    # And neither is mined from history as one of the database's own queries.
+    from nlqueries.connectors.base import QueryRecord
+    from nlqueries.processing.query_filter import filter_and_deduplicate
+
+    kept = filter_and_deduplicate(
+        [
+            QueryRecord(sql=query, execution_count=calls, avg_duration_ms=None, last_executed=None)
+            for query, calls in recorded
+        ]
+    )
+    assert kept == []
