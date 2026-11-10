@@ -141,6 +141,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The cache's content guard tells a negative number from its positive.**
+  The guard compares what two questions ask for, and its tokenizer left out a
+  number's minus sign, so "balance below -100" and "balance below 100" read
+  as the same request and only the similarity score kept them apart at Tier
+  1. A leading minus is now part of the number, and in Tier 2's masked
+  questions part of the placeholder (`-<NUMBER>`). A hyphen after a word or a
+  number still joins rather than signs, so `2020-2021` is two years. The
+  guard reads stored questions at lookup time, so no entry needs rewriting.
+
 - **A hybrid answer carries its SQL and whether it was valid, and `--json`
   says when rows were cut short.** `AgentQueryResult.sql` is documented as set
   for SQL and hybrid answers, but `run_query` read it only on the SQL route,
