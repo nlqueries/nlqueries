@@ -78,7 +78,7 @@ class _UnbufferedCursor(_Cursor):
 def test_a_login_with_no_concerns_is_least_privilege() -> None:
     identity = LoginIdentity("mysql", "reader@%", "shop")
     assert identity.is_least_privilege
-    assert identity.summary() == "reader@%@shop: least privilege"
+    assert identity.summary() == "reader@%@shop: no write or administrative rights"
 
 
 def test_a_partly_read_identity_is_logged_as_a_warning(caplog) -> None:
@@ -407,7 +407,9 @@ class TestSQLServer:
     def test_a_clean_read_says_what_it_covered(self) -> None:
         """Schema and object grants are not read, so the pass is qualified."""
         summary = self._clean_read(("app_user", "shop")).summary()
-        assert summary == "app_user@shop: least privilege at database and server scope"
+        assert summary == (
+            "app_user@shop: no write or administrative rights at database and server scope"
+        )
 
 
 # --- Snowflake ------------------------------------------------------------------
