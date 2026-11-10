@@ -66,10 +66,13 @@ A query the text shows has no end is refused as well:
 
 - a recursive CTE with nothing to stop it. It needs a `CYCLE` clause
   (PostgreSQL 14 and later), a condition in its recursive part comparing a
-  column it reads from itself with a constant (`WHERE depth < 20`), or a
-  `LIMIT` on a query that reads it directly with no `ORDER BY`, grouping,
-  `DISTINCT` or aggregate, which would read every row first. Without one, a
-  walk over a hierarchy with a cycle in its data never finishes;
+  column it reads from itself with a constant (`WHERE depth < 20`), or, on
+  PostgreSQL, SQLite and DuckDB, a `LIMIT` on a query that reads it directly
+  with no `WHERE`, `ORDER BY`, grouping, `DISTINCT` or aggregate: a filter may
+  never let `LIMIT` rows through, and the rest read every row first. Those
+  three engines were measured to stop at the `LIMIT`; elsewhere it is not
+  counted. Without a bound, a walk over a hierarchy with a cycle in its data
+  never finishes;
 - a `generate_series` (or BigQuery's `GENERATE_DATE_ARRAY`) whose literal bounds
   span more than 1,000,000 rows (`MAX_SERIES_ROWS`). Bounds read from data are
   not judged.

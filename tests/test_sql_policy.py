@@ -598,6 +598,43 @@ class TestCostBounds:
 
         assert decision.allowed, decision.summary()
 
+    def test_a_filtered_outer_limit_is_no_bound(self) -> None:
+        """The engine evaluates until LIMIT rows pass the filter, which on
+        cyclic data may be never: measured on PostgreSQL 16 and SQLite 3.45,
+        this ran until the timeout."""
+        sql = (
+            "WITH RECURSIVE g(id, parent) AS ("
+            "SELECT id, parent FROM employees WHERE parent IS NULL "
+            "UNION ALL SELECT e.id, e.parent FROM employees e JOIN g ON e.parent = g.id"
+            ") SELECT * FROM g WHERE id = 42 LIMIT 1"
+        )
+
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.allowed
+        assert "no bound" in decision.summary()
+
+    @pytest.mark.parametrize(
+        ("dialect", "bounded"),
+        [
+            ("postgres", True),
+            ("sqlite", True),
+            ("duckdb", True),
+            # Not measured: the LIMIT is not counted, so the CTE needs another bound.
+            ("mysql", False),
+            ("snowflake", False),
+        ],
+    )
+    def test_an_outer_limit_counts_only_where_it_was_measured(
+        self, dialect: str, bounded: bool
+    ) -> None:
+        sql = (
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SELECT n FROM t LIMIT 10"
+        )
+
+        assert evaluate(sql, dialect).allowed is bounded, evaluate(sql, dialect).summary()
+
     def test_the_refusal_says_how_to_bound_it(self) -> None:
         """The reason reaches the model's correction prompt, so it names the fix."""
         decision = evaluate(
@@ -662,3 +699,48 @@ class TestCostBounds:
         decision = evaluate(sql, "postgres")
 
         assert decision.allowed, decision.summary()
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # 1e400 reads as infinity, and a step like 1e-320 divides to it.
+            "SELECT * FROM generate_series(1, 1e400) AS s(i)",
+            "SELECT * FROM generate_series(1, 10, 1e-320) AS s(i)",
+        ],
+        ids=["infinite-bound", "denormal-step"],
+    )
+    def test_a_series_with_no_end_is_refused_rather_than_raising(self, sql: str) -> None:
+        """`evaluate` never raises; `math.floor` of infinity does."""
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.allowed
+        assert "generate_series" in decision.summary()
+
+    def test_bounds_that_cannot_be_subtracted_are_left_to_the_server(self) -> None:
+        """One bound with a time zone and one without: Python cannot subtract
+        them, so the count is unknown, and an unknown count is not refused."""
+        sql = (
+            "SELECT * FROM generate_series('2024-01-01T00:00:00+00:00'::timestamptz, "
+            "'2024-12-31', '1 day'::interval) AS s(d)"
+        )
+
+        decision = evaluate(sql, "postgres")
+
+        assert decision.allowed, decision.summary()
+
+    def test_a_sqlglot_without_the_cycle_class_still_judges_recursion(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sqlglot 23.0, the floor pyproject allows, has no RecursiveWithSearch.
+        A direct reference raised AttributeError for every recursive CTE."""
+        from sqlglot import exp
+
+        monkeypatch.delattr(exp, "RecursiveWithSearch")
+
+        decision = evaluate(
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) SELECT n FROM t",
+            "postgres",
+        )
+
+        assert not decision.allowed
+        assert "no bound" in decision.summary()

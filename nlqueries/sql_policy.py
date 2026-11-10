@@ -850,16 +850,32 @@ def _depth_condition(member: exp.Expression, name: str) -> bool:
     return False
 
 
-def _outer_limit(with_: exp.With, name: str) -> bool:
+#: Engines measured to stop evaluating a recursive CTE once a LIMIT on a query
+#: reading it directly has its rows: PostgreSQL 16, SQLite 3.45 and DuckDB 2.0
+#: each returned ten rows of an unbounded counter at once. Elsewhere this has
+#: not been measured, so an outer LIMIT is not counted as a bound there.
+_LIMIT_STOPS_RECURSION = frozenset({"postgres", "sqlite", "duckdb"})
+
+
+def _outer_limit(with_: exp.With, name: str, dialect: str) -> bool:
     """True when the query that owns *with_* reads CTE *name* directly under a
-    LIMIT, and nothing in it needs every row first. PostgreSQL then evaluates
-    only as many of the CTE's rows as the LIMIT fetches."""
+    LIMIT, and nothing in it needs every row first or can reject rows. The
+    engine then evaluates only as many of the CTE's rows as the LIMIT fetches.
+
+    A WHERE disqualifies it: the engine keeps evaluating until LIMIT rows pass
+    the filter, which on cyclic data may be never. Measured on PostgreSQL 16
+    and SQLite 3.45, ``... SELECT n FROM t WHERE n = 0 LIMIT 1`` ran until the
+    timeout."""
+    if dialect not in _LIMIT_STOPS_RECURSION:
+        return False
     query = with_.parent
     if not isinstance(query, exp.Select):
         return False
     if query.args.get("limit") is None and query.args.get("fetch") is None:
         return False
-    if any(query.args.get(key) for key in ("order", "group", "distinct", "joins", "having")):
+    if any(
+        query.args.get(key) for key in ("where", "order", "group", "distinct", "joins", "having")
+    ):
         return False
     if any(e.find(*_READS_EVERY_ROW) for e in query.expressions):
         return False
@@ -883,14 +899,18 @@ def _unbounded_recursive_ctes(tree: exp.Expression, dialect: str) -> list[str]:
         search = with_.args.get("search")
         # sqlglot keeps one CYCLE clause on the WITH, not on the CTE it was
         # written after, so it is trusted only when there is one CTE it can
-        # belong to.
+        # belong to. The class is looked up by name: sqlglot 23.0, the floor
+        # pyproject allows, has none, and a direct reference would raise for
+        # every recursive CTE.
+        search_class = getattr(exp, "RecursiveWithSearch", None)
         cycle = (
-            isinstance(search, exp.RecursiveWithSearch)
+            search_class is not None
+            and isinstance(search, search_class)
             and str(search.args.get("kind") or "").upper() == "CYCLE"
             and len(recursive) == 1
         )
         for cte, name in recursive:
-            if cycle or _outer_limit(with_, name):
+            if cycle or _outer_limit(with_, name, dialect):
                 continue
             members = [part for part in _union_parts(cte.this) if _names_itself(part, name)]
             if members and all(_depth_condition(member, name) for member in members):
@@ -965,13 +985,21 @@ def _series_rows(node: exp.Expression) -> int | None:
         first, last = _instant(start), _instant(end)
         if first is None or last is None:
             return None
+        # Raises TypeError for one bound with a time zone and one without;
+        # `_oversized_series` reads that as a count it cannot make.
         low, high = 0.0, (last - first).total_seconds()
         # BigQuery's GENERATE_DATE_ARRAY steps a day by default.
         stride = _step_seconds(step) if step is not None else 86_400.0
     if not stride:
         return None
-    count = math.floor((high - low) / stride) + 1
-    return max(count, 0)
+    span = (high - low) / stride
+    if math.isnan(span):
+        return None
+    # A bound like 1e400 reads as infinity, and a step like 1e-320 divides to
+    # it: a series with no end, which is over any cap.
+    if math.isinf(span):
+        return MAX_SERIES_ROWS + 1 if span > 0 else 0
+    return max(math.floor(span) + 1, 0)
 
 
 def _oversized_series(tree: exp.Expression) -> list[str]:
@@ -983,7 +1011,12 @@ def _oversized_series(tree: exp.Expression) -> list[str]:
     )
     reasons: list[str] = []
     for node in tree.find_all(*classes):
-        rows = _series_rows(node)
+        # `evaluate` never raises, and its callers rely on that: a count that
+        # cannot be made is no reason to refuse, nor to fail.
+        try:
+            rows = _series_rows(node)
+        except (ArithmeticError, TypeError, ValueError):
+            rows = None
         if rows is not None and rows > MAX_SERIES_ROWS:
             function = (
                 "GENERATE_DATE_ARRAY"
