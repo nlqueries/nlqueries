@@ -1172,7 +1172,19 @@ class TestPutStoresKindAndTemplate:
         points = mock_client.upsert.call_args.kwargs.get("points") or []
         templates = [p for p in points if p.payload.get("kind") == "template"]
         assert len(templates) == 1, dialect
-        assert "[total:INT]" in templates[0].payload["sql"]
+        stored = templates[0].payload["sql"]
+        assert "[total:INT]" in stored
+
+        # And what was stored binds again, in the same dialect, with other
+        # values: a template that is stored and can never be hit only costs an
+        # embedding call and an upsert. T-SQL's TOP took a string sentinel,
+        # which it does not parse, so every SQL Server template with a TOP missed.
+        from nlqueries.cache.semantic_cache import _bind_entities
+
+        bound = _bind_entities("top 7 orders over 250", stored, dialect)
+        assert bound is not None, f"{dialect}: {stored}"
+        assert "> 250" in bound, bound
+        assert ("TOP 7" in bound) or ("LIMIT 7" in bound), bound
 
     def test_put_skips_template_when_no_entities(self) -> None:
         """put() stores only the answer point when the question has no entity literals."""

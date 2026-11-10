@@ -430,9 +430,20 @@ def _sentinel_template(template_sql: str) -> tuple[str, list[tuple[str, str]]]:
 
     def _sub(match: re.Match[str]) -> str:
         order.append((match.group(1), match.group(2)))
-        return "'" + _BIND_SENTINEL.format(len(order) - 1) + "'"
+        sentinel = "'" + _BIND_SENTINEL.format(len(order) - 1) + "'"
+        # T-SQL reads a bare TOP value as a number and refuses a string there,
+        # so `TOP '__nlq_bind_0__'` did not parse and every SQL Server template
+        # with a TOP missed. In parentheses it parses to the same Limit node,
+        # and the bound statement renders as `TOP 7` again.
+        if _TOP_BEFORE_RE.search(template_sql, 0, match.start()):
+            return f"({sentinel})"
+        return sentinel
 
     return _QUOTED_PLACEHOLDER_RE.sub(_sub, template_sql), order
+
+
+#: ``TOP`` directly before a placeholder, as a T-SQL template writes its row cap.
+_TOP_BEFORE_RE = re.compile(r"\bTOP\s+$", re.IGNORECASE)
 
 
 def _literal_shape(tree: exp.Expression) -> str:
@@ -634,6 +645,13 @@ def _bind_entities(question: str, template_sql: str, dialect: str | None = None)
     # month the template keeps as a literal -- and binding the rest picks
     # values by position: "In 2026, what is the total of order 27?" bound
     # `id = 2026`. A miss sends the question to generation instead.
+    #
+    # No placeholder holds a month or a currency amount, so a question naming
+    # one always misses here. That is the intent for a month -- a template
+    # stored for April keeps April's dates as written -- and it costs a miss
+    # when `_MONTH_RE` reads the word "may" as one ("customers who may
+    # churn"). The mask is not narrowed to avoid that: it derives every
+    # template's point id.
     slots: dict[str, int] = {}
     for _name, ptype in placeholders:
         entity_type = _PARAM_TYPE_TO_ENTITY.get(ptype.upper(), "STRING")

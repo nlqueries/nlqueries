@@ -153,7 +153,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   is answered by fresh SQL instead. Templates are also now stored in the
   engine's dialect, as they are bound: in sqlglot's default dialect a SQL
   Server or MySQL statement in brackets, backticks or `TOP` did not parse, so
-  those engines never had a Tier 2 entry.
+  those engines never had a Tier 2 entry. A SQL Server template with `TOP`
+  now binds as well: its placeholder became a quoted value, which T-SQL does
+  not accept after `TOP`.
 
 - **The SQL repair no longer drops a statement, and says when it replaced a
   refused one.** When the model returned several statements, the repair that
