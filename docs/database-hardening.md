@@ -62,6 +62,22 @@ statement is also parsed again from the form sqlglot renders it in, and refused
 if the policy reads that differently: another number of statements, other
 tables, or something it would refuse.
 
+A query the text shows has no end is refused as well:
+
+- a recursive CTE with nothing to stop it. It needs a `CYCLE` clause
+  (PostgreSQL 14 and later), a condition in its recursive part comparing a
+  column it reads from itself with a constant (`WHERE depth < 20`), or a
+  `LIMIT` on a query that reads it directly with no `ORDER BY`, grouping,
+  `DISTINCT` or aggregate, which would read every row first. Without one, a
+  walk over a hierarchy with a cycle in its data never finishes;
+- a `generate_series` (or BigQuery's `GENERATE_DATE_ARRAY`) whose literal bounds
+  span more than 1,000,000 rows (`MAX_SERIES_ROWS`). Bounds read from data are
+  not judged.
+
+This is not a cost limit. A cross join of two large tables, or a series whose
+bounds come from a column, is allowed and runs until the statement timeout
+stops it, which is why the role-level `statement_timeout` above still matters.
+
 `tests/sql_corpus.py` holds the analytics queries, per dialect, that the lists
 must keep allowing. PostgreSQL, SQLite and DuckDB run theirs in CI and report
 which tables each query read; every one must be a table the policy saw.

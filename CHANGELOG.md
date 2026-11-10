@@ -86,6 +86,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **The SQL policy refuses a recursive CTE with no bound and an oversized
+  `generate_series`, and allows `CYCLE` (policy version 8).** A recursive CTE
+  that nothing stops ran until the statement timeout on data with a cycle, and
+  so did `generate_series(1, 2000000000)`; the policy allowed both, while it
+  refused PostgreSQL's `CYCLE` clause, which exists to stop the first. A
+  recursive CTE now needs a `CYCLE` clause, a condition in its recursive part
+  on a column it reads from itself (`WHERE depth < 20`), or a `LIMIT` on a
+  query that reads it directly and need not read every row first; otherwise
+  the refusal says which of these to add, and the model's correction is asked
+  for one. A `generate_series` or `GENERATE_DATE_ARRAY` with literal bounds may
+  span at most 1,000,000 rows. `CYCLE` and `SEARCH` are allowed, and only
+  `CYCLE` counts as a bound. The statement timeout still bounds everything
+  else, such as a large cross join. The new version is part of the semantic
+  cache's binding, so entries cached under version 7 stop verifying and are
+  generated again; audit events record `policy_version` 8.
+
 - **Answers follow what the question means where four rules followed a
   benchmark's conventions instead.** A thing the question counts is counted
   once, with `COUNT(DISTINCT key)` where the joins can repeat it, not once per

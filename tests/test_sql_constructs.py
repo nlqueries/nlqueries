@@ -47,7 +47,7 @@ def test_sqlite_timediff_is_allowed() -> None:
 
 
 def test_the_version_records_the_change() -> None:
-    assert POLICY_VERSION == "7"
+    assert POLICY_VERSION == "8"
 
 
 #: Calls that read files, sleep, lock, reach the network, run commands, or read
