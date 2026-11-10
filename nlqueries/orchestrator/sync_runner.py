@@ -98,6 +98,20 @@ class AgentQueryResult:
     provenance: Provenance | None = None
 
 
+def _sql_is_valid(chunk: dict[str, Any], sql: str | None) -> bool:
+    """The frame's verdict on its statement.
+
+    A frame that carries SQL and no verdict -- an older frame, or one that
+    forgot -- is read as not validated: defaulting to True reported every
+    hybrid answer valid, since the hybrid frame never sent one. With no SQL
+    there is nothing to have failed, and the answer is True as before.
+    """
+    verdict = chunk.get("is_valid")
+    if verdict is None:
+        return sql is None
+    return bool(verdict)
+
+
 def _parse_final_chunk(
     tokens: list[str],
 ) -> tuple[
@@ -171,6 +185,9 @@ def _parse_final_chunk(
 
     elif agent_type == "hybrid":
         merged_answer = parsed.get("merged_answer") or None
+        # Documented as set for "sql" or "hybrid", and read only for "sql":
+        # `nlqueries eval` read a hybrid-routed case as having no SQL.
+        sql = parsed.get("sql") or None
         text_tokens = []  # hybrid: NL answer IS the merged_answer field
         citations = [
             Citation(
@@ -354,7 +371,7 @@ async def run_query(
         # Carried rather than inferred. `sql_result is None` means three
         # different things — not run, refused, or ran and returned nothing —
         # and a caller that guesses picks the wrong one at the worst moment.
-        sql_is_valid=bool(chunk.get("is_valid", True)),
+        sql_is_valid=_sql_is_valid(chunk, sql),
         execution_mode=str(chunk.get("execution_mode", execution.mode.value)),
         citations=citations,
         merged_answer=merged_answer,

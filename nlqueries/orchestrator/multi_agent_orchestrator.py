@@ -745,6 +745,10 @@ class MultiAgentOrchestrator:
                 _hit_chunk["type"] = "sql"
                 if _cached.sql:
                     _hit_chunk["sql"] = _cached.sql
+                    # The check that decides whether it runs, so the frame
+                    # says what it was judged by; without a verdict a frame
+                    # carrying SQL is read as not validated.
+                    _hit_chunk["is_valid"] = _is_executable_select(_cached.sql, dialect)
                     # Re-execute the cached SQL so the replayed frame carries a
                     # fresh result table (the cache stores SQL + answer text but
                     # not rows). Without this, a cache hit streams an answer with
@@ -879,6 +883,7 @@ class MultiAgentOrchestrator:
                         "agent_type": "hybrid",
                         "merged_answer": None,
                         "sql": pending.get("sql"),
+                        "is_valid": pending.get("is_valid") if pending.get("sql") else None,
                         "sql_table": None,
                         "citations": [],
                         "choices": pending["choices"],
@@ -949,6 +954,10 @@ class MultiAgentOrchestrator:
                     "agent_type": "hybrid",
                     "merged_answer": hybrid_result.merged_answer,
                     "sql": final_sql_chunk.get("sql") if final_sql_chunk else None,
+                    # The SQL sub-answer's verdict, beside its statement: the
+                    # runner reads `is_valid` off this frame, and a frame with a
+                    # statement and no verdict is read as not validated.
+                    "is_valid": final_sql_chunk.get("is_valid") if final_sql_chunk else None,
                     "sql_table": sql_table_dict,
                     "citations": citations_list,
                 }

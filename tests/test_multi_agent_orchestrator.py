@@ -8,6 +8,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.intent_classifier import IntentClassificationResult, IntentType
 from nlqueries.orchestrator.multi_agent_orchestrator import (
@@ -512,6 +513,40 @@ class TestMultiAgentOrchestratorNewPaths:
         final = json.loads(tokens[-1])
         assert final["from_cache"] is True
         assert final["agent_type"] == "sql"
+
+    @pytest.mark.parametrize(
+        ("sql", "valid"),
+        [("SELECT sum(revenue) FROM orders", True), ("DELETE FROM orders", False)],
+    )
+    def test_a_cache_hit_says_whether_its_statement_is_valid(self, sql: str, valid: bool) -> None:
+        """A frame with SQL and no `is_valid` is now read as not validated, so
+        the hit says, from the same check that decides whether it runs."""
+        from datetime import UTC, datetime
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+
+        cache_entry = CacheEntry(
+            question="Total revenue?",
+            resolved_question="Total revenue?",
+            agent_type="sql",
+            answer="Total revenue was $1.2M",
+            sql=sql,
+            created_at=datetime.now(UTC),
+            hit_count=1,
+        )
+
+        async def run() -> list[str]:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+            ):
+                MockCache.return_value.get.return_value = cache_entry
+                orch = MultiAgentOrchestrator()
+                return [token async for token in orch.handle_question("Total revenue?", "agent1")]
+
+        final = json.loads(asyncio.run(run())[-1])
+        assert final["is_valid"] is valid
 
     def test_cache_hit_sql_reexecutes_and_attaches_fresh_result_table(self) -> None:
         """A sql cache hit re-runs the cached SQL and attaches a fresh sql_table

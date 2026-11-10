@@ -3613,6 +3613,10 @@ def query(
                     "row_count": sql_result.row_count,
                     "execution_time_ms": sql_result.execution_time_ms,
                     "error": sql_result.error,
+                    # Whether the rows are all of them: without these a
+                    # shortened result read as the whole answer.
+                    "truncated": sql_result.truncated,
+                    "truncation_reason": sql_result.truncation_reason,
                 }
                 if sql_result
                 else None

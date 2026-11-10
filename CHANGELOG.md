@@ -141,6 +141,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A hybrid answer carries its SQL and whether it was valid, and `--json`
+  says when rows were cut short.** `AgentQueryResult.sql` is documented as set
+  for SQL and hybrid answers, but `run_query` read it only on the SQL route,
+  so a hybrid answer came back with `sql=None` and `nlqueries eval` failed a
+  hybrid-routed case as "no SQL". `sql_is_valid` defaulted to true whenever the
+  final frame did not say, and a hybrid frame never did, so a hybrid answer
+  built on SQL that failed validation reported it valid. The hybrid frame now
+  carries the SQL sub-answer's `is_valid`, a cache hit carries the result of
+  the check that decides whether its SQL runs, and a frame with SQL and no
+  verdict is read as not validated. `nlqueries query --json` also adds
+  `truncated` and `truncation_reason` to `sql_result`, which it left out, so a
+  shortened result read as the whole answer.
+
 - **A Tier 2 cache hit no longer binds a value into the wrong place.** A
   template's placeholders were filled from the question's values in order,
   so a value the stored SQL had no place for still took one: "In 2026, what

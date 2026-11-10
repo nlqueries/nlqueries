@@ -352,3 +352,33 @@ def test_when_no_source_can_be_searched_it_is_an_error_not_an_empty_answer(
     answered as though the documents held nothing relevant."""
     with pytest.raises(RuntimeError, match="none of the agent's 2 document source"):
         document_retrieval.retrieve_across("q", ["doc_x_chunks", "doc_y_chunks"])
+
+
+def test_query_json_says_when_the_rows_were_cut_short(connectors_file: Path) -> None:
+    """`--json` built `sql_result` from five fields and left out the two that
+    say whether the rows are all of them, so a caller reading the JSON took a
+    truncated result for the whole answer."""
+    import json
+
+    from nlqueries.connectors.base import QueryResult
+
+    rows = QueryResult(
+        columns=["n"],
+        rows=[[1], [2]],
+        row_count=2,
+        execution_time_ms=1.0,
+        error=None,
+        truncated=True,
+        truncation_reason="orchestrator_row_cap",
+    )
+
+    def run(question: str, agent_id: str, **kwargs: Any) -> AgentQueryResult:
+        return _result("sql", answer="Two rows.", sql="SELECT n FROM t", sql_result=rows)
+
+    with patch("nlqueries.orchestrator.sync_runner.run_query_sync", run):
+        result = CliRunner().invoke(cli, ["query", "shop", "How many?", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output[result.output.index("{") :])
+    assert payload["sql_result"]["truncated"] is True
+    assert payload["sql_result"]["truncation_reason"] == "orchestrator_row_cap"
