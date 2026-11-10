@@ -10,7 +10,7 @@
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Visitors](https://visitor-badge.laobi.icu/badge?page_id=nlqueries.nlqueries)](https://github.com/nlqueries/nlqueries)
 
-**NLQueries Core** is an open-source natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a YAML knowledge base from your schema and query history (rebuilt whenever you re-run `export-kb`), and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Markdown, plain text, Notion, Confluence), with citations.
+**NLQueries Core** is a self-hosted natural language to SQL engine — see [nlqueries.com](https://nlqueries.com). It turns plain-English questions into validated SQL, builds a YAML knowledge base from your schema and query history (rebuilt whenever you re-run `export-kb`), and exposes everything as an MCP server your AI assistant can call directly. It also answers questions from your documents (PDF, Word, Excel, Markdown, plain text, Notion, Confluence), with citations.
 
 ## Links
 

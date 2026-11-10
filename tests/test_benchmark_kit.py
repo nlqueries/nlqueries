@@ -124,6 +124,33 @@ def test_the_kit_s_golden_set_asks_only_about_tables_the_seed_creates() -> None:
     assert "--golden benchmarks/golden.yaml" in run_bench_text
 
 
+@pytest.mark.parametrize(
+    ("answer", "expected", "ok"),
+    [
+        # A number is a number, not a substring of an id (from #401's review).
+        ("9 units, across orders 102, 104 and 106", ["10"], False),
+        ("There are 10 units across orders 102, 104 and 106.", ["10"], True),
+        ("Orders 101 to 107 exist.", ["7"], False),
+        ("There are 7 orders.", ["7"], True),
+        ("East 174.25, West 418.50", ["174.25", "418.5"], True),
+        ("Revenue was 1,250 in total.", ["1250"], True),
+        ("Orders 1,2 and 3", ["12"], False),
+        # A hyphen after a word or a digit joins; it is not a minus (from #402's review).
+        ("Orders 104-105 are pending.", ["105"], True),
+        ("Order ORD-105 is pending.", ["105"], True),
+        ("Shipped on 2025-10-04.", ["4"], True),
+        ("A balance of -50 remains.", ["-50"], True),
+        ("A balance of -50 remains.", ["50"], False),
+        # Text keeps the case-insensitive substring check.
+        ("The customer is ELM STREET GOODS.", ["Elm Street Goods"], True),
+    ],
+)
+def test_expected_numbers_are_matched_as_numbers(
+    answer: str, expected: list[str], ok: bool
+) -> None:
+    assert run_bench._check_contains(answer, expected) is ok
+
+
 def test_the_compose_file_mounts_a_seed_that_exists() -> None:
     compose = yaml.safe_load((_ROOT / "benchmarks" / "docker-compose.yaml").read_text("utf-8"))
     mounts = compose["services"]["postgres"]["volumes"]

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -124,11 +125,33 @@ def _check_tables(sql: str | None, expect_tables: list[str]) -> bool:
     return all(t.lower() in sql_lower for t in expect_tables)
 
 
+#: A number, with a minus only where it starts one: after a word or a digit a
+#: hyphen joins (`104-105`, `ORD-105`, `2025-10-04`), as in the cache's guard.
+_NUMBER = re.compile(r"(?:(?<![\w.])-)?\d+(?:\.\d+)?")
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+
+
 def _check_contains(answer: str, expect_contains: list[str]) -> bool:
+    """Every expected value appears in *answer*.
+
+    A value that is a number is compared with the numbers in the answer, not
+    looked for as a substring: "10" was found in an order id 101, and "7" in
+    107, so a wrong count still passed. Compared as numbers, "418.5" still
+    matches an answer that prints 418.50. Anything else is a case-insensitive
+    substring.
+    """
     if not expect_contains:
         return True
     answer_lower = answer.lower()
-    return all(c.lower() in answer_lower for c in expect_contains)
+    # Thousands separators only (1,250 is 1250); a comma between numbers stays.
+    numbers = {float(n) for n in _NUMBER.findall(_THOUSANDS.sub("", answer))}
+    for expected in expect_contains:
+        if _NUMBER.fullmatch(expected.strip()):
+            if float(expected) not in numbers:
+                return False
+        elif expected.lower() not in answer_lower:
+            return False
+    return True
 
 
 async def _run_one(
