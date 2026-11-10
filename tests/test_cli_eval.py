@@ -41,6 +41,7 @@ def _invoke(tmp_path: Path, kb: dict[str, Any], args: list[str]) -> Any:
         patch.object(cli_main, "KB_PATH", tmp_path),
         patch.object(cli_main, "_resolve_alias", side_effect=lambda v: _ID if v == "shop" else v),
         patch.object(cli_main, "_resolve_dialect", return_value="postgres"),
+        patch.object(cli_main, "_load_connectors", return_value={_ID: {"alias": "shop"}}),
         patch(
             "nlqueries.orchestrator.sync_runner.run_query_sync",
             side_effect=lambda *a, **k: _result("SELECT id FROM orders"),
@@ -72,4 +73,20 @@ def test_a_golden_case_named_by_alias_is_run(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output[result.output.index("{") :])
     assert payload["agent_id"] == _ID
+    assert [c["question"] for c in payload["cases"]] == ["how many orders?"]
+
+
+def test_a_golden_case_named_by_alias_is_run_when_eval_is_given_the_id(tmp_path: Path) -> None:
+    """A CI job names the connector by its ID; the golden file was written with
+    the alias. The connector's own alias has to match too, or every golden case
+    is dropped and the capsules alone pass the run (from #397's review)."""
+    golden = tmp_path / "golden.yaml"
+    golden.write_text(
+        yaml.safe_dump([{"q": "how many orders?", "agent": "shop"}]), encoding="utf-8"
+    )
+
+    result = _invoke(tmp_path, _KB, [_ID, "--golden", str(golden), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output[result.output.index("{") :])
     assert [c["question"] for c in payload["cases"]] == ["how many orders?"]

@@ -272,6 +272,17 @@ def _resolve_alias(value: str) -> str:
     return value
 
 
+def _aliases_of(connector_id: str) -> set[str]:
+    """The ``alias`` the connectors file gives *connector_id*, if any.
+
+    Read the same way :func:`_resolve_alias` reads it, for the other direction:
+    a file written with the alias has to match a command that named the ID.
+    """
+    cfg = _load_connectors().get(connector_id)
+    alias = cfg.get("alias") if isinstance(cfg, dict) else None
+    return {str(alias)} if alias else set()
+
+
 def _what_the_entry_is(cfg: object) -> str:
     """A malformed connectors entry, described for the person fixing the file.
 
@@ -3755,7 +3766,10 @@ def eval_cmd(
     if golden_path:
         golden = yaml.safe_load(Path(golden_path).read_text(encoding="utf-8")) or []
 
-    cases = build_cases(kb, agent_id, golden=golden, aliases={requested_id}, max_cases=max_cases)
+    # The name typed and the connector's own alias, so a golden file written
+    # either way matches however the command was invoked.
+    aliases = {requested_id, *_aliases_of(agent_id)}
+    cases = build_cases(kb, agent_id, golden=golden, aliases=aliases, max_cases=max_cases)
     if not cases:
         # A failure, not a pass: a gate that checked nothing would pass a KB
         # that lost its capsules, or a golden file whose agent names matched
