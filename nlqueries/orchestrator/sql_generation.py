@@ -1111,13 +1111,25 @@ def _try_mechanical_repair(
     2. Case-insensitive table-name correction against KB names — handles LLMs
        that produce ``Orders`` instead of ``orders``.
 
-    None of them turns several statements into one: a string the SQL policy
-    refused for holding more than one is left for the model's repair.
+    None of them turns several statements into one: a string that is not
+    exactly one statement is returned unrepaired, for the model's repair.
 
     Returns:
         ``(repaired_sql, None)`` on success (SQL is valid).
         ``(original_sql, error_message)`` when no mechanical fix worked.
     """
+    # Before any step, because each one re-renders what it parsed, and how a
+    # parse treats a second statement depends on the sqlglot release:
+    # `parse_one` returns the first and discards the rest up to at least 23.0,
+    # the floor pyproject allows, and returns a Block of both in 30. Counted
+    # once here, the guarantee does not rest on any one step's parse.
+    try:
+        statements = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
+    except Exception:  # noqa: BLE001 - unparseable input has no statement count to trust
+        statements = []
+    if len(statements) != 1:
+        return sql, "no mechanical fix found"
+
     # Step 0: fix string literals used where integers are required (LIMIT/OFFSET/FETCH)
     try:
         stmt = sqlglot.parse_one(sql, dialect=dialect)

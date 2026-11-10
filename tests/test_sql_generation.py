@@ -605,6 +605,8 @@ def test_validate_sql_accepts_valid_explicit_column() -> None:
         # is not something a repair can know.
         "SELECT * FROM orders; SELECT 1",
         "SELECT * FROM orders;\n-- note\nDROP TABLE orders",
+        # Step 0's case: a quoted LIMIT it would otherwise put right.
+        "SELECT id FROM orders LIMIT '10'; DELETE FROM orders",
     ],
 )
 def test_mechanical_repair_never_drops_a_statement(sql: str) -> None:
@@ -615,6 +617,38 @@ def test_mechanical_repair_never_drops_a_statement(sql: str) -> None:
     repaired, err = _try_mechanical_repair(sql, _make_kb(), "postgres")
     assert err is not None
     assert repaired == sql
+
+
+def test_mechanical_repair_does_not_rely_on_how_parse_one_treats_a_second_statement() -> None:
+    """sqlglot 23.0, the floor pyproject allows, has `parse_one` return the
+    first statement and drop the rest; 30 returns a Block of both. Step 0
+    re-renders what `parse_one` gave it, so on the older release it fixed the
+    quoted LIMIT and returned the SELECT alone. Emulated here, so the test
+    fails whichever sqlglot is installed if the count is not checked first."""
+    import sqlglot
+
+    real_parse_one = sqlglot.parse_one
+
+    def _first_statement_only(sql: str, *args: Any, **kwargs: Any) -> Any:
+        dialect = kwargs.get("dialect") or kwargs.get("read")
+        first = sqlglot.parse(sql, dialect=dialect)[0]
+        return first if first is not None else real_parse_one(sql, *args, **kwargs)
+
+    sql = "SELECT id FROM orders LIMIT '10'; DELETE FROM orders"
+    with patch("nlqueries.orchestrator.sql_generation.sqlglot.parse_one", _first_statement_only):
+        repaired, err = _try_mechanical_repair(sql, _make_kb(), "postgres")
+
+    assert err is not None
+    assert repaired == sql
+
+
+def test_mechanical_repair_still_fixes_a_quoted_limit_on_one_statement() -> None:
+    repaired, err = _try_mechanical_repair(
+        "SELECT id FROM orders LIMIT '10'", _make_kb(), "postgres"
+    )
+
+    assert err is None
+    assert "LIMIT 10" in repaired
 
 
 def _repairing_llm(*replies: str) -> MagicMock:
