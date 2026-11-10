@@ -228,3 +228,55 @@ def test_a_column_grant_counts_as_reading_the_table(login_with: Any) -> None:
 
     assert identity.readable_tables == 1
     assert identity.readable_schemas == ("lab",)
+
+
+def test_a_column_write_grant_is_a_concern(login_with: Any) -> None:
+    """`UPDATE (note)` writes as surely as `UPDATE` does (from #399's review)."""
+    credentials = login_with(
+        "ci8_colwriter",
+        "GRANT USAGE ON SCHEMA lab TO {role}",
+        "GRANT SELECT ON lab.orders TO {role}",
+        "GRANT UPDATE (note) ON lab.marker TO {role}",
+    )
+
+    identity = _identity_of(credentials)
+
+    assert identity.writable_tables == ("lab.marker",)
+    assert "no administrative or write privileges" not in identity.summary()
+
+
+def test_partitions_are_counted_with_their_table(login_with: Any, privileged_credentials) -> None:
+    """A partitioned table with three partitions is one table to read."""
+    engine = sa.create_engine(
+        sa.URL.create(
+            "postgresql+psycopg2",
+            username=privileged_credentials["user"],
+            password=privileged_credentials["password"],
+            host=privileged_credentials["host"],
+            port=privileged_credentials["port"],
+            database=privileged_credentials["database"],
+        )
+    )
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE SCHEMA ci8_parts"))
+        conn.execute(sa.text("CREATE TABLE ci8_parts.events (id int) PARTITION BY RANGE (id)"))
+        for i in range(3):
+            conn.execute(
+                sa.text(
+                    f"CREATE TABLE ci8_parts.events_{i} PARTITION OF ci8_parts.events "
+                    f"FOR VALUES FROM ({i * 10}) TO ({i * 10 + 10})"
+                )
+            )
+    try:
+        credentials = login_with(
+            "ci8_partreader",
+            "GRANT USAGE ON SCHEMA ci8_parts TO {role}",
+            "GRANT SELECT ON ALL TABLES IN SCHEMA ci8_parts TO {role}",
+        )
+        identity = _identity_of(credentials)
+        assert identity.readable_tables == 1
+        assert identity.readable_schemas == ("ci8_parts",)
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa.text("DROP SCHEMA ci8_parts CASCADE"))
+        engine.dispose()

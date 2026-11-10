@@ -47,7 +47,8 @@ DANGEROUS_PREDEFINED_ROLES = frozenset(
 #: table, was reported as if it held nothing. ``reachable`` is every table and
 #: view in a schema the login holds USAGE on, outside the catalog's own: a table
 #: privilege in a schema without USAGE cannot be exercised, so it is neither a
-#: read nor a write here.
+#: read nor a write here. Column-level grants count on both sides: `UPDATE
+#: (salary)` writes as surely as `UPDATE` does, and `SELECT (id)` reads.
 IDENTITY_SQL = r"""
 WITH reachable AS (
     SELECT c.oid, n.nspname, c.relname
@@ -58,6 +59,9 @@ WITH reachable AS (
       AND n.nspname NOT LIKE 'pg\_toast%'
       AND n.nspname NOT LIKE 'pg\_temp\_%'
       AND has_schema_privilege(n.oid, 'USAGE')
+      -- A partition, or an inheritance child, is part of the table above it:
+      -- counted on its own it inflates both counts and fills the named list.
+      AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)
 ),
 readable AS (
     SELECT nspname FROM reachable
@@ -82,6 +86,7 @@ SELECT
     ARRAY(
         SELECT quote_ident(nspname) || '.' || quote_ident(relname) FROM reachable
         WHERE has_table_privilege(oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
+           OR has_any_column_privilege(oid, 'INSERT, UPDATE')
         ORDER BY 1
     )                                                     AS writable_tables,
     (SELECT count(*) FROM readable)                       AS readable_tables,
