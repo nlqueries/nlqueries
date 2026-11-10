@@ -141,12 +141,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The configuration guide gives the right cap on column descriptions.** "What
+  leaves this machine" said every description sent to the model is capped at
+  300 characters. A table's is; a column's is capped at 160 in the default
+  compact schema (`_MAX_COLUMN_DESCRIPTION_CHARS`), and at 300 only with
+  `NLQ_SCHEMA_FORMAT=verbose`. Only the documentation changes.
+
 - **`nlqueries eval` runs every golden case, and fails when it ran nothing.**
   `--max-cases` cut the combined list with the mined capsules first, so with
   50 capsules every golden case was dropped. It now caps capsules only, and
-  golden cases run first, all of them. A golden case scoped by the alias given
-  on the command line was compared with the resolved connector ID and dropped;
-  either now matches. A run with no cases exited 0, which passes a CI gate that
+  golden cases run first, all of them. A golden case scoped by the connector's
+  alias was compared with the resolved connector ID and dropped; the ID and the
+  alias now both match, whichever the command was given. A run with no cases exited 0, which passes a CI gate that
   checked nothing; it now exits 1. A top-level `UNION`, which the SQL policy
   allows, failed as "not a SELECT". The `--json` output's `agent_id` is now
   documented.
