@@ -97,6 +97,52 @@ def test_a_masked_comparison_is_still_told_apart() -> None:
     assert not {"<", ">"} & _question_content("orders on <DATE> for <STRING>")
 
 
+@pytest.mark.parametrize(
+    ("cached", "incoming"),
+    [
+        ("accounts with a balance below -100", "accounts with a balance below 100"),
+        ("accounts with a balance below -1.5", "accounts with a balance below 1.5"),
+        ("rows where delta < -3", "rows where delta < 3"),
+        # Tier 2's masked forms: the mask leaves the minus outside the placeholder.
+        ("accounts with a balance below -<NUMBER>", "accounts with a balance below <NUMBER>"),
+    ],
+)
+def test_a_negative_number_is_not_its_positive(cached: str, incoming: str) -> None:
+    """The tokenizer left out the minus, so both read as N100 and only the
+    cosine score kept apart questions that ask for opposite rows."""
+    assert not _asks_the_same(cached, incoming)
+
+
+@pytest.mark.parametrize(
+    ("question", "numbers"),
+    [
+        # A hyphen between two numbers or a word and a number is not a sign.
+        ("orders in 2020-2021", {"N2020", "N2021"}),
+        ("orders for item x-1", {"N1"}),
+        ("a balance of -100", {"N-100"}),
+        ("-5 degrees", {"N-5"}),
+    ],
+)
+def test_a_minus_is_a_sign_only_where_it_starts_a_number(question: str, numbers: set[str]) -> None:
+    found = {token for token in _question_content(question) if token.startswith("N")}
+    assert found == numbers
+
+
+@pytest.mark.parametrize(
+    ("cached", "incoming"),
+    [
+        ("revenue in q3", "revenue in q4"),
+        ("latency at p95", "latency at p99"),
+        ("budget for fy2023", "budget for fy2024"),
+        ("sales at store_12", "sales at store_13"),
+    ],
+)
+def test_a_number_after_a_letter_is_still_a_number(cached: str, incoming: str) -> None:
+    """Guarding the whole number rather than its sign dropped every digit that
+    follows a letter, so "q3" and "q4" read the same (from #395's review)."""
+    assert not _asks_the_same(cached, incoming)
+
+
 def test_how_much_is_a_request_of_its_own() -> None:
     assert "AMOUNT" in _question_content("how much did they spend")
     assert "AMOUNT" not in _question_content("how many did they buy")
