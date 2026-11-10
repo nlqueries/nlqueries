@@ -163,3 +163,15 @@ def test_many_writable_tables_are_counted_and_the_first_named() -> None:
 
     assert concern.startswith("may write to 8 tables: app.t0, app.t1, app.t2, app.t3, app.t4")
     assert concern.endswith("and 3 more")
+
+
+def test_many_schemas_are_counted_and_the_first_named() -> None:
+    """The line is logged for every new pool connection: a schema per tenant
+    must not put hundreds of names in it (from #399's review)."""
+    schemas = tuple(f"tenant_{i:03d}" for i in range(40))
+    summary = _identity(readable_tables=400, readable_schemas=schemas).summary()
+
+    assert summary.endswith(
+        "reads 400 tables in schemas tenant_000, tenant_001, tenant_002, tenant_003, "
+        "tenant_004, and 35 more"
+    )

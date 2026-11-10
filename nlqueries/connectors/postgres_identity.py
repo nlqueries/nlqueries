@@ -51,7 +51,9 @@ DANGEROUS_PREDEFINED_ROLES = frozenset(
 #: (salary)` writes as surely as `UPDATE` does, and `SELECT (id)` reads.
 #:
 #: A partition or inheritance child is counted through its parent when the
-#: login holds the same kind of privilege there, so a schema-wide grant does not
+#: parent is itself reachable (a partition may live in another schema from its
+#: parent) and the login holds the same kind of privilege there, so a
+#: schema-wide grant does not
 #: count every partition, and on its own otherwise: grants are not inherited,
 #: and a statement against a partition checks only the partition's, so an
 #: INSERT held on one partition alone is a write.
@@ -76,6 +78,7 @@ writable AS (
     WHERE (has_table_privilege(oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
            OR has_any_column_privilege(oid, 'INSERT, UPDATE'))
       AND NOT (parent IS NOT NULL
+               AND parent IN (SELECT oid FROM reachable)
                AND (has_table_privilege(parent, 'INSERT, UPDATE, DELETE, TRUNCATE')
                     OR has_any_column_privilege(parent, 'INSERT, UPDATE')))
 ),
@@ -83,6 +86,7 @@ readable AS (
     SELECT nspname FROM reachable
     WHERE (has_table_privilege(oid, 'SELECT') OR has_any_column_privilege(oid, 'SELECT'))
       AND NOT (parent IS NOT NULL
+               AND parent IN (SELECT oid FROM reachable)
                AND (has_table_privilege(parent, 'SELECT')
                     OR has_any_column_privilege(parent, 'SELECT')))
 )
@@ -114,6 +118,17 @@ WHERE r.rolname = current_user
 
 #: How many writable tables a concern names before it counts the rest.
 _NAMED_TABLES = 5
+
+
+def _first_named(names: tuple[str, ...]) -> str:
+    """The first :data:`_NAMED_TABLES` of *names*, and how many more there are.
+
+    The line is logged for every new pool connection and printed by ``health``,
+    so a database with a schema per tenant must not put hundreds of names in it.
+    """
+    named = ", ".join(names[:_NAMED_TABLES])
+    more = len(names) - _NAMED_TABLES
+    return named + (f", and {more} more" if more > 0 else "")
 
 
 @dataclass(frozen=True)
@@ -170,12 +185,8 @@ class PostgresIdentity:
 
         if self.writable_tables:
             count = len(self.writable_tables)
-            named = ", ".join(self.writable_tables[:_NAMED_TABLES])
-            more = count - _NAMED_TABLES
             noun = "table" if count == 1 else "tables"
-            found.append(
-                f"may write to {count} {noun}: {named}" + (f", and {more} more" if more > 0 else "")
-            )
+            found.append(f"may write to {count} {noun}: {_first_named(self.writable_tables)}")
         return tuple(found)
 
     @property
@@ -196,7 +207,9 @@ class PostgresIdentity:
             return "; reads no tables"
         tables = "table" if self.readable_tables == 1 else "tables"
         schemas = "schema" if len(self.readable_schemas) == 1 else "schemas"
-        where = f" in {schemas} {', '.join(self.readable_schemas)}" if self.readable_schemas else ""
+        where = (
+            f" in {schemas} {_first_named(self.readable_schemas)}" if self.readable_schemas else ""
+        )
         return f"; reads {self.readable_tables} {tables}{where}"
 
     def summary(self) -> str:

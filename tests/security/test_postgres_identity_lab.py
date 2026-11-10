@@ -339,3 +339,45 @@ def test_a_read_held_on_one_partition_alone_is_counted(login_with: Any, partitio
 
     assert identity.readable_tables == 1
     assert identity.readable_schemas == ("ci8_parts2",)
+
+
+def test_a_partition_is_not_folded_into_a_parent_the_login_cannot_reach(
+    login_with: Any, privileged_credentials: dict[str, Any]
+) -> None:
+    """A partition can live in another schema from its parent. With USAGE on
+    the partition's schema only, the parent is out of reach, so a write held
+    on both is a write through the partition (from #399's review)."""
+    engine = sa.create_engine(
+        sa.URL.create(
+            "postgresql+psycopg2",
+            username=privileged_credentials["user"],
+            password=privileged_credentials["password"],
+            host=privileged_credentials["host"],
+            port=privileged_credentials["port"],
+            database=privileged_credentials["database"],
+        )
+    )
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE SCHEMA ci8_parent"))
+        conn.execute(sa.text("CREATE SCHEMA ci8_child"))
+        conn.execute(sa.text("CREATE TABLE ci8_parent.log (id int) PARTITION BY RANGE (id)"))
+        conn.execute(
+            sa.text(
+                "CREATE TABLE ci8_child.log_0 PARTITION OF ci8_parent.log "
+                "FOR VALUES FROM (0) TO (10)"
+            )
+        )
+    try:
+        credentials = login_with(
+            "ci8_crossschema",
+            "GRANT USAGE ON SCHEMA ci8_child TO {role}",
+            "GRANT INSERT ON ci8_parent.log TO {role}",
+            "GRANT INSERT ON ci8_child.log_0 TO {role}",
+        )
+        identity = _identity_of(credentials)
+        assert identity.writable_tables == ("ci8_child.log_0",)
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa.text("DROP SCHEMA ci8_child CASCADE"))
+            conn.execute(sa.text("DROP SCHEMA ci8_parent CASCADE"))
+        engine.dispose()
