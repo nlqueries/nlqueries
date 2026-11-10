@@ -593,16 +593,103 @@ def test_validate_sql_accepts_valid_explicit_column() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4B: _try_mechanical_repair step 3 — multi-statement stripping
+# A string of several statements is not repaired by dropping the rest
 # ---------------------------------------------------------------------------
 
 
-def test_mechanical_repair_strips_second_statement() -> None:
-    """When LLM appends a second statement, only the first is kept."""
-    sql = "SELECT * FROM orders; SELECT 1"
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM orders; DELETE FROM orders",
+        # Refused too, though both read: which of two answers the user wanted
+        # is not something a repair can know.
+        "SELECT * FROM orders; SELECT 1",
+        "SELECT * FROM orders;\n-- note\nDROP TABLE orders",
+    ],
+)
+def test_mechanical_repair_never_drops_a_statement(sql: str) -> None:
+    """It used to keep the first statement and call the result valid, so a
+    write after a read vanished without an error or a warning. Transpiling
+    did the same: it returns one string per statement and only the first was
+    looked at."""
     repaired, err = _try_mechanical_repair(sql, _make_kb(), "postgres")
-    assert err is None
-    assert "SELECT 1" not in repaired
+    assert err is not None
+    assert repaired == sql
+
+
+def _repairing_llm(*replies: str) -> MagicMock:
+    llm = MagicMock()
+    queue = list(replies)
+
+    async def _acomplete(*a: Any, **kw: Any) -> str:
+        return queue.pop(0)
+
+    llm.acomplete = _acomplete
+    llm.supports_prompt_caching = False
+    return llm
+
+
+def _repair_with_provenance(sql: str, *replies: str) -> tuple[SQLGenerationResult, list[str]]:
+    from nlqueries.orchestrator.provenance import Provenance, use_provenance
+
+    collector = Provenance()
+
+    async def _run() -> SQLGenerationResult:
+        with use_provenance(collector):
+            return await validate_and_repair(sql, _make_kb(), "postgres", _repairing_llm(*replies))
+
+    return asyncio.run(_run()), collector.validator
+
+
+def test_a_trailing_write_the_model_cannot_repair_stays_invalid() -> None:
+    result, _ = _repair_with_provenance(
+        "SELECT * FROM orders; DELETE FROM orders",
+        "SELECT * FROM orders; DELETE FROM orders",
+    )
+
+    assert result.is_valid is False
+    assert result.validation_error is not None
+    assert "one statement" in result.validation_error
+
+
+def test_a_trailing_write_repaired_by_the_model_says_so() -> None:
+    """Decision: the model's repair of a refused statement is accepted, and the
+    refusal is kept in provenance, so a reader can see what it replaced."""
+    result, warnings = _repair_with_provenance(
+        "SELECT * FROM orders; DELETE FROM orders",
+        "SELECT * FROM orders",
+    )
+
+    assert result.is_valid is True
+    assert result.sql.strip().rstrip(";") == "SELECT * FROM orders"
+    assert result.attempt_count == 2, "the model was asked to correct it"
+    assert len(warnings) == 1
+    assert warnings[0].startswith("repaired after: Refused by SQL policy")
+    assert "one statement" in warnings[0]
+
+
+def test_a_write_inside_a_cte_repaired_by_the_model_says_so() -> None:
+    result, warnings = _repair_with_provenance(
+        "WITH gone AS (DELETE FROM orders RETURNING id) SELECT count(*) FROM gone",
+        "SELECT count(*) FROM orders",
+    )
+
+    assert result.is_valid is True
+    assert result.attempt_count == 2
+    assert len(warnings) == 1
+    assert warnings[0].startswith("repaired after: Refused by SQL policy")
+
+
+def test_a_repaired_unknown_table_records_no_policy_warning() -> None:
+    """Only a refusal is worth recording: an unknown table repaired is the
+    ordinary correction loop, and a warning on every one would be noise."""
+    result, warnings = _repair_with_provenance(
+        "SELECT * FROM ghost_table",
+        "SELECT * FROM orders",
+    )
+
+    assert result.is_valid is True
+    assert warnings == []
 
 
 def test_mechanical_repair_single_statement_unchanged() -> None:

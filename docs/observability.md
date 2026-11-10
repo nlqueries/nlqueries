@@ -142,7 +142,7 @@ The MCP server's `health` tool checks the LLM configuration, Qdrant, the embeddi
 - `capsules_used`;
 - `prompt_sections`: which parts of the knowledge base were put in the prompt;
 - `cache`: `hit`, `similarity` and `tier`;
-- `validator`: warnings;
+- `validator`: warnings, including `repaired after: <refusal>` when the SQL policy refused the statement as generated and the model's correction replaced it;
 - `literals_grounded` and `literal_repair`;
 - `grain_check`: when the statement disagreed with the plan line the model wrote first, the line, the disagreements, and whether the repair replaced the statement (see [`NLQ_GRAIN_CHECK`](configuration.md));
 - `plan_rewrite`: when the plan check found a subquery re-run for every row, the statement as generated, what the plan showed, and whether the rewrite replaced it (see [`NLQ_PLAN_CHECK`](configuration.md));
