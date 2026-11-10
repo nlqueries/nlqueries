@@ -141,6 +141,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **`nlqueries eval` runs every golden case, and fails when it ran nothing.**
+  `--max-cases` cut the combined list with the mined capsules first, so with
+  50 capsules every golden case was dropped. It now caps capsules only, and
+  golden cases run first, all of them. A golden case scoped by the alias given
+  on the command line was compared with the resolved connector ID and dropped;
+  either now matches. A run with no cases exited 0, which passes a CI gate that
+  checked nothing; it now exits 1. A top-level `UNION`, which the SQL policy
+  allows, failed as "not a SELECT". The `--json` output's `agent_id` is now
+  documented.
+
 - **The cache's content guard tells a negative number from its positive.**
   The guard compares what two questions ask for, and its tokenizer left out a
   number's minus sign, so "balance below -100" and "balance below 100" read
