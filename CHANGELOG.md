@@ -86,6 +86,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **Core no longer describes itself as open source.** It is under the Business
+  Source License 1.1, which is source-available: it does not permit offering
+  Core as a hosted service, and each version converts to Apache 2.0 later.
+  The package description (shown on PyPI), the README, `CONTRIBUTING.md` and
+  the contributing guide now say "self-hosted" or that the source is public
+  under BSL 1.1, as nlqueries.com now does. The benchmark kit's
+  `expect_contains` also compares a number as a number: as a substring, an
+  expected `10` was found in an order id `101`.
+
 - **CI tests the lock the image ships, and the sqlglot floor is 30.13.** The
   test jobs installed `.[dev,docs]` unpinned, so they tested a newer sqlglot
   (30.29) than the image's lock (30.17), and the SQL policy reads statements

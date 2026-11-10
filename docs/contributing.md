@@ -1,6 +1,6 @@
 # Contributing
 
-NLQueries Core is open source under [BSL 1.1](../LICENSE) and maintained by Theorence Labs. Contributions of code, tests, documentation and bug reports are welcome. This page covers what the project is looking for and how to get a change merged. [CONTRIBUTING.md](../CONTRIBUTING.md) in the repository root is a shorter summary of the same policy (CLA, setup, branching, style, tests, commit messages); where the two differ in detail, this page is the fuller one.
+NLQueries Core's source is public under [BSL 1.1](../LICENSE), and it is maintained by Theorence Labs. Contributions of code, tests, documentation and bug reports are welcome. This page covers what the project is looking for and how to get a change merged. [CONTRIBUTING.md](../CONTRIBUTING.md) in the repository root is a shorter summary of the same policy (CLA, setup, branching, style, tests, commit messages); where the two differ in detail, this page is the fuller one.
 
 ---
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nlqueries-core"
 version = "0.4.1"
-description = "Open source natural language to SQL (NL2SQL) engine with schema validation and an MCP server for Claude and Cursor."
+description = "Self-hosted natural language to SQL (NL2SQL) engine with schema validation and an MCP server for Claude and Cursor."
 readme = "README.md"
 license = { file = "LICENSE" }
 # Upper bound = the first version CI does not test. Keep it in step with the
