@@ -1141,6 +1141,39 @@ class TestPutStoresKindAndTemplate:
         assert "answer" in kinds
         assert "template" in kinds
 
+    @pytest.mark.parametrize(
+        ("dialect", "sql"),
+        [
+            ("mssql", "SELECT TOP 5 * FROM [orders] WHERE [total] > 100"),
+            ("mysql", "SELECT * FROM `orders` WHERE total > 100 LIMIT 5"),
+        ],
+    )
+    def test_put_parameterises_in_the_engine_s_dialect(self, dialect: str, sql: str) -> None:
+        """Parsed in sqlglot's default dialect, brackets, backticks and TOP do
+        not parse, and the template was dropped without a word: an engine with
+        its own quoting never had a Tier 2 entry. The lookup already binds in
+        the binding's dialect; the store now parameterises in it too."""
+        result = _FakeResult(
+            resolved_question="top 5 orders over 100",
+            agent_type="sql",
+            answer="Five orders.",
+            sql=sql,
+        )
+        mock_client = MagicMock()
+        binding = replace(TEST_BINDING, dialect=dialect)
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1", binding=binding).put("top 5 orders over 100", result)
+
+        points = mock_client.upsert.call_args.kwargs.get("points") or []
+        templates = [p for p in points if p.payload.get("kind") == "template"]
+        assert len(templates) == 1, dialect
+        assert "[total:INT]" in templates[0].payload["sql"]
+
     def test_put_skips_template_when_no_entities(self) -> None:
         """put() stores only the answer point when the question has no entity literals."""
         result = _FakeResult(
