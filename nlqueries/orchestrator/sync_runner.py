@@ -185,8 +185,8 @@ def _parse_final_chunk(
 
     elif agent_type == "hybrid":
         merged_answer = parsed.get("merged_answer") or None
-        # Documented as set for "sql" or "hybrid", and read only for "sql":
-        # `nlqueries eval` read a hybrid-routed case as having no SQL.
+        # `AgentQueryResult.sql` is documented as set for "sql" or "hybrid",
+        # and this frame carries it, but it was read only on the sql route.
         sql = parsed.get("sql") or None
         text_tokens = []  # hybrid: NL answer IS the merged_answer field
         citations = [
