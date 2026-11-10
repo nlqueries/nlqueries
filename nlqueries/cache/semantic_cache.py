@@ -141,6 +141,19 @@ _ENTITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 # Regex to find parameterized SQL placeholders like [column_name:DATE]
 _PLACEHOLDER_RE = re.compile(r"\[([^:\]]+):([^\]]+)\]")
 
+#: A number as a value: with its minus sign, which `_NUMBER_RE` leaves out,
+#: unless the minus joins two words or numbers (`2020-2021`, `x-1`). Used only
+#: to extract values; masking keeps `_NUMBER_RE`, so no cache key changes.
+_SIGNED_NUMBER_RE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\b")
+
+#: `_ENTITY_PATTERNS` for extraction: the same order and placeholders, with
+#: the number pattern sign-aware, so `-50` is extracted as `-50` and a
+#: placeholder that accepts only digits refuses it instead of binding 50.
+_EXTRACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (_SIGNED_NUMBER_RE if pattern is _NUMBER_RE else pattern, token)
+    for pattern, token in _ENTITY_PATTERNS
+]
+
 # Maps parameterizer placeholder types → entity type keys used by _extract_entities_by_type
 _PARAM_TYPE_TO_ENTITY: dict[str, str] = {
     "INT": "NUMBER",
@@ -344,7 +357,7 @@ def _extract_entities_by_type(question: str) -> dict[str, list[str]]:
     """
     result: dict[str, list[str]] = {}
     remaining = question
-    for pattern, token in _ENTITY_PATTERNS:
+    for pattern, token in _EXTRACT_PATTERNS:
         type_key = token[1:-1]  # strip < > → "DATE", "NUMBER", etc.
         values = pattern.findall(remaining)
         if values:
@@ -417,9 +430,20 @@ def _sentinel_template(template_sql: str) -> tuple[str, list[tuple[str, str]]]:
 
     def _sub(match: re.Match[str]) -> str:
         order.append((match.group(1), match.group(2)))
-        return "'" + _BIND_SENTINEL.format(len(order) - 1) + "'"
+        sentinel = "'" + _BIND_SENTINEL.format(len(order) - 1) + "'"
+        # T-SQL reads a bare TOP value as a number and refuses a string there,
+        # so `TOP '__nlq_bind_0__'` did not parse and every SQL Server template
+        # with a TOP missed. In parentheses it parses to the same Limit node,
+        # and the bound statement renders as `TOP 7` again.
+        if _TOP_BEFORE_RE.search(template_sql, 0, match.start()):
+            return f"({sentinel})"
+        return sentinel
 
     return _QUOTED_PLACEHOLDER_RE.sub(_sub, template_sql), order
+
+
+#: ``TOP`` directly before a placeholder, as a T-SQL template writes its row cap.
+_TOP_BEFORE_RE = re.compile(r"\bTOP\s+$", re.IGNORECASE)
 
 
 def _literal_shape(tree: exp.Expression) -> str:
@@ -614,6 +638,27 @@ def _bind_entities(question: str, template_sql: str, dialect: str | None = None)
         return template_sql  # no placeholders — use as-is
 
     entities = _extract_entities_by_type(question)
+
+    # Every value the question names needs a place in the template. One left
+    # over means the template was stored for a question that used that value
+    # differently or not at all -- a year the SQL never read, a string or a
+    # month the template keeps as a literal -- and binding the rest picks
+    # values by position: "In 2026, what is the total of order 27?" bound
+    # `id = 2026`. A miss sends the question to generation instead.
+    #
+    # No placeholder holds a month or a currency amount, so a question naming
+    # one always misses here. That is the intent for a month -- a template
+    # stored for April keeps April's dates as written -- and it costs a miss
+    # when `_MONTH_RE` reads the word "may" as one ("customers who may
+    # churn"). The mask is not narrowed to avoid that: it derives every
+    # template's point id.
+    slots: dict[str, int] = {}
+    for _name, ptype in placeholders:
+        entity_type = _PARAM_TYPE_TO_ENTITY.get(ptype.upper(), "STRING")
+        slots[entity_type] = slots.get(entity_type, 0) + 1
+    if any(len(found) > slots.get(entity_type, 0) for entity_type, found in entities.items()):
+        return None
+
     # Mutable copy of the number pool so pre-assignments can claim values.
     number_pool: list[str] = list(entities.get("NUMBER", []))
 
@@ -685,6 +730,10 @@ def _bind_entities(question: str, template_sql: str, dialect: str | None = None)
             continue
         position = int(match.group(1))
         if position >= len(values):
+            return None
+        # A minus the template keeps outside its placeholder belongs to the
+        # stored value, not the new one: 50 would bind as -50.
+        if isinstance(node.parent, exp.Neg):
             return None
         ptype = order[position][1].upper()
         value = values[position]
@@ -1723,8 +1772,16 @@ class SemanticCache:
                         _parameterize_sql,
                     )
 
+                    # In the engine's dialect, as the lookup binds it: in the
+                    # default one a statement in backticks, brackets or TOP
+                    # does not parse and no template is stored.
                     template_sql, placeholders = _parameterize_sql(
-                        result.sql, {}, skip_string_literals=True
+                        result.sql,
+                        {},
+                        skip_string_literals=True,
+                        dialect=_sqlglot_name(
+                            self._binding.dialect if self._binding is not None else None
+                        ),
                     )
                     if placeholders:  # only store if SQL has literal parameters
                         masked_vector = embed_text(masked)

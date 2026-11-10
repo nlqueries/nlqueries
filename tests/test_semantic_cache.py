@@ -1141,6 +1141,51 @@ class TestPutStoresKindAndTemplate:
         assert "answer" in kinds
         assert "template" in kinds
 
+    @pytest.mark.parametrize(
+        ("dialect", "sql"),
+        [
+            ("mssql", "SELECT TOP 5 * FROM [orders] WHERE [total] > 100"),
+            ("mysql", "SELECT * FROM `orders` WHERE total > 100 LIMIT 5"),
+        ],
+    )
+    def test_put_parameterises_in_the_engine_s_dialect(self, dialect: str, sql: str) -> None:
+        """Parsed in sqlglot's default dialect, brackets, backticks and TOP do
+        not parse, and the template was dropped without a word: an engine with
+        its own quoting never had a Tier 2 entry. The lookup already binds in
+        the binding's dialect; the store now parameterises in it too."""
+        result = _FakeResult(
+            resolved_question="top 5 orders over 100",
+            agent_type="sql",
+            answer="Five orders.",
+            sql=sql,
+        )
+        mock_client = MagicMock()
+        binding = replace(TEST_BINDING, dialect=dialect)
+
+        with (
+            patch("nlqueries.cache.semantic_cache._get_client", return_value=mock_client),
+            patch("nlqueries.cache.semantic_cache.embed_text", return_value=[0.1] * 384),
+            patch("nlqueries.cache.semantic_cache.ensure_collection"),
+        ):
+            SemanticCache("agent1", binding=binding).put("top 5 orders over 100", result)
+
+        points = mock_client.upsert.call_args.kwargs.get("points") or []
+        templates = [p for p in points if p.payload.get("kind") == "template"]
+        assert len(templates) == 1, dialect
+        stored = templates[0].payload["sql"]
+        assert "[total:INT]" in stored
+
+        # And what was stored binds again, in the same dialect, with other
+        # values: a template that is stored and can never be hit only costs an
+        # embedding call and an upsert. T-SQL's TOP took a string sentinel,
+        # which it does not parse, so every SQL Server template with a TOP missed.
+        from nlqueries.cache.semantic_cache import _bind_entities
+
+        bound = _bind_entities("top 7 orders over 250", stored, dialect)
+        assert bound is not None, f"{dialect}: {stored}"
+        assert "> 250" in bound, bound
+        assert ("TOP 7" in bound) or ("LIMIT 7" in bound), bound
+
     def test_put_skips_template_when_no_entities(self) -> None:
         """put() stores only the answer point when the question has no entity literals."""
         result = _FakeResult(

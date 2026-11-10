@@ -96,9 +96,14 @@ def test_a_single_quoted_entity_cannot_carry_the_payload_at_all(dialect: str) ->
     one literal, as it does in the double-quoted case -- is wrong, and a test
     written to that expectation would have to be "fixed" by someone who might
     fix it in the wrong direction.
+
+    The review's payload also selected a literal `1`. A number the template has
+    no placeholder for now makes the lookup miss before anything binds, which
+    is safe but would leave this test asserting that instead; without it, the
+    test still shows what it is for.
     """
     bound = _bind_entities(
-        "Show me sales for 'x' UNION SELECT password, 1 FROM users --", STRING_TEMPLATE, dialect
+        "Show me sales for 'x' UNION SELECT password FROM users --", STRING_TEMPLATE, dialect
     )
 
     assert bound is not None, dialect
@@ -337,3 +342,80 @@ def test_an_unknown_dialect_says_so_once_instead_of_missing_silently(
     with caplog.at_level(logging.WARNING, logger="nlqueries.cache.semantic_cache"):
         assert _parse_or_none("this is not sql at all", "postgres") is None
     assert not caplog.records
+
+
+# ---------------------------------------------------------------------------
+# A value the template cannot place is a miss, not a guess
+#
+# Owner decision: when a template cannot bind every value in the question
+# correctly, the lookup misses and fresh SQL is generated. Each case below used
+# to bind, and returned another question's answer.
+# ---------------------------------------------------------------------------
+
+
+def test_a_number_the_template_has_no_place_for_is_a_miss() -> None:
+    """The stored question named a year the SQL never used, so its template
+    has one placeholder. The first number in the new question used to take
+    it: `id = 2026`, the order that does not exist."""
+    template = "SELECT total FROM orders WHERE id = [id:INT]"
+
+    assert _bind_entities("In 2026, what is the total of order 27?", template) is None
+    # The one-number question still binds.
+    bound = _bind_entities("What is the total of order 27?", template)
+    assert bound is not None and "id = 27" in bound
+
+
+def test_a_string_the_template_does_not_parameterise_is_a_miss() -> None:
+    """Templates keep string literals as written, so 'East' stays in the SQL
+    while the masked question reads <STRING> for 'West' too."""
+    template = "SELECT SUM(total) FROM orders WHERE region = 'East' AND total > [total:INT]"
+
+    assert _bind_entities("Sales over 100 in 'West'", template) is None
+
+
+def test_a_month_the_template_does_not_parameterise_is_a_miss() -> None:
+    template = "SELECT COUNT(*) FROM orders WHERE total > [total:INT]"
+
+    assert _bind_entities("Orders over 100 in March", template) is None
+
+
+@pytest.mark.parametrize(
+    ("question", "template"),
+    [
+        # The minus was not part of the number, so -50 bound as 50.
+        (
+            "Accounts with a balance below -50",
+            "SELECT id FROM accounts WHERE balance < [balance:INT]",
+        ),
+        # And the template keeps a stored minus outside its placeholder, so
+        # 50 bound as -50.
+        (
+            "Accounts with a balance below 50",
+            "SELECT id FROM accounts WHERE balance < -[balance:INT]",
+        ),
+        (
+            "Accounts with a balance below -50",
+            "SELECT id FROM accounts WHERE balance < -[balance:INT]",
+        ),
+    ],
+    ids=["signed-question", "signed-template", "both"],
+)
+def test_a_sign_is_never_lost_or_invented(question: str, template: str) -> None:
+    assert _bind_entities(question, template) is None
+
+
+def test_an_unsigned_number_still_binds() -> None:
+    bound = _bind_entities(
+        "Accounts with a balance below 50",
+        "SELECT id FROM accounts WHERE balance < [balance:INT]",
+    )
+    assert bound is not None and "balance < 50" in bound
+
+
+def test_a_hyphenated_range_is_not_read_as_a_negative_number() -> None:
+    """`2020-2021` is two years, not 2020 and -2021."""
+    bound = _bind_entities(
+        "Orders between 2020-2021",
+        "SELECT COUNT(*) FROM orders WHERE y BETWEEN [y:INT] AND [y_2:INT]",
+    )
+    assert bound is not None and "BETWEEN 2020 AND 2021" in bound

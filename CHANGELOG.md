@@ -141,6 +141,22 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A Tier 2 cache hit no longer binds a value into the wrong place.** A
+  template's placeholders were filled from the question's values in order,
+  so a value the stored SQL had no place for still took one: "In 2026, what
+  is the total of order 27?" bound `id = 2026`. A quoted string or month that
+  the template keeps as written was ignored, so a question about `'West'`
+  returned the SQL stored for `'East'`. And a minus sign was lost both ways:
+  `-50` bound as `50`, and a template stored from `-50` bound `50` as `-50`.
+  Tier 2 now misses whenever the question names more values of a kind than
+  the template has places for, or a number carries a sign, and the question
+  is answered by fresh SQL instead. Templates are also now stored in the
+  engine's dialect, as they are bound: in sqlglot's default dialect a SQL
+  Server or MySQL statement in brackets, backticks or `TOP` did not parse, so
+  those engines never had a Tier 2 entry. A SQL Server template with `TOP`
+  now binds as well: its placeholder became a quoted value, which T-SQL does
+  not accept after `TOP`.
+
 - **The SQL repair no longer drops a statement, and says when it replaced a
   refused one.** When the model returned several statements, the repair that
   runs before any model call kept the first and reported the result valid on
