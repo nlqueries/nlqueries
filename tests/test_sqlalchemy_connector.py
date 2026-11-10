@@ -74,8 +74,20 @@ def _emitted_sql(conn: MagicMock) -> str:
     return str(conn.execute.call_args[0][0])
 
 
-def test_apply_statement_timeout_postgres_uses_set_local() -> None:
+def test_apply_statement_timeout_postgres_only_lowers_the_role_s() -> None:
+    """Transaction-scoped as SET LOCAL was, but the lower of the role's limit
+    and this one: a stricter role limit is not replaced (measured against a
+    real server in tests/test_postgres_connector.py)."""
     conn = _mock_conn("postgresql")
+    _apply_statement_timeout(conn, 5)
+    sql = _emitted_sql(conn).lower()
+    assert "set_config('statement_timeout'" in sql and "least(" in sql
+    assert "pg_settings" in sql
+    assert conn.execute.call_args[0][1] == {"ms": 5000}
+
+
+def test_apply_statement_timeout_redshift_still_uses_set_local() -> None:
+    conn = _mock_conn("redshift")
     _apply_statement_timeout(conn, 5)
     sql = _emitted_sql(conn).lower()
     assert "set local statement_timeout" in sql and "5000" in sql

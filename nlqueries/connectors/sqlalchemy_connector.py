@@ -45,6 +45,7 @@ from nlqueries.connectors.base import (
 )
 from nlqueries.connectors.login_identity import LoginIdentity, watch_engine
 from nlqueries.connectors.mysql_identity import inspect_identity as inspect_mysql_identity
+from nlqueries.connectors.postgres import _lower_statement_timeout
 from nlqueries.connectors.postgres_tls import TlsPosture, describe, resolve_ssl_mode
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,11 @@ def _apply_statement_timeout(conn: Connection, seconds: float) -> None:
     dialect = conn.engine.dialect
     name = dialect.name
     ms = max(1, int(seconds * 1000))
-    if name in ("postgresql", "redshift"):
+    if name == "postgresql":
+        # The lower of the role's limit and this one, transaction-scoped as
+        # SET LOCAL is: a stricter limit the role already has is not replaced.
+        _lower_statement_timeout(conn, ms)
+    elif name == "redshift":
         # SET LOCAL is transaction-scoped, so it resets when the tx ends — no leak
         # onto the pooled connection.
         conn.execute(text(f"SET LOCAL statement_timeout = {ms}"))

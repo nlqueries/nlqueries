@@ -100,7 +100,7 @@ CAPABILITIES: dict[str, DialectCapabilities] = {
         read_only_mechanism=(
             "SET TRANSACTION READ ONLY, as the first statement of every transaction"
         ),
-        statement_timeout_mechanism="SET LOCAL statement_timeout",
+        statement_timeout_mechanism="transaction-local statement_timeout, never above the role's",
         verified_here=True,
         operator_requirement=(
             "A login that owns nothing, holds SELECT on an explicit list of schemas, and "

@@ -208,6 +208,13 @@ No `$user` and no writable schema in the path. `default_transaction_read_only`
 belongs here as well as in the application: it is the same control, held one
 layer down, where an application bug cannot skip it.
 
+The role's `statement_timeout` is a backstop that nlqueries only ever lowers.
+Each query runs under the lower of the role's limit and
+`CONNECTOR_STATEMENT_TIMEOUT_SECONDS` (or the query's own budget), where the
+role's `0` means no limit; a 30 s role limit holds even with the 120 s
+default. This applies to the PostgreSQL connector and to `postgresql://` URLs
+through the generic one.
+
 ### 6. Check what you built
 
 ```sql
@@ -558,7 +565,7 @@ statement, and anything it did outside the transaction stands.
 
 | dialect | read-only mechanism | statement timeout | verified in this repository |
 |---|---|---|---|
-| `postgres` | `SET TRANSACTION READ ONLY` | `SET LOCAL statement_timeout` | yes |
+| `postgres` | `SET TRANSACTION READ ONLY` | transaction-local `statement_timeout`, the lower of the role's and nlqueries' | yes |
 | `sqlite` | `mode=ro` + authorizer | watchdog `interrupt()` | yes |
 | `duckdb` | `read_only=True` + locked sandbox | watchdog | yes |
 | `mssql` | never committed; rolled back either way. T-SQL DDL is transactional, so a `DROP` is undone too | **none per query** | no — asserted against a fake driver |
