@@ -217,7 +217,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # Python 3.11 is the lock's and the image's, so that job tests what the
+      # image ships: the lock with its hashes, then the package, which adds only
+      # what the lock does not hold (the docs extra). The other versions resolve
+      # the floors afresh, which is what `pip install nlqueries-core` gets there.
+      # Unpinned, every job tested a newer sqlglot than the image carried, and
+      # the SQL policy reads statements differently between releases.
+      - name: Install from the lock (Python 3.11)
+        if: matrix.python-version == '3.11'
+        run: |
+          pip install --require-hashes -r requirements/core.lock
+          pip install -e ".[dev,docs]"
+          python scripts/check_installed_matches_lock.py requirements/core.lock
+
       - name: Install package + dev extras
+        if: matrix.python-version != '3.11'
         run: pip install -e ".[dev,docs]"
 
       - name: Run pytest with coverage

@@ -8,10 +8,17 @@ Usage::
     python -m benchmarks.run_bench \
         --golden tests/golden/questions.yaml \
         --agent  sales-agent \
+        --dialect postgres --execute \
         --out    docs/benchmarks/
 
     # Replay mode — measure cache hit rate from a question log:
     python -m benchmarks.run_bench --replay questions.txt --agent sales-agent
+
+How a question runs is stated, not inherited: ``--dialect`` (default
+``postgres``), ``--execute`` to run the SQL read-only rather than only
+generate it, and ``--no-cache`` to bypass the semantic cache. Without
+``--execute`` nothing reaches the database, so ``expect_contains`` checks the
+answer text the model wrote about SQL it never ran.
 """
 
 from __future__ import annotations
@@ -32,6 +39,23 @@ import yaml
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class RunOptions:
+    """How each question is run, passed to ``run_query`` rather than left to its
+    defaults (Postgres, the cache on, and generate-only)."""
+
+    dialect: str = "postgres"
+    execute: bool = False
+    use_cache: bool = True
+
+    def execution(self) -> Any:
+        from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+
+        return (
+            ExecutionPolicy.execute_read_only() if self.execute else ExecutionPolicy.generate_only()
+        )
+
+
 @dataclass
 class BenchRow:
     question: str
@@ -39,7 +63,7 @@ class BenchRow:
     latency_ms: int
     agent_type: str
     sql: str | None
-    is_valid: bool  # True when sql present and no validation error in answer
+    is_valid: bool  # the result's sql_is_valid, and False when no SQL came back
     from_cache: bool
     tables_ok: bool  # expected_tables all present in sql
     contains_ok: bool  # expect_contains all present in answer
@@ -107,43 +131,46 @@ def _check_contains(answer: str, expect_contains: list[str]) -> bool:
     return all(c.lower() in answer_lower for c in expect_contains)
 
 
-def _is_from_cache(answer: str) -> bool:
-    # run_query joins all tokens; "from_cache" is in the last JSON chunk which
-    # sync_runner strips. We detect it via a trailing marker in the joined text
-    # if the orchestrator inserts one. For now we can't reliably detect it from
-    # AgentQueryResult — this is a best-effort heuristic until TTFT tracking is
-    # added in Phase 2.
-    return False
-
-
 async def _run_one(
     question: str,
     agent_id: str,
     expect_tables: list[str],
     expect_contains: list[str],
     hard: bool,
+    options: RunOptions,
 ) -> BenchRow:
-    from nlqueries.orchestrator.sync_runner import run_query
+    from nlqueries.orchestrator import sync_runner  # noqa: PLC0415
 
     start = time.monotonic()
     error: str | None = None
     sql: str | None = None
     agent_type = "unclear"
     answer = ""
+    is_valid = False
+    from_cache = False
 
     try:
-        result = await run_query(question, agent_id)
+        result = await sync_runner.run_query(
+            question,
+            agent_id,
+            dialect=options.dialect,
+            execution=options.execution(),
+            use_cache=options.use_cache,
+        )
         sql = result.sql
         agent_type = result.agent_type
         answer = result.answer or ""
         latency_ms = result.latency_ms
+        # Read from the result, not guessed: the cache flag was always False
+        # and validity was a search of the answer for "validation_error".
+        is_valid = sql is not None and result.sql_is_valid
+        from_cache = result.from_cache
     except Exception as exc:  # noqa: BLE001
         latency_ms = int((time.monotonic() - start) * 1000)
         error = str(exc)
 
     tables_ok = _check_tables(sql, expect_tables)
     contains_ok = _check_contains(answer, expect_contains)
-    is_valid = sql is not None and "validation_error" not in (answer or "").lower()
 
     return BenchRow(
         question=question,
@@ -152,7 +179,7 @@ async def _run_one(
         agent_type=agent_type,
         sql=sql,
         is_valid=is_valid,
-        from_cache=_is_from_cache(answer),
+        from_cache=from_cache,
         tables_ok=tables_ok,
         contains_ok=contains_ok,
         hard=hard,
@@ -165,7 +192,9 @@ async def _run_one(
 # ---------------------------------------------------------------------------
 
 
-async def run_golden(golden_path: Path, default_agent: str) -> BenchReport:
+async def run_golden(
+    golden_path: Path, default_agent: str, options: RunOptions | None = None
+) -> BenchReport:
     items: list[dict[str, Any]] = yaml.safe_load(golden_path.read_text(encoding="utf-8")) or []
     report = BenchReport()
 
@@ -177,7 +206,9 @@ async def run_golden(golden_path: Path, default_agent: str) -> BenchReport:
         hard: bool = bool(item.get("hard", False))
 
         print(f"  [{agent}] {q[:70]}...", end="", flush=True)
-        row = await _run_one(q, agent, expect_tables, expect_contains, hard)
+        row = await _run_one(
+            q, agent, expect_tables, expect_contains, hard, options or RunOptions()
+        )
         status = "OK" if (row.tables_ok and row.contains_ok and not row.error) else "FAIL"
         print(f" {status} ({row.latency_ms} ms)")
         report.rows.append(row)
@@ -190,14 +221,16 @@ async def run_golden(golden_path: Path, default_agent: str) -> BenchReport:
 # ---------------------------------------------------------------------------
 
 
-async def run_replay(replay_path: Path, agent_id: str) -> BenchReport:
+async def run_replay(
+    replay_path: Path, agent_id: str, options: RunOptions | None = None
+) -> BenchReport:
     raw = replay_path.read_text(encoding="utf-8").splitlines()
     lines = [ln.strip() for ln in raw if ln.strip()]
     report = BenchReport()
 
     for question in lines:
         print(f"  {question[:70]}...", end="", flush=True)
-        row = await _run_one(question, agent_id, [], [], False)
+        row = await _run_one(question, agent_id, [], [], False, options or RunOptions())
         print(f" {row.latency_ms} ms cache={'Y' if row.from_cache else 'N'}")
         report.rows.append(row)
 
@@ -250,7 +283,7 @@ def _render_markdown(report: BenchReport, label: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NLQueries benchmark harness")
     parser.add_argument("--golden", type=Path, help="Path to golden questions YAML")
     parser.add_argument("--replay", type=Path, help="Path to question log (one per line)")
@@ -259,19 +292,41 @@ def _parse_args() -> argparse.Namespace:
         "--out", type=Path, default=Path("docs/benchmarks"), help="Output directory for report"
     )
     parser.add_argument("--label", default="", help="Label for the report filename")
-    return parser.parse_args()
+    parser.add_argument(
+        "--dialect", default="postgres", help="SQL dialect to generate and check (default postgres)"
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the generated SQL, read-only; without it the SQL is only generated",
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="Bypass the semantic cache for every question"
+    )
+    return parser.parse_args(argv)
+
+
+def options_from(args: argparse.Namespace) -> RunOptions:
+    """The run options the command line asked for."""
+    return RunOptions(dialect=args.dialect, execute=args.execute, use_cache=not args.no_cache)
 
 
 async def _main() -> None:
     args = _parse_args()
+    options = options_from(args)
+    print(
+        f"dialect={options.dialect} "
+        f"execution={'execute_read_only' if options.execute else 'generate_only'} "
+        f"cache={'on' if options.use_cache else 'off'}"
+    )
 
     if args.golden:
         print(f"Running golden set: {args.golden}")
-        report = await run_golden(args.golden, args.agent)
+        report = await run_golden(args.golden, args.agent, options)
         mode = "golden"
     elif args.replay:
         print(f"Replay mode: {args.replay}")
-        report = await run_replay(args.replay, args.agent)
+        report = await run_replay(args.replay, args.agent, options)
         mode = "replay"
     else:
         print("ERROR: Provide --golden or --replay", file=sys.stderr)
