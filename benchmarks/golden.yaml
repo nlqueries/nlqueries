@@ -1,0 +1,53 @@
+# Golden questions for the benchmark stack's seed (benchmarks/seed.sql).
+#
+# Run against an agent connected to the stack's Postgres (port 5433, database
+# nlq_bench, user nlq) with its knowledge base generated:
+#
+#   python -m benchmarks.run_bench --golden benchmarks/golden.yaml \
+#       --agent <agent-id> --dialect postgres --execute
+#
+# Every expected value below was worked out from seed.sql by hand, and each
+# question has one answer (no ties), so a failure is the model's, not the
+# fixture's. expect_contains is checked against the answer text, so it only
+# means something with --execute. No entry names an agent: --agent decides.
+#
+# tests/golden/questions.yaml is a different set, written for sales, HR and
+# finance schemas this seed does not have.
+
+- q: How many orders are there?
+  expect_tables: [orders]
+  expect_contains: ["7"]
+
+- q: Which order is still pending?
+  expect_tables: [orders]
+  expect_contains: ["105"]
+
+- q: Which customers are in the North region?
+  expect_tables: [customers]
+  expect_contains: ["Dogwood Traders"]
+
+- q: What is the most expensive product?
+  expect_tables: [products]
+  expect_contains: ["Support pack"]
+
+- q: Which customer has bought the most widgets in total?
+  # Widgets: Alder Supply 10 + 2 = 12, Elm Street Goods 25.
+  expect_tables: [customers, orders, order_items, products]
+  expect_contains: ["Elm Street Goods"]
+
+- q: How many units of the Gadget were ordered in total?
+  # Orders 102 (4), 104 (1) and 106 (5).
+  expect_tables: [order_items, products]
+  expect_contains: ["10"]
+
+- q: Which customer signed up most recently?
+  expect_tables: [customers]
+  expect_contains: ["Elm Street Goods"]
+
+- q: Total value of shipped orders, by region
+  # Shipped: 101 East 63.25, 104 East 111.00, 102 West 48.00, 106 West 172.50,
+  # 107 West 198.00. East 174.25, West 418.50; cancelled 103 and pending 105
+  # are not counted. "418.5" also matches an answer that prints 418.50.
+  expect_tables: [customers, orders, order_items, products]
+  expect_contains: ["174.25", "418.5"]
+  hard: true

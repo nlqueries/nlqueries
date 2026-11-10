@@ -1,6 +1,8 @@
 version: "3.9"
 
 # Benchmark infrastructure: Postgres, seeded from ./seed.sql, and Qdrant.
+# ./golden.yaml holds the questions written for that seed:
+#   python -m benchmarks.run_bench --golden benchmarks/golden.yaml --agent <id> --execute
 # There is no embedding service in this file: nlqueries embeds through the
 # local daemon if `nlqueries embed-server start` is running, and in the
 # calling process otherwise.

@@ -103,6 +103,27 @@ def test_a_golden_file_runs_end_to_end(tmp_path: Path) -> None:
     assert "how many orders?" in run_bench._render_markdown(report, "smoke")
 
 
+def test_the_kit_s_golden_set_asks_only_about_tables_the_seed_creates() -> None:
+    """The kit pointed at tests/golden/questions.yaml, whose questions expect
+    HR and finance tables the seed does not have, so most cases failed on the
+    fixture whatever the model wrote (from #401's review)."""
+    import re
+
+    seed = (_ROOT / "benchmarks" / "seed.sql").read_text("utf-8")
+    created = {name.lower() for name in re.findall(r"CREATE TABLE (\w+)", seed)}
+    golden = yaml.safe_load((_ROOT / "benchmarks" / "golden.yaml").read_text("utf-8"))
+
+    assert golden, "the kit's golden set is empty"
+    for case in golden:
+        missing = {t.lower() for t in case.get("expect_tables", [])} - created
+        assert not missing, (
+            f"{case['q']!r} expects {sorted(missing)}, which seed.sql does not create"
+        )
+        assert "agent" not in case, "--agent decides the agent; the set must not pin one"
+    run_bench_text = (_ROOT / "benchmarks" / "run_bench.py").read_text("utf-8")
+    assert "--golden benchmarks/golden.yaml" in run_bench_text
+
+
 def test_the_compose_file_mounts_a_seed_that_exists() -> None:
     compose = yaml.safe_load((_ROOT / "benchmarks" / "docker-compose.yaml").read_text("utf-8"))
     mounts = compose["services"]["postgres"]["volumes"]

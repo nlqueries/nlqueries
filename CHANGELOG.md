@@ -97,7 +97,9 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   policy's tests pass on; on an older one the policy refused queries the
   lock's release allows. The benchmark kit in `benchmarks/` now runs as
   written: its compose file mounted a `seed.sql` that did not exist (there is
-  one now, with synthetic data), and `run_bench.py` takes `--dialect`,
+  one now, with synthetic data, and `benchmarks/golden.yaml`, questions with
+  answers worked out from it; the kit used to point at a golden set written
+  for schemas the stack never had), and `run_bench.py` takes `--dialect`,
   `--execute` and `--no-cache` instead of Core's defaults, under which nothing
   executed, and reads cache hits and validity from the result instead of
   guessing them.

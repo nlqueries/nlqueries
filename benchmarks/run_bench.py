@@ -6,7 +6,7 @@ Runs a golden question set through run_query() and emits a Markdown report.
 Usage::
 
     python -m benchmarks.run_bench \
-        --golden tests/golden/questions.yaml \
+        --golden benchmarks/golden.yaml \
         --agent  sales-agent \
         --dialect postgres --execute \
         --out    docs/benchmarks/
