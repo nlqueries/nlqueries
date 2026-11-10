@@ -323,7 +323,7 @@ Conversational context is persisted per agent in `~/.nlqueries/sessions/` and ca
 
 ## eval
 
-Regression-checks an agent's knowledge: re-asks each mined **query capsule** (and, with `--golden`, a golden question set), then checks that the generated SQL **parses** and **references only tables the agent knows**. Exits non-zero if any case fails, so it works as a CI gate.
+Regression-checks an agent's knowledge: re-asks each mined **query capsule** (and, with `--golden`, a golden question set), then checks that the generated SQL **parses** and **references only tables the agent knows**. Exits non-zero if any case fails, or if there is no case to run, so it works as a CI gate.
 
 ```bash
 nlqueries eval <connector-or-alias>
@@ -333,12 +333,12 @@ nlqueries eval <connector-or-alias> --json        # machine-readable per-case re
 
 | Flag | Default | Description |
 |---|---|---|
-| `--golden PATH` | none | A golden questions YAML (`- q: … / agent: … / expect_tables: […]`); cases scoped to this agent are added on top of the KB's capsules |
+| `--golden PATH` | none | A golden questions YAML (`- q: … / agent: … / expect_tables: […]`); cases scoped to this agent are added on top of the KB's capsules. `agent` may be the connector ID or the alias given on the command line |
 | `--dialect` | the connector's type, else `postgres` | SQL dialect used for generation + parsing: `postgres`, `mysql`, `snowflake`, `bigquery`, `redshift`, `mssql`, `duckdb` or `sqlite`. Without it, the agent's connector type decides (for a `sqlalchemy` connector, the engine its URL names), and `postgres` when that names none |
-| `--max-cases N` | `50` | Cap on cases evaluated per run |
-| `--json` | off | Emit JSON: `{total, passed, failed, cases: [{question, source, ok, reason, sql}]}` |
+| `--max-cases N` | `50` | Cap on capsule cases evaluated per run; golden cases are always all run, before the capsules |
+| `--json` | off | Emit JSON: `{agent_id, total, passed, failed, cases: [{question, source, ok, reason, sql}]}`, where `agent_id` is the resolved connector ID |
 
-Each case passes when the generated SQL parses as a `SELECT` referencing only known tables (CTE names excepted); golden cases additionally require their `expect_tables` to appear. This is the community check — the enterprise tier adds QueryGraph-shape drift classification (`same_shape` / `benign_diff` / `drift`).
+Each case passes when the generated SQL parses as a `SELECT` (or a `UNION` of them) referencing only known tables (CTE names excepted); golden cases additionally require their `expect_tables` to appear. This is the community check — the enterprise tier adds QueryGraph-shape drift classification (`same_shape` / `benign_diff` / `drift`).
 
 ---
 

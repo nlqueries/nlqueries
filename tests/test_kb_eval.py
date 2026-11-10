@@ -152,3 +152,60 @@ def test_run_eval_treats_generation_error_as_failure() -> None:
     outcomes = run_eval(_KB, [EvalQuestion("q", "capsule")], boom)
     assert outcomes[0].ok is False
     assert outcomes[0].sql is None
+
+
+# ---------------------------------------------------------------------------
+# What a run keeps (CI-6)
+# ---------------------------------------------------------------------------
+
+
+def _many_capsules(n: int) -> dict:
+    return {
+        "schema": {"tables": [{"name": "orders"}]},
+        "query_capsules": [{"intent": f"capsule question {i}"} for i in range(n)],
+    }
+
+
+def test_golden_cases_survive_the_cap() -> None:
+    """The cap cut the combined list, capsules first, so with as many capsules
+    as the cap every golden case was dropped without a word."""
+    golden = [{"q": "the one that matters", "agent": "a"}]
+
+    cases = build_cases(_many_capsules(60), "a", golden=golden, max_cases=50)
+
+    assert [c.question for c in cases if c.source == "golden"] == ["the one that matters"]
+    assert sum(1 for c in cases if c.source == "capsule") == 50
+
+
+def test_the_cap_still_bounds_capsules() -> None:
+    assert len(build_cases(_many_capsules(60), "a", max_cases=10)) == 10
+
+
+def test_a_golden_case_written_with_the_alias_is_kept() -> None:
+    """The CLI resolves the alias before building cases, so a golden file that
+    names the agent as the user does ("shop") matched nothing."""
+    golden = [{"q": "by alias", "agent": "shop"}, {"q": "by id", "agent": "postgres:h:db"}]
+
+    cases = build_cases(_KB, "postgres:h:db", golden=golden, aliases={"shop"}, max_cases=50)
+
+    assert {c.question for c in cases if c.source == "golden"} == {"by alias", "by id"}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id FROM orders UNION SELECT id FROM customers",
+        "SELECT id FROM orders UNION ALL SELECT id FROM customers",
+    ],
+)
+def test_a_union_of_known_tables_passes(sql: str) -> None:
+    """The SQL policy allows a top-level UNION (`_ALLOWED_ROOTS`); the check
+    refused it as "not a SELECT (got Union)"."""
+    ok, reason = check_generated_sql(sql, _KNOWN)
+    assert ok, reason
+
+
+def test_a_union_still_has_its_tables_checked() -> None:
+    ok, reason = check_generated_sql("SELECT id FROM orders UNION SELECT id FROM ghosts", _KNOWN)
+    assert not ok
+    assert "ghosts" in reason

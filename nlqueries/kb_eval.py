@@ -16,7 +16,7 @@ without a live agent.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,25 +57,29 @@ def build_cases(
     agent_id: str,
     *,
     golden: Sequence[dict[str, Any]] | None = None,
+    aliases: Collection[str] = (),
     max_cases: int = 50,
 ) -> list[EvalQuestion]:
-    """Build eval questions from the KB's capsules + optional golden questions."""
-    cases: list[EvalQuestion] = []
-    capsules = kb.get("query_capsules", []) if isinstance(kb, dict) else []
-    for capsule in capsules:
-        if not isinstance(capsule, dict):
-            continue
-        intent = str(capsule.get("intent") or "").strip()
-        if intent:
-            cases.append(EvalQuestion(question=intent, source="capsule"))
+    """Build eval questions from the KB's capsules + optional golden questions.
 
+    *max_cases* caps the mined capsules only. Golden cases are a set someone
+    wrote on purpose, and the cap used to cut the combined list with the
+    capsules first, so a KB with as many capsules as the cap dropped every
+    golden case without a word. They come first, all of them.
+
+    A golden entry's ``agent`` may name *agent_id* or any of *aliases*: the
+    CLI resolves an alias before it gets here, and a golden file that names
+    the agent the way its user does would otherwise match nothing.
+    """
+    names = {agent_id, *aliases}
+    cases: list[EvalQuestion] = []
     for entry in golden or []:
         if not isinstance(entry, dict):
             continue
         question = str(entry.get("q") or "").strip()
         # Golden files can carry cases for many agents; keep the ones for this one
         # (or unscoped entries).
-        if question and (not entry.get("agent") or entry.get("agent") == agent_id):
+        if question and (not entry.get("agent") or entry.get("agent") in names):
             expect = entry.get("expect_tables")
             cases.append(
                 EvalQuestion(
@@ -85,7 +89,16 @@ def build_cases(
                 )
             )
 
-    return cases[: max(0, max_cases)]
+    capsule_cases: list[EvalQuestion] = []
+    capsules = kb.get("query_capsules", []) if isinstance(kb, dict) else []
+    for capsule in capsules:
+        if not isinstance(capsule, dict):
+            continue
+        intent = str(capsule.get("intent") or "").strip()
+        if intent:
+            capsule_cases.append(EvalQuestion(question=intent, source="capsule"))
+
+    return cases + capsule_cases[: max(0, max_cases)]
 
 
 def check_generated_sql(
@@ -109,7 +122,8 @@ def check_generated_sql(
         return False, "SQL did not parse"
     if statement is None:
         return False, "SQL did not parse"
-    if not isinstance(statement, exp.Select):
+    # A top-level UNION is a query too, as the SQL policy's allowed roots say.
+    if not isinstance(statement, (exp.Select, exp.Union)):
         return False, f"not a SELECT (got {type(statement).__name__})"
 
     cte_names = {str(c.alias).lower() for c in statement.find_all(exp.CTE) if c.alias}
