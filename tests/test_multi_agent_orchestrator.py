@@ -548,6 +548,55 @@ class TestMultiAgentOrchestratorNewPaths:
         final = json.loads(asyncio.run(run())[-1])
         assert final["is_valid"] is valid
 
+    @pytest.mark.parametrize(
+        ("execution", "logged"),
+        [(ExecutionPolicy.execute_read_only(), 1), (ExecutionPolicy.generate_only(), 0)],
+        ids=["executing", "generate-only"],
+    )
+    def test_a_refused_cache_hit_is_judged_once_and_logged_once(
+        self, execution: ExecutionPolicy, logged: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The frame's verdict and the check before execution are one decision.
+        Asked twice, a refused hit logged its ERROR twice, and once even when
+        nothing was going to run (from #396's review)."""
+        import logging
+        from datetime import UTC, datetime
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+        from nlqueries.sql_policy import evaluate
+
+        cache_entry = CacheEntry(
+            question="q",
+            resolved_question="q",
+            agent_type="sql",
+            answer="a",
+            sql="DELETE FROM orders",
+            created_at=datetime.now(UTC),
+            hit_count=1,
+        )
+
+        async def run() -> None:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.evaluate", wraps=evaluate
+                ) as judged,
+            ):
+                MockCache.return_value.get.return_value = cache_entry
+                async for _ in MultiAgentOrchestrator().handle_question(
+                    "q", "agent1", execution=execution
+                ):
+                    pass
+                assert judged.call_count == 1
+
+        with caplog.at_level(logging.ERROR):
+            asyncio.run(run())
+
+        refusals = [r for r in caplog.records if "Cached SQL was not executed" in r.getMessage()]
+        assert len(refusals) == logged
+
     def test_cache_hit_sql_reexecutes_and_attaches_fresh_result_table(self) -> None:
         """A sql cache hit re-runs the cached SQL and attaches a fresh sql_table
         (the cache stores SQL + answer text but not the rows), while still

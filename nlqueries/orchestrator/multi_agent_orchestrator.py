@@ -69,7 +69,7 @@ from nlqueries.orchestrator.provenance import (
 )
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 from nlqueries.query_settings import current as current_settings
-from nlqueries.sql_policy import evaluate
+from nlqueries.sql_policy import PolicyDecision, evaluate
 
 _log = logging.getLogger(__name__)
 
@@ -446,7 +446,20 @@ def _merge_hybrid(
     )
 
 
-def _is_executable_select(sql: str, dialect: str) -> bool:
+def _cached_sql_decision(sql: str, dialect: str) -> PolicyDecision | None:
+    """The SQL policy's verdict on a cached statement, or ``None`` for no statement.
+
+    Computed once per hit: the frame reports it as ``is_valid``, and
+    :func:`_execute_cached_sql` acts on it. Logging is left to the place that
+    refuses to run the statement, so a refused hit logs once, and not at all
+    when nothing was going to run.
+    """
+    if not sql or not sql.strip():
+        return None
+    return evaluate(sql, dialect)
+
+
+def _is_executable_select(sql: str, dialect: str, decision: PolicyDecision | None = None) -> bool:
     """Return ``True`` when the SQL policy permits *sql* for *dialect*.
 
     A last gate in front of someone else's database, and the only one on the
@@ -466,10 +479,10 @@ def _is_executable_select(sql: str, dialect: str) -> bool:
     dialect is a configuration problem an operator can fix, and should not be
     diagnosed by noticing that cached queries quietly stopped running.
     """
-    if not sql or not sql.strip():
+    if decision is None:
+        decision = _cached_sql_decision(sql, dialect)
+    if decision is None:
         return False
-
-    decision = evaluate(sql, dialect)
     if not decision.allowed:
         _log.error(
             "Cached SQL was not executed. Policy %s refused it: %s",
@@ -485,8 +498,12 @@ async def _execute_cached_sql(
     timeout_seconds: float | None,
     dialect: str = "postgres",
     execution: ExecutionPolicy = DEFAULT_POLICY,
+    decision: PolicyDecision | None = None,
 ) -> dict[str, Any] | None:
     """Execute *sql* for *agent_id* and return a ``sql_table`` dict (or ``None``).
+
+    *decision* is the policy's verdict when the caller has it already, so the
+    statement is not evaluated twice.
 
     The semantic cache stores the generated SQL and the answer text but not the
     result rows (which would go stale), so a cache hit must re-run the query to
@@ -511,7 +528,7 @@ async def _execute_cached_sql(
     if not execution.may_execute:
         return None
 
-    if not _is_executable_select(sql, dialect):
+    if not _is_executable_select(sql, dialect, decision):
         return {"error": "Cached SQL failed revalidation and was not executed"}
 
     try:
@@ -748,14 +765,15 @@ class MultiAgentOrchestrator:
                     # The check that decides whether it runs, so the frame
                     # says what it was judged by; without a verdict a frame
                     # carrying SQL is read as not validated.
-                    _hit_chunk["is_valid"] = _is_executable_select(_cached.sql, dialect)
+                    _decision = _cached_sql_decision(_cached.sql, dialect)
+                    _hit_chunk["is_valid"] = bool(_decision and _decision.allowed)
                     # Re-execute the cached SQL so the replayed frame carries a
                     # fresh result table (the cache stores SQL + answer text but
                     # not rows). Without this, a cache hit streams an answer with
                     # no ``sql_table``, and table-rendering callers (enterprise
                     # chat, CLI, MCP) show no data for repeated queries.
                     _hit_chunk["sql_table"] = await _execute_cached_sql(
-                        agent_id, _cached.sql, timeout_seconds, dialect, execution
+                        agent_id, _cached.sql, timeout_seconds, dialect, execution, _decision
                     )
             elif _cached.agent_type == "document":
                 _hit_chunk["type"] = "citations"

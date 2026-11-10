@@ -153,8 +153,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 - **A hybrid answer carries its SQL and whether it was valid, and `--json`
   says when rows were cut short.** `AgentQueryResult.sql` is documented as set
   for SQL and hybrid answers, but `run_query` read it only on the SQL route,
-  so a hybrid answer came back with `sql=None` and `nlqueries eval` failed a
-  hybrid-routed case as "no SQL". `sql_is_valid` defaulted to true whenever the
+  so a hybrid answer came back with `sql=None`. `sql_is_valid` defaulted to true whenever the
   final frame did not say, and a hybrid frame never did, so a hybrid answer
   built on SQL that failed validation reported it valid. The hybrid frame now
   carries the SQL sub-answer's `is_valid`, a cache hit carries the result of
