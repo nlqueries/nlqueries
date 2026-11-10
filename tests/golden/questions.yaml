@@ -12,6 +12,9 @@
 # How to run
 # ----------
 # python -m benchmarks.run_bench --golden tests/golden/questions.yaml --agent <agent-id>
+#
+# These assume sales, HR and finance schemas. The benchmark stack in
+# benchmarks/ seeds a smaller shop schema; its questions are benchmarks/golden.yaml.
 
 # ---------------------------------------------------------------------------
 # Sales / Orders

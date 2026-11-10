@@ -111,3 +111,72 @@ def test_the_base_image_is_pinned_by_digest() -> None:
     assert froms
     for line in froms:
         assert "@sha256:" in line, line
+
+
+# ---------------------------------------------------------------------------
+# CI tests what the image ships (CI-11)
+# ---------------------------------------------------------------------------
+
+
+def _locked_version(name: str) -> tuple[int, ...]:
+    match = re.search(rf"^{re.escape(name)}==([0-9.]+)", LOCK.read_text("utf-8"), re.M)
+    assert match, f"{name} is not pinned in the lock"
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def test_the_sqlglot_floor_is_the_measured_one_and_the_lock_satisfies_it(pyproject: dict) -> None:
+    """30.13 is the lowest release the SQL policy's tests pass on; the floor was
+    23.0, which the policy has not been tested against for many releases."""
+    floor = next(d for d in pyproject["project"]["dependencies"] if d.startswith("sqlglot"))
+
+    assert floor == "sqlglot>=30.13"
+    assert _locked_version("sqlglot") >= (30, 13)
+
+
+def test_ci_tests_the_lock_on_the_image_s_python() -> None:
+    """Unpinned, every test job resolved a newer sqlglot than the image carried."""
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8")
+    step = ci[ci.index("- name: Install from the lock (Python 3.11)") :]
+    step = step[: step.index("- name: Install package + dev extras")]
+
+    assert "if: matrix.python-version == '3.11'" in step
+    assert "pip install --require-hashes -r requirements/core.lock" in step
+    assert "scripts/check_installed_matches_lock.py" in step
+    assert "python:3.11" in (REPO_ROOT / "Dockerfile").read_text("utf-8")
+    assert "with Python 3.11" in LOCK.read_text("utf-8")
+
+
+def test_the_guard_reports_a_package_installed_at_another_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_installed_matches_lock", REPO_ROOT / "scripts" / "check_installed_matches_lock.py"
+    )
+    assert spec and spec.loader
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    lock = tmp_path / "x.lock"
+    lock.write_text(
+        "Sqlglot==30.17.0 \\\n    --hash=sha256:abc\n    # via nlqueries-core\n"
+        "pyyaml==6.0.2 \\\n    --hash=sha256:def\n",
+        encoding="utf-8",
+    )
+    assert guard.locked_pins(lock) == {"sqlglot": "30.17.0", "pyyaml": "6.0.2"}
+
+    class _Dist:
+        def __init__(self, name: str, version: str) -> None:
+            self.metadata = {"Name": name}
+            self.version = version
+
+    monkeypatch.setattr(
+        guard.metadata,
+        "distributions",
+        lambda: [_Dist("sqlglot", "30.29.0"), _Dist("PyYAML", "6.0.2")],
+    )
+    assert guard.mismatches(guard.locked_pins(lock)) == [
+        "sqlglot: locked 30.17.0, installed 30.29.0"
+    ]
+    assert guard.main(["x", str(lock)]) == 1

@@ -36,7 +36,7 @@ dependencies = [
     "psycopg2-binary>=2.9",
 
     # SQL parsing / dialect normalisation
-    "sqlglot>=23.0",
+    "sqlglot>=30.13",
 
     # Knowledge base
     "pyyaml>=6.0",

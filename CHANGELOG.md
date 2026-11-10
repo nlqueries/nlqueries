@@ -86,6 +86,24 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **CI tests the lock the image ships, and the sqlglot floor is 30.13.** The
+  test jobs installed `.[dev,docs]` unpinned, so they tested a newer sqlglot
+  (30.29) than the image's lock (30.17), and the SQL policy reads statements
+  differently between releases. The Python 3.11 job, the lock's and the
+  image's Python, now installs `requirements/core.lock` with its hashes, and
+  `scripts/check_installed_matches_lock.py` fails it if any locked package
+  ends up at another version; 3.12 to 3.14 still resolve the floors afresh.
+  The `sqlglot` floor rises from 23.0 to 30.13, the lowest release the
+  policy's tests pass on; on an older one the policy refused queries the
+  lock's release allows. The benchmark kit in `benchmarks/` now runs as
+  written: its compose file mounted a `seed.sql` that did not exist (there is
+  one now, with synthetic data, and `benchmarks/golden.yaml`, questions with
+  answers worked out from it; the kit used to point at a golden set written
+  for schemas the stack never had), and `run_bench.py` takes `--dialect`,
+  `--execute` and `--no-cache` instead of Core's defaults, under which nothing
+  executed, and reads cache hits and validity from the result instead of
+  guessing them.
+
 - **The SQL policy refuses a recursive CTE with no bound and an oversized
   `generate_series`, and allows `CYCLE` (policy version 8).** A recursive CTE
   that nothing stops ran until the statement timeout on data with a cycle, and

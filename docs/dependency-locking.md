@@ -67,10 +67,19 @@ Not in the closure:
   the lock cannot ingest PDF, Word or Excel files or sync Notion or Confluence
   sources until those are added.
 
-The lock is installed only by the image build. CI does not install from it: the
-test jobs in `.github/workflows/ci.yml`, which `release.yml` calls before it
-publishes anything, run `pip install -e ".[dev,docs]"`, which resolves the `>=`
-floors afresh, so CI can test newer versions than the image ships.
+The image build installs the lock, and so does CI's Python 3.11 test job, the
+lock's and the image's Python: it installs `requirements/core.lock` with its
+hashes, then the package (adding the `docs` extra the lock does not hold), and
+`scripts/check_installed_matches_lock.py` fails the job if any locked package
+ended up at another version. So the job `release.yml` waits on tests what the
+image ships. The 3.12, 3.13 and 3.14 jobs run `pip install -e ".[dev,docs]"`,
+which resolves the `>=` floors afresh, as `pip install nlqueries-core` does
+there.
+
+The `sqlglot` floor is the lowest release the SQL policy's tests pass on
+(30.13): the policy lists sqlglot's classes by name, and an older release lacks
+some of them, so it refused queries the lock's release allows. Re-check it with
+the policy tests when the lock moves.
 
 CI does audit the lock. The `lock-audit` job in `ci.yml` runs
 `pip-audit -r requirements/core.lock --require-hashes` on every CI run, and a
