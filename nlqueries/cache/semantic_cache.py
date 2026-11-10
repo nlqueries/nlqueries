@@ -293,7 +293,9 @@ _SIGNED_PLACEHOLDER_TOKEN_RE = re.compile(r"(?<![\w.>])-<([A-Z]+)>")
 #: The tokens `_question_content` reads: words, numbers and comparisons. A
 #: number keeps a leading minus, so ``-100`` is not ``100``, except where the
 #: minus follows a word or a number (``2020-2021``, ``x-1``), where it joins.
-_CONTENT_TOKEN_RE = re.compile(r"[a-z]+|(?<![\w.])-?\d+(?:\.\d+)?|[<>!]=|[<>=]")
+#: Only the minus is guarded: a digit after a letter is still a number, so
+#: ``q3`` reads as ``N3`` and is not ``q4``.
+_CONTENT_TOKEN_RE = re.compile(r"[a-z]+|(?:(?<![\w.])-)?\d+(?:\.\d+)?|[<>!]=|[<>=]")
 
 
 def _question_content(question: str) -> frozenset[str]:
