@@ -29,8 +29,10 @@ to a distinct class. A deny-list would require every such class to be named.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 import sqlglot
 from sqlglot import TokenType, exp
@@ -67,7 +69,14 @@ from nlqueries.sql_constructs import allowed_constructs
 #: with a modifier (``strftime('%Y', 'now', '-1 day')``), so that form was
 #: refused as an unrecognised function. sqlglot 30.29 does the same to ``date``
 #: with a modifier (``date('now', '-1 day')``), which earlier releases modelled.
-POLICY_VERSION = "7"
+#:
+#: 8: a query that the text shows cannot stop on its own is refused: a
+#: recursive CTE with no ``CYCLE`` clause, no condition on a column it reads
+#: from itself, and no ``LIMIT`` on a query that reads it directly; and a
+#: ``generate_series`` whose literal bounds span more than
+#: :data:`MAX_SERIES_ROWS` rows. PostgreSQL's ``CYCLE`` and ``SEARCH`` clauses
+#: (``RecursiveWithSearch``) are allowed; only ``CYCLE`` counts as a bound.
+POLICY_VERSION = "8"
 
 #: The only statement types a generated query may be.
 _ALLOWED_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.Union)
@@ -742,10 +751,283 @@ def _read(tree: exp.Expression, sql: str, dialect: str) -> _Reading:
                 "which SQL Server reads as a keyword"
             )
 
+    reasons.extend(
+        f"recursive CTE {name} has no bound, so on data with a cycle it never stops: "
+        "add a CYCLE clause, a condition on a column it reads from itself in its "
+        "recursive part (such as WHERE depth < 100), or a LIMIT on a query that "
+        "reads it directly"
+        for name in _unbounded_recursive_ctes(tree, _sqlglot_dialect(dialect))
+    )
+    reasons.extend(_oversized_series(tree))
+
     tables = frozenset(
         tuple(part.name for part in table.parts) for table in tree.find_all(exp.Table)
     )
     return _Reading(tuple(reasons), anonymous, unlisted, tables)
+
+
+# ---------------------------------------------------------------------------
+# Version 8: queries that cannot stop on their own
+# ---------------------------------------------------------------------------
+#
+# The statement timeout bounds every query whatever this decides, and these
+# rules are not a cost model: they refuse only what the text shows has no end,
+# so that the model is asked for a statement with one instead of the user
+# waiting out the timeout for an error. Measured on PostgreSQL 16, a UNION ALL
+# recursive CTE over cyclic data and generate_series(1, 2e9) each ran until the
+# timeout stopped them.
+
+#: The most rows a ``generate_series`` with literal bounds may produce. Ten
+#: years of days is 3,653 and a year of minutes 525,600; two billion integers
+#: is a way to spend the timeout.
+MAX_SERIES_ROWS = 1_000_000
+
+#: Dialects in which a CTE that names itself is recursive whether or not
+#: ``RECURSIVE`` is written. Measured for SQLite 3.45 (and DuckDB, which
+#: refuses it, is not here); SQL Server has no keyword at all. Snowflake
+#: documents the keyword as optional. Elsewhere a CTE without the keyword that
+#: names its own name reads the table of that name, which is not recursion.
+_IMPLICIT_RECURSION = frozenset({"tsql", "sqlite", "snowflake"})
+
+_COMPARISONS: tuple[type[exp.Expression], ...] = (exp.LT, exp.LTE, exp.GT, exp.GTE)
+
+#: What makes a query read every row of what it selects from, so that a LIMIT
+#: on it cannot stop a recursive CTE early.
+_READS_EVERY_ROW = (exp.AggFunc, exp.Window)
+
+
+def _union_parts(node: exp.Expression) -> list[exp.Expression]:
+    if isinstance(node, exp.Union):
+        return _union_parts(node.this) + _union_parts(node.expression)
+    return [node]
+
+
+def _names_itself(node: exp.Expression, name: str) -> bool:
+    return any(
+        not table.args.get("db") and table.name.lower() == name
+        for table in node.find_all(exp.Table)
+    )
+
+
+def _is_constant(node: exp.Expression) -> bool:
+    return node.find(exp.Column, exp.Query) is None
+
+
+def _depth_condition(member: exp.Expression, name: str) -> bool:
+    """True when *member*, a recursive part of CTE *name*, compares a column it
+    reads from the CTE with a constant, in its WHERE or a join's ON."""
+    refs = {name} | {
+        table.alias.lower()
+        for table in member.find_all(exp.Table)
+        if table.name.lower() == name and table.alias
+    }
+    sources = list(member.find_all(exp.Table))
+
+    def _from_cte(side: exp.Expression) -> bool:
+        for column in side.find_all(exp.Column):
+            qualifier = column.table.lower()
+            if qualifier in refs or (not qualifier and len(sources) == 1):
+                return True
+        return False
+
+    conditions = [member.args.get("where")] + [
+        join.args.get("on") for join in member.args.get("joins") or []
+    ]
+    for condition in filter(None, conditions):
+        for comparison in condition.find_all(*_COMPARISONS):
+            left, right = comparison.this, comparison.expression
+            if (_from_cte(left) and _is_constant(right)) or (
+                _from_cte(right) and _is_constant(left)
+            ):
+                return True
+        for between in condition.find_all(exp.Between):
+            if (
+                _from_cte(between.this)
+                and _is_constant(between.args["low"])
+                and _is_constant(between.args["high"])
+            ):
+                return True
+    return False
+
+
+#: Engines measured to stop evaluating a recursive CTE once a LIMIT on a query
+#: reading it directly has its rows: PostgreSQL 16, SQLite 3.45 and DuckDB 2.0
+#: each returned ten rows of an unbounded counter at once. Elsewhere this has
+#: not been measured, so an outer LIMIT is not counted as a bound there.
+_LIMIT_STOPS_RECURSION = frozenset({"postgres", "sqlite", "duckdb"})
+
+
+def _outer_limit(with_: exp.With, name: str, dialect: str) -> bool:
+    """True when the query that owns *with_* reads CTE *name* directly under a
+    LIMIT, and nothing in it needs every row first or can reject rows. The
+    engine then evaluates only as many of the CTE's rows as the LIMIT fetches.
+
+    A WHERE disqualifies it: the engine keeps evaluating until LIMIT rows pass
+    the filter, which on cyclic data may be never. Measured on PostgreSQL 16
+    and SQLite 3.45, ``... SELECT n FROM t WHERE n = 0 LIMIT 1`` ran until the
+    timeout."""
+    if dialect not in _LIMIT_STOPS_RECURSION:
+        return False
+    query = with_.parent
+    if not isinstance(query, exp.Select):
+        return False
+    if query.args.get("limit") is None and query.args.get("fetch") is None:
+        return False
+    if any(
+        query.args.get(key) for key in ("where", "order", "group", "distinct", "joins", "having")
+    ):
+        return False
+    if any(e.find(*_READS_EVERY_ROW) for e in query.expressions):
+        return False
+    # sqlglot 30 keys the clause "from_"; releases the floor allows key it "from".
+    source = query.args.get("from_") or query.args.get("from")
+    table = source.this if source is not None else None
+    return isinstance(table, exp.Table) and table.name.lower() == name and not table.args.get("db")
+
+
+def _unbounded_recursive_ctes(tree: exp.Expression, dialect: str) -> list[str]:
+    """Names of the recursive CTEs in *tree* with nothing to stop them."""
+    unbounded: list[str] = []
+    for with_ in tree.find_all(exp.With):
+        if not with_.args.get("recursive") and dialect not in _IMPLICIT_RECURSION:
+            continue
+        recursive = [
+            (cte, name)
+            for cte in with_.expressions
+            if (name := cte.alias.lower()) and _names_itself(cte.this, name)
+        ]
+        search = with_.args.get("search")
+        # sqlglot keeps one CYCLE clause on the WITH, not on the CTE it was
+        # written after, so it is trusted only when there is one CTE it can
+        # belong to. The class is looked up by name: sqlglot 23.0, the floor
+        # pyproject allows, has none, and a direct reference would raise for
+        # every recursive CTE.
+        search_class = getattr(exp, "RecursiveWithSearch", None)
+        cycle = (
+            search_class is not None
+            and isinstance(search, search_class)
+            and str(search.args.get("kind") or "").upper() == "CYCLE"
+            and len(recursive) == 1
+        )
+        for cte, name in recursive:
+            if cycle or _outer_limit(with_, name, dialect):
+                continue
+            members = [part for part in _union_parts(cte.this) if _names_itself(part, name)]
+            if members and all(_depth_condition(member, name) for member in members):
+                continue
+            unbounded.append(cte.alias)
+    return unbounded
+
+
+_SECONDS_PER = {
+    "second": 1,
+    "minute": 60,
+    "hour": 3_600,
+    "day": 86_400,
+    "week": 604_800,
+    # Shortest month and year: a smaller step can only make the count larger,
+    # so the cap is never passed by a count that understates.
+    "month": 28 * 86_400,
+    "year": 365 * 86_400,
+}
+
+_INTERVAL_TEXT = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([a-z]+?)s?\s*$", re.IGNORECASE)
+
+
+def _number(node: exp.Expression | None) -> float | None:
+    if isinstance(node, exp.Neg):
+        inner = _number(node.this)
+        return None if inner is None else -inner
+    if isinstance(node, exp.Literal) and not node.is_string:
+        try:
+            return float(node.this)
+        except ValueError:
+            return None
+    return None
+
+
+def _instant(node: exp.Expression | None) -> datetime | None:
+    if isinstance(node, exp.Cast):
+        node = node.this
+    if isinstance(node, exp.Literal) and node.is_string:
+        try:
+            return datetime.fromisoformat(node.this)
+        except ValueError:
+            return None
+    return None
+
+
+def _step_seconds(node: exp.Expression | None) -> float | None:
+    if isinstance(node, exp.Cast):
+        node = node.this
+    text: str | None = None
+    if isinstance(node, exp.Interval):
+        amount, unit = node.this, node.args.get("unit")
+        if unit is not None and isinstance(amount, exp.Literal):
+            text = f"{amount.this} {unit.name}"
+        elif isinstance(amount, exp.Literal):
+            text = str(amount.this)
+    elif isinstance(node, exp.Literal) and node.is_string:
+        text = node.this
+    match = _INTERVAL_TEXT.match(text or "")
+    if match is None or match.group(2).lower() not in _SECONDS_PER:
+        return None
+    return float(match.group(1)) * _SECONDS_PER[match.group(2).lower()]
+
+
+def _series_rows(node: exp.Expression) -> int | None:
+    """How many rows *node* produces, when its bounds are written as literals."""
+    start, end, step = (node.args.get(key) for key in ("start", "end", "step"))
+    low, high = _number(start), _number(end)
+    if low is not None and high is not None:
+        stride = 1.0 if step is None else _number(step)
+    else:
+        first, last = _instant(start), _instant(end)
+        if first is None or last is None:
+            return None
+        # Raises TypeError for one bound with a time zone and one without;
+        # `_oversized_series` reads that as a count it cannot make.
+        low, high = 0.0, (last - first).total_seconds()
+        # BigQuery's GENERATE_DATE_ARRAY steps a day by default.
+        stride = _step_seconds(step) if step is not None else 86_400.0
+    if not stride:
+        return None
+    span = (high - low) / stride
+    if math.isnan(span):
+        return None
+    # A bound like 1e400 reads as infinity, and a step like 1e-320 divides to
+    # it: a series with no end, which is over any cap.
+    if math.isinf(span):
+        return MAX_SERIES_ROWS + 1 if span > 0 else 0
+    return max(math.floor(span) + 1, 0)
+
+
+def _oversized_series(tree: exp.Expression) -> list[str]:
+    # By name, as in sql_constructs: a release the floor allows may lack one.
+    classes: tuple[type[exp.Expression], ...] = tuple(
+        cls
+        for name in ("GenerateSeries", "ExplodingGenerateSeries", "GenerateDateArray")
+        if isinstance(cls := getattr(exp, name, None), type) and issubclass(cls, exp.Expression)
+    )
+    reasons: list[str] = []
+    for node in tree.find_all(*classes):
+        # `evaluate` never raises, and its callers rely on that: a count that
+        # cannot be made is no reason to refuse, nor to fail.
+        try:
+            rows = _series_rows(node)
+        except (ArithmeticError, TypeError, ValueError):
+            rows = None
+        if rows is not None and rows > MAX_SERIES_ROWS:
+            function = (
+                "GENERATE_DATE_ARRAY"
+                if type(node).__name__ == "GenerateDateArray"
+                else "generate_series"
+            )
+            reasons.append(
+                f"{function} produces {rows:,} rows, more than the {MAX_SERIES_ROWS:,} "
+                "allowed: use a larger step or narrower bounds"
+            )
+    return reasons
 
 
 def _rendered(tree: exp.Expression, dialect: str) -> str:

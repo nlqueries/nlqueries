@@ -502,3 +502,245 @@ class TestTsqlReservedWords:
     def test_other_dialects_are_not_affected(self) -> None:
         """`key` is an ordinary name in PostgreSQL."""
         assert evaluate("SELECT key FROM t", "postgres").allowed
+
+
+class TestCostBounds:
+    """Version 8: a query that cannot stop on its own is refused.
+
+    Measured on PostgreSQL 16: a `UNION ALL` recursive CTE over cyclic data runs
+    until the statement timeout, and so does `generate_series(1, 2e9)`. The
+    timeout still stands behind both; these refuse what can be seen from the
+    text to have no end, so the model is asked for one with a bound instead.
+    """
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # Counts forever: nothing stops n.
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) SELECT n FROM t",
+            # A hierarchy walk, which loops forever as soon as the data has a cycle.
+            "WITH RECURSIVE g(id, parent) AS ("
+            "SELECT id, parent FROM employees WHERE parent IS NULL "
+            "UNION ALL SELECT e.id, e.parent FROM employees e JOIN g ON e.parent = g.id"
+            ") SELECT * FROM g",
+            # A LIMIT the outer query cannot stop early for: the ORDER BY reads it all.
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SELECT n FROM t ORDER BY n LIMIT 10",
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SELECT count(*) FROM (SELECT n FROM t LIMIT 10) AS s, t",
+            # SEARCH orders the rows; it does not stop them.
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SEARCH DEPTH FIRST BY n SET ord SELECT n FROM t",
+            # A comparison that does not read the recursive CTE bounds nothing.
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT t.n + 1 FROM t, employees e "
+            "WHERE e.id < 10) SELECT n FROM t",
+            # The count reads every row before the LIMIT applies.
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SELECT count(*) FROM t LIMIT 1",
+        ],
+        ids=[
+            "counter",
+            "hierarchy",
+            "ordered-limit",
+            "limit-in-subquery",
+            "search",
+            "other-col",
+            "aggregate-limit",
+        ],
+    )
+    def test_a_recursive_cte_with_no_bound_is_refused(self, sql: str) -> None:
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.allowed
+        assert "no bound" in decision.summary()
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 10) "
+            "SELECT n FROM t",
+            "WITH RECURSIVE g(id, parent, depth) AS ("
+            "SELECT id, parent, 1 FROM employees WHERE parent IS NULL "
+            "UNION ALL SELECT e.id, e.parent, g.depth + 1 FROM employees e "
+            "JOIN g ON e.parent = g.id WHERE g.depth < 20) SELECT * FROM g",
+            "WITH RECURSIVE g(id, parent, depth) AS ("
+            "SELECT id, parent, 1 FROM employees WHERE parent IS NULL "
+            "UNION ALL SELECT e.id, e.parent, g.depth + 1 FROM employees e "
+            "JOIN g ON e.parent = g.id AND g.depth <= 20) SELECT * FROM g",
+            # PostgreSQL 14's CYCLE clause stops at a row already on the path.
+            "WITH RECURSIVE g(id, parent) AS ("
+            "SELECT id, parent FROM employees WHERE parent IS NULL "
+            "UNION ALL SELECT e.id, e.parent FROM employees e JOIN g ON e.parent = g.id"
+            ") CYCLE id SET is_cycle USING path SELECT * FROM g",
+            # A LIMIT on a query that reads the CTE directly: the server stops
+            # evaluating it once enough rows have been fetched.
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SELECT n FROM t LIMIT 10",
+            # RECURSIVE written, nothing recursive in it.
+            "WITH RECURSIVE r AS (SELECT 1 AS n) SELECT * FROM r",
+            "WITH t AS (SELECT id FROM employees) SELECT * FROM t",
+            # Without RECURSIVE, PostgreSQL reads the table of that name.
+            "WITH employees AS (SELECT id FROM employees) SELECT * FROM employees",
+        ],
+        ids=[
+            "depth-where",
+            "depth-join",
+            "depth-on",
+            "cycle",
+            "outer-limit",
+            "not-recursive",
+            "plain",
+            "same-name-table",
+        ],
+    )
+    def test_a_bounded_recursive_cte_is_allowed(self, sql: str) -> None:
+        decision = evaluate(sql, "postgres")
+
+        assert decision.allowed, decision.summary()
+
+    def test_a_filtered_outer_limit_is_no_bound(self) -> None:
+        """The engine evaluates until LIMIT rows pass the filter, which on
+        cyclic data may be never: measured on PostgreSQL 16 and SQLite 3.45,
+        this ran until the timeout."""
+        sql = (
+            "WITH RECURSIVE g(id, parent) AS ("
+            "SELECT id, parent FROM employees WHERE parent IS NULL "
+            "UNION ALL SELECT e.id, e.parent FROM employees e JOIN g ON e.parent = g.id"
+            ") SELECT * FROM g WHERE id = 42 LIMIT 1"
+        )
+
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.allowed
+        assert "no bound" in decision.summary()
+
+    @pytest.mark.parametrize(
+        ("dialect", "bounded"),
+        [
+            ("postgres", True),
+            ("sqlite", True),
+            ("duckdb", True),
+            # Not measured: the LIMIT is not counted, so the CTE needs another bound.
+            ("mysql", False),
+            ("snowflake", False),
+        ],
+    )
+    def test_an_outer_limit_counts_only_where_it_was_measured(
+        self, dialect: str, bounded: bool
+    ) -> None:
+        sql = (
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) "
+            "SELECT n FROM t LIMIT 10"
+        )
+
+        assert evaluate(sql, dialect).allowed is bounded, evaluate(sql, dialect).summary()
+
+    def test_the_refusal_says_how_to_bound_it(self) -> None:
+        """The reason reaches the model's correction prompt, so it names the fix."""
+        decision = evaluate(
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) SELECT n FROM t",
+            "postgres",
+        )
+
+        summary = decision.summary()
+        assert "t" in summary
+        assert "CYCLE" in summary
+        assert "LIMIT" in summary
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "duckdb", "mysql", "tsql", "snowflake"])
+    def test_the_rule_holds_in_every_dialect(self, dialect: str) -> None:
+        unbounded = (
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) SELECT n FROM t"
+        )
+        bounded = (
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 10) "
+            "SELECT n FROM t"
+        )
+        if dialect == "tsql":
+            unbounded = unbounded.replace("RECURSIVE ", "")
+            bounded = bounded.replace("RECURSIVE ", "")
+
+        assert not evaluate(unbounded, dialect).allowed, dialect
+        assert evaluate(bounded, dialect).allowed, (dialect, evaluate(bounded, dialect).summary())
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM generate_series(1, 2000000000) AS s(i)",
+            "SELECT generate_series(1, 2000000000)",
+            "SELECT * FROM generate_series(-1000000, 1000000) AS s(i)",
+            "SELECT * FROM generate_series(TIMESTAMP '2000-01-01', TIMESTAMP '2030-01-01', "
+            "INTERVAL '1 second') AS s(t)",
+        ],
+        ids=["two-billion", "in-select", "signed", "seconds"],
+    )
+    def test_a_series_over_the_cap_is_refused(self, sql: str) -> None:
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.allowed
+        assert "generate_series" in decision.summary()
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM generate_series(1, 1000) AS s(i)",
+            "SELECT * FROM generate_series(1, 2000000000, 10000) AS s(i)",
+            "SELECT * FROM generate_series(DATE '2020-01-01', DATE '2029-12-31', "
+            "INTERVAL '1 day') AS s(d)",
+            "SELECT * FROM generate_series('2020-01-01'::timestamp, '2021-01-01', "
+            "'1 hour'::interval) AS s(t)",
+            # Bounds read from data cannot be judged from the text; the
+            # statement timeout is what bounds these.
+            "SELECT * FROM employees e, LATERAL generate_series(1, e.id) AS g",
+        ],
+        ids=["thousand", "stepped", "ten-years-of-days", "a-year-of-hours", "from-data"],
+    )
+    def test_a_series_within_the_cap_is_allowed(self, sql: str) -> None:
+        decision = evaluate(sql, "postgres")
+
+        assert decision.allowed, decision.summary()
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # 1e400 reads as infinity, and a step like 1e-320 divides to it.
+            "SELECT * FROM generate_series(1, 1e400) AS s(i)",
+            "SELECT * FROM generate_series(1, 10, 1e-320) AS s(i)",
+        ],
+        ids=["infinite-bound", "denormal-step"],
+    )
+    def test_a_series_with_no_end_is_refused_rather_than_raising(self, sql: str) -> None:
+        """`evaluate` never raises; `math.floor` of infinity does."""
+        decision = evaluate(sql, "postgres")
+
+        assert not decision.allowed
+        assert "generate_series" in decision.summary()
+
+    def test_bounds_that_cannot_be_subtracted_are_left_to_the_server(self) -> None:
+        """One bound with a time zone and one without: Python cannot subtract
+        them, so the count is unknown, and an unknown count is not refused."""
+        sql = (
+            "SELECT * FROM generate_series('2024-01-01T00:00:00+00:00'::timestamptz, "
+            "'2024-12-31', '1 day'::interval) AS s(d)"
+        )
+
+        decision = evaluate(sql, "postgres")
+
+        assert decision.allowed, decision.summary()
+
+    def test_a_sqlglot_without_the_cycle_class_still_judges_recursion(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sqlglot 23.0, the floor pyproject allows, has no RecursiveWithSearch.
+        A direct reference raised AttributeError for every recursive CTE."""
+        from sqlglot import exp
+
+        monkeypatch.delattr(exp, "RecursiveWithSearch")
+
+        decision = evaluate(
+            "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t) SELECT n FROM t",
+            "postgres",
+        )
+
+        assert not decision.allowed
+        assert "no bound" in decision.summary()

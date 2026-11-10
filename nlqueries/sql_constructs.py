@@ -32,7 +32,9 @@ from sqlglot import exp
 READ_STRUCTURE: frozenset[str] = frozenset(
     {
         # statements and clauses
-        "Select", "Union", "Except", "Intersect", "Subquery", "With", "CTE", "From",
+        "Select", "Union", "Except", "Intersect", "Subquery", "With", "CTE",
+        # PostgreSQL's SEARCH and CYCLE clauses on a recursive CTE.
+        "RecursiveWithSearch", "From",
         "Join", "Where",
         "Group", "Having", "Order", "Ordered", "Limit", "Offset", "Fetch",
         "LimitOptions", "Distinct", "Window", "WindowSpec", "Filter",
