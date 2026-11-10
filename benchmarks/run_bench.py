@@ -125,7 +125,9 @@ def _check_tables(sql: str | None, expect_tables: list[str]) -> bool:
     return all(t.lower() in sql_lower for t in expect_tables)
 
 
-_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+#: A number, with a minus only where it starts one: after a word or a digit a
+#: hyphen joins (`104-105`, `ORD-105`, `2025-10-04`), as in the cache's guard.
+_NUMBER = re.compile(r"(?:(?<![\w.])-)?\d+(?:\.\d+)?")
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 
 

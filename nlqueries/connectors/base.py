@@ -8,8 +8,8 @@ Every database integration (Postgres, Snowflake, BigQuery, ...) implements
 MCP server, knowledge base) is written against, so it can work with any
 database without knowing the underlying driver.
 
-This module is part of the public OSS API: it ships in the open-source
-``nlqueries-core`` package and has no dependency on the enterprise layer.
+This module is part of Core's public API: it ships in the ``nlqueries-core``
+package and has no dependency on the enterprise layer.
 """
 
 from __future__ import annotations

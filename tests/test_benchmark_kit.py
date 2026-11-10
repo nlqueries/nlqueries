@@ -135,6 +135,12 @@ def test_the_kit_s_golden_set_asks_only_about_tables_the_seed_creates() -> None:
         ("East 174.25, West 418.50", ["174.25", "418.5"], True),
         ("Revenue was 1,250 in total.", ["1250"], True),
         ("Orders 1,2 and 3", ["12"], False),
+        # A hyphen after a word or a digit joins; it is not a minus (from #402's review).
+        ("Orders 104-105 are pending.", ["105"], True),
+        ("Order ORD-105 is pending.", ["105"], True),
+        ("Shipped on 2025-10-04.", ["4"], True),
+        ("A balance of -50 remains.", ["-50"], True),
+        ("A balance of -50 remains.", ["50"], False),
         # Text keeps the case-insensitive substring check.
         ("The customer is ELM STREET GOODS.", ["Elm Street Goods"], True),
     ],
