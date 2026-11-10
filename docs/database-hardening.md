@@ -228,11 +228,16 @@ CREATE TABLE should_fail (x int);                                -- expect: erro
 If the third line succeeds, nothing above is in effect.
 
 **NLQueries also checks this for you.** Each time the pool opens a connection,
-the connector reads the login's privileges and records what it finds. The result
-appears in `nlqueries health`:
+the connector reads the login's privileges and records what it finds: its role
+attributes and predefined roles, any table it may `INSERT`, `UPDATE`, `DELETE`
+or `TRUNCATE` (each a concern), and how many tables it may read and in which
+schemas. The read count is reported rather than judged, because no grant says
+whether a table, a salary table for one, should be readable; check it against
+what the agent needs. The result appears in `nlqueries health`:
 
 ```
-[OK]   Database (shop) identity: nlqueries@shop: least privilege
+[OK]   Database (shop) identity: nlqueries@shop: no administrative or write
+       privileges; reads 14 tables in schema analytics
 [WARN] Database (shop) identity: postgres@shop: connects as a superuser, which
        bypasses every privilege check — see docs/database-hardening.md
 [FAIL] Database (shop) identity: identity could not be determined: <reason>
@@ -718,8 +723,10 @@ The same shape, in each vendor's vocabulary:
 The identity line described for PostgreSQL in step 6 is also printed for MySQL
 and MariaDB (through the `sqlalchemy` connector), SQL Server and Snowflake. In
 each case it names the login and anything it holds beyond reading; a login that
-holds nothing more is `least privilege`, and a check that could not read the
-grants is a failure, not a pass.
+holds nothing more is `no write or administrative rights`, and a check that could
+not read the grants is a failure, not a pass. The line never says "least
+privilege": grants can show what a login may do, not whether everything it may
+read should be readable.
 
 | Engine | Read from | Reported |
 |---|---|---|
@@ -741,7 +748,8 @@ database's effective permissions; other server roles show only when the server
 scope can be read. Grants on a schema or an object (`GRANT INSERT ON SCHEMA::dbo
 TO app`) are not seen: `fn_my_permissions` is read for the database and the
 server, and those grants are held on the schema or the object. So on SQL Server
-a clean result reads `least privilege at database and server scope`; check
+a clean result reads `no write or administrative rights at database and server
+scope`; check
 schema and object grants in `sys.database_permissions`.
 
 On Snowflake the check waits up to 30 seconds for a running query to release the

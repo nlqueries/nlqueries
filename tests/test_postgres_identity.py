@@ -121,3 +121,57 @@ class TestConcerns:
     def test_concerns_are_ordered_with_superuser_first(self) -> None:
         found = _identity(is_superuser=True, may_create_role=True).concerns
         assert "superuser" in found[0]
+
+
+# ---------------------------------------------------------------------------
+# What a clean result may claim (CI-8)
+# ---------------------------------------------------------------------------
+
+
+def test_a_clean_result_never_claims_least_privilege() -> None:
+    """Grants cannot say whether a salary table should be readable, so the
+    line says what the login holds rather than that it is the least it needs."""
+    summary = _identity(readable_tables=12, readable_schemas=("hr", "sales")).summary()
+
+    assert "least privilege" not in summary
+    assert summary == (
+        "sec_reader@shop: no administrative or write privileges; "
+        "reads 12 tables in schemas hr, sales"
+    )
+
+
+def test_one_table_in_one_schema_is_said_in_the_singular() -> None:
+    summary = _identity(readable_tables=1, readable_schemas=("app",)).summary()
+    assert summary.endswith("reads 1 table in schema app")
+
+
+def test_a_login_that_reads_nothing_says_so() -> None:
+    summary = _identity(readable_tables=0, readable_schemas=()).summary()
+    assert summary.endswith("reads no tables")
+
+
+def test_a_table_the_login_can_write_is_a_concern() -> None:
+    identity = _identity(writable_tables=("app.orders",), readable_tables=1)
+
+    assert not identity.is_least_privilege
+    assert "may write to 1 table: app.orders" in identity.concerns
+
+
+def test_many_writable_tables_are_counted_and_the_first_named() -> None:
+    tables = tuple(f"app.t{i}" for i in range(8))
+    concern = _identity(writable_tables=tables).concerns[0]
+
+    assert concern.startswith("may write to 8 tables: app.t0, app.t1, app.t2, app.t3, app.t4")
+    assert concern.endswith("and 3 more")
+
+
+def test_many_schemas_are_counted_and_the_first_named() -> None:
+    """The line is logged for every new pool connection: a schema per tenant
+    must not put hundreds of names in it (from #399's review)."""
+    schemas = tuple(f"tenant_{i:03d}" for i in range(40))
+    summary = _identity(readable_tables=400, readable_schemas=schemas).summary()
+
+    assert summary.endswith(
+        "reads 400 tables in schemas tenant_000, tenant_001, tenant_002, tenant_003, "
+        "tenant_004, and 35 more"
+    )

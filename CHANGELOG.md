@@ -165,6 +165,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   compact schema (`_MAX_COLUMN_DESCRIPTION_CHARS`), and at 300 only with
   `NLQ_SCHEMA_FORMAT=verbose`. Only the documentation changes.
 
+- **`nlqueries health` reads table grants, and no longer says "least
+  privilege".** The PostgreSQL identity check read only role attributes and
+  predefined roles, so a login with `SELECT` on a whole `hr` schema, every
+  salary row included, or with `INSERT` on a table, was reported as "least
+  privilege". It now reports each table the login may `INSERT`, `UPDATE`,
+  `DELETE` or `TRUNCATE` as a concern, and says how many tables it reads and in
+  which schemas: `no administrative or write privileges; reads 14 tables in
+  schema analytics`. On MySQL, MariaDB, SQL Server and Snowflake a clean
+  result now reads `no write or administrative rights`. No check claims "least
+  privilege" any more, since grants cannot say whether what a login reads
+  should be readable.
+
 - **`nlqueries eval` runs every golden case, and fails when it ran nothing.**
   `--max-cases` cut the combined list with the mined capsules first, so with
   50 capsules every golden case was dropped. It now caps capsules only, and

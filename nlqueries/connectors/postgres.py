@@ -308,8 +308,11 @@ class PostgresConnector(DatabaseConnector):
 
         Attached to the pool's ``connect`` event rather than executed per query.
         The event fires when a backend connection is opened, which is when the
-        result can change. Cost measured against PostgreSQL 16: 2 ms on a cold
-        connection, 0.3 ms warm.
+        result can change. The query reads every table's grants as well as the
+        role's attributes, so it grows with the catalogue. Measured against
+        PostgreSQL 16 in a local container, round trip included: 6 ms on a cold
+        connection and 1.3 ms warm with an empty catalogue, and 66 ms cold and
+        10.5 ms warm with 2,000 tables and a table of 1,000 partitions.
 
         The result is recorded and reported. It is not enforced here: a
         read-only transaction restricts the operations a statement performs but
