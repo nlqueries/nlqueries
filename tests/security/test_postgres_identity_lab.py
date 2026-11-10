@@ -118,3 +118,113 @@ def test_a_privileged_connector_reports_its_concerns(
         assert not connector.identity.is_least_privilege
     finally:
         connector.close()
+
+
+# ---------------------------------------------------------------------------
+# Table grants (CI-8): what health may say about what a login reads and writes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def login_with(privileged_credentials: dict[str, Any]) -> Any:
+    """A throwaway login with the grants a test names, dropped afterwards."""
+    engine = sa.create_engine(
+        sa.URL.create(
+            "postgresql+psycopg2",
+            username=privileged_credentials["user"],
+            password=privileged_credentials["password"],
+            host=privileged_credentials["host"],
+            port=privileged_credentials["port"],
+            database=privileged_credentials["database"],
+        )
+    )
+    made: list[str] = []
+
+    def _make(name: str, *grants: str) -> dict[str, Any]:
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"CREATE ROLE {name} LOGIN PASSWORD 'lab-only'"))
+            for grant in grants:
+                conn.execute(sa.text(grant.format(role=name)))
+        made.append(name)
+        return {**privileged_credentials, "user": name, "password": "lab-only"}
+
+    yield _make
+    with engine.begin() as conn:
+        for name in made:
+            conn.execute(sa.text(f"DROP OWNED BY {name}"))
+            conn.execute(sa.text(f"DROP ROLE {name}"))
+    engine.dispose()
+
+
+def _identity_of(credentials: dict[str, Any]) -> Any:
+    connection = _raw_connection(credentials)
+    try:
+        return inspect_identity(connection)
+    finally:
+        connection.close()
+
+
+def test_the_guide_s_login_reports_what_it_reads(
+    least_privilege_credentials: dict[str, Any],
+) -> None:
+    identity = _identity_of(least_privilege_credentials)
+
+    assert identity.concerns == ()
+    assert identity.summary().endswith(
+        "no administrative or write privileges; reads 1 table in schema lab"
+    )
+
+
+def test_schema_wide_select_is_counted_not_called_least_privilege(login_with: Any) -> None:
+    """The report that started this: a login with SELECT on a whole schema,
+    every salary row included, was printed as "least privilege"."""
+    credentials = login_with(
+        "ci8_wide",
+        "GRANT USAGE ON SCHEMA lab TO {role}",
+        "GRANT SELECT ON ALL TABLES IN SCHEMA lab TO {role}",
+    )
+
+    identity = _identity_of(credentials)
+
+    assert identity.concerns == ()
+    assert "least privilege" not in identity.summary()
+    assert identity.readable_tables == 2
+    assert identity.readable_schemas == ("lab",)
+
+
+def test_a_write_grant_is_a_concern(login_with: Any) -> None:
+    credentials = login_with(
+        "ci8_writer",
+        "GRANT USAGE ON SCHEMA lab TO {role}",
+        "GRANT SELECT ON lab.orders TO {role}",
+        "GRANT INSERT ON lab.marker TO {role}",
+    )
+
+    identity = _identity_of(credentials)
+
+    assert identity.writable_tables == ("lab.marker",)
+    assert "may write to 1 table: lab.marker" in identity.concerns
+
+
+def test_a_grant_in_a_schema_the_login_cannot_use_is_not_counted(login_with: Any) -> None:
+    """Without USAGE on the schema the table cannot be reached at all."""
+    credentials = login_with("ci8_nousage", "GRANT SELECT, INSERT ON lab.marker TO {role}")
+
+    identity = _identity_of(credentials)
+
+    assert identity.writable_tables == ()
+    assert identity.readable_tables == 0
+
+
+def test_a_column_grant_counts_as_reading_the_table(login_with: Any) -> None:
+    """`GRANT SELECT (id)` reads part of a table, which is still a read."""
+    credentials = login_with(
+        "ci8_columns",
+        "GRANT USAGE ON SCHEMA lab TO {role}",
+        "GRANT SELECT (id) ON lab.orders TO {role}",
+    )
+
+    identity = _identity_of(credentials)
+
+    assert identity.readable_tables == 1
+    assert identity.readable_schemas == ("lab",)

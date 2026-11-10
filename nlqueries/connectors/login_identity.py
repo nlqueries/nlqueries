@@ -56,6 +56,10 @@ class LoginIdentity:
     def is_least_privilege(self) -> bool:
         """True when all the grants were read and nothing beyond reading was found.
 
+        The name is kept for callers. It does not mean the login reads only
+        what it should, which grants cannot say, and :meth:`summary` does not
+        claim that either.
+
         Not when part of them went unread: a check that did not look at the
         server scope cannot say the login holds nothing there.
         """
@@ -71,7 +75,12 @@ class LoginIdentity:
         elif self.unread:
             found = "nothing beyond reading in what was read"
         else:
-            found = f"least privilege at {self.scope}" if self.scope else "least privilege"
+            # What was found, not a verdict: grants say nothing about whether
+            # what the login reads should be readable, so "least privilege"
+            # claimed more than any of these checks can know.
+            found = "no write or administrative rights"
+            if self.scope:
+                found += f" at {self.scope}"
         if self.unread:
             found += f" (not read: {'; '.join(self.unread)})"
         return f"{who}: {found}"
