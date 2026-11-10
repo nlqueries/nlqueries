@@ -729,10 +729,12 @@ class PostgresConnector(DatabaseConnector):
         ``QueryResult.error`` rather than propagating, so callers can treat
         query execution as always returning a result object.
 
-        ``SET LOCAL statement_timeout`` is applied inside the same transaction so
-        the server itself aborts the query once it's been running that long, rather
-        than the query continuing to hold locks/connections after the caller (e.g.
-        an API request that already returned 504) has given up waiting on it.
+        A statement timeout is set for the same transaction, so the server itself
+        aborts the query once it's been running that long, rather than the query
+        continuing to hold locks/connections after the caller (e.g. an API request
+        that already returned 504) has given up waiting on it. It is the lower of
+        the budget below and the login role's own ``statement_timeout``: a stricter
+        limit the role already has is kept (see :data:`_LOWER_STATEMENT_TIMEOUT`).
 
         The budget is *timeout_seconds* when given (Task 26.5 — Sprint 26),
         otherwise the ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — so a query
