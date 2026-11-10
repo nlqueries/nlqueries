@@ -18,6 +18,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from nlqueries.connectors.base import QueryResult
 from nlqueries.orchestrator.intent_classifier import (
     IntentClassificationResult,
@@ -362,3 +363,21 @@ def test_a_hybrid_frame_with_no_statement_says_so_rather_than_omitting_the_key()
     chunk = _hybrid_chunk(emitted)
     assert "sql" in chunk
     assert chunk["sql"] is None
+
+
+@pytest.mark.parametrize("is_valid", [True, False])
+def test_the_hybrid_frame_carries_whether_its_statement_was_valid(is_valid: bool) -> None:
+    """The runner read `is_valid` from the frame and defaulted it to True, and
+    the hybrid frame never sent one: a hybrid answer built on SQL that failed
+    validation reported `sql_is_valid=True`."""
+    _, emitted = _drive_hybrid(
+        ["Answering.", json.dumps(_payload(sql_table=None, is_valid=is_valid))]
+    )
+    assert _hybrid_chunk(emitted)["is_valid"] is is_valid
+
+
+def test_a_hybrid_frame_with_no_statement_has_no_validity_either() -> None:
+    _, emitted = _drive_hybrid(["Answering.", json.dumps({"type": "citations", "citations": []})])
+    chunk = _hybrid_chunk(emitted)
+    assert "is_valid" in chunk
+    assert chunk["is_valid"] is None

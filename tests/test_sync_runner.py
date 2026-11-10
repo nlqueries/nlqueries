@@ -431,3 +431,53 @@ class TestFollowupCacheKey:
         assert cache.get.call_args.args[0] == meant
         cache.put.assert_called_once()
         assert cache.put.call_args.args[0] == meant
+
+
+class TestHybridResultsCarryTheirSql:
+    """`AgentQueryResult.sql` is documented as set for "sql" or "hybrid", and
+    was read only on the sql route; `sql_is_valid` defaulted to True whatever
+    the frame said, and a hybrid frame said nothing."""
+
+    @staticmethod
+    def _run(final: dict[str, object]) -> AgentQueryResult:
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory(["Reasoning. ", json.dumps(final)])
+        resolved = ResolvedQuestion(original="q", resolved="q", is_followup=False, reasoning="")
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch("nlqueries.orchestrator.sync_runner.resolve_followup", return_value=resolved),
+        ):
+            return asyncio.run(run_query("q", "agent1"))
+
+    _HYBRID: dict[str, object] = {
+        "type": "hybrid",
+        "agent_type": "hybrid",
+        "merged_answer": "Merged.",
+        "sql": "SELECT region FROM sales",
+        "sql_table": None,
+        "citations": [],
+    }
+
+    def test_a_hybrid_answer_carries_its_statement(self) -> None:
+        result = self._run({**self._HYBRID, "is_valid": True})
+        assert result.sql == "SELECT region FROM sales"
+        assert result.sql_is_valid is True
+
+    def test_a_hybrid_answer_on_invalid_sql_says_so(self) -> None:
+        result = self._run({**self._HYBRID, "is_valid": False})
+        assert result.sql_is_valid is False
+
+    def test_a_statement_without_a_verdict_is_not_called_valid(self) -> None:
+        """An older frame, or any frame that forgets the flag: SQL nothing
+        vouched for is not reported as having passed validation."""
+        result = self._run(dict(self._HYBRID))
+        assert result.sql == "SELECT region FROM sales"
+        assert result.sql_is_valid is False
+
+    def test_an_answer_with_no_statement_is_unchanged(self) -> None:
+        result = self._run({"type": "citations", "agent_type": "document", "citations": []})
+        assert result.sql is None
+        assert result.sql_is_valid is True

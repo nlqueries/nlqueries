@@ -263,6 +263,7 @@ def test_the_hybrid_route_gives_the_choice_back_and_merges_nothing() -> None:
         "type": "sql",
         "agent_type": "sql",
         "sql": _ASKED_SQL,
+        "is_valid": True,
         "sql_table": None,
         "choices": [_CHOICE.as_dict()],
     }
@@ -294,6 +295,8 @@ def test_the_hybrid_route_gives_the_choice_back_and_merges_nothing() -> None:
     assert final["type"] == "hybrid"
     assert final["choices"] == [_CHOICE.as_dict()]
     assert final["merged_answer"] is None and final["sql"] == _ASKED_SQL
+    # The statement's verdict travels with it, as on the frame with an answer.
+    assert final["is_valid"] is True
 
 
 # ---------------------------------------------------------------------------

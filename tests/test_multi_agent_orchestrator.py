@@ -8,6 +8,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.intent_classifier import IntentClassificationResult, IntentType
 from nlqueries.orchestrator.multi_agent_orchestrator import (
@@ -512,6 +513,89 @@ class TestMultiAgentOrchestratorNewPaths:
         final = json.loads(tokens[-1])
         assert final["from_cache"] is True
         assert final["agent_type"] == "sql"
+
+    @pytest.mark.parametrize(
+        ("sql", "valid"),
+        [("SELECT sum(revenue) FROM orders", True), ("DELETE FROM orders", False)],
+    )
+    def test_a_cache_hit_says_whether_its_statement_is_valid(self, sql: str, valid: bool) -> None:
+        """A frame with SQL and no `is_valid` is now read as not validated, so
+        the hit says, from the same check that decides whether it runs."""
+        from datetime import UTC, datetime
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+
+        cache_entry = CacheEntry(
+            question="Total revenue?",
+            resolved_question="Total revenue?",
+            agent_type="sql",
+            answer="Total revenue was $1.2M",
+            sql=sql,
+            created_at=datetime.now(UTC),
+            hit_count=1,
+        )
+
+        async def run() -> list[str]:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+            ):
+                MockCache.return_value.get.return_value = cache_entry
+                orch = MultiAgentOrchestrator()
+                return [token async for token in orch.handle_question("Total revenue?", "agent1")]
+
+        final = json.loads(asyncio.run(run())[-1])
+        assert final["is_valid"] is valid
+
+    @pytest.mark.parametrize(
+        ("execution", "logged"),
+        [(ExecutionPolicy.execute_read_only(), 1), (ExecutionPolicy.generate_only(), 0)],
+        ids=["executing", "generate-only"],
+    )
+    def test_a_refused_cache_hit_is_judged_once_and_logged_once(
+        self, execution: ExecutionPolicy, logged: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The frame's verdict and the check before execution are one decision.
+        Asked twice, a refused hit logged its ERROR twice, and once even when
+        nothing was going to run (from #396's review)."""
+        import logging
+        from datetime import UTC, datetime
+
+        from nlqueries.cache.semantic_cache import CacheEntry
+        from nlqueries.sql_policy import evaluate
+
+        cache_entry = CacheEntry(
+            question="q",
+            resolved_question="q",
+            agent_type="sql",
+            answer="a",
+            sql="DELETE FROM orders",
+            created_at=datetime.now(UTC),
+            hit_count=1,
+        )
+
+        async def run() -> None:
+            with (
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.SemanticCache") as MockCache,
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.Orchestrator"),
+                patch("nlqueries.orchestrator.multi_agent_orchestrator.DocumentOrchestrator"),
+                patch(
+                    "nlqueries.orchestrator.multi_agent_orchestrator.evaluate", wraps=evaluate
+                ) as judged,
+            ):
+                MockCache.return_value.get.return_value = cache_entry
+                async for _ in MultiAgentOrchestrator().handle_question(
+                    "q", "agent1", execution=execution
+                ):
+                    pass
+                assert judged.call_count == 1
+
+        with caplog.at_level(logging.ERROR):
+            asyncio.run(run())
+
+        refusals = [r for r in caplog.records if "Cached SQL was not executed" in r.getMessage()]
+        assert len(refusals) == logged
 
     def test_cache_hit_sql_reexecutes_and_attaches_fresh_result_table(self) -> None:
         """A sql cache hit re-runs the cached SQL and attaches a fresh sql_table
