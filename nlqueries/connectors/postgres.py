@@ -278,9 +278,9 @@ class PostgresConnector(DatabaseConnector):
         The event fires when a backend connection is opened, which is when the
         result can change. The query reads every table's grants as well as the
         role's attributes, so it grows with the catalogue. Measured against
-        PostgreSQL 16 in a local container, round trip included: 5.7 ms on a cold
-        connection and 1.2 ms warm with an empty catalogue, and 41 ms cold and
-        6.7 ms warm with 2,000 tables and a table of 1,000 partitions.
+        PostgreSQL 16 in a local container, round trip included: 6 ms on a cold
+        connection and 1.2 ms warm with an empty catalogue, and 59 ms cold and
+        8.6 ms warm with 2,000 tables and a table of 1,000 partitions.
 
         The result is recorded and reported. It is not enforced here: a
         read-only transaction restricts the operations a statement performs but

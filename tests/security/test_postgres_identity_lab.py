@@ -280,3 +280,62 @@ def test_partitions_are_counted_with_their_table(login_with: Any, privileged_cre
         with engine.begin() as conn:
             conn.execute(sa.text("DROP SCHEMA ci8_parts CASCADE"))
         engine.dispose()
+
+
+@pytest.fixture()
+def partitioned(privileged_credentials: dict[str, Any]) -> Any:
+    """ci8_parts.events with three partitions, dropped afterwards."""
+    engine = sa.create_engine(
+        sa.URL.create(
+            "postgresql+psycopg2",
+            username=privileged_credentials["user"],
+            password=privileged_credentials["password"],
+            host=privileged_credentials["host"],
+            port=privileged_credentials["port"],
+            database=privileged_credentials["database"],
+        )
+    )
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE SCHEMA ci8_parts2"))
+        conn.execute(sa.text("CREATE TABLE ci8_parts2.events (id int) PARTITION BY RANGE (id)"))
+        for i in range(3):
+            conn.execute(
+                sa.text(
+                    f"CREATE TABLE ci8_parts2.events_{i} PARTITION OF ci8_parts2.events "
+                    f"FOR VALUES FROM ({i * 10}) TO ({i * 10 + 10})"
+                )
+            )
+    yield
+    with engine.begin() as conn:
+        conn.execute(sa.text("DROP SCHEMA ci8_parts2 CASCADE"))
+    engine.dispose()
+
+
+def test_a_write_held_on_one_partition_alone_is_a_concern(
+    login_with: Any, partitioned: Any
+) -> None:
+    """Grants are not inherited, and a statement against a partition checks the
+    partition's own: INSERT on one partition is a write, though the parent
+    grants nothing (from #399's review)."""
+    credentials = login_with(
+        "ci8_partwriter",
+        "GRANT USAGE ON SCHEMA ci8_parts2 TO {role}",
+        "GRANT INSERT ON ci8_parts2.events_0 TO {role}",
+    )
+
+    identity = _identity_of(credentials)
+
+    assert identity.writable_tables == ("ci8_parts2.events_0",)
+
+
+def test_a_read_held_on_one_partition_alone_is_counted(login_with: Any, partitioned: Any) -> None:
+    credentials = login_with(
+        "ci8_partonly",
+        "GRANT USAGE ON SCHEMA ci8_parts2 TO {role}",
+        "GRANT SELECT ON ci8_parts2.events_1 TO {role}",
+    )
+
+    identity = _identity_of(credentials)
+
+    assert identity.readable_tables == 1
+    assert identity.readable_schemas == ("ci8_parts2",)

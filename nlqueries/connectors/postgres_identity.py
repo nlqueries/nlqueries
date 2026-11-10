@@ -49,9 +49,20 @@ DANGEROUS_PREDEFINED_ROLES = frozenset(
 #: privilege in a schema without USAGE cannot be exercised, so it is neither a
 #: read nor a write here. Column-level grants count on both sides: `UPDATE
 #: (salary)` writes as surely as `UPDATE` does, and `SELECT (id)` reads.
+#:
+#: A partition or inheritance child is counted through its parent when the
+#: login holds the same kind of privilege there, so a schema-wide grant does not
+#: count every partition, and on its own otherwise: grants are not inherited,
+#: and a statement against a partition checks only the partition's, so an
+#: INSERT held on one partition alone is a write.
 IDENTITY_SQL = r"""
 WITH reachable AS (
-    SELECT c.oid, n.nspname, c.relname
+    SELECT
+        c.oid,
+        n.nspname,
+        c.relname,
+        (SELECT i.inhparent FROM pg_inherits i
+         WHERE i.inhrelid = c.oid ORDER BY i.inhseqno LIMIT 1) AS parent
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
@@ -59,13 +70,21 @@ WITH reachable AS (
       AND n.nspname NOT LIKE 'pg\_toast%'
       AND n.nspname NOT LIKE 'pg\_temp\_%'
       AND has_schema_privilege(n.oid, 'USAGE')
-      -- A partition, or an inheritance child, is part of the table above it:
-      -- counted on its own it inflates both counts and fills the named list.
-      AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)
+),
+writable AS (
+    SELECT nspname, relname FROM reachable
+    WHERE (has_table_privilege(oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
+           OR has_any_column_privilege(oid, 'INSERT, UPDATE'))
+      AND NOT (parent IS NOT NULL
+               AND (has_table_privilege(parent, 'INSERT, UPDATE, DELETE, TRUNCATE')
+                    OR has_any_column_privilege(parent, 'INSERT, UPDATE')))
 ),
 readable AS (
     SELECT nspname FROM reachable
-    WHERE has_table_privilege(oid, 'SELECT') OR has_any_column_privilege(oid, 'SELECT')
+    WHERE (has_table_privilege(oid, 'SELECT') OR has_any_column_privilege(oid, 'SELECT'))
+      AND NOT (parent IS NOT NULL
+               AND (has_table_privilege(parent, 'SELECT')
+                    OR has_any_column_privilege(parent, 'SELECT')))
 )
 SELECT
     current_user                                          AS user_name,
@@ -84,9 +103,7 @@ SELECT
           AND pg_has_role(current_user, g.oid, 'USAGE')
     )                                                     AS predefined_roles,
     ARRAY(
-        SELECT quote_ident(nspname) || '.' || quote_ident(relname) FROM reachable
-        WHERE has_table_privilege(oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
-           OR has_any_column_privilege(oid, 'INSERT, UPDATE')
+        SELECT quote_ident(nspname) || '.' || quote_ident(relname) FROM writable
         ORDER BY 1
     )                                                     AS writable_tables,
     (SELECT count(*) FROM readable)                       AS readable_tables,
