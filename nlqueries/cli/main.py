@@ -272,6 +272,17 @@ def _resolve_alias(value: str) -> str:
     return value
 
 
+def _aliases_of(connector_id: str) -> set[str]:
+    """The ``alias`` the connectors file gives *connector_id*, if any.
+
+    Read the same way :func:`_resolve_alias` reads it, for the other direction:
+    a file written with the alias has to match a command that named the ID.
+    """
+    cfg = _load_connectors().get(connector_id)
+    alias = cfg.get("alias") if isinstance(cfg, dict) else None
+    return {str(alias)} if alias else set()
+
+
 def _what_the_entry_is(cfg: object) -> str:
     """A malformed connectors entry, described for the person fixing the file.
 
@@ -3707,7 +3718,12 @@ def query(
         "else postgres."
     ),
 )
-@click.option("--max-cases", default=50, show_default=True, help="Cap on cases per run.")
+@click.option(
+    "--max-cases",
+    default=50,
+    show_default=True,
+    help="Cap on capsule cases per run; golden cases are always all run.",
+)
 @click.option("--json", "output_json", is_flag=True, default=False, help="Emit JSON.")
 def eval_cmd(
     agent_id: str, golden_path: str | None, dialect: str | None, max_cases: int, output_json: bool
@@ -3719,7 +3735,8 @@ def eval_cmd(
 
     Re-asks each mined capsule (and, with --golden, a golden question set), then
     checks the generated SQL **parses** and **references only tables the agent
-    knows**. Exits non-zero if any case fails — usable as a CI gate.
+    knows**. Exits non-zero if any case fails, or if there is no case to run —
+    usable as a CI gate.
 
     \b
     Examples:
@@ -3732,6 +3749,7 @@ def eval_cmd(
     from nlqueries.kb_eval import build_cases, run_eval  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import run_query_sync  # noqa: PLC0415
 
+    requested_id = agent_id
     agent_id = _resolve_alias(agent_id)
     resolved_dialect = _resolve_dialect(agent_id, dialect)
     safe_id = agent_storage_id(agent_id)
@@ -3748,13 +3766,19 @@ def eval_cmd(
     if golden_path:
         golden = yaml.safe_load(Path(golden_path).read_text(encoding="utf-8")) or []
 
-    cases = build_cases(kb, agent_id, golden=golden, max_cases=max_cases)
+    # The name typed and the connector's own alias, so a golden file written
+    # either way matches however the command was invoked.
+    aliases = {requested_id, *_aliases_of(agent_id)}
+    cases = build_cases(kb, agent_id, golden=golden, aliases=aliases, max_cases=max_cases)
     if not cases:
+        # A failure, not a pass: a gate that checked nothing would pass a KB
+        # that lost its capsules, or a golden file whose agent names matched
+        # no case, and nobody reading a green build would know.
         err_console.print(
-            "[yellow]No cases to evaluate — the KB has no query capsules "
-            "(run process-history) and no --golden set was given.[/yellow]"
+            "[bold red]✗ No cases to evaluate[/bold red] — the KB has no query capsules "
+            "(run process-history) and no --golden case is scoped to this agent."
         )
-        sys.exit(0)
+        sys.exit(1)
 
     def _generate(question: str) -> str | None:
         try:
