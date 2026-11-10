@@ -717,3 +717,21 @@ def test_anthropic_astream_that_stalls_mid_drain_times_out(
 
     with pytest.raises(LLMTimeout):
         _adrain(client)
+
+
+def test_every_timeout_setting_the_config_docs_name_exists() -> None:
+    """The LLM_TIMEOUT_SECONDS docstring sent readers to
+    QUERY_STATEMENT_TIMEOUT_SECONDS, which does not exist; the connector's
+    budget is CONNECTOR_STATEMENT_TIMEOUT_SECONDS. Every ``*_SECONDS`` name the
+    module's text quotes has to be one a reader can set."""
+    import inspect
+    import re
+
+    from nlqueries import config
+
+    # Named in config.py as litellm's own constant, not one of ours.
+    not_ours = {"COMPLETION_HTTP_FALLBACK_SECONDS"}
+    named = set(re.findall(r"``([A-Z][A-Z0-9_]*_SECONDS)``", inspect.getsource(config)))
+
+    assert named - not_ours, "the scan found nothing to check"
+    assert sorted(n for n in named - not_ours if not hasattr(config, n)) == []

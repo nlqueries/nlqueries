@@ -230,6 +230,120 @@ def test_execute_query_applies_default_statement_timeout(connector, monkeypatch)
     assert "statement timeout" in result.error.lower()
 
 
+@pytest.fixture()
+def role_with_a_timeout(credentials):
+    """A login whose role sets its own statement_timeout, as
+    docs/database-hardening.md recommends for the backstop."""
+
+    def _make(limit: str) -> PostgresConnector:
+        admin = granted(PostgresConnector())
+        admin.connect(credentials)
+        with admin._require_engine().begin() as conn:
+            conn.execute(sa_text("DROP ROLE IF EXISTS ci7_reader"))
+            conn.execute(sa_text("CREATE ROLE ci7_reader LOGIN PASSWORD 'ci7-pass'"))
+            conn.execute(sa_text(f"ALTER ROLE ci7_reader SET statement_timeout = '{limit}'"))
+        reader = granted(PostgresConnector())
+        reader.connect({**credentials, "user": "ci7_reader", "password": "ci7-pass"})
+        made.append(reader)
+        return reader
+
+    made: list[PostgresConnector] = []
+    yield _make
+    for reader in made:
+        reader._require_engine().dispose()
+    admin = granted(PostgresConnector())
+    admin.connect(credentials)
+    with admin._require_engine().begin() as conn:
+        conn.execute(sa_text("DROP ROLE IF EXISTS ci7_reader"))
+
+
+def _timeout_in_effect(connector, timeout_seconds: float | None) -> str:
+    result = connector.execute_query(
+        "SELECT current_setting('statement_timeout') AS t", timeout_seconds=timeout_seconds
+    )
+    assert result.error is None, result.error
+    return str(result.rows[0][0])
+
+
+def test_a_stricter_role_timeout_is_not_loosened(role_with_a_timeout):
+    """Core's default is 120 s; the role says 30 s. `SET LOCAL` used to put 120 s
+    in force for the query, so the operator's backstop did not hold inside the
+    one place it was meant for."""
+    reader = role_with_a_timeout("30s")
+
+    assert _timeout_in_effect(reader, 120) == "30s"
+
+
+def test_a_stricter_core_budget_still_applies(role_with_a_timeout):
+    reader = role_with_a_timeout("30s")
+
+    assert _timeout_in_effect(reader, 2) == "2s"
+
+
+def test_a_role_with_no_limit_gets_core_s(role_with_a_timeout):
+    """0 is no limit, not the smallest one."""
+    reader = role_with_a_timeout("0")
+
+    assert _timeout_in_effect(reader, 120) == "2min"
+
+
+def test_a_disabled_core_budget_leaves_the_role_s(role_with_a_timeout, monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0.0)
+    reader = role_with_a_timeout("30s")
+
+    assert _timeout_in_effect(reader, None) == "30s"
+
+
+def test_the_role_limit_cancels_a_query_core_would_have_let_run(role_with_a_timeout):
+    """The property, not the setting: the query is stopped at the role's limit."""
+    reader = role_with_a_timeout("300ms")
+
+    result = reader.execute_query("SELECT pg_sleep(2)", timeout_seconds=120)
+
+    assert result.error is not None
+    assert "statement timeout" in result.error.lower()
+
+
+def test_a_streamed_read_is_held_to_the_role_limit_too(role_with_a_timeout):
+    """A streamed read resets the timeout before every batch to what is left of
+    its budget, so the budget it starts from has to be the lower of the two."""
+    reader = role_with_a_timeout("500ms")
+
+    # Each 1000-row batch sleeps about a second, over the role's 500 ms; the
+    # whole read takes about five, well inside Core's 120.
+    result = reader.execute_query(
+        "SELECT pg_sleep(0.001), g FROM generate_series(1, 5000) AS g", timeout_seconds=120
+    )
+
+    assert result.error is not None
+    assert "statement timeout" in result.error.lower()
+
+
+def test_the_generic_connector_does_not_loosen_the_role_s_limit_either(
+    role_with_a_timeout, credentials
+):
+    """A `postgresql://` URL through the generic connector set the same
+    `SET LOCAL statement_timeout`, and loosened a role limit the same way."""
+    from nlqueries.connectors.sqlalchemy_connector import SQLAlchemyConnector
+
+    role_with_a_timeout("30s")  # creates the role
+    generic = granted(SQLAlchemyConnector())
+    generic.connect(
+        {
+            "url": (
+                f"postgresql+psycopg2://ci7_reader:ci7-pass@{credentials['host']}:"
+                f"{credentials['port']}/{credentials['database']}"
+            ),
+            "ssl_mode": "disable",
+        }
+    )
+    try:
+        assert _timeout_in_effect(generic, 120) == "30s"
+        assert _timeout_in_effect(generic, 2) == "2s"
+    finally:
+        generic._require_engine().dispose()
+
+
 def test_execute_query_default_timeout_disabled_runs_unbounded(connector, monkeypatch):
     """A config default of 0 disables the timeout — the query runs unbounded."""
     monkeypatch.setattr(config, "CONNECTOR_STATEMENT_TIMEOUT_SECONDS", 0.0)
@@ -1034,6 +1148,13 @@ def test_resetting_the_timeout_per_batch_leaves_one_history_row(history_credenti
             )
         ).all()
     sets = [query for query, _calls in recorded if query.lstrip().upper().startswith("SET")]
-    resets = [calls for query, calls in recorded if "set_config" in query]
-    assert sets == ["SET LOCAL statement_timeout = 30000"]  # the read's own, once
+    # The read's own timeout is a parameterised SELECT now, which lowers the
+    # role's value rather than replacing it, so no SET is recorded at all, and
+    # it is one row however many budgets are used.
+    lowered = [calls for query, calls in recorded if "pg_settings" in query]
+    resets = [
+        calls for query, calls in recorded if "set_config" in query and "pg_settings" not in query
+    ]
+    assert sets == []
+    assert lowered == [2]  # once per read
     assert resets and resets[0] >= 6  # at least three batches in each read

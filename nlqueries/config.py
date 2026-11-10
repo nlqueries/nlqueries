@@ -500,7 +500,7 @@ token, and a deadline that fires on those trades a hang for a broken
 deployment, which is not an improvement. Lower it if your models are fast and
 you would rather fail early.
 
-The connector-side equivalent is ``QUERY_STATEMENT_TIMEOUT_SECONDS``, which is
+The connector-side equivalent is ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS``, which is
 a separate budget for the SQL, not for the model.
 
 A non-positive, non-finite or unparseable value is ignored with a warning --
@@ -1086,7 +1086,8 @@ CONNECTOR_STATEMENT_TIMEOUT_SECONDS: float = float(
 """Default server-side statement timeout (seconds) applied to connector queries
 that don't pass an explicit ``timeout_seconds`` — so a slow query fails fast with
 an error instead of hanging a request/chat turn indefinitely. Set to 0 to disable.
-Currently enforced by the Postgres connector via ``SET LOCAL statement_timeout``."""
+On PostgreSQL it is set for the query's transaction and only ever lowers the
+login role's own ``statement_timeout``, where that is stricter."""
 
 
 def _oracle_snapshot_retry_seconds() -> float:
