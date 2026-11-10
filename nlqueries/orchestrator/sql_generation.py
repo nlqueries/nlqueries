@@ -42,7 +42,11 @@ from nlqueries.orchestrator.prompt_assembly import (
     _table_ref,
     answer_rules_for,
 )
-from nlqueries.orchestrator.provenance import record_literal_grounded, record_literal_repair
+from nlqueries.orchestrator.provenance import (
+    record_literal_grounded,
+    record_literal_repair,
+    record_validator_warning,
+)
 from nlqueries.query_settings import current as current_settings
 from nlqueries.sql_policy import _sqlglot_dialect, evaluate
 
@@ -180,7 +184,12 @@ async def validate_and_repair(
         kept_choices.extend(grounded.choices)
         return grounded.sql, grounded
 
+    # The policy's refusal of the statement as generated, when it was refused.
+    refused_error: str | None = None
+
     async def _finish(result: SQLGenerationResult) -> SQLGenerationResult:
+        if refused_error is not None and result.is_valid:
+            record_validator_warning(f"repaired after: {refused_error}")
         _record_substitutions(kept, result.sql, dialect)
         for note, values in kept_notes:
             add_match_note(note, values)
@@ -215,6 +224,12 @@ async def validate_and_repair(
         return (await _ground(corrected))[0]
 
     error = _CUT_OFF_ERROR if cut_off else _validate_sql(sql, knowledge_base, dialect)
+    if error is not None and error.startswith(_POLICY_REFUSAL):
+        # A statement the policy refused and a repair then replaced is
+        # accepted, but not silently: `_finish` keeps what it replaced in
+        # provenance. The repair may have changed what the statement asks,
+        # and the reader of the answer is the one placed to judge that.
+        refused_error = error
     if error is None:
         result = SQLGenerationResult(
             sql=await _ground_valid(sql),
@@ -1002,6 +1017,11 @@ def _extract_sql(text: str) -> str:
     return text
 
 
+#: How :func:`_validate_sql` opens an error that is the SQL policy's refusal,
+#: as opposed to a check against the knowledge base.
+_POLICY_REFUSAL = "Refused by SQL policy"
+
+
 def _validate_sql(
     sql: str,
     knowledge_base: dict[str, Any],
@@ -1033,7 +1053,7 @@ def _validate_sql(
     dialect = _sqlglot_dialect(dialect)
     decision = evaluate(sql, dialect)
     if not decision.allowed:
-        return f"Refused by SQL policy {decision.policy_version}: {decision.summary()}"
+        return f"{_POLICY_REFUSAL} {decision.policy_version}: {decision.summary()}"
 
     # Re-parsed for the schema check below. The policy has already established
     # that this parses, is a single statement, and is a query.
@@ -1091,10 +1111,25 @@ def _try_mechanical_repair(
     2. Case-insensitive table-name correction against KB names — handles LLMs
        that produce ``Orders`` instead of ``orders``.
 
+    None of them turns several statements into one: a string that is not
+    exactly one statement is returned unrepaired, for the model's repair.
+
     Returns:
         ``(repaired_sql, None)`` on success (SQL is valid).
         ``(original_sql, error_message)`` when no mechanical fix worked.
     """
+    # Before any step, because each one re-renders what it parsed, and how a
+    # parse treats a second statement depends on the sqlglot release:
+    # `parse_one` returns the first and discards the rest up to at least 23.0,
+    # the floor pyproject allows, and returns a Block of both in 30. Counted
+    # once here, the guarantee does not rest on any one step's parse.
+    try:
+        statements = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
+    except Exception:  # noqa: BLE001 - unparseable input has no statement count to trust
+        statements = []
+    if len(statements) != 1:
+        return sql, "no mechanical fix found"
+
     # Step 0: fix string literals used where integers are required (LIMIT/OFFSET/FETCH)
     try:
         stmt = sqlglot.parse_one(sql, dialect=dialect)
@@ -1111,10 +1146,12 @@ def _try_mechanical_repair(
     except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
         pass
 
-    # Step 1: dialect transpile
+    # Step 1: dialect transpile. One string comes back per statement, and a
+    # repair that kept only the first would drop the rest unseen, so this
+    # applies only when there is exactly one.
     try:
         transpiled_list = sqlglot.transpile(sql, write=dialect)
-        if transpiled_list:
+        if len(transpiled_list) == 1:
             candidate = transpiled_list[0]
             err = _validate_sql(candidate, knowledge_base, dialect)
             if err is None:
@@ -1144,15 +1181,9 @@ def _try_mechanical_repair(
         except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
             pass
 
-    # Step 3: strip garbage after first statement (handles multi-statement output)
-    try:
-        statements = sqlglot.parse(sql, dialect=dialect)
-        if len(statements) > 1 and statements[0] is not None:
-            candidate = statements[0].sql(dialect=dialect)
-            err = _validate_sql(candidate, knowledge_base, dialect)
-            if err is None:
-                return candidate, None
-    except Exception:  # noqa: BLE001, S110 - a repair that fails leaves the next to try
-        pass
+    # No step keeps the first of several statements. It used to, and called
+    # the result valid on the first attempt, so a write after a read was
+    # dropped with no error and no warning. A string of several statements
+    # goes to the model's repair like any other refusal, and is recorded.
 
     return sql, "no mechanical fix found"

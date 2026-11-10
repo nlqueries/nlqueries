@@ -141,6 +141,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The SQL repair no longer drops a statement, and says when it replaced a
+  refused one.** When the model returned several statements, the repair that
+  runs before any model call kept the first and reported the result valid on
+  the first attempt, so a `DELETE` after a `SELECT` disappeared with no error
+  and no warning. Transpiling did the same, since it returns one string per
+  statement and only the first was read. A string of several statements,
+  even when every one reads, is now treated like any other statement the SQL
+  policy refuses: the model is asked to correct it. When a correction replaces
+  a statement the policy refused, such as a write inside a CTE, it is still
+  accepted, and provenance's `validator` list records `repaired after:` and
+  the refusal, so `--explain` shows what was replaced.
+
 - **An answer whose rows hold a UUID, a time, an interval, an address or bytes
   no longer fails.** The answer's frame is JSON, and its encoder knew only
   numerics and dates: any other value raised `TypeError`, and the whole answer
