@@ -151,6 +151,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   allows, failed as "not a SELECT". The `--json` output's `agent_id` is now
   documented.
 
+- **The statement timeout no longer loosens a stricter limit on the login's
+  role.** `docs/database-hardening.md` recommends `ALTER ROLE ... SET
+  statement_timeout` as a backstop, and every PostgreSQL query replaced it
+  with `SET LOCAL statement_timeout` from `CONNECTOR_STATEMENT_TIMEOUT_SECONDS`
+  (120 s by default), so a 30 s role limit did not hold inside the queries it
+  was meant for. Each query now runs under the lower of the two, where the
+  role's `0` means no limit, through the PostgreSQL connector and through the
+  generic connector for a `postgresql://` URL; a streamed read's budget starts
+  from that lower value too. The `LLM_TIMEOUT_SECONDS` documentation named a
+  setting that does not exist (`QUERY_STATEMENT_TIMEOUT_SECONDS`); it is
+  `CONNECTOR_STATEMENT_TIMEOUT_SECONDS`.
+
 - **The cache's content guard tells a negative number from its positive.**
   The guard compares what two questions ask for, and its tokenizer left out a
   number's minus sign, so "balance below -100" and "balance below 100" read

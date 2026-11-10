@@ -8,9 +8,10 @@ This is the adapter layer between the streaming orchestrator and the REST API
 / SDK callers who want a complete result in one call.
 
 Task 26.5 (Sprint 26) — Timeout cancellation propagation. ``timeout_seconds``
-threads down to the SQL sub-agent's ``execute_query`` call, applied as
-``SET LOCAL statement_timeout`` on Postgres connections (see
-``nlqueries.connectors.postgres.PostgresConnector.execute_query``) so a
+threads down to the SQL sub-agent's ``execute_query`` call, applied as the
+transaction's ``statement_timeout`` on Postgres connections, never above the
+login role's own (see
+``nlqueries.connectors.postgres.PostgresConnector.execute_query``), so a
 runaway query is aborted by the database itself rather than left running
 orphaned after the caller has given up. It does not (yet) bound the LLM
 client call — see the enterprise-side coordination note for why that half
@@ -277,8 +278,9 @@ async def run_query(
         session_id:      Optional session identifier — passed through to the result.
         history:         Prior conversation turns for follow-up resolution.
         timeout_seconds: Cancellation budget (Task 26.5 — Sprint 26), forwarded
-                         to the SQL sub-agent's ``execute_query`` call as a
-                         ``SET LOCAL statement_timeout`` on Postgres, so a
+                         to the SQL sub-agent's ``execute_query`` call as the
+                         transaction's ``statement_timeout`` on Postgres (never
+                         above the role's own), so a
                          runaway query is aborted server-side instead of
                          continuing to run — and hold locks/connections —
                          after the caller (e.g. an API request that already

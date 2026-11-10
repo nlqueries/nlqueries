@@ -597,3 +597,17 @@ def test_stats_none_leaves_function_unchanged() -> None:
     records = [_qr("SELECT id FROM users")]
     result = filter_and_deduplicate(records, _stats=None)
     assert len(result) == 1
+
+
+def test_the_connector_s_own_timeout_statement_is_not_mined_as_a_query() -> None:
+    """The statement that lowers the timeout runs once for every query, so it
+    ranks first in pg_stat_statements. It has to be dropped like the per-batch
+    reset, not clustered as one of the database's own patterns (from #398's
+    review). Fed in as pg_stat_statements records it, constants as $n."""
+    from nlqueries.connectors.postgres import _LOWER_STATEMENT_TIMEOUT
+
+    recorded = str(_LOWER_STATEMENT_TIMEOUT).replace(":ms", "$1")
+
+    kept = filter_and_deduplicate([_qr(recorded, execution_count=5000)])
+
+    assert kept == []

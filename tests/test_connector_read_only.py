@@ -49,6 +49,9 @@ class _Result:
     def __iter__(self) -> Any:
         return iter(())
 
+    def first(self) -> Any:
+        return None
+
 
 class _Dialect:
     def __init__(self, name: str) -> None:
@@ -70,7 +73,7 @@ class _Connection:
         self.rollbacks = 0
         self.engine = _Engine(dialect_name)
 
-    def execute(self, clause: Any) -> _Result:
+    def execute(self, clause: Any, *args: Any, **kwargs: Any) -> _Result:
         self.statements.append(str(clause))
         return _Result()
 

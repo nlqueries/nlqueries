@@ -113,6 +113,38 @@ def _streamed_rows(conn: Any, result: Any, deadline: float | None) -> Iterator[A
         yield from batch
 
 
+#: Sets the transaction's statement_timeout to the lower of the session's and
+#: ``:ms`` and returns the value set, in one round trip. The session's value is
+#: the role's `ALTER ROLE ... SET statement_timeout` when one is set, which
+#: docs/database-hardening.md recommends as the backstop; 0 there is no limit,
+#: not the smallest one. ``pg_settings.setting`` is in milliseconds whatever
+#: unit the role's value was written in; `set_config` returns the value in
+#: display units ("2min"), so the number is computed once and returned itself.
+#:
+#: ``set_config`` comes first in the select list so that query history drops
+#: this statement as it drops the per-batch reset: it runs once for every query,
+#: so it would otherwise rank first in ``pg_stat_statements`` and be mined as
+#: one of the database's own query patterns. ``query_filter`` recognises a
+#: SELECT that opens with ``set_config``.
+_LOWER_STATEMENT_TIMEOUT = text(
+    "SELECT set_config('statement_timeout', lowered.ms::text, true), lowered.ms "
+    "FROM (SELECT CASE WHEN s.setting::bigint = 0 THEN CAST(:ms AS bigint) "
+    "ELSE LEAST(s.setting::bigint, CAST(:ms AS bigint)) END AS ms "
+    "FROM pg_settings s WHERE s.name = 'statement_timeout') AS lowered"
+)
+
+
+def _lower_statement_timeout(conn: Any, budget_ms: int) -> int:
+    """Put ``min(role, budget_ms)`` in force for this transaction; return it.
+
+    ``SET LOCAL statement_timeout`` alone replaced a stricter limit the role
+    already had, so Core's 120 s default loosened an operator's 30 s backstop
+    inside the very query it was meant to bound. Core now only ever lowers it.
+    """
+    row = conn.execute(_LOWER_STATEMENT_TIMEOUT, {"ms": budget_ms}).first()
+    return int(row[1]) if row is not None and row[1] is not None else budget_ms
+
+
 def _returns_rows(sql: str) -> bool:
     """True when *sql* is a read that psycopg2 can stream.
 
@@ -697,10 +729,12 @@ class PostgresConnector(DatabaseConnector):
         ``QueryResult.error`` rather than propagating, so callers can treat
         query execution as always returning a result object.
 
-        ``SET LOCAL statement_timeout`` is applied inside the same transaction so
-        the server itself aborts the query once it's been running that long, rather
-        than the query continuing to hold locks/connections after the caller (e.g.
-        an API request that already returned 504) has given up waiting on it.
+        A statement timeout is set for the same transaction, so the server itself
+        aborts the query once it's been running that long, rather than the query
+        continuing to hold locks/connections after the caller (e.g. an API request
+        that already returned 504) has given up waiting on it. It is the lower of
+        the budget below and the login role's own ``statement_timeout``: a stricter
+        limit the role already has is kept (see :data:`_LOWER_STATEMENT_TIMEOUT`).
 
         The budget is *timeout_seconds* when given (Task 26.5 — Sprint 26),
         otherwise the ``CONNECTOR_STATEMENT_TIMEOUT_SECONDS`` default — so a query
@@ -743,9 +777,10 @@ class PostgresConnector(DatabaseConnector):
 
                     deadline: float | None = None
                     if effective_timeout is not None and effective_timeout > 0:
-                        statement_timeout_ms = max(1, int(effective_timeout * 1000))
-                        conn.execute(text(f"SET LOCAL statement_timeout = {statement_timeout_ms}"))
-                        deadline = time.monotonic() + effective_timeout
+                        applied_ms = _lower_statement_timeout(
+                            conn, max(1, int(effective_timeout * 1000))
+                        )
+                        deadline = time.monotonic() + applied_ms / 1000
 
                     # Server-side cursor for reads: rows arrive in batches
                     # instead of the driver building the entire result before
