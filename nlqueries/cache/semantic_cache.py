@@ -285,6 +285,16 @@ _LEAST = frozenset({"least", "bottom", "lowest", "fewest", "worst", "smallest"})
 #: The placeholders `_mask_entities` writes (``<DATE>``, ``<NUMBER>`` ...).
 _PLACEHOLDER_TOKEN_RE = re.compile(r"<([A-Z]+)>")
 
+#: A placeholder with a minus in front, which the mask leaves outside it, as
+#: it does the sign of an unmasked number: ``-<NUMBER>`` for ``-100``. Not
+#: after a word or a number, where a hyphen joins rather than signs.
+_SIGNED_PLACEHOLDER_TOKEN_RE = re.compile(r"(?<![\w.>])-<([A-Z]+)>")
+
+#: The tokens `_question_content` reads: words, numbers and comparisons. A
+#: number keeps a leading minus, so ``-100`` is not ``100``, except where the
+#: minus follows a word or a number (``2020-2021``, ``x-1``), where it joins.
+_CONTENT_TOKEN_RE = re.compile(r"[a-z]+|(?<![\w.])-?\d+(?:\.\d+)?|[<>!]=|[<>=]")
+
 
 def _question_content(question: str) -> frozenset[str]:
     """The things *question* asks for, as a set of tokens.
@@ -300,11 +310,17 @@ def _question_content(question: str) -> frozenset[str]:
     # A Tier 2 placeholder becomes one word first. Left as it is, `<NUMBER>`
     # adds a `<` and a `>` of its own to every masked question, and the masked
     # "total > <NUMBER>" and "total < <NUMBER>" then hold both.
-    unmasked = _PLACEHOLDER_TOKEN_RE.sub(lambda m: f" slot{m.group(1).lower()} ", question)
+    # A minus before a placeholder is the masked form of a negative value, and
+    # becomes part of the slot: "below -<NUMBER>" and "below <NUMBER>" ask
+    # for opposite rows.
+    unmasked = _SIGNED_PLACEHOLDER_TOKEN_RE.sub(
+        lambda m: f" slotneg{m.group(1).lower()} ", question
+    )
+    unmasked = _PLACEHOLDER_TOKEN_RE.sub(lambda m: f" slot{m.group(1).lower()} ", unmasked)
     lowered = unmasked.lower().replace("n't", " not").replace("what's", "what is")
     content: set[str] = set()
-    for token in re.findall(r"[a-z]+|\d+(?:\.\d+)?|[<>!]=|[<>=]", lowered):
-        if token[0].isdigit():
+    for token in _CONTENT_TOKEN_RE.findall(lowered):
+        if token[0].isdigit() or token[0] == "-":
             content.add(f"N{token}")
         elif token in _NUMBER_WORDS:
             content.add(f"N{_NUMBER_WORDS[token]}")

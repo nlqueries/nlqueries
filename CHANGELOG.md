@@ -141,6 +141,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **The cache's content guard tells a negative number from its positive.**
+  The guard compares what two questions ask for, and its tokenizer left out a
+  number's minus sign, so "balance below -100" and "balance below 100" read
+  as the same request and only the similarity score kept them apart at Tier
+  1. A leading minus is now part of the number, and in Tier 2's masked
+  questions part of the placeholder (`-<NUMBER>`). A hyphen after a word or a
+  number still joins rather than signs, so `2020-2021` is two years. The
+  guard reads stored questions at lookup time, so no entry needs rewriting.
+
 - **A Tier 2 cache hit no longer binds a value into the wrong place.** A
   template's placeholders were filled from the question's values in order,
   so a value the stored SQL had no place for still took one: "In 2026, what
