@@ -137,26 +137,41 @@ def test_an_openai_key_alone_defaults_the_model_to_gpt_6_1(monkeypatch: pytest.M
     assert config._detect_model("litellm") == "openai/gpt-6.1-sol"
 
 
-def test_the_openai_defaults_are_priced_and_not_marked_deprecated(
+def test_the_openai_defaults_are_in_litellm_s_bundled_map_and_not_deprecated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The OpenAI defaults are models the pinned LiteLLM prices and does not
-    mark for shutdown.
+    """The OpenAI defaults are models the pinned LiteLLM ships knowing, and
+    does not mark for shutdown.
 
     The defaults were ``gpt-4o`` and then ``gpt-5``; OpenAI shuts the first off
-    on 2027-01-14 and the second on 2026-12-11, and nothing here noticed. An
-    unpriced default reads as free in every cost figure. When a LiteLLM bump
-    gives a default a ``deprecation_date``, this fails: move the default to the
-    replacement OpenAI names (https://developers.openai.com/api/docs/deprecations).
+    on 2027-01-14 and the second on 2026-12-11, and nothing here noticed.
+
+    Read from the map bundled inside LiteLLM, not ``litellm.model_cost``. That
+    one is downloaded at import unless ``LITELLM_LOCAL_MODEL_COST_MAP`` is set,
+    so it named ``gpt-6.1-sol`` while the bundled map of the LiteLLM then
+    pinned (1.100.4) did not -- and the bundled map is what an install without
+    network, or with that variable set as Enterprise's image sets it, reads.
+    When a LiteLLM bump gives a default a ``deprecation_date``, this fails:
+    move the default to a current model
+    (https://developers.openai.com/api/docs/deprecations).
     """
+    import json  # noqa: PLC0415
+    from importlib.metadata import version  # noqa: PLC0415
+    from importlib.resources import files  # noqa: PLC0415
+
     import litellm  # noqa: PLC0415
 
+    bundled = json.loads(
+        (files("litellm") / "model_prices_and_context_window_backup.json").read_text("utf-8")
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     for model in (config._detect_model("litellm"), config._detect_fast_model("litellm")):
         name, provider, _, _ = litellm.get_llm_provider(model)
-        entry = litellm.model_cost.get(name)
+        entry = bundled.get(name)
         assert provider == "openai", model
-        assert entry and entry.get("input_cost_per_token"), f"{model} has no LiteLLM price"
+        assert entry and entry.get("input_cost_per_token"), (
+            f"{model} is not priced in the map LiteLLM {version('litellm')} ships"
+        )
         assert not entry.get("deprecation_date"), (
             f"{model} is deprecated on {entry['deprecation_date']}"
         )
