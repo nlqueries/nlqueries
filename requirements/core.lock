@@ -194,6 +194,7 @@ anyio==4.14.2 \
     #   anthropic
     #   httpx
     #   httpx2
+    #   litellm
     #   mcp
     #   openai
     #   sse-starlette
@@ -268,13 +269,13 @@ backports-tarfile==1.2.0 \
     --hash=sha256:77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34 \
     --hash=sha256:d75e02c268746e1b8144c278978b6e98e85de6ad16f8e4b0844a154557eca991
     # via jaraco-context
-boto3==1.43.82 \
-    --hash=sha256:65319e8bba6e30f74a6e2727a5688725222da2ab71c6069bc484ce5bfd101c73 \
-    --hash=sha256:bc5a7824568c117110bac8fe7ccfac63f0a946f253953d42e73a8c1fb65162e0
+boto3==1.43.117 \
+    --hash=sha256:a5b6cd7e67653987fcf0e212187c16f7b58af2ae192e368f7212ddab7c05b25d \
+    --hash=sha256:f3d314908d866b577ee6b74ed432c21e565c4c4dbd640ef3fd5e0da30fa13a98
     # via litellm
-botocore==1.43.82 \
-    --hash=sha256:347573c0bab52e29c923e28128764fcc50f469ed98dc5460220026cd3672ac0c \
-    --hash=sha256:97b3e89061decc91e7745d726dae595cbe2053894611c49ea91d6fdcb2ecc36b
+botocore==1.43.117 \
+    --hash=sha256:5920ef9b3002e1361846549078549d9154a6e0004c22853c01ce7b279d05d495 \
+    --hash=sha256:71993702832cc37c2495048b9945f2929d306fccb3fb767e9964e437e637fa6c
     # via
     #   boto3
     #   s3transfer
@@ -284,6 +285,7 @@ certifi==2026.10.19 \
     # via
     #   httpcore
     #   httpx
+    #   litellm
     #   requests
 cffi==2.1.1 \
     --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
@@ -905,6 +907,7 @@ filelock==4.2.4 \
     --hash=sha256:c6d8663535e1650ee430507b4ffbac7b464dd64b7647ea0112a9f406499d163d
     # via
     #   huggingface-hub
+    #   litellm
     #   nlqueries-core (pyproject.toml)
     #   torch
 frozenlist==1.8.0 \
@@ -1322,6 +1325,7 @@ huggingface-hub==1.29.0 \
     --hash=sha256:6ebb385a581435325cf6d5c5b233d5d4bc91175834d99fd65dae14379b36e9ad \
     --hash=sha256:b00f7782afc14db4bc6572763810a635bdfbab8623d957bfb553bd18e03852cd
     # via
+    #   litellm
     #   sentence-transformers
     #   tokenizers
     #   transformers
@@ -1644,15 +1648,15 @@ librt==0.15.0 \
     --hash=sha256:fc1ed11c4ad0b91af24def2050f2840ea4567828e3dd058fbe608d982f6e5465 \
     --hash=sha256:febb1ce6cac545a54e6b769982824e955a700fdd9fbf3a08a3d82c990968b57d
     # via mypy
-litellm==1.100.4 \
-    --hash=sha256:7228d4d12eb332e5e7b7dbfeb41a4182784ad2acf86f6b7eb806565e04912ada \
-    --hash=sha256:737c99748f9a37e74d4927ad9fe311e3f531a5379ea423eb0d1412d3310f1643 \
-    --hash=sha256:83342175eb948f146f405735b03c1cb1e5c332aeef6a98cfb31f59233d10426a \
-    --hash=sha256:aa8e8507678451b18c4369b69506d8948154b2ab4af211454dd062380597c1ce \
-    --hash=sha256:c031cbc63848be16403725594f6060fe002dc2e65f0866878285d72923ac27ab \
-    --hash=sha256:c86e2e3370674557547022eb9acd8ec842f802bddb2cfa97992332ad56309a53 \
-    --hash=sha256:ded14b15466163c76c9a7da0cd091663b4bebbff9aa56724a5905386a9d12532 \
-    --hash=sha256:eb12645456c19dd56f1fa5d7e165a2a76effb1501ace5d0a4df18efc0ac5c39a
+litellm==1.109.0 \
+    --hash=sha256:267639caedf188b4b9417132c3778ec322e774f8a24b836d12d8843e5b2d5e14 \
+    --hash=sha256:27ec560f5405a587c19c564c92c431cfaea9d81fa7dcee989522ba24a2a44e9e \
+    --hash=sha256:38473a723dca07bd92c6596465528da1ca610bdc6976305794c76610a65348d9 \
+    --hash=sha256:4309728c770de22bb797f08c26830b2feaf91e42e14fda584ddf5fa5d5d5cfc7 \
+    --hash=sha256:bda9a3cd0f9deb4678593250ce6e443e3d5928e90e0c51cb7a213ea9fdce7379 \
+    --hash=sha256:d30ef6121630c2380d567c484cb63ece2b74637b38baf240ea23f4f12da0c706 \
+    --hash=sha256:d9a5bf856384f962c3eced5afc82dc0724e6f2433e47df6459e7f5c322af69b0 \
+    --hash=sha256:e2e76acab04fe377f18bd1467fb3033204c93b0c70085df7af0fdcde20edcf07
     # via nlqueries-core (pyproject.toml)
 markdown-it-py==4.2.0 \
     --hash=sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49 \
@@ -2236,6 +2240,7 @@ packaging==26.3 \
     # via
     #   google-cloud-bigquery
     #   huggingface-hub
+    #   litellm
     #   pytest
     #   transformers
 pathspec==1.1.1 \
@@ -2740,6 +2745,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
     #   huggingface-hub
+    #   litellm
     #   nlqueries-core (pyproject.toml)
     #   transformers
 qdrant-client==1.19.0 \
@@ -3444,6 +3450,7 @@ typing-extensions==4.16.0 \
     #   grpcio
     #   httpx2
     #   huggingface-hub
+    #   litellm
     #   mcp
     #   mypy
     #   openai

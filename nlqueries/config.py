@@ -248,13 +248,13 @@ def _detect_model(provider: str) -> str:
 
     Priority: explicit LLM_MODEL env var > provider default.
     When auto-detected as litellm (OpenAI key present), defaults to
-    'openai/gpt-5' so LiteLLM routes to OpenAI without extra config.
+    'openai/gpt-6.1-sol' so LiteLLM routes to OpenAI without extra config.
     """
     explicit = os.getenv("LLM_MODEL", "").strip()
     if explicit:
         return explicit
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
-        return "openai/gpt-5"
+        return "openai/gpt-6.1-sol"
     return "claude-sonnet-5-5"
 
 
@@ -564,7 +564,7 @@ def _detect_fast_model(provider: str) -> str:
         # LLM_MODEL_FAST to a Bedrock Haiku id to get the cheap tier back.
         return default_model
     if provider == "litellm" and os.getenv("OPENAI_API_KEY"):
-        return "openai/gpt-5-mini"
+        return "openai/gpt-6.1-terra"
     return "claude-haiku-5-5"
 
 
