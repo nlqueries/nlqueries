@@ -297,7 +297,7 @@ class LiteLLMClient(LLMClient):
     Examples::
 
         anthropic/claude-sonnet-5-5
-        openai/gpt-5
+        openai/gpt-6.1-sol
         gemini/gemini-1.5-pro
         ollama/llama3
         bedrock/us.anthropic.claude-sonnet-5-5

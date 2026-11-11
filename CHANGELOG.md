@@ -143,12 +143,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   These change the SQL generated for such questions; scores on benchmarks whose
   reference answers count join rows or keep one tied row will drop.
 
-- **OpenAI defaults to GPT-5.** With only `OPENAI_API_KEY` set, `LLM_MODEL`
-  now defaults to `openai/gpt-5` and `LLM_MODEL_FAST` to `openai/gpt-5-mini`,
-  replacing the older `openai/gpt-4o` and `openai/gpt-4o-mini`. An explicit `LLM_MODEL` or `LLM_MODEL_FAST` is unchanged. GPT-5
-  models reason before they answer, and spend that from the same output
-  allowance; raise `LLM_MAX_OUTPUT_TOKENS`, which every budget derives from,
-  if short calls run out.
+- **OpenAI defaults to GPT-6.1.** With only `OPENAI_API_KEY` set, `LLM_MODEL`
+  now defaults to `openai/gpt-6.1-sol` and `LLM_MODEL_FAST` to
+  `openai/gpt-6.1-terra`, replacing `openai/gpt-4o` and `openai/gpt-4o-mini`.
+  OpenAI shuts the GPT-4o snapshots off on 2027-01-14, and GPT-5 and
+  GPT-5 mini on 2026-12-11, so a default naming either would stop answering.
+  An explicit `LLM_MODEL` or `LLM_MODEL_FAST` is unchanged; if yours names one
+  of those models, change it before then. GPT-6.1 models reason before they
+  answer, and spend that from the same output allowance; raise
+  `LLM_MAX_OUTPUT_TOKENS`, which every budget derives from, if short calls run
+  out.
 - **Bedrock examples name Claude Sonnet 5.5 and Haiku 5.5**
   (`us.anthropic.claude-sonnet-5-5`, `us.anthropic.claude-haiku-5-5`), in the
   docs and in the model a misconfigured Bedrock tier is told to use.

@@ -128,13 +128,38 @@ def test_the_openai_fast_default_applies_without_a_bedrock_model(
 ) -> None:
     """The negative control: no bedrock model, so the OpenAI branch applies."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
-    assert config._detect_fast_model("litellm") == "openai/gpt-5-mini"
+    assert config._detect_fast_model("litellm") == "openai/gpt-6.1-terra"
 
 
-def test_an_openai_key_alone_defaults_the_model_to_gpt_5(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_openai_key_alone_defaults_the_model_to_gpt_6_1(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
-    assert config._detect_model("litellm") == "openai/gpt-5"
+    assert config._detect_model("litellm") == "openai/gpt-6.1-sol"
+
+
+def test_the_openai_defaults_are_priced_and_not_marked_deprecated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OpenAI defaults are models the pinned LiteLLM prices and does not
+    mark for shutdown.
+
+    The defaults were ``gpt-4o`` and then ``gpt-5``; OpenAI shuts the first off
+    on 2027-01-14 and the second on 2026-12-11, and nothing here noticed. An
+    unpriced default reads as free in every cost figure. When a LiteLLM bump
+    gives a default a ``deprecation_date``, this fails: move the default to the
+    replacement OpenAI names (https://developers.openai.com/api/docs/deprecations).
+    """
+    import litellm  # noqa: PLC0415
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    for model in (config._detect_model("litellm"), config._detect_fast_model("litellm")):
+        name, provider, _, _ = litellm.get_llm_provider(model)
+        entry = litellm.model_cost.get(name)
+        assert provider == "openai", model
+        assert entry and entry.get("input_cost_per_token"), f"{model} has no LiteLLM price"
+        assert not entry.get("deprecation_date"), (
+            f"{model} is deprecated on {entry['deprecation_date']}"
+        )
 
 
 def test_the_anthropic_fast_default_is_haiku_5_5() -> None:

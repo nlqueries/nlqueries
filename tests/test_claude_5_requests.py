@@ -246,7 +246,9 @@ def test_litellm_sends_bedrock_claude_5_no_effort_and_no_temperature() -> None:
     assert "temperature" not in kwargs
 
 
-@pytest.mark.parametrize("model", ["openai/gpt-5", "openai/gpt-5-mini", "o3"])
+@pytest.mark.parametrize(
+    "model", ["openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-5", "o3"]
+)
 def test_litellm_sends_openai_reasoning_models_no_temperature(model: str) -> None:
     """They accept only the default of 1, and LiteLLM refuses any other value
     before the request leaves: self-consistency lost its 0.4 and 0.8 candidates."""
