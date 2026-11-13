@@ -1,7 +1,7 @@
 {
  "format": "nlq-rates-v1",
- "effective_from": "2026-11-12",
- "published": "2026-11-12",
+ "effective_from": "2026-11-13",
+ "published": "2026-11-13",
  "models": {
   "abliteration/abliterated-model": {
    "cache_read_input_token_cost": 1e-07,
@@ -2745,6 +2745,11 @@
    "cache_read_input_token_cost": 6e-09,
    "input_cost_per_token": 3e-07,
    "output_cost_per_token": 1.2e-06
+  },
+  "azure_ai/deepseek-v4.1-flash-1017": {
+   "input_cost_per_token": 3e-07,
+   "output_cost_per_token": 1.2e-06,
+   "cache_read_input_token_cost": 6e-09
   },
   "azure_ai/embed-v-4-0": {
    "input_cost_per_token": 1.2e-07,
@@ -9305,6 +9310,11 @@
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05
   },
+  "gemini/gemini-4-hydrogen": {
+   "cache_read_input_token_cost": 7.5e-08,
+   "input_cost_per_token": 1.5e-06,
+   "output_cost_per_token": 7.5e-06
+  },
   "gemini/gemini-decision-1": {
    "input_cost_per_token": 1e-07,
    "output_cost_per_token": 0.0
@@ -10118,6 +10128,11 @@
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05
   },
+  "gmi/google/gemini-4-carbon": {
+   "cache_read_input_token_cost": 1e-07,
+   "input_cost_per_token": 2e-06,
+   "output_cost_per_token": 1e-05
+  },
   "gmi/google/gemma-4-26b-a4b-it": {
    "input_cost_per_token": 1.3e-07,
    "output_cost_per_token": 4e-07
@@ -10441,6 +10456,14 @@
    "cache_read_input_token_cost": 5e-07,
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 6e-06
+  },
+  "gmi/xai/grok4.7": {
+   "cache_read_input_token_cost": 5e-07,
+   "cache_read_input_token_cost_above_200k_tokens": 1e-06,
+   "input_cost_per_token": 2e-06,
+   "input_cost_per_token_above_200k_tokens": 4e-06,
+   "output_cost_per_token": 6e-06,
+   "output_cost_per_token_above_200k_tokens": 1.2e-05
   },
   "gmi/XiaomiMiMo/MiMo-V2.5": {
    "cache_read_input_token_cost": 2.38e-09,
@@ -12827,19 +12850,27 @@
    "output_cost_per_token": 0
   },
   "nace/drex-latest": {
-   "input_cost_per_token": 6e-08,
+   "input_cost_per_token": 3e-08,
+   "output_cost_per_token": 0.0
+  },
+  "nace/drex-max": {
+   "input_cost_per_token": 3e-08,
+   "output_cost_per_token": 0.0
+  },
+  "nace/drex-max-v1.1": {
+   "input_cost_per_token": 3e-08,
    "output_cost_per_token": 0.0
   },
   "nace/drex-v1.0": {
-   "input_cost_per_token": 4e-08,
+   "input_cost_per_token": 3e-08,
    "output_cost_per_token": 0.0
   },
   "nace/drex-v1.5": {
-   "input_cost_per_token": 5e-08,
+   "input_cost_per_token": 3e-08,
    "output_cost_per_token": 0.0
   },
   "nace/drex-v2.0": {
-   "input_cost_per_token": 6e-08,
+   "input_cost_per_token": 3e-08,
    "output_cost_per_token": 0.0
   },
   "nebius/BAAI/bge-en-icl": {
@@ -14505,6 +14536,11 @@
    "output_cost_per_token": 5e-05,
    "cache_read_input_token_cost": 2.5e-07
   },
+  "perplexity/anthropic/claude-fable-5-2": {
+   "input_cost_per_token": 8e-06,
+   "output_cost_per_token": 4e-05,
+   "cache_read_input_token_cost": 2e-07
+  },
   "perplexity/anthropic/claude-haiku-4-5": {
    "input_cost_per_token": 1e-06,
    "output_cost_per_token": 5e-06,
@@ -14620,6 +14656,11 @@
    "cache_read_input_token_cost": 7.5e-08
   },
   "perplexity/google/gemini-4-argon": {
+   "input_cost_per_token": 2e-06,
+   "output_cost_per_token": 1e-05,
+   "cache_read_input_token_cost": 1e-07
+  },
+  "perplexity/google/gemini-4-carbon": {
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05,
    "cache_read_input_token_cost": 1e-07
@@ -16665,6 +16706,11 @@
    "input_cost_per_token": 1e-06,
    "output_cost_per_token": 4.05e-06
   },
+  "together_ai/thinkingmachines/Inkling-2-Small": {
+   "cache_read_input_token_cost": 3e-08,
+   "input_cost_per_token": 3e-07,
+   "output_cost_per_token": 1e-06
+  },
   "together_ai/together/Tev1-4B-experimental": {
    "input_cost_per_token": 4.2e-08,
    "output_cost_per_token": 0.0
@@ -17936,6 +17982,11 @@
    "input_cost_per_token": 2e-07,
    "output_cost_per_token": 6e-07
   },
+  "vertex_ai/deep-research-preview-04-2026": {
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 2e-06,
+   "output_cost_per_token": 1.2e-05
+  },
   "vertex_ai/deep-research-pro-preview-12-2025": {
    "cache_read_input_token_cost": 2e-07,
    "input_cost_per_token": 2e-06,
@@ -18139,6 +18190,11 @@
    "cache_read_input_token_cost": 2e-07,
    "input_cost_per_token": 4e-06,
    "output_cost_per_token": 2e-05
+  },
+  "vertex_ai/gemini-4-hydrogen": {
+   "cache_read_input_token_cost": 7.5e-08,
+   "input_cost_per_token": 1.5e-06,
+   "output_cost_per_token": 7.5e-06
   },
   "vertex_ai/gemini-embedding-2": {
    "input_cost_per_token": 2e-07,
