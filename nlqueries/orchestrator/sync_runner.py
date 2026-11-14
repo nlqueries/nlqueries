@@ -92,6 +92,16 @@ class AgentQueryResult:
     #: it is part of). Pass ``{key: chosen option}`` back as ``chosen_values``.
     #: Empty when nothing waits on the user; when not, no statement ran.
     choices: list[dict[str, Any]] = field(default_factory=list)
+    #: Why the SQL failed validation, when it did (``sql_is_valid`` false): the
+    #: validator's message, for the user to read. ``None`` when it is valid or
+    #: there is no SQL.
+    validation_error: str | None = None
+    #: The same as a code a caller can act on: ``"output_budget_exhausted"``
+    #: (the model ran out of output budget before the statement was complete,
+    #: even on a retry with more room; ``sql`` is then ``None``, not the part
+    #: written, and the remedy is a larger ``LLM_MAX_OUTPUT_TOKENS``) or
+    #: ``"invalid_sql"`` (anything else). ``None`` when it is valid.
+    validation_code: str | None = None
     # Answer provenance (SYL-1.1): how the answer was produced — route, capsules,
     # KB parts injected, cache hit/miss, validator warnings, timings. Populated
     # only when ``explain=True`` is passed to :func:`run_query`; ``None`` otherwise,
@@ -383,7 +393,13 @@ async def run_query(
         provenance=prov,
         result_notes=[str(note) for note in chunk.get("result_notes") or []],
         choices=[dict(c) for c in chunk.get("choices") or [] if isinstance(c, dict)],
+        validation_error=_text_or_none(chunk.get("validation_error")),
+        validation_code=_text_or_none(chunk.get("validation_code")),
     )
+
+
+def _text_or_none(value: Any) -> str | None:
+    return str(value) if value else None
 
 
 def run_query_sync(

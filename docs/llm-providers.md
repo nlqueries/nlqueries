@@ -143,6 +143,8 @@ Thinking is billed from `LLM_MAX_OUTPUT_TOKENS`, and spent first. See [Output bu
 
 It is a ceiling, not a charge: tokens are billed as generated. A reasoning model spends its reasoning from the same allowance before it writes anything, so a budget sized for the answer alone returns a short answer, or nothing. On most calls, producing nothing raises `OutputBudgetExhausted`, naming the model and the budget. Follow-up resolution and knowledge-base column descriptions log it as a warning instead and carry on. Raise this setting for a model that reasons at length. The details are in [configuration.md](configuration.md).
 
+A reply that runs out of budget part-way through its SQL is asked again once, with twice the answer budget, capped at the most the model can write where LiteLLM's model map knows it. If that reply runs out too, or the model can write no more, the answer comes back with no SQL, `sql_is_valid` false, `validation_code` `output_budget_exhausted` and a `validation_error` naming `LLM_MAX_OUTPUT_TOKENS`. The part written is never returned: it ends mid-clause, and run, it reads as a statement naming a column the schema lacks. A correction cut off the same way fails the same way.
+
 ### Timeout
 
 `LLM_TIMEOUT_SECONDS` (default `180`) is how long a call may go **without producing data** before it fails with `LLMTimeout`. It is a read deadline, not a cap on the whole call: a stream that keeps sending can run past it.

@@ -363,6 +363,12 @@ async def query(
     if result.sql:
         parts.append(f"\n\n**Generated SQL**\n```sql\n{result.sql}\n```")
 
+    if not result.sql_is_valid and (result.sql or result.validation_error):
+        # Said, with the reason: a statement the output budget cut off comes
+        # with no SQL at all, and without this the reply was only the prose.
+        reason = result.validation_error or "the generated SQL failed validation."
+        parts.append(f"\n\n⚠ Not run: {reason}")
+
     if paraphrase and result.sql:
         from nlqueries.verbalizer import verbalize  # noqa: PLC0415
 

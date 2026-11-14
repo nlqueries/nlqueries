@@ -3598,8 +3598,13 @@ def query(
     # directly, around `open_connector_for_agent` and whatever is wrapped
     # around it for a request.
     sql_result: QueryResult | None = result.sql_result
-    if not result.sql_is_valid and result.sql:
-        err_console.print("[yellow]⚠ Not executed:[/yellow] the generated SQL failed validation.")
+    if not result.sql_is_valid and (result.sql or result.validation_error):
+        # The reason, not only the verdict: a statement the output budget cut
+        # off reads, run, as one naming a column the schema lacks.
+        from rich.markup import escape  # noqa: PLC0415
+
+        reason = result.validation_error or "the generated SQL failed validation."
+        err_console.print(f"[yellow]⚠ Not executed:[/yellow] {escape(reason)}")
 
     # Deterministic SQL-to-English paraphrase (ACE-1.1). Identifiers are humanized
     # here (no KB vocab in the core CLI); the enterprise service supplies business
@@ -3617,6 +3622,9 @@ def query(
             "agent_type": result.agent_type,
             "answer": result.answer,
             "sql": result.sql,
+            "sql_is_valid": result.sql_is_valid,
+            "validation_error": result.validation_error,
+            "validation_code": result.validation_code,
             "sql_result": (
                 {
                     "columns": sql_result.columns,

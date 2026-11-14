@@ -8,12 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nlqueries.orchestrator.sql_generation import (
+    INVALID_SQL,
+    OUTPUT_BUDGET_EXHAUSTED,
     SQLGenerationResult,
     _extract_sql,
     _kb_to_sqlglot_schema,
     _try_mechanical_repair,
     _validate_columns,
     _validate_sql,
+    failure_code,
     generate_sql,
     validate_and_repair,
 )
@@ -1103,8 +1106,10 @@ def test_a_cut_off_statement_that_parses_is_written_again_not_accepted() -> None
     assert "WHERE total > 100" in result.sql
     assert result.attempt_count == 2
     assert len(calls) == 1
-    assert calls[0]["max_tokens"] == output_budget("answer")
+    # More room than the call that ran out: on the same budget it ran out again.
+    assert calls[0]["max_tokens"] == 2 * output_budget("answer")
     assert "ran out of room before the statement was complete" in calls[0]["user"]
+    assert result.failure is None and failure_code(result) is None
 
 
 def test_an_invalid_statement_not_cut_off_keeps_the_correction_budget() -> None:
@@ -1132,13 +1137,23 @@ def test_an_invalid_statement_not_cut_off_keeps_the_correction_budget() -> None:
         "<sql>SELECT id FROM orders",  # parses, and is not complete
     ],
 )
-def test_a_repair_cut_off_as_well_says_so(reply: str) -> None:
+def test_a_repair_cut_off_as_well_fails_typed_with_no_sql(reply: str) -> None:
+    """Never the part written: it ends mid-clause, and run, it reads as a
+    statement naming a column the schema lacks."""
+    from nlqueries.llm import output_budget
+
     llm, _ = _recording_llm(reply, cut_off=True)
     result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
 
     assert not result.is_valid
+    assert result.sql == ""
+    assert result.failure == OUTPUT_BUDGET_EXHAUSTED
+    assert failure_code(result) == OUTPUT_BUDGET_EXHAUSTED
     assert result.validation_error is not None
     assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
+    answer = output_budget("answer")
+    assert f"({answer} tokens)" in result.validation_error
+    assert f"retry with {2 * answer} tokens" in result.validation_error
 
 
 def test_a_repair_cut_off_after_its_statement_closed_is_kept() -> None:
@@ -1162,5 +1177,88 @@ def test_a_fallback_repair_cut_off_says_so_too() -> None:
         result = _repair("SELECT * FROM ghost_table", llm, cut_off=False)
 
     assert not result.is_valid
+    assert result.sql == ""
+    assert result.failure == OUTPUT_BUDGET_EXHAUSTED
     assert result.validation_error is not None
     assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
+
+
+#: A model map with one known model, so these tests pin what this code does
+#: with an entry rather than what LiteLLM's downloaded map says today.
+_CAPPED = "capped-test-model"
+_CAP = 8192
+
+
+@pytest.fixture
+def fixed_model_map() -> Any:
+    import litellm
+
+    with patch.dict(litellm.model_cost, {_CAPPED: {"max_output_tokens": _CAP}}, clear=True):
+        yield
+
+
+def test_the_retry_is_capped_at_what_the_model_can_write(fixed_model_map: Any) -> None:
+    """A provider refuses a max_tokens over its model's maximum."""
+    llm, calls = _recording_llm("<sql>SELECT id FROM orders WHERE total > 100</sql>")
+    llm._model = _CAPPED
+    with patch("nlqueries.config.LLM_MAX_OUTPUT_TOKENS", _CAP - 100):
+        result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
+
+    assert result.is_valid
+    assert calls[0]["max_tokens"] == _CAP
+
+
+def test_a_model_that_can_write_no_more_fails_typed_without_a_retry(
+    fixed_model_map: Any,
+) -> None:
+    llm, calls = _recording_llm("<sql>SELECT id FROM orders</sql>")
+    llm._model = _CAPPED
+    with patch("nlqueries.config.LLM_MAX_OUTPUT_TOKENS", _CAP):
+        result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
+
+    assert calls == []
+    assert not result.is_valid and result.sql == ""
+    assert result.failure == OUTPUT_BUDGET_EXHAUSTED
+    assert result.attempt_count == 1
+    assert "the most this model can write" in (result.validation_error or "")
+
+
+def test_any_other_invalid_statement_is_typed_invalid_sql() -> None:
+    """The repair's statement names a table the schema lacks."""
+    llm, _ = _recording_llm("<sql>SELECT * FROM ghost_table</sql>")
+    with patch("nlqueries.config.SELF_CONSISTENCY", "off"):
+
+        async def _run() -> SQLGenerationResult:
+            return await validate_and_repair(
+                "SELECT * FROM ghost_table", _make_kb(), "postgres", llm
+            )
+
+        result = asyncio.run(_run())
+
+    assert not result.is_valid
+    assert result.failure is None
+    assert failure_code(result) == INVALID_SQL
+    assert result.sql  # kept: it is whole, and the error names what is wrong with it
+    assert result.validation_error
+
+
+@pytest.mark.parametrize(
+    ("model", "spent", "expected"),
+    [
+        ("an-unlisted-model", 1024, 2048),  # unknown maximum: twice, uncapped
+        (_CAPPED, 1024, 2048),
+        (_CAPPED, 6000, _CAP),  # capped
+        (_CAPPED, _CAP, _CAP),  # no more room: spent itself
+        (f"provider/{_CAPPED}", 6000, _CAP),  # the map's key without the prefix
+        (None, 1024, 2048),
+    ],
+)
+def test_retry_output_budget(
+    fixed_model_map: Any, model: str | None, spent: int, expected: int
+) -> None:
+    from nlqueries.llm import retry_output_budget
+
+    llm = MagicMock(spec=["_model"])
+    llm._model = model
+
+    assert retry_output_budget(llm, spent) == expected

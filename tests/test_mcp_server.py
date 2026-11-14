@@ -23,8 +23,12 @@ def _make_result(
     citations: list[Any] | None = None,
     latency_ms: int = 250,
     result_notes: list[str] | None = None,
+    validation_error: str | None = None,
 ) -> MagicMock:
     r = MagicMock()
+    # Invalid exactly when a reason is given, as run_query reports it.
+    r.sql_is_valid = validation_error is None
+    r.validation_error = validation_error
     r.answer = answer
     r.agent_type = agent_type
     r.sql = sql
@@ -121,6 +125,35 @@ class TestQuery:
             out = await query("How many lost orders?", "sales")
 
         assert f"**Note**\n- {note}" in out
+
+    @pytest.mark.anyio
+    async def test_a_statement_cut_off_for_good_says_why(self) -> None:
+        """It comes with no SQL; the reply was the prose alone."""
+        from nlqueries.mcp_server.server import query
+
+        reason = "... was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
+        result = _make_result(answer="Orders over 100.", sql=None, validation_error=reason)
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            return_value=result,
+        ):
+            out = await query("How many big orders?", "sales")
+
+        assert f"Not run: {reason}" in out
+
+    @pytest.mark.anyio
+    async def test_a_valid_statement_says_nothing_of_validation(self) -> None:
+        from nlqueries.mcp_server.server import query
+
+        with patch(
+            "nlqueries.orchestrator.sync_runner.run_query",
+            new_callable=AsyncMock,
+            return_value=_make_result(),
+        ):
+            out = await query("How many orders?", "sales")
+
+        assert "Not run" not in out
 
     @pytest.mark.anyio
     async def test_no_note_heading_without_notes(self) -> None:

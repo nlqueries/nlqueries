@@ -119,14 +119,21 @@ def _extract_citations_from_tokens(tokens: list[str]) -> list[Citation] | None:
 
 
 def _final_sql_chunk(tokens: list[str]) -> dict[str, Any] | None:
-    """The SQL sub-agent's final JSON chunk, when its last token is one."""
+    """The SQL sub-agent's final JSON chunk, when its last token is one.
+
+    A chunk with no statement counts only when it says the statement failed: a
+    statement the output budget cut off comes with no SQL, and dropping its
+    chunk left the hybrid frame with no verdict, which reads as valid.
+    """
     if not tokens:
         return None
     try:
         last = json.loads(tokens[-1])
     except (json.JSONDecodeError, TypeError):
         return None
-    if not isinstance(last, dict) or last.get("type") != "sql" or not last.get("sql"):
+    if not isinstance(last, dict) or last.get("type") != "sql":
+        return None
+    if not last.get("sql") and last.get("is_valid") is not False:
         return None
     return last
 
@@ -189,10 +196,12 @@ def _extract_sql_query_result(tokens: list[str]) -> tuple[QueryResult | None, bo
         error = str(chunk.get("validation_error", ""))
     else:
         error = None
+    # No statement at all (cut off by the output budget): the error alone.
+    statement = chunk.get("sql")
     return QueryResult(
         columns=["sql_query"],
-        rows=[[chunk["sql"]]],
-        row_count=1,
+        rows=[[statement]] if statement else [],
+        row_count=1 if statement else 0,
         execution_time_ms=0.0,
         error=error,
     ), False
@@ -902,6 +911,8 @@ class MultiAgentOrchestrator:
                         "merged_answer": None,
                         "sql": pending.get("sql"),
                         "is_valid": pending.get("is_valid") if pending.get("sql") else None,
+                        "validation_error": pending.get("validation_error"),
+                        "validation_code": pending.get("validation_code"),
                         "sql_table": None,
                         "citations": [],
                         "choices": pending["choices"],
@@ -976,6 +987,15 @@ class MultiAgentOrchestrator:
                     # runner reads `is_valid` off this frame, and a frame with a
                     # statement and no verdict is read as not validated.
                     "is_valid": final_sql_chunk.get("is_valid") if final_sql_chunk else None,
+                    # Why it is not valid, as the SQL route says it: a statement
+                    # the output budget cut off comes with no SQL, and without
+                    # these the caller had neither a statement nor a reason.
+                    "validation_error": (
+                        final_sql_chunk.get("validation_error") if final_sql_chunk else None
+                    ),
+                    "validation_code": (
+                        final_sql_chunk.get("validation_code") if final_sql_chunk else None
+                    ),
                     "sql_table": sql_table_dict,
                     "citations": citations_list,
                 }
