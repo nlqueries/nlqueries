@@ -538,3 +538,36 @@ class TestAnInvalidStatementSaysWhy:
         result = self._run(json.loads(_SQL_FINAL_CHUNK))
 
         assert result.validation_error is None and result.validation_code is None
+
+
+class TestAHybridAnswerSaysWhyToo:
+    def test_a_hybrid_statement_cut_off_for_good_carries_its_reason(self) -> None:
+        chunk = {
+            "type": "hybrid",
+            "agent_type": "hybrid",
+            "merged_answer": "From the documents: ...",
+            "sql": "",
+            "is_valid": False,
+            "validation_error": "... was cut off too. Raise LLM_MAX_OUTPUT_TOKENS.",
+            "validation_code": "output_budget_exhausted",
+            "sql_table": None,
+            "citations": [],
+        }
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory([json.dumps(chunk)])
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.resolve_followup",
+                return_value=_NO_FOLLOWUP,
+            ),
+        ):
+            result = asyncio.run(run_query("q?", "agent1"))
+
+        assert result.agent_type == "hybrid"
+        assert result.sql is None and result.sql_is_valid is False
+        assert result.validation_code == "output_budget_exhausted"
+        assert "LLM_MAX_OUTPUT_TOKENS" in (result.validation_error or "")

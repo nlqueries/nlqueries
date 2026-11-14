@@ -214,7 +214,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
   The reason now reaches the caller: `AgentQueryResult` has
   `validation_error` and `validation_code`; the SQL frame carries
-  `validation_code`; `nlqueries query` prints the reason instead of "failed
+  `validation_code`, and the hybrid frame both, for its SQL half; `nlqueries query` prints the reason instead of "failed
   validation" (and printed nothing for a statement with no SQL), and its
   `--json` output includes `sql_is_valid`, `validation_error` and
   `validation_code`; the MCP `query` tool adds a "Not run" line with the

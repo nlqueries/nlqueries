@@ -381,3 +381,55 @@ def test_a_hybrid_frame_with_no_statement_has_no_validity_either() -> None:
     chunk = _hybrid_chunk(emitted)
     assert "is_valid" in chunk
     assert chunk["is_valid"] is None
+
+
+def test_the_hybrid_frame_carries_why_its_statement_was_not_valid() -> None:
+    """A statement the output budget cut off comes with no SQL; without the
+    reason the caller had neither."""
+    reason = "... was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
+    _, emitted = _drive_hybrid(
+        [
+            "Answering.",
+            json.dumps(
+                _payload(
+                    sql="",
+                    is_valid=False,
+                    validation_error=reason,
+                    validation_code="output_budget_exhausted",
+                )
+            ),
+        ]
+    )
+    chunk = _hybrid_chunk(emitted)
+
+    assert chunk["is_valid"] is False
+    assert chunk["validation_error"] == reason
+    assert chunk["validation_code"] == "output_budget_exhausted"
+
+
+def test_a_valid_hybrid_statement_has_no_reason() -> None:
+    _, emitted = _drive_hybrid(["Answering.", json.dumps(_payload(sql_table=None))])
+    chunk = _hybrid_chunk(emitted)
+
+    assert (chunk["validation_error"], chunk["validation_code"]) == (None, None)
+
+
+def test_a_statement_cut_off_for_good_reaches_the_merge_as_its_error() -> None:
+    """No statement to show: the merge's table carries the reason and no row."""
+    result, executed = _extract_sql_query_result(
+        [
+            json.dumps(
+                _payload(
+                    sql="",
+                    is_valid=False,
+                    validation_error="... Raise LLM_MAX_OUTPUT_TOKENS.",
+                    validation_code="output_budget_exhausted",
+                )
+            )
+        ]
+    )
+
+    assert executed is False
+    assert result is not None
+    assert result.rows == [] and result.row_count == 0
+    assert result.error == "... Raise LLM_MAX_OUTPUT_TOKENS."

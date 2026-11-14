@@ -1183,28 +1183,37 @@ def test_a_fallback_repair_cut_off_says_so_too() -> None:
     assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
 
 
-def test_the_retry_is_capped_at_what_the_model_can_write() -> None:
-    """A provider refuses a max_tokens over its model's maximum."""
-    from nlqueries.llm.override import _model_output_max
+#: A model map with one known model, so these tests pin what this code does
+#: with an entry rather than what LiteLLM's downloaded map says today.
+_CAPPED = "capped-test-model"
+_CAP = 8192
 
+
+@pytest.fixture
+def fixed_model_map() -> Any:
+    import litellm
+
+    with patch.dict(litellm.model_cost, {_CAPPED: {"max_output_tokens": _CAP}}, clear=True):
+        yield
+
+
+def test_the_retry_is_capped_at_what_the_model_can_write(fixed_model_map: Any) -> None:
+    """A provider refuses a max_tokens over its model's maximum."""
     llm, calls = _recording_llm("<sql>SELECT id FROM orders WHERE total > 100</sql>")
-    llm._model = "claude-sonnet-5-5"
-    ceiling = _model_output_max("claude-sonnet-5-5")
-    assert ceiling is not None
-    with patch("nlqueries.config.LLM_MAX_OUTPUT_TOKENS", ceiling - 100):
+    llm._model = _CAPPED
+    with patch("nlqueries.config.LLM_MAX_OUTPUT_TOKENS", _CAP - 100):
         result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
 
     assert result.is_valid
-    assert calls[0]["max_tokens"] == ceiling
+    assert calls[0]["max_tokens"] == _CAP
 
 
-def test_a_model_that_can_write_no_more_fails_typed_without_a_retry() -> None:
-    from nlqueries.llm.override import _model_output_max
-
+def test_a_model_that_can_write_no_more_fails_typed_without_a_retry(
+    fixed_model_map: Any,
+) -> None:
     llm, calls = _recording_llm("<sql>SELECT id FROM orders</sql>")
-    llm._model = "claude-sonnet-5-5"
-    ceiling = _model_output_max("claude-sonnet-5-5")
-    with patch("nlqueries.config.LLM_MAX_OUTPUT_TOKENS", ceiling):
+    llm._model = _CAPPED
+    with patch("nlqueries.config.LLM_MAX_OUTPUT_TOKENS", _CAP):
         result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
 
     assert calls == []
@@ -1237,17 +1246,18 @@ def test_any_other_invalid_statement_is_typed_invalid_sql() -> None:
     ("model", "spent", "expected"),
     [
         ("an-unlisted-model", 1024, 2048),  # unknown maximum: twice, uncapped
-        ("claude-sonnet-5-5", 1024, 2048),
-        ("claude-sonnet-5-5", 100_000, 128_000),  # capped
-        ("claude-sonnet-5-5", 128_000, 128_000),  # no more room: spent itself
+        (_CAPPED, 1024, 2048),
+        (_CAPPED, 6000, _CAP),  # capped
+        (_CAPPED, _CAP, _CAP),  # no more room: spent itself
+        (f"provider/{_CAPPED}", 6000, _CAP),  # the map's key without the prefix
         (None, 1024, 2048),
     ],
 )
-def test_retry_output_budget(model: str | None, spent: int, expected: int) -> None:
+def test_retry_output_budget(
+    fixed_model_map: Any, model: str | None, spent: int, expected: int
+) -> None:
     from nlqueries.llm import retry_output_budget
-    from nlqueries.llm.override import _model_output_max
 
-    assert _model_output_max("claude-sonnet-5-5") == 128_000  # the map this assumes
     llm = MagicMock(spec=["_model"])
     llm._model = model
 
