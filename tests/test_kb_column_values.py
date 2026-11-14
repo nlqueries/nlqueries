@@ -343,3 +343,168 @@ def test_export_kb_says_nothing_of_sizes_when_every_table_reports_one(
 
     assert result.exit_code == 0, result.output
     assert "report no row count" not in " ".join(result.output.split())
+
+
+# --- Topping up a short sample ------------------------------------------------------
+
+
+SPARSE = SchemaSpec(
+    database="db",
+    tables=[
+        TableSpec(
+            "visits",
+            "main",
+            None,
+            [
+                _col("id", "INTEGER", pk=True),
+                _col("remark"),  # NULL in the first 250 rows, then one value per row
+                _col("score", "INTEGER"),  # NULL in the first 250 rows, then 7 values
+                _col("ward", "INTEGER"),  # 1 in the first 100 rows, then 4 values
+                _col("seats", "INTEGER"),  # one value per row
+                _col("visitor_email"),  # personal data
+                _col("essay"),  # NULL in the first 250 rows, then long free text
+            ],
+            None,
+        )
+    ],
+    extracted_at="2026-11-14T00:00:00",
+)
+
+
+class _Recording:
+    """*connector*, recording each statement it is sent."""
+
+    def __init__(self, connector: Any) -> None:
+        self._connector = connector
+        self.queries: list[str] = []
+
+    def execute_query(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        self.queries.append(sql)
+        return self._connector.execute_query(sql, *args, **kwargs)
+
+
+@pytest.fixture
+def sparse(tmp_path: Path) -> _Recording:
+    db = tmp_path / "visits.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE visits (id INTEGER PRIMARY KEY, remark TEXT, score INTEGER, "
+            "ward INTEGER, seats INTEGER, visitor_email TEXT, essay TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO visits VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    i,
+                    None if i <= 250 else f"remark {i}",
+                    None if i <= 250 else i % 7,
+                    1 if i <= 100 else i % 4,
+                    1000 + i,
+                    f"visitor{i}@example.org",
+                    None if i <= 250 else f"A long account of visit {i}, written up " * 4,
+                )
+                for i in range(1, 301)
+            ],
+        )
+    sqlite = SQLiteConnector()
+    sqlite.connect({"database": str(db)})
+    sqlite.bind_execution_policy(ExecutionPolicy.execute_read_only())
+    return _Recording(sqlite)
+
+
+def _asked_about(queries: list[str], column: str) -> list[str]:
+    return [q for q in queries if f'"{column}"' in q]
+
+
+def test_a_sparse_text_column_with_many_values_is_topped_up_at_no_cost(
+    sparse: _Recording,
+) -> None:
+    """NULL in the first rows, so they gave it nothing; its SELECT DISTINCT had
+    returned twenty-one values before finding too many to list."""
+    samples, complete = collect_column_values(sparse, SPARSE, 3, "sqlite")
+
+    assert len(samples["visits"]["remark"]) == 3
+    assert all(v.startswith("remark ") for v in samples["visits"]["remark"])
+    assert "remark" not in complete.get("visits", set())
+    assert len(_asked_about(sparse.queries, "remark")) == 1
+
+
+def test_a_sparse_number_column_is_topped_up_with_one_bounded_query(sparse: _Recording) -> None:
+    samples, complete = collect_column_values(sparse, SPARSE, 3, "sqlite")
+
+    assert len(samples["visits"]["score"]) == 3
+    assert set(samples["visits"]["score"]) <= {str(n) for n in range(7)}
+    assert "score" not in complete.get("visits", set())
+    (query,) = _asked_about(sparse.queries, "score")
+    assert query == column_values_sql("visits", "main", "score", 3, "sqlite")
+
+
+def test_a_number_column_repeating_one_value_is_topped_up(sparse: _Recording) -> None:
+    """The first rows hold 1 three times: one sample, where the column has four."""
+    samples, _ = collect_column_values(sparse, SPARSE, 3, "sqlite")
+
+    assert samples["visits"]["ward"][0] == "1"
+    assert len(samples["visits"]["ward"]) == 3
+    assert len(set(samples["visits"]["ward"])) == 3
+
+
+def test_a_column_the_first_rows_fill_costs_no_query(sparse: _Recording) -> None:
+    samples, _ = collect_column_values(sparse, SPARSE, 3, "sqlite")
+
+    assert samples["visits"]["seats"] == ["1001", "1002", "1003"]
+    assert _asked_about(sparse.queries, "seats") == []
+
+
+def test_keys_and_personal_data_are_never_topped_up(sparse: _Recording) -> None:
+    samples, _ = collect_column_values(sparse, SPARSE, 3, "sqlite")
+
+    assert "visitor_email" not in samples["visits"] and "id" not in samples["visits"]
+    assert _asked_about(sparse.queries, "visitor_email") == []
+    assert _asked_about(sparse.queries, "id") == []
+
+
+def test_free_text_found_by_the_top_up_is_still_dropped(sparse: _Recording) -> None:
+    samples, _ = collect_column_values(sparse, SPARSE, 3, "sqlite")
+
+    assert "essay" not in samples["visits"]
+
+
+def test_known_samples_stand_in_for_the_first_rows(sparse: _Recording) -> None:
+    """A caller that sampled the table already: no sample statement, its
+    values first, and only what it came up short on topped up."""
+    known = {"visits": {"seats": [1001, 1002, None, 1003], "ward": [3, 3]}}
+
+    samples, _ = collect_column_values(sparse, SPARSE, 3, "sqlite", known_samples=known)
+
+    assert not any(q.startswith("SELECT *") for q in sparse.queries)
+    assert samples["visits"]["seats"] == ["1001", "1002", "1003"]
+    assert _asked_about(sparse.queries, "seats") == []
+    # The caller's value first: the DISTINCT returns 1 before it.
+    assert samples["visits"]["ward"][0] == "3" and len(set(samples["visits"]["ward"])) == 3
+    assert len(samples["visits"]["score"]) == 3  # not named: sampled with nothing found
+
+
+def test_a_failed_top_up_keeps_what_the_first_rows_gave(sparse: _Recording) -> None:
+    class _NoDistinct(_Recording):
+        def execute_query(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+            if "DISTINCT" in sql:
+                raise RuntimeError("permission denied")
+            return super().execute_query(sql, *args, **kwargs)
+
+    connector = _NoDistinct(sparse._connector)
+
+    samples, complete = collect_column_values(connector, SPARSE, 3, "sqlite")
+
+    assert samples["visits"]["ward"] == ["1"]
+    assert samples["visits"]["seats"] == ["1001", "1002", "1003"]
+    assert "score" not in samples["visits"] and "remark" not in samples["visits"]
+    assert complete == {}
+
+
+def test_no_samples_asked_for_means_no_top_up(sparse: _Recording) -> None:
+    """``sample_rows=0``: the complete lists only, as a caller wanting no
+    samples has always had."""
+    samples, _ = collect_column_values(sparse, SPARSE, 0, "sqlite")
+
+    assert samples == {}
+    assert _asked_about(sparse.queries, "score") == []

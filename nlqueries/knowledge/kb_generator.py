@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,8 @@ def collect_column_values(
     sample_rows: int,
     dialect: str | None = None,
     max_rows: int = VALUES_MAX_ROWS,
+    *,
+    known_samples: Mapping[str, Mapping[str, Sequence[Any]]] | None = None,
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, set[str]]]:
     """Values to store per column: ``(column_samples, column_values_complete)``.
 
@@ -116,6 +119,20 @@ def collect_column_values(
     and the model has no spelling to guess. Any other column gets up to
     *sample_rows* distinct values from the table's first rows, unless they
     average more than :data:`_MAX_AVG_SAMPLE_CHARS` characters.
+
+    When the first rows hold fewer than *sample_rows* distinct non-NULL values
+    of a column, the samples are topped up from a ``SELECT DISTINCT`` of the
+    whole column: a column that is NULL in those rows, or repeats one value
+    there, otherwise showed the model one sample or none. A text column's
+    top-up costs nothing more, since its ``SELECT DISTINCT`` above has already
+    returned up to :data:`_MAX_COMPLETE_VALUES` ``+ 1`` values when it found
+    too many to list. Any other column costs one more ``SELECT DISTINCT``,
+    bounded to *sample_rows* rows, sent only when the first rows came up short.
+
+    *known_samples* (``{table: {column: [values]}}``), when given, stands in for
+    the first rows, and no sample statement is sent: for a caller that has
+    sampled every table already, with a sample of its own size. A table or
+    column it does not name counts as sampled with nothing found.
 
     Keys and personal-data columns get nothing: an identifier's value tells
     the model nothing, and :func:`is_pii_column` values never leave the
@@ -129,8 +146,6 @@ def collect_column_values(
     less shows there are no more. On a warehouse billed by bytes read, BigQuery
     for one, a ``LIMIT`` does not reduce the charge.
     """
-    from nlqueries.connectors.base import table_sample_sql  # noqa: PLC0415
-
     samples: dict[str, dict[str, list[str]]] = {}
     complete: dict[str, set[str]] = {}
     for table in schema.tables:
@@ -143,47 +158,72 @@ def collect_column_values(
         ]
         if not eligible:
             continue
-        rows: list[list[Any]] = []
-        index: dict[str, int] = {}
-        try:
-            sampled = connector.execute_query(
-                table_sample_sql(table.name, table.schema, sample_rows, dialect),
-                _VALUES_TIMEOUT_S,
-            )
-            if not sampled.error:
-                rows = sampled.rows
-                index = {name: i for i, name in enumerate(sampled.columns)}
-        except Exception:  # noqa: BLE001
-            logger.debug("Sampling %s failed; no samples stored.", table.name, exc_info=True)
+        first: Mapping[str, Sequence[Any]] = (
+            _first_rows(connector, table, sample_rows, dialect)
+            if known_samples is None
+            else known_samples.get(table.name, {})
+        )
         for col in eligible:
+            more: list[str] | None = None
             if _is_text_type(col.type):
-                values = _all_values(connector, table, col, dialect)
-                if values is not None:
-                    samples.setdefault(table.name, {})[col.name] = values
+                more, whole = _all_values(connector, table, col, dialect)
+                if whole:
+                    samples.setdefault(table.name, {})[col.name] = more
                     complete.setdefault(table.name, set()).add(col.name)
                     continue
-            position = index.get(col.name)
-            if position is None:
-                continue
-            picked: list[str] = []
-            for row in rows:
-                value = row[position] if position < len(row) else None
-                if value is None:
-                    continue
-                text = str(value)
-                if text not in picked:
-                    picked.append(text)
-                if len(picked) >= sample_rows:
-                    break
+            picked = _distinct_text(first.get(col.name, ()), sample_rows)
+            if len(picked) < sample_rows:
+                if more is None:
+                    more = _some_values(connector, table, col, sample_rows, dialect)
+                picked = _distinct_text([*picked, *more], sample_rows)
             if picked and sum(len(v) for v in picked) / len(picked) <= _MAX_AVG_SAMPLE_CHARS:
                 samples.setdefault(table.name, {})[col.name] = picked
     return samples, complete
 
 
+def _first_rows(
+    connector: Any, table: TableSpec, sample_rows: int, dialect: str | None
+) -> dict[str, list[Any]]:
+    """Each column's values in the table's first *sample_rows* rows; ``{}`` if
+    the sample fails."""
+    from nlqueries.connectors.base import table_sample_sql  # noqa: PLC0415
+
+    try:
+        sampled = connector.execute_query(
+            table_sample_sql(table.name, table.schema, sample_rows, dialect),
+            _VALUES_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Sampling %s failed; no samples stored.", table.name, exc_info=True)
+        return {}
+    if sampled.error:
+        return {}
+    return {
+        name: [row[i] for row in sampled.rows if i < len(row)]
+        for i, name in enumerate(sampled.columns)
+    }
+
+
+def _distinct_text(values: Iterable[Any], limit: int) -> list[str]:
+    """The first *limit* distinct non-NULL *values*, as text, in order."""
+    picked: list[str] = []
+    for value in values:
+        if len(picked) >= limit:
+            break
+        if value is None:
+            continue
+        text = str(value)
+        if text not in picked:
+            picked.append(text)
+    return picked
+
+
 def _all_values(
     connector: Any, table: TableSpec, col: ColumnSpec, dialect: str | None
-) -> list[str] | None:
-    """Every value *col* holds, sorted, if they are few and short enough; else ``None``."""
+) -> tuple[list[str], bool]:
+    """``(values, whole)``: every value *col* holds, sorted, and ``True``, if
+    they are few and short enough. Otherwise the non-NULL values the query
+    returned, in its order, and ``False``; ``[]`` if it failed."""
     from nlqueries.connectors.base import column_values_sql  # noqa: PLC0415
 
     try:
@@ -195,17 +235,36 @@ def _all_values(
         )
     except Exception:  # noqa: BLE001
         logger.debug("Reading %s.%s's values failed.", table.name, col.name, exc_info=True)
-        return None
+        return [], False
     if result.error:
-        return None
-    values = sorted({str(row[0]) for row in result.rows if row and row[0] is not None})
+        return [], False
+    found = _distinct_text((row[0] for row in result.rows if row), len(result.rows))
     if (
-        not values
+        not found
         or len(result.rows) > _MAX_COMPLETE_VALUES
-        or sum(len(v) for v in values) > _MAX_COMPLETE_CHARS
+        or sum(len(v) for v in found) > _MAX_COMPLETE_CHARS
     ):
-        return None
-    return values
+        return found, False
+    return sorted(found), True
+
+
+def _some_values(
+    connector: Any, table: TableSpec, col: ColumnSpec, limit: int, dialect: str | None
+) -> list[str]:
+    """Up to *limit* distinct non-NULL values of *col*; ``[]`` if the query fails."""
+    from nlqueries.connectors.base import column_values_sql  # noqa: PLC0415
+
+    try:
+        result = connector.execute_query(
+            column_values_sql(table.name, table.schema, col.name, limit, dialect),
+            _VALUES_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Reading %s.%s's values failed.", table.name, col.name, exc_info=True)
+        return []
+    if result.error:
+        return []
+    return _distinct_text((row[0] for row in result.rows if row), limit)
 
 
 # Column name suffixes that indicate surrogate/technical keys with no business meaning.

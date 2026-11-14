@@ -86,6 +86,21 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Changed
 
+- **A column the first rows leave short gets its samples from the whole
+  column.** `export-kb` took a column's samples from the table's first
+  `--sample-rows` rows, so a column NULL in every one of them was stored with
+  no samples, and one that repeats a value there with one. When those rows
+  hold fewer distinct values than `--sample-rows`, the samples are now topped
+  up from a `SELECT DISTINCT` of the column. For a text column that is the
+  `DISTINCT` already run to see whether its values can be listed whole, so it
+  costs nothing more; any other column costs one more `DISTINCT`, bounded to
+  `--sample-rows` rows and sent only when the first rows came up short. Keys,
+  personal-data columns and tables over `--values-max-rows` still get none.
+  `collect_column_values` also takes `known_samples`, for a caller that has
+  sampled the tables already: they stand in for the first rows, and no sample
+  query is sent. A knowledge base has to be exported again to get the new
+  samples.
+
 - **Core no longer describes itself as open source.** It is under the Business
   Source License 1.1, which is source-available: it does not permit offering
   Core as a hosted service, and each version converts to Apache 2.0 later.
