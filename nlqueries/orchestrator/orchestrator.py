@@ -52,6 +52,7 @@ from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
     _same_statement,
+    failure_code,
     repair_after_execution_error,
     repair_after_suspicious_result,
     validate_and_repair,
@@ -828,6 +829,10 @@ class Orchestrator:
                 # table" without guessing from an empty result.
                 "execution_mode": execution.mode.value,
                 "validation_error": result.validation_error,
+                # Why the statement is not valid, as a code a caller can act on
+                # without reading the message: `output_budget_exhausted` (no SQL
+                # comes with it) or `invalid_sql`. Absent when it is valid.
+                "validation_code": failure_code(result),
                 "dialect": result.dialect,
                 "attempt_count": result.attempt_count,
                 "sql_table": sql_table or None,

@@ -29,7 +29,12 @@ import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
 
-from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
+from nlqueries.llm import (
+    get_llm_client,
+    output_budget,
+    output_was_cut_off,
+    retry_output_budget,
+)
 from nlqueries.orchestrator.literal_grounding import (
     GroundingResult,
     ground_literals,
@@ -73,6 +78,12 @@ class SQLGenerationResult:
                           each correction: a repair after validation failed,
                           and a repair after the database rejected the
                           statement. So at most ``3``.
+        failure:          Why the statement is not valid, as a code a caller
+                          can act on without parsing *validation_error*:
+                          :data:`OUTPUT_BUDGET_EXHAUSTED` when the model ran out
+                          of output budget before finishing it, so *sql* is
+                          empty rather than the part written. ``None`` for any
+                          other outcome; see :func:`failure_code`.
     """
 
     sql: str
@@ -80,6 +91,22 @@ class SQLGenerationResult:
     validation_error: str | None
     dialect: str
     attempt_count: int
+    failure: str | None = None
+
+
+#: The model ran out of output budget before the statement was complete, and a
+#: retry with more room ran out too (or the model can write no more).
+OUTPUT_BUDGET_EXHAUSTED = "output_budget_exhausted"
+#: The statement failed validation for any other reason: it does not parse,
+#: names something the schema lacks, or the policy refuses it.
+INVALID_SQL = "invalid_sql"
+
+
+def failure_code(result: SQLGenerationResult) -> str | None:
+    """Why *result* is not valid, as a code; ``None`` when it is valid."""
+    if result.is_valid:
+        return None
+    return result.failure or INVALID_SQL
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +184,14 @@ async def validate_and_repair(
     boundary can be valid and answer another question. The repair is told the
     statement ran out of room, asked for the statement alone, and given the
     whole output budget rather than the correction tier's share, which is what
-    cut it off twice. A repair that is cut off as well says so in
-    ``validation_error``, naming ``LLM_MAX_OUTPUT_TOKENS``.
+    cut it off twice. The repair gets more room than the call that ran out of
+    it (:func:`retry_output_budget`: twice the answer budget, within the
+    model's maximum). A repair that is cut off as well, or a model that can
+    write no more, fails with :data:`OUTPUT_BUDGET_EXHAUSTED` and a
+    ``validation_error`` naming ``LLM_MAX_OUTPUT_TOKENS``, and with no SQL: the
+    part written ends mid-clause, and returned, it read as a statement that
+    named a column the schema lacks. Any repair reply cut off the same way
+    fails the same way.
     """
     from nlqueries import config as _cfg  # noqa: PLC0415
 
@@ -278,9 +311,24 @@ async def validate_and_repair(
         + f"Please generate a corrected {dialect} SELECT statement. "
         "Wrap the SQL in <sql>...</sql> markers."
     )
-    # The whole budget for a statement that ran out of room in it; the
-    # correction tier's share is how a long statement was cut off twice.
-    budget = output_budget("answer" if cut_off else "correction")
+    # More room than the call that ran out of it: the same budget is how a long
+    # statement was cut off twice, and the correction tier's share has less.
+    answer_budget = output_budget("answer")
+    if cut_off:
+        budget = retry_output_budget(llm, answer_budget)
+        if budget <= answer_budget:
+            return await _finish(
+                _out_of_room(
+                    f"The answer was cut off at the output budget ({answer_budget} "
+                    "tokens) before the statement was complete, and that is already "
+                    "the most this model can write in one reply, so a retry would "
+                    "have no more room.",
+                    dialect,
+                    attempt_count=1,
+                )
+            )
+    else:
+        budget = output_budget("correction")
 
     # --- Phase 6A: self-consistency for hard queries -----------------------
     from nlqueries.orchestrator.candidates import (  # noqa: PLC0415
@@ -312,12 +360,20 @@ async def validate_and_repair(
         # including the fallback above when no candidate came back.
         repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
 
-    repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)
     if repair_cut_off:
-        repair_error = (
-            f"The corrected statement was cut off at the output budget ({budget} tokens) "
-            "before it was complete. Raise LLM_MAX_OUTPUT_TOKENS."
-        )
+        if cut_off:
+            message = (
+                f"The answer was cut off at the output budget ({answer_budget} tokens) "
+                f"before the statement was complete, and a retry with {budget} tokens "
+                "was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
+            )
+        else:
+            message = (
+                f"The corrected statement was cut off at the output budget ({budget} "
+                "tokens) before it was complete. Raise LLM_MAX_OUTPUT_TOKENS."
+            )
+        return await _finish(_out_of_room(message, dialect, attempt_count=2))
+    repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)
     result = SQLGenerationResult(
         sql=(await _ground(repaired_sql))[0] if repair_error is None else repaired_sql,
         is_valid=repair_error is None,
@@ -326,6 +382,20 @@ async def validate_and_repair(
         attempt_count=2,
     )
     return await _finish(result)
+
+
+def _out_of_room(message: str, dialect: str, *, attempt_count: int) -> SQLGenerationResult:
+    """The result of a statement the output budget cut off for good: no SQL,
+    since the part written ends mid-clause, and the reason, typed."""
+    _log.warning("%s", message)
+    return SQLGenerationResult(
+        sql="",
+        is_valid=False,
+        validation_error=message,
+        dialect=dialect,
+        attempt_count=attempt_count,
+        failure=OUTPUT_BUDGET_EXHAUSTED,
+    )
 
 
 async def _repair_literals(

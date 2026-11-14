@@ -481,3 +481,60 @@ class TestHybridResultsCarryTheirSql:
         result = self._run({"type": "citations", "agent_type": "document", "citations": []})
         assert result.sql is None
         assert result.sql_is_valid is True
+
+
+class TestAnInvalidStatementSaysWhy:
+    """``sql_is_valid`` false came with no reason, so a statement the output
+    budget cut off read, run, as one naming a column the schema lacks."""
+
+    def _run(self, chunk: dict) -> AgentQueryResult:
+        mock_orch = MagicMock()
+        mock_orch.handle_question = _async_gen_factory([json.dumps(chunk)])
+        with (
+            patch(
+                "nlqueries.orchestrator.sync_runner.MultiAgentOrchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "nlqueries.orchestrator.sync_runner.resolve_followup",
+                return_value=_NO_FOLLOWUP,
+            ),
+        ):
+            return asyncio.run(run_query("q?", "agent1"))
+
+    def test_a_statement_cut_off_for_good_carries_its_reason_and_no_sql(self) -> None:
+        chunk = json.loads(_SQL_FINAL_CHUNK)
+        chunk.update(
+            sql="",
+            is_valid=False,
+            validation_error="... was cut off too. Raise LLM_MAX_OUTPUT_TOKENS.",
+            validation_code="output_budget_exhausted",
+        )
+
+        result = self._run(chunk)
+
+        assert result.sql is None
+        assert result.sql_is_valid is False
+        assert result.validation_code == "output_budget_exhausted"
+        assert "LLM_MAX_OUTPUT_TOKENS" in (result.validation_error or "")
+
+    def test_any_other_invalid_statement_carries_its_reason(self) -> None:
+        chunk = json.loads(_SQL_FINAL_CHUNK)
+        chunk.update(
+            is_valid=False,
+            validation_error="Table 'ghost' not found",
+            validation_code="invalid_sql",
+        )
+
+        result = self._run(chunk)
+
+        assert result.sql == "SELECT count(*) FROM orders"
+        assert (result.validation_code, result.validation_error) == (
+            "invalid_sql",
+            "Table 'ghost' not found",
+        )
+
+    def test_a_valid_statement_has_neither(self) -> None:
+        result = self._run(json.loads(_SQL_FINAL_CHUNK))
+
+        assert result.validation_error is None and result.validation_code is None

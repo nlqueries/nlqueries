@@ -664,3 +664,71 @@ def test_a_reply_cut_off_after_its_statement_closed_is_not() -> None:
 def test_a_reply_that_finished_is_not_cut_off() -> None:
     tokens = ["<sql>SELECT id FROM orders WHERE total > 100</sql>"]
     assert _cut_off_passed_on(tokens, "end_turn") is False
+
+
+class _OutOfRoomLLM(_FinishingLLM):
+    """Streams a reply the budget cuts off mid-statement; its repair returns
+    *repair*, cut off as well when *repair_cut_off*. Records each repair's
+    ``max_tokens``."""
+
+    def __init__(self, tokens: list[str], repair: str, *, repair_cut_off: bool) -> None:
+        super().__init__(tokens, "max_tokens")
+        self._repair = repair
+        self._repair_cut_off = repair_cut_off
+        self.repair_budgets: list[int | None] = []
+
+    async def acomplete(
+        self, system: Any, user: str, max_tokens: int | None = None, **_: Any
+    ) -> str:
+        from nlqueries.llm.client import note_finish
+
+        self.repair_budgets.append(max_tokens)
+        note_finish("max_tokens" if self._repair_cut_off else "end_turn", self._repair)
+        return self._repair
+
+
+_CUT_MID_WORD = ["Male customers born 1974 to 1976.\n", "<sql>SELECT id FROM orders WHERE tot"]
+
+
+def _final_frame(llm: _OutOfRoomLLM) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kb_path = Path(tmpdir)
+        _write_kb(kb_path, "agent1", _make_kb())
+        with (
+            patch("nlqueries.orchestrator.orchestrator.config") as mock_cfg,
+            patch("nlqueries.orchestrator.orchestrator.get_llm_client", return_value=llm),
+            patch("nlqueries.embeddings.qdrant_store.search_schema", return_value=[]),
+            patch("nlqueries.embeddings.qdrant_store.search", return_value=[]),
+        ):
+            mock_cfg.KB_PATH = kb_path
+            tokens = asyncio.run(
+                _collect_tokens(Orchestrator().handle_question("big orders", "agent1"))
+            )
+    return json.loads(tokens[-1])
+
+
+def test_a_cut_off_reply_is_written_again_with_more_room() -> None:
+    from nlqueries.llm import output_budget
+
+    llm = _OutOfRoomLLM(
+        _CUT_MID_WORD, "<sql>SELECT id FROM orders WHERE total > 100</sql>", repair_cut_off=False
+    )
+
+    frame = _final_frame(llm)
+
+    assert frame["is_valid"] is True
+    assert frame["sql"].endswith("total > 100")
+    assert frame["validation_code"] is None
+    assert llm.repair_budgets == [2 * output_budget("answer")]
+
+
+def test_a_reply_cut_off_on_the_retry_too_is_a_typed_failure_with_no_sql() -> None:
+    """Never ``... WHERE tot`` as the answer."""
+    llm = _OutOfRoomLLM(_CUT_MID_WORD, "<sql>SELECT id FROM orders WHERE to", repair_cut_off=True)
+
+    frame = _final_frame(llm)
+
+    assert frame["is_valid"] is False
+    assert frame["sql"] == ""
+    assert frame["validation_code"] == "output_budget_exhausted"
+    assert "LLM_MAX_OUTPUT_TOKENS" in frame["validation_error"]

@@ -21,6 +21,7 @@ from nlqueries.llm.override import (
     _override,
     current_llm_override,
     output_budget,
+    retry_output_budget,
     use_llm_override,
 )
 from nlqueries.llm.usage import (
@@ -48,6 +49,7 @@ __all__ = [
     "output_was_cut_off",
     "probe_round_trip",
     "record_usage",
+    "retry_output_budget",
     "use_llm_override",
     "use_usage_sink",
 ]

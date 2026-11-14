@@ -167,3 +167,41 @@ def output_budget(tier: str = "answer") -> int:
         )
     share, floor = _BUDGET_TIERS[tier]
     return max(floor, int(total * share))
+
+
+#: How much more room a reply cut off at its budget is given when it is asked
+#: again: this many times what it ran out of.
+_RETRY_GROWTH = 2
+
+
+def retry_output_budget(llm: Any, spent: int) -> int:
+    """Tokens for asking again for a reply that was cut off at *spent* tokens.
+
+    Twice *spent*, capped at the most the model can write where LiteLLM's model
+    map knows it, since a provider refuses a ``max_tokens`` over its model's
+    maximum. A retry on the same budget is the call that was cut off, made
+    again, and it is cut off again. Returns *spent* when the model can write no
+    more, so a caller compares the two and does not ask again for the same
+    room.
+    """
+    wanted = spent * _RETRY_GROWTH
+    ceiling = _model_output_max(getattr(llm, "_model", None))
+    if ceiling is not None:
+        wanted = min(wanted, ceiling)
+    return max(spent, wanted)
+
+
+def _model_output_max(model: object) -> int | None:
+    """The most *model* can write in one reply, from LiteLLM's model map, or
+    ``None`` when the map does not know it (or LiteLLM is not installed)."""
+    if not model:
+        return None
+    try:
+        import litellm  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - without the map there is no cap to apply
+        return None
+    name = str(model)
+    # The map keys some models with their provider prefix and some without.
+    entry = litellm.model_cost.get(name) or litellm.model_cost.get(name.split("/", 1)[-1])
+    value = entry.get("max_output_tokens") if isinstance(entry, dict) else None
+    return value if isinstance(value, int) and value > 0 else None

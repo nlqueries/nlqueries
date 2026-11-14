@@ -199,6 +199,27 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **An answer the output budget cut off is written again with more room, or
+  fails saying so.** A reply that ran out of `LLM_MAX_OUTPUT_TOKENS` part-way
+  through its SQL was repaired on the same budget, so a long statement was
+  usually cut off again, and the part written came back as the answer: a
+  statement ending mid-word, which run read as one naming a column the schema
+  lacks. The repair now gets twice the answer budget, capped at the most the
+  model can write where LiteLLM's model map knows it. Cut off again, or with no
+  more room to give, the answer has no SQL, `sql_is_valid` false and the new
+  `validation_code` `output_budget_exhausted`, with a `validation_error` that
+  says to raise `LLM_MAX_OUTPUT_TOKENS`. A correction reply cut off the same
+  way fails the same way. Any other invalid statement has `validation_code`
+  `invalid_sql`.
+
+  The reason now reaches the caller: `AgentQueryResult` has
+  `validation_error` and `validation_code`; the SQL frame carries
+  `validation_code`; `nlqueries query` prints the reason instead of "failed
+  validation" (and printed nothing for a statement with no SQL), and its
+  `--json` output includes `sql_is_valid`, `validation_error` and
+  `validation_code`; the MCP `query` tool adds a "Not run" line with the
+  reason.
+
 - **The configuration guide gives the right cap on column descriptions.** "What
   leaves this machine" said every description sent to the model is capped at
   300 characters. A table's is; a column's is capped at 160 in the default
