@@ -1,7 +1,7 @@
 {
  "format": "nlq-rates-v1",
- "effective_from": "2026-11-13",
- "published": "2026-11-13",
+ "effective_from": "2026-11-14",
+ "published": "2026-11-14",
  "models": {
   "abliteration/abliterated-model": {
    "cache_read_input_token_cost": 1e-07,
@@ -6264,6 +6264,11 @@
    "output_cost_per_token": 1.6e-07,
    "cache_read_input_token_cost": 4e-08
   },
+  "deepinfra/nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 5e-07,
+   "cache_read_input_token_cost": 2e-08
+  },
   "deepinfra/nvidia/NVIDIA-Nemotron-Nano-9B-v2": {
    "input_cost_per_token": 4e-08,
    "output_cost_per_token": 1.6e-07
@@ -6432,6 +6437,11 @@
    "output_cost_per_token": 5.8e-07,
    "cache_read_input_token_cost": 3.5e-08
   },
+  "deepinfra/tencent/Hy4-preview": {
+   "input_cost_per_token": 8.34e-07,
+   "output_cost_per_token": 2.501e-06,
+   "cache_read_input_token_cost": 4.2e-08
+  },
   "deepinfra/thinkingmachines/Inkling": {
    "input_cost_per_token": 9.5e-07,
    "output_cost_per_token": 4.05e-06,
@@ -6451,6 +6461,11 @@
    "input_cost_per_token": 1e-06,
    "output_cost_per_token": 3e-06,
    "cache_read_input_token_cost": 2e-07
+  },
+  "deepinfra/XiaomiMiMo/MiMo-V2.6-Flash": {
+   "input_cost_per_token": 1.4e-07,
+   "output_cost_per_token": 2.8e-07,
+   "cache_read_input_token_cost": 2.8e-09
   },
   "deepinfra/zai-org/GLM-4.5": {
    "input_cost_per_token": 4e-07,
@@ -6485,6 +6500,11 @@
    "input_cost_per_token": 7.5e-07,
    "output_cost_per_token": 2.4e-06,
    "cache_read_input_token_cost": 1.4e-07
+  },
+  "deepinfra/zai-org/GLM-5.3-Flash": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 5e-07,
+   "cache_read_input_token_cost": 3e-08
   },
   "deepseek-chat": {
    "cache_read_input_token_cost": 2.8e-08,
@@ -9283,12 +9303,10 @@
    "output_cost_per_token": 3.75e-06
   },
   "gemini/gemini-3.8-flash-lite-tts": {
-   "cache_read_input_token_cost": 1.25e-07,
    "input_cost_per_token": 5e-07,
    "output_cost_per_token": 6e-06
   },
   "gemini/gemini-3.8-flash-tts": {
-   "cache_read_input_token_cost": 1.25e-07,
    "input_cost_per_token": 5e-07,
    "output_cost_per_token": 9e-06
   },
@@ -9569,6 +9587,11 @@
    "cache_read_input_token_cost": 1e-07,
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05
+  },
+  "github_copilot/gemini-4-hydrogen": {
+   "cache_read_input_token_cost": 7.5e-08,
+   "input_cost_per_token": 1.5e-06,
+   "output_cost_per_token": 7.5e-06
   },
   "github_copilot/gpt-5-mini": {
    "cache_read_input_token_cost": 2.5e-08,
@@ -14664,6 +14687,11 @@
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05,
    "cache_read_input_token_cost": 1e-07
+  },
+  "perplexity/google/gemini-4-hydrogen": {
+   "input_cost_per_token": 1.5e-06,
+   "output_cost_per_token": 7.5e-06,
+   "cache_read_input_token_cost": 7.5e-08
   },
   "perplexity/llama-2-70b-chat": {
    "input_cost_per_token": 7e-07,
