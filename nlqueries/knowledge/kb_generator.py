@@ -91,6 +91,12 @@ def _is_text_type(col_type: str) -> bool:
     return not upper or any(marker in upper for marker in _TEXT_TYPE_MARKERS)
 
 
+def _is_boolean_type(col_type: str) -> bool:
+    """``BOOLEAN``/``BOOL`` anywhere, and SQL Server's ``BIT``."""
+    upper = (col_type or "").upper().strip()
+    return upper.startswith("BOOL") or upper == "BIT"
+
+
 #: Above this many rows, a table gets no column values unless the caller says
 #: otherwise (``export-kb --values-max-rows``).
 VALUES_MAX_ROWS = 10_000_000
@@ -128,6 +134,10 @@ def collect_column_values(
     returned up to :data:`_MAX_COMPLETE_VALUES` ``+ 1`` values when it found
     too many to list. Any other column costs one more ``SELECT DISTINCT``,
     bounded to *sample_rows* rows, sent only when the first rows came up short.
+    A column with fewer distinct values than *sample_rows* always comes up
+    short, so it pays for that ``DISTINCT`` on every export, and the ``LIMIT``
+    is never reached, so it reads the whole column: a two-state code, say,
+    with the default of three. A boolean column is never topped up.
 
     *known_samples* (``{table: {column: [values]}}``), when given, stands in for
     the first rows, and no sample statement is sent: for a caller that has
@@ -172,7 +182,10 @@ def collect_column_values(
                     complete.setdefault(table.name, set()).add(col.name)
                     continue
             picked = _distinct_text(first.get(col.name, ()), sample_rows)
-            if len(picked) < sample_rows:
+            # Not a boolean: it can never hold sample_rows values once that is
+            # 3 or more, so its top-up would read the whole column on every
+            # export to show what the type already says.
+            if len(picked) < sample_rows and not _is_boolean_type(col.type):
                 if more is None:
                     more = _some_values(connector, table, col, sample_rows, dialect)
                 picked = _distinct_text([*picked, *more], sample_rows)

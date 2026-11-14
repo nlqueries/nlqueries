@@ -94,8 +94,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   up from a `SELECT DISTINCT` of the column. For a text column that is the
   `DISTINCT` already run to see whether its values can be listed whole, so it
   costs nothing more; any other column costs one more `DISTINCT`, bounded to
-  `--sample-rows` rows and sent only when the first rows came up short. Keys,
-  personal-data columns and tables over `--values-max-rows` still get none.
+  `--sample-rows` rows and sent only when the first rows came up short. A
+  column with fewer distinct values than `--sample-rows`, a two-state code
+  with the default of 3 for one, always comes up short: it pays for that
+  `DISTINCT` on every export, and since the bound is never reached, it reads
+  the whole column. A boolean column is not topped up. Keys, personal-data
+  columns and tables over `--values-max-rows` still get none.
   `collect_column_values` also takes `known_samples`, for a caller that has
   sampled the tables already: they stand in for the first rows, and no sample
   query is sent. A knowledge base has to be exported again to get the new

@@ -508,3 +508,63 @@ def test_no_samples_asked_for_means_no_top_up(sparse: _Recording) -> None:
 
     assert samples == {}
     assert _asked_about(sparse.queries, "score") == []
+
+
+def _flags(tmp_path: Path, col_type: str) -> tuple[_Recording, SchemaSpec]:
+    """``active`` (of *col_type*) is 1 in the first 50 rows, then 0;
+    ``state`` is a two-state integer, 1 then 2."""
+    db = tmp_path / "flags.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            f"CREATE TABLE flags (id INTEGER PRIMARY KEY, active {col_type}, state INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO flags VALUES (?, ?, ?)",
+            [(i, 1 if i <= 50 else 0, 1 if i <= 50 else 2) for i in range(1, 101)],
+        )
+    sqlite = SQLiteConnector()
+    sqlite.connect({"database": str(db)})
+    sqlite.bind_execution_policy(ExecutionPolicy.execute_read_only())
+    schema = SchemaSpec(
+        database="db",
+        tables=[
+            TableSpec(
+                "flags",
+                "main",
+                None,
+                [
+                    _col("id", "INTEGER", pk=True),
+                    _col("active", col_type),
+                    _col("state", "INTEGER"),
+                ],
+                None,
+            )
+        ],
+        extracted_at="2026-11-14T00:00:00",
+    )
+    return _Recording(sqlite), schema
+
+
+@pytest.mark.parametrize("col_type", ["BOOLEAN", "bool", "BIT"])
+def test_a_boolean_column_is_never_topped_up(tmp_path: Path, col_type: str) -> None:
+    """It can never fill three samples, so a top-up would read the whole column
+    on every export to show what its type already says."""
+    connector, schema = _flags(tmp_path, col_type)
+
+    samples, _ = collect_column_values(connector, schema, 3, "sqlite")
+
+    assert samples["flags"]["active"] == ["1"]
+    assert _asked_about(connector.queries, "active") == []
+
+
+def test_a_two_state_number_column_pays_for_its_top_up_on_every_export(tmp_path: Path) -> None:
+    """Fewer values than sample_rows: always short, so always one DISTINCT
+    (the cost the CHANGELOG and the CLI reference name)."""
+    connector, schema = _flags(tmp_path, "BOOLEAN")
+
+    samples, _ = collect_column_values(connector, schema, 3, "sqlite")
+
+    assert samples["flags"]["state"] == ["1", "2"]
+    assert _asked_about(connector.queries, "state") == [
+        column_values_sql("flags", "main", "state", 3, "sqlite")
+    ]
