@@ -291,8 +291,11 @@ def test_a_completion_records_its_reasoning_tokens() -> None:
     [
         (DEEPSEEK, True),
         ("openai/gpt-4o", True),
-        # Not OpenAI-compatible routes, though LiteLLM takes stream_options for Bedrock.
-        ("bedrock/us.anthropic.claude-sonnet-4-6", False),
+        # Claude on Bedrock answers stream_options with its usage, though LiteLLM
+        # doesn't list the option for Bedrock.
+        ("bedrock/us.anthropic.claude-sonnet-4-6", True),
+        # Not OpenAI-compatible routes.
+        ("bedrock/us.amazon.nova-pro-v1:0", False),
         ("anthropic/claude-sonnet-4-6", False),
     ],
 )

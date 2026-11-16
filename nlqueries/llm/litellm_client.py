@@ -94,6 +94,15 @@ def _caches_prompts(model: str) -> bool:
     Claude, so they keep the flattened system prompt they always had. The
     model must also be one LiteLLM knows to support prompt caching.
     """
+    if not _is_bedrock_claude(model):
+        return False
+    with contextlib.suppress(Exception):
+        return bool(litellm.utils.supports_prompt_caching(model=model))
+    return False
+
+
+def _is_bedrock_claude(model: str) -> bool:
+    """Whether *model* is Claude on Amazon Bedrock, by id or inference profile."""
     if not model.startswith("bedrock/"):
         return False
     bare = model[len("bedrock/") :]
@@ -102,11 +111,7 @@ def _caches_prompts(model: str) -> bool:
     # A cross-region inference profile puts its geography first: us., eu.,
     # apac., global. -- the model family follows it.
     family = bare.split(".", 1)[1] if bare.split(".", 1)[0] in _PROFILE_PREFIXES else bare
-    if not family.startswith("anthropic."):
-        return False
-    with contextlib.suppress(Exception):
-        return bool(litellm.utils.supports_prompt_caching(model=model))
-    return False
+    return family.startswith("anthropic.")
 
 
 _PROFILE_PREFIXES = frozenset({"us", "eu", "apac", "global", "us-gov", "ca", "jp", "au"})
@@ -171,10 +176,14 @@ def _deepseek_body(model: str) -> dict[str, Any]:
 def _streams_usage(model: str) -> bool:
     """Whether to ask *model*'s stream for its usage (``stream_options``).
 
-    On OpenAI-compatible routes only, as LiteLLM lists them, and only where
-    LiteLLM says the route accepts ``stream_options``. Without it such a stream
-    ends with no usage at all, and the record has to be an estimate.
+    On OpenAI-compatible routes, as LiteLLM lists them, where LiteLLM says the
+    route accepts ``stream_options``; and for Claude on Bedrock, which LiteLLM
+    doesn't list as accepting it but answers with Bedrock's usage, cache reads
+    and writes included. Without it such a stream ends with no usage at all,
+    and the record has to be an estimate with no cache split.
     """
+    if _is_bedrock_claude(model):
+        return True
     with contextlib.suppress(Exception):
         _, provider, _, _ = litellm.get_llm_provider(model=model)
         compatible = getattr(litellm, "openai_compatible_providers", ())
