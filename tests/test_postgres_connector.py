@@ -1170,3 +1170,55 @@ def test_resetting_the_timeout_per_batch_leaves_one_history_row(history_credenti
         ]
     )
     assert kept == []
+
+
+def _cursor_entries(connector: PostgresConnector) -> dict[str, int]:
+    """How many pg_stat_statements rows each cursor command has, by its verb."""
+    with connector._require_engine().connect() as conn:
+        rows = conn.execute(
+            sa_text(
+                "SELECT upper(split_part(ltrim(query), ' ', 1)) AS verb, count(*) "
+                "FROM pg_stat_statements WHERE query ~* '^\s*(declare|fetch|close)\s' "
+                "GROUP BY 1"
+            )
+        ).all()
+    return {verb: n for verb, n in rows}
+
+
+def test_repeated_streamed_reads_do_not_grow_the_query_history(history_credentials) -> None:
+    """Each streamed read used a cursor with a fresh random name, and
+    pg_stat_statements keeps a row per name: a DECLARE, a FETCH and a CLOSE for
+    every read. One day of KB sampling took a database from 996 entries to
+    4,807 and evicted the real queries run once (F12, 2026-11-17). With one
+    name, running the same reads again adds nothing."""
+    connector = granted(PostgresConnector())
+    connector.connect(history_credentials)
+    with connector._require_engine().begin() as conn:
+        conn.execute(sa_text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        conn.execute(sa_text("CREATE TABLE IF NOT EXISTS sample_me (id int, colour text)"))
+        conn.execute(sa_text("INSERT INTO sample_me VALUES (1, 'red'), (2, 'blue')"))
+        conn.execute(sa_text("SELECT pg_stat_statements_reset()"))
+    reads = [
+        "SELECT * FROM sample_me LIMIT 100",
+        "SELECT DISTINCT colour FROM sample_me LIMIT 51",
+    ]
+
+    for read in reads:
+        assert connector.execute_query(read).error is None
+    after_one_run = _cursor_entries(connector)
+    for _ in range(2):  # two more nights
+        for read in reads:
+            assert connector.execute_query(read).error is None
+
+    # The same reads again: nothing new.
+    assert _cursor_entries(connector) == after_one_run
+    # One DECLARE per statement and one CLOSE in all. FETCH has a few fixed
+    # shapes (SQLAlchemy's batch sizes: FORWARD 1, 999, 1000), whatever the
+    # statement and however many runs.
+    assert after_one_run["DECLARE"] == len(reads)
+    assert after_one_run["CLOSE"] == 1
+    assert after_one_run["FETCH"] <= 3
+
+    # A statement never streamed before adds its DECLARE and nothing else.
+    assert connector.execute_query("SELECT colour FROM sample_me LIMIT 7").error is None
+    assert _cursor_entries(connector) == {**after_one_run, "DECLARE": len(reads) + 1}
