@@ -30,6 +30,7 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import (
+    OutputBudgetExhausted,
     get_llm_client,
     output_budget,
     output_was_cut_off,
@@ -343,35 +344,75 @@ async def validate_and_repair(
         sc_mode == "all" or (sc_mode == "hard" and _is_hard(correction_user, knowledge_base))
     )
 
+    async def _ask(max_tokens: int) -> tuple[str, bool]:
+        """One correction call: the statement it wrote, and whether it was cut
+        off. Cut off before </sql>, the statement is incomplete even if it
+        parses, as the first one was. Asked after every single reply,
+        including the fallback below when no candidate came back."""
+        raw = await llm.acomplete(system, correction_user, max_tokens=max_tokens)
+        return _extract_sql(raw), output_was_cut_off() and _CLOSE_SQL not in raw
+
     repair_cut_off = False
-    if use_consistency:
-        candidates = await generate_candidates(llm, system, correction_user, n=3)
-        if candidates:
-            repaired_sql = select_best(candidates, knowledge_base, dialect)
+    # The model spent the whole allowance before writing anything at all.
+    exhausted: OutputBudgetExhausted | None = None
+    repaired_sql = ""
+    try:
+        if use_consistency:
+            candidates = await generate_candidates(llm, system, correction_user, n=3)
+            if candidates:
+                repaired_sql = select_best(candidates, knowledge_base, dialect)
+            else:
+                repaired_sql, repair_cut_off = await _ask(budget)
         else:
-            raw = await llm.acomplete(system, correction_user, max_tokens=budget)
-            repaired_sql = _extract_sql(raw)
-            repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
-    else:
-        raw = await llm.acomplete(system, correction_user, max_tokens=budget)
-        repaired_sql = _extract_sql(raw)
-        # Cut off before </sql>, the statement is incomplete even if it
-        # parses, as the first one was. Asked after every single reply,
-        # including the fallback above when no candidate came back.
-        repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
+            repaired_sql, repair_cut_off = await _ask(budget)
+    except OutputBudgetExhausted as exc:
+        exhausted = exc
+
+    # The correction tier's share is half the answer's, and a reasoning model
+    # can spend all of it before writing a word: at LLM_MAX_OUTPUT_TOKENS=1024
+    # that failed the whole question although a statement already existed
+    # (2026-11-14). So once more with the whole answer budget, and if that runs
+    # out too, the first statement with its own error -- something to show and
+    # a reason, instead of nothing (owner decision, 2026-11-17).
+    if not cut_off and (exhausted is not None or repair_cut_off):
+        tried = [budget]
+        if budget < answer_budget:
+            budget = answer_budget
+            tried.append(budget)
+            exhausted = None
+            try:
+                repaired_sql, repair_cut_off = await _ask(budget)
+            except OutputBudgetExhausted as exc:
+                exhausted = exc
+        if exhausted is not None or repair_cut_off:
+            budgets = " and then ".join(str(b) for b in tried)
+            note = (
+                f"A correction was attempted, and ran out of output budget ({budgets} "
+                "tokens) before it was complete. Raise LLM_MAX_OUTPUT_TOKENS to let it finish."
+            )
+            _log.warning("%s", note)
+            return await _finish(
+                SQLGenerationResult(
+                    sql=sql,
+                    is_valid=False,
+                    validation_error=f"{error} {note}",
+                    dialect=dialect,
+                    attempt_count=1 + len(tried),
+                )
+            )
+    if exhausted is not None:
+        # A cut-off statement has no complete first statement to fall back on,
+        # and its repair already had more room than the answer did.
+        raise exhausted
 
     if repair_cut_off:
-        if cut_off:
-            message = (
-                f"The answer was cut off at the output budget ({answer_budget} tokens) "
-                f"before the statement was complete, and a retry with {budget} tokens "
-                "was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
-            )
-        else:
-            message = (
-                f"The corrected statement was cut off at the output budget ({budget} "
-                "tokens) before it was complete. Raise LLM_MAX_OUTPUT_TOKENS."
-            )
+        # Only a cut-off statement reaches here: any other repair that was cut
+        # off was asked again above, and fell back to the first statement.
+        message = (
+            f"The answer was cut off at the output budget ({answer_budget} tokens) "
+            f"before the statement was complete, and a retry with {budget} tokens "
+            "was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
+        )
         return await _finish(_out_of_room(message, dialect, attempt_count=2))
     repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)
     result = SQLGenerationResult(
