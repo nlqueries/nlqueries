@@ -45,6 +45,38 @@ logger = logging.getLogger(__name__)
 # one is not paying a round trip per handful of rows.
 _YIELD_PER = 1000
 
+#: The one name every streamed read's server-side cursor is given.
+#:
+#: SQLAlchemy names each one afresh (``c_7816b9698dd0_340``), and
+#: ``pg_stat_statements`` keeps a row per name: every streamed read left a
+#: DECLARE, a FETCH and a CLOSE of its own. One day of knowledge-base sampling
+#: took a database's history from 996 entries to 4,807, and at the default
+#: ``pg_stat_statements.max`` of 5000 the store then evicts the entries run
+#: least often -- the customer's own one-off queries. Under one name a FETCH
+#: and a CLOSE are one entry each, and a DECLARE one per statement, the same on
+#: every run. Reusing it is safe: a read opens its own connection, holds one
+#: cursor, and closes it before the connection goes back to the pool.
+#:
+#: History mining still reads our console statements out of their DECLARE
+#: (``STATEMENT_TEXT`` accepts any cursor name), and still drops the rest.
+STREAM_CURSOR_NAME = "nlq_stream"
+
+
+def _name_streamed_cursors(engine: Engine) -> None:
+    """Give every server-side cursor *engine* opens :data:`STREAM_CURSOR_NAME`.
+
+    Per engine, through its own dialect instance, so no other engine in the
+    process is touched.
+    """
+    base: Any = engine.dialect.execution_ctx_cls
+
+    class _OneCursorName(base):  # type: ignore[misc]
+        def create_server_side_cursor(self) -> Any:
+            return self._dbapi_connection.cursor(STREAM_CURSOR_NAME)
+
+    engine.dialect.execution_ctx_cls = _OneCursorName
+
+
 # Statements that can be read through a server-side cursor. Deliberately a
 # check of the first word rather than a parse: it runs on every query, and the
 # cost of being wrong is only that a read is not streamed.
@@ -301,6 +333,7 @@ class PostgresConnector(DatabaseConnector):
             pool_recycle=1800,
             connect_args=connect_args,
         )
+        _name_streamed_cursors(self._engine)
         self._watch_identity(self._engine)
 
     def _watch_identity(self, engine: Engine) -> None:
