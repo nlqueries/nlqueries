@@ -118,7 +118,12 @@ def _run(sql: str, connector: _Recording) -> Any:
 
 
 def _follow_up(
-    sql: str, connector: _Recording, source: LookupSource, *, may_rerun: bool = True
+    sql: str,
+    connector: _Recording,
+    source: LookupSource,
+    *,
+    may_rerun: bool = True,
+    kb: dict[str, Any] | None = None,
 ) -> Any:
     qr = _run(sql, connector)
     result = SQLGenerationResult(
@@ -129,11 +134,10 @@ def _follow_up(
             result,
             qr,
             connector=connector,
-            kb=_kb(),
+            kb=kb or _kb(),
             dialect="sqlite",
             lookups=source,
-            run_timeout=5,
-            may_rerun=may_rerun,
+            budget=lambda: (may_rerun, 5),
         )
     )
 
@@ -240,8 +244,7 @@ def test_rows_mean_nothing_is_looked_up(
             kb=_kb(),
             dialect="sqlite",
             lookups=source,
-            run_timeout=5,
-            may_rerun=True,
+            budget=lambda: (True, 5),
         )
     )
     assert followup is None and statements == []
@@ -406,3 +409,77 @@ def test_the_answer_runs_with_the_one_stored_spelling(
         "is closest to."
     ]
     assert "choices" not in frame
+
+
+def test_a_lone_whole_word_part_is_named_not_run(tmp_path: Path, statements: list[str]) -> None:
+    """'NOT ACTIVE' contains 'ACTIVE', its opposite: run with it, the answer is
+    the reverse of the question (from #413's review)."""
+    path = tmp_path / "accounts.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE account (id TEXT, status TEXT)")
+        conn.executemany(
+            "INSERT INTO account VALUES (?, ?)",
+            [("1", "ACTIVE"), ("2", "INACTIVE")] + [(str(i), f"STATE {i}") for i in range(30)],
+        )
+    conn = _Recording(statements)
+    conn.connect({"database": str(path)})
+    conn.bind_execution_policy(ExecutionPolicy.execute_read_only())
+    src = LookupSource(
+        key="acct", open=lambda: PermittedConnector(conn, ExecutionPolicy.execute_read_only())
+    )
+    kb = {
+        "schema": {
+            "tables": [
+                {
+                    "name": "account",
+                    "columns": [{"name": "id", "type": "TEXT"}, {"name": "status", "type": "TEXT"}],
+                }
+            ]
+        }
+    }
+    sql = "SELECT id FROM account WHERE status = 'NOT ACTIVE'"
+
+    followup = _follow_up(sql, conn, src, kb=kb)
+
+    assert followup is not None and followup.qr.rows == []
+    assert followup.result.sql == sql, "not run with its opposite"
+    assert followup.notes == ["No status is 'NOT ACTIVE'. Stored values it may mean: 'ACTIVE'."]
+
+
+def test_the_rerun_budget_is_asked_after_the_lookups(
+    connector: _Recording, source: LookupSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asked before them, a rerun could start after the caller's deadline had
+    passed: the lookups can spend seconds (from #413's review)."""
+    from nlqueries.orchestrator import empty_result
+
+    events: list[str] = []
+    real = empty_result.empty_result_literals
+
+    async def recording(*args: Any) -> Any:
+        found = await real(*args)
+        events.append("lookups")
+        return found
+
+    monkeypatch.setattr(empty_result, "empty_result_literals", recording)
+
+    def budget() -> tuple[bool, float | None]:
+        events.append("budget")
+        return True, 5
+
+    sql = "SELECT city_code FROM city WHERE city_name = 'PITSBURGH'"
+    asyncio.run(
+        follow_up_empty_result(
+            SQLGenerationResult(
+                sql=sql, is_valid=True, validation_error=None, dialect="sqlite", attempt_count=1
+            ),
+            _run(sql, connector),
+            connector=connector,
+            kb=_kb(),
+            dialect="sqlite",
+            lookups=source,
+            budget=budget,
+        )
+    )
+
+    assert events == ["lookups", "budget"]

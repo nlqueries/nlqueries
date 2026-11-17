@@ -14,9 +14,11 @@ literal_grounding.empty_result_literals`), and then by ``NLQ_AMBIGUITY``:
 
 - ``ask``: the user is asked to choose, with the existing ``choices`` shape;
   their answer comes back as ``chosen_values`` and grounding uses it;
-- ``pick``: one literal with exactly one candidate is replaced and the
-  statement run once more, with a note saying so; anything else is not
-  guessed, and a note names the literal, the column and what it may mean;
+- ``pick``: one literal whose one candidate is a near spelling is replaced
+  and the statement run once more, with a note saying so; anything else is
+  not guessed, a lone whole-word part included ('NOT ACTIVE' contains
+  'ACTIVE', its opposite), and a note names the literal, the column and what
+  it may mean;
 - no candidates: the note names the literal that matched nothing.
 
 The specific note replaces the generic one. One rerun at most, on the same
@@ -28,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -70,14 +73,15 @@ async def follow_up_empty_result(
     kb: dict[str, Any],
     dialect: str,
     lookups: LookupSource | None,
-    run_timeout: float | None,
-    may_rerun: bool,
+    budget: Callable[[], tuple[bool, float | None]],
 ) -> EmptyResultFollowup | None:
     """Follow up an empty *qr* from *result*; ``None`` when there is nothing to
     add (no literal matches nothing stored), so the generic note stands.
 
-    *may_rerun* is whether there is time left for one more statement, and
-    *run_timeout* the timeout to run it with.
+    *budget* says whether there is time for one more statement and the timeout
+    to run it with. It is asked just before the rerun, after the lookups have
+    spent their share: asked first, a rerun could start after the caller's
+    deadline had passed (from #413's review).
     """
     if qr.error is not None or qr.rows or qr.truncated:
         return None
@@ -96,8 +100,9 @@ async def follow_up_empty_result(
                 f"No {u.column} is {_quoted(u.literal)}. Did you mean: {_listed(u.candidates)}?"
             )
     else:
-        single = [u for u in offered if len(u.candidates) == 1]
-        if len(offered) == 1 and len(single) == 1 and may_rerun:
+        single = [u for u in offered if len(u.candidates) == 1 and u.near == u.candidates]
+        runnable, run_timeout = budget() if len(offered) == 1 and single else (False, None)
+        if runnable:
             u = single[0]
             rerun = await _rerun(
                 result, u.position, u.candidates[0], connector, dialect, run_timeout

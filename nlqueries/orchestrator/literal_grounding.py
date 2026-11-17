@@ -1113,6 +1113,11 @@ class EmptyLiteral:
     candidates: tuple[str, ...]
     #: Where the literal stands among the statement's string literals.
     position: int
+    #: The candidates that are near spellings of the literal, rather than
+    #: whole-word parts of it. Only these are strong enough to run with
+    #: unasked: 'NOT ACTIVE' contains 'ACTIVE', which is its opposite (from
+    #: #413's review).
+    near: tuple[str, ...] = ()
 
 
 def _word_runs(literal: str) -> list[str]:
@@ -1258,6 +1263,7 @@ async def empty_result_literals(
                     literal=literal,
                     candidates=candidates,
                     position=positions.get(id(literal_node), -1),
+                    near=tuple(c for c in candidates if c in near),
                 )
             )
     finally:

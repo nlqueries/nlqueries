@@ -825,7 +825,6 @@ class Orchestrator:
                         # stored: the values it may mean, to choose between, run
                         # with, or name in the note (owner feedback F19).
                         if current_settings().result_checks:
-                            may_rerun, rerun_timeout = _correction_budget(timeout_seconds, deadline)
                             try:
                                 followup = await follow_up_empty_result(
                                     result,
@@ -834,8 +833,9 @@ class Orchestrator:
                                     kb=kb,
                                     dialect=dialect,
                                     lookups=lookups,
-                                    run_timeout=rerun_timeout,
-                                    may_rerun=may_rerun,
+                                    # Asked just before the rerun, after the
+                                    # lookups: see `follow_up_empty_result`.
+                                    budget=lambda: _correction_budget(timeout_seconds, deadline),
                                 )
                             except Exception:  # noqa: BLE001 — advisory, like the checks
                                 _log.warning("Following up an empty result failed.", exc_info=True)
