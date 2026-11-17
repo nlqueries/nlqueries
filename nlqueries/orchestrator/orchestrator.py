@@ -569,8 +569,10 @@ class Orchestrator:
 
             # A reply that ran out of output budget before </sql> ends
             # mid-statement, so the repair below must know it lacked room, not
-            # made a mistake. Cut off after </sql>, the statement is whole.
-            cut_off = output_was_cut_off() and not found_sql
+            # made a mistake. Cut off after </sql>, the statement is whole. A
+            # stream that ended inside <sql> was cut off whatever the provider
+            # reported about why it stopped.
+            cut_off = in_sql or (output_was_cut_off() and not found_sql)
             if cut_off:
                 _log.warning(
                     "The answer was cut off at the output budget (%d tokens, "
