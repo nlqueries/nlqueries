@@ -101,7 +101,7 @@ async def generate_candidates(
         List of extracted SQL strings (length ≤ *n*; may be shorter if some
         calls raise exceptions).
     """
-    from nlqueries.orchestrator.sql_generation import _extract_sql  # noqa: PLC0415
+    from nlqueries.orchestrator.sql_generation import _extract_complete_sql  # noqa: PLC0415
 
     temperatures = (_CANDIDATE_TEMPERATURES + [None] * n)[:n]
 
@@ -110,7 +110,7 @@ async def generate_candidates(
             raw = await llm.acomplete(
                 system, user, max_tokens=output_budget("correction"), temperature=temperature
             )
-            return _extract_sql(raw)
+            return _extract_complete_sql(raw)
         except Exception as exc:  # noqa: BLE001 - one candidate's failure leaves the others
             # Said, not swallowed: a model that refuses the temperature fails
             # every call at it, and the vote then runs on fewer candidates.

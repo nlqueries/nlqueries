@@ -1426,3 +1426,15 @@ def test_a_repair_that_ends_inside_its_statement_counts_as_cut_off() -> None:
 
     assert result.sql == ""
     assert result.failure == OUTPUT_BUDGET_EXHAUSTED
+
+
+def test_a_complete_statement_or_nothing_for_the_other_callers() -> None:
+    """The repairs and rewrites that accept whatever parses get nothing from a
+    reply that ended inside <sql> (from #412's review)."""
+    from nlqueries.orchestrator.sql_generation import _extract_complete_sql
+
+    assert _extract_complete_sql("<sql>SELECT o.id FROM orders o") == ""
+    assert (
+        _extract_complete_sql("<sql>SELECT o.id FROM orders o</sql>") == "SELECT o.id FROM orders o"
+    )
+    assert _extract_complete_sql("SELECT o.id FROM orders o") == "SELECT o.id FROM orders o"

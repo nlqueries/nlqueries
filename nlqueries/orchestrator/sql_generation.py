@@ -482,7 +482,7 @@ async def _repair_literals(
     reason: str | None = None
     try:
         raw = await llm.acomplete(system, user, max_tokens=output_budget("correction"))
-        candidate = _extract_sql(raw).strip()
+        candidate = _extract_complete_sql(raw).strip()
         if (
             candidate
             and _validate_sql(candidate, knowledge_base, dialect) is None
@@ -694,7 +694,7 @@ async def repair_after_execution_error(
         "same statement unchanged. Wrap the SQL in <sql>...</sql> markers."
     )
     raw = await llm.acomplete(system, correction_user, max_tokens=output_budget("correction"))
-    repaired_sql = _extract_sql(raw)
+    repaired_sql = _extract_complete_sql(raw)
     error = _validate_sql(repaired_sql, knowledge_base, dialect)
     return SQLGenerationResult(
         sql=repaired_sql,
@@ -741,7 +741,7 @@ async def repair_after_suspicious_result(
         "answers the question above. Wrap the SQL in <sql>...</sql> markers."
     )
     raw = await llm.acomplete(system, correction_user, max_tokens=output_budget("correction"))
-    repaired_sql = _extract_sql(raw)
+    repaired_sql = _extract_complete_sql(raw)
     error = _validate_sql(repaired_sql, knowledge_base, dialect)
     return SQLGenerationResult(
         sql=repaired_sql,
@@ -792,7 +792,7 @@ def generate_sql(
 
     # Attempt 1 ---------------------------------------------------------------
     raw1 = llm.complete(system_prompt, question)
-    sql1 = _extract_sql(raw1)
+    sql1 = _extract_complete_sql(raw1)
     error1 = _validate_sql(sql1, knowledge_base, dialect)
 
     if error1 is None:
@@ -812,7 +812,7 @@ def generate_sql(
         "Output only the raw SQL, no explanation or markdown."
     )
     raw2 = llm.complete(system_prompt, correction_user)
-    sql2 = _extract_sql(raw2)
+    sql2 = _extract_complete_sql(raw2)
     error2 = _validate_sql(sql2, knowledge_base, dialect)
 
     return SQLGenerationResult(
@@ -1097,7 +1097,10 @@ def _extract_sql(text: str) -> str:
 
     An opening ``<sql>`` with no closing one is a reply cut off mid-statement:
     what follows the tag is returned, less any half-written ``</sql>``, and the
-    callers treat the reply as cut off (:func:`_ends_inside_sql`).
+    two callers that know what to do with a cut-off statement -- the answer
+    stream and the correction call -- treat the reply as cut off
+    (:func:`_ends_inside_sql`). Every other caller goes through
+    :func:`_extract_complete_sql`, which returns nothing for such a reply.
     """
     text = text.strip()
 
@@ -1174,6 +1177,18 @@ def _parses_as_sql(candidate: str) -> bool:
             continue
         return True
     return False
+
+
+def _extract_complete_sql(raw: str) -> str:
+    """The statement in *raw*, or ``""`` when the reply ended inside ``<sql>``.
+
+    For the repairs and rewrites that validate what comes back and accept it if
+    it parses: the part of a statement written before a cut can be valid SQL
+    that answers another question -- ``SELECT o.id FROM orders o`` stopped just
+    before its ``WHERE`` -- and would then run with the filter silently dropped
+    (from #412's review). Nothing is a failed repair, which each of them handles.
+    """
+    return "" if _ends_inside_sql(raw) else _extract_sql(raw)
 
 
 def _ends_inside_sql(raw: str) -> bool:
