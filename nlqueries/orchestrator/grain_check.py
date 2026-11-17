@@ -56,7 +56,7 @@ from nlqueries.orchestrator.plan_check import PlanCheck, _room_for_rewrite
 from nlqueries.orchestrator.provenance import record_grain_check
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
-    _extract_sql,
+    _extract_complete_sql,
     _same_statement,
     _validate_sql,
 )
@@ -345,7 +345,7 @@ async def repair_to_plan(
         "as asked, return it unchanged. Wrap the SQL in <sql>...</sql> markers."
     )
     raw = await llm.acomplete(system, user, max_tokens=output_budget("correction"))
-    repaired = _extract_sql(raw)
+    repaired = _extract_complete_sql(raw)
     error = _validate_sql(repaired, knowledge_base, dialect)
     result = SQLGenerationResult(
         sql=repaired,

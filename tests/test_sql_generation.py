@@ -1351,3 +1351,90 @@ def test_retry_output_budget(
     llm._model = model
 
     assert retry_output_budget(llm, spent) == expected
+
+
+# ---------------------------------------------------------------------------
+# A reply cut off inside <sql>, and prose that begins with "select" (F14)
+# ---------------------------------------------------------------------------
+
+#: The three shapes seen in answers whose `sql` held the model's raw reply
+#: (2026-11-13/14): an explanation that happens to start with the word, then an
+#: opening tag, then a statement cut off before </sql>.
+_UNCLOSED_REPLIES = [
+    (
+        "SELECT.\n\n<sql>\nSELECT DISTINCT p.id\nFROM laboratory l\nJOIN patient p ON l.id = p.id\n"
+        "WHERE l.x >= 300\n</s",
+        "SELECT DISTINCT p.id\nFROM laboratory l\nJOIN patient p ON l.id = p.id\nWHERE l.x >= 300",
+    ),
+    (
+        "SELECT as that filter, Postgres could evaluate it before the filter. I moved the cast "
+        "into a CASE.\n\n<sql>\n"
+        "SELECT CASE WHEN v ~ '^[0-9]+$' THEN v::numeric END AS v\n  FROM th",
+        "SELECT CASE WHEN v ~ '^[0-9]+$' THEN v::numeric END AS v\n  FROM th",
+    ),
+    (
+        "select list is unchanged: the earliest circuit and the gap.\n\n<sql>\nWITH t AS (\n"
+        "  SELECT c.circuitref, r.time\n  FROM races r\n  JOIN circuits c ON c.id = r.cid",
+        "WITH t AS (\n  SELECT c.circuitref, r.time\n"
+        "  FROM races r\n  JOIN circuits c ON c.id = r.cid",
+    ),
+]
+
+
+@pytest.mark.parametrize(("reply", "expected"), _UNCLOSED_REPLIES)
+def test_an_unclosed_sql_tag_gives_what_follows_it(reply: str, expected: str) -> None:
+    """Never the raw reply: with no closing tag the keyword scan matched the
+    prose's first word and handed the whole reply on as the statement."""
+    assert _extract_sql(reply) == expected
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "SELECT as that filter, Postgres could evaluate it before the filter.",
+        "select list is unchanged: the earliest circuit, the latest circuit.",
+        "SELECT.",
+    ],
+)
+def test_prose_that_begins_with_select_is_not_sql(prose: str) -> None:
+    assert _extract_sql(prose) == ""
+
+
+def test_a_well_formed_reply_is_unchanged() -> None:
+    assert _extract_sql("Here it is.\n<sql>\nSELECT id FROM orders\n</sql>\nDone.") == (
+        "SELECT id FROM orders"
+    )
+
+
+def test_two_sql_blocks_give_the_first() -> None:
+    reply = "<sql>SELECT 1</sql> or, if you prefer, <sql>SELECT 2</sql>"
+    assert _extract_sql(reply) == "SELECT 1"
+
+
+def test_a_dialect_s_own_statement_still_comes_back_from_the_keyword_scan() -> None:
+    """The scan now asks that what it found parse as SQL, in some dialect: T-SQL's
+    TOP does not parse in sqlglot's default one."""
+    assert _extract_sql("Here you go:\nSELECT TOP 5 name FROM t") == "SELECT TOP 5 name FROM t"
+
+
+def test_a_repair_that_ends_inside_its_statement_counts_as_cut_off() -> None:
+    """Whatever the provider said about why it stopped: never the half-written
+    statement (F14)."""
+    llm, _ = _recording_llm("<sql>SELECT id FROM orders WHERE total >", cut_off=False)
+
+    result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
+
+    assert result.sql == ""
+    assert result.failure == OUTPUT_BUDGET_EXHAUSTED
+
+
+def test_a_complete_statement_or_nothing_for_the_other_callers() -> None:
+    """The repairs and rewrites that accept whatever parses get nothing from a
+    reply that ended inside <sql> (from #412's review)."""
+    from nlqueries.orchestrator.sql_generation import _extract_complete_sql
+
+    assert _extract_complete_sql("<sql>SELECT o.id FROM orders o") == ""
+    assert (
+        _extract_complete_sql("<sql>SELECT o.id FROM orders o</sql>") == "SELECT o.id FROM orders o"
+    )
+    assert _extract_complete_sql("SELECT o.id FROM orders o") == "SELECT o.id FROM orders o"
