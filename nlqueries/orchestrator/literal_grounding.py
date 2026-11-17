@@ -82,6 +82,7 @@ import contextvars
 import difflib
 import functools
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -240,6 +241,7 @@ async def ground_literals(
     tables = _kb_tables(knowledge_base)
     if not tables:
         return GroundingResult(sql=sql)
+    schemas = _kb_schemas(knowledge_base)
     row_counts = _row_counts(knowledge_base)
     from nlqueries import config as _cfg  # noqa: PLC0415
 
@@ -281,7 +283,14 @@ async def ground_literals(
                 outcome = _from_values(literal, stored, mode) if stored is not None else None
             else:
                 outcome = await _outcome(
-                    session, scope, dialect, table_node, column_node, literal, stored, mode
+                    session,
+                    scope,
+                    dialect,
+                    _qualified(table_node, schemas),
+                    column_node,
+                    literal,
+                    stored,
+                    mode,
                 )
             if outcome is not None:
                 changed |= _apply(result, outcome, table_node, column_node, literal_node, flagged)
@@ -426,6 +435,18 @@ def _apply(
             )
         result.match_notes.append((note, kept))
         return True
+    if outcome.kind == "none":
+        # The user's answer to the choices an empty result offered (see
+        # :func:`empty_result_literals`): the value they picked for a literal
+        # that matched nothing stored is used as chosen (owner feedback F19).
+        picked = chosen_value(choice_key(table.name, column.name, literal))
+        if picked is not None and isinstance(literal_node.parent, (exp.EQ, exp.In)):
+            literal_node.set("this", picked)
+            result.substitutions.append((table.name, column.name, literal, picked))
+            result.match_notes.append(
+                (f"{_quote(literal)} was taken as {_quote_stored(picked)}, as chosen.", (picked,))
+            )
+            return True
     if outcome.kind == "variants":
         # A LIKE, which an IN cannot stand in for: left to the repair, as a
         # match on several values always was.
@@ -466,6 +487,39 @@ def _kb_tables(knowledge_base: dict[str, Any]) -> dict[str, dict[str, dict[str, 
             str(col.get("name") or "").lower(): col for col in table.get("columns", []) or []
         }
     return out
+
+
+def _kb_schemas(knowledge_base: dict[str, Any]) -> dict[str, set[str]]:
+    """``{table name (lower): the schemas the KB has a table of that name in}``."""
+    out: dict[str, set[str]] = {}
+    for table in knowledge_base.get("schema", {}).get("tables", []) or []:
+        name = str(table.get("name") or "").lower()
+        schema = str(table.get("schema") or "")
+        if name and schema:
+            out.setdefault(name, set()).add(schema)
+    return out
+
+
+def _qualified(table: exp.Table, schemas: dict[str, set[str]]) -> exp.Table:
+    """*table* as the lookups read it: with the schema the knowledge base records
+    for it, when the statement names none and the KB has exactly one.
+
+    A model's first draft often leaves the schema out. Where the connection's
+    search path does not include it, every lookup failed with "relation does
+    not exist" and grounding was skipped, though the repair later qualified the
+    statement and it ran: 692 of 709 lookups failed that way over eight hours
+    on one multi-schema deployment (owner feedback F19). The lookups now read
+    the table the statement that finally runs reads. Only the copy the lookups
+    use is qualified; the statement is not changed here.
+    """
+    if table.args.get("db") is not None:
+        return table
+    found = schemas.get(table.name.lower(), set())
+    if len(found) != 1:
+        return table
+    qualified = table.copy()
+    qualified.set("db", exp.to_identifier(next(iter(found))))
+    return qualified
 
 
 def _row_counts(knowledge_base: dict[str, Any]) -> dict[str, int]:
@@ -1029,3 +1083,200 @@ def _quote_stored(value: str) -> str:
     if len(value) > _MAX_NOTE_VALUE_CHARS:
         return _quote(value[:_MAX_NOTE_VALUE_CHARS]) + " [cut]"
     return _quote(value)
+
+
+# ---------------------------------------------------------------------------
+# After an empty result
+# ---------------------------------------------------------------------------
+
+#: Stored values offered for one literal an empty result names.
+_MAX_CANDIDATES = 5
+#: How alike a stored value must be to count as the literal spelled another way.
+_NEAR_SPELLING = 0.8
+#: Most words of a literal whose runs are looked up as stored values.
+_MAX_PART_WORDS = 8
+_WORD_SPLIT = re.compile(r"[\s/,;&+-]+")
+
+
+@dataclass(frozen=True)
+class EmptyLiteral:
+    """A literal an empty result compares a column with, that matches no
+    stored value, and what it may have meant."""
+
+    #: The table and column as the statement names them, so a choice for it is
+    #: keyed as :func:`_apply` reads it back.
+    table: str
+    column: str
+    literal: str
+    #: Stored values it may mean: its whole-word parts first, in the order the
+    #: literal names them, then near spellings. Empty when nothing is near.
+    candidates: tuple[str, ...]
+    #: Where the literal stands among the statement's string literals.
+    position: int
+
+
+def _word_runs(literal: str) -> list[str]:
+    """The runs of whole words in *literal*, folded, longest first, the whole
+    literal left out: 'Dallas Fort Worth' gives 'dallas fort', 'fort worth',
+    'dallas', 'fort', 'worth'."""
+    words = [w for w in _WORD_SPLIT.split(_fold(literal)) if w][:_MAX_PART_WORDS]
+    runs: list[str] = []
+    for size in range(len(words) - 1, 0, -1):
+        for start in range(len(words) - size + 1):
+            run = " ".join(words[start : start + size])
+            if len(run) >= 2 and run not in runs:
+                runs.append(run)
+    return runs
+
+
+def _parts_query(source: exp.Table, col: exp.Column, runs: list[str], dialect: str) -> exp.Expr:
+    """Distinct stored values equal to one of *runs* (folded), ignoring case
+    and surrounding spaces; on SQLite through NOCASE, as :func:`_loose_match`."""
+    if dialect == "sqlite":
+        left: exp.Expr = exp.Collate(
+            this=exp.Trim(this=col.copy()), expression=exp.Var(this="NOCASE")
+        )
+    else:
+        left = _normalised(col.copy())
+    return (
+        exp.select(col.copy())
+        .distinct()
+        .from_(source.copy())
+        .where(exp.In(this=left, expressions=[exp.Literal.string(r) for r in runs]))
+        .limit(_MAX_CANDIDATES * 2)
+    )
+
+
+def _in_literal_order(literal: str, values: list[str]) -> list[str]:
+    """*values* ordered by where they first stand in *literal*, longest first at a tie."""
+    folded = _fold(literal)
+    return sorted(
+        dict.fromkeys(values),
+        key=lambda v: (folded.find(_fold(v)) if _fold(v) in folded else len(folded), -len(v), v),
+    )
+
+
+async def empty_result_literals(
+    sql: str,
+    knowledge_base: dict[str, Any],
+    dialect: str,
+    source: LookupSource | None,
+) -> list[EmptyLiteral]:
+    """The literals of *sql*, a statement that returned no rows, that match no
+    stored value, each with the stored values it may mean (owner feedback F19).
+
+    Only ``=`` and ``IN`` comparisons with a column grounding would look up (a
+    text column the knowledge base knows, not a key, not personal data), and
+    only literals that match no stored value as the current match mode reads
+    them. A literal that matches a stored value is not named, though the rows
+    are still empty: the value is right and something else filtered them out.
+
+    The candidates, at most five: stored values that are runs of whole words of
+    the literal ('DALLAS' and 'FORT WORTH' for 'DALLAS FORT WORTH'), from the
+    column's complete list or one bounded query; then stored values spelled
+    nearly the same, from the nearby values grounding has found for the
+    literal (usually cached, so no query). Bounded and read-only as grounding
+    is, through the same *source*; any failure gives fewer or no literals.
+    """
+    if source is None or not sql.strip():
+        return []
+    try:
+        statement = sqlglot.parse_one(sql, read=dialect)
+    except Exception:  # noqa: BLE001
+        return []
+    if statement is None:
+        return []
+    tables = _kb_tables(knowledge_base)
+    if not tables:
+        return []
+    schemas = _kb_schemas(knowledge_base)
+    row_counts = _row_counts(knowledge_base)
+    from nlqueries import config as _cfg  # noqa: PLC0415
+
+    cap = _cfg.LITERAL_GROUNDING_MAX_ROWS
+    mode = current_settings().match_mode
+    positions = {id(node): i for i, node in enumerate(string_literals(statement))}
+    found: list[EmptyLiteral] = []
+    session = _Session(source, time.monotonic() + _TOTAL_BUDGET_S)
+    try:
+        for count, (table_node, column_node, literal_node, entry) in enumerate(
+            _comparisons(statement, tables)
+        ):
+            if count >= _MAX_LITERALS or not session.usable:
+                break
+            if not isinstance(literal_node.parent, (exp.EQ, exp.In)):
+                continue
+            literal = literal_node.this
+            stored = _stored_values(entry)
+            if stored is not None and literal in stored:
+                continue
+            rows = row_counts.get(table_node.name.lower())
+            too_large = cap > 0 and rows is not None and rows > cap
+            if too_large and stored is None:
+                continue
+            try:
+                scope = await session.cache_scope()
+            except Exception:  # noqa: BLE001
+                break
+            if scope != "":
+                stored = None
+            probe = _qualified(table_node, schemas)
+            if too_large:
+                outcome = _from_values(literal, stored, mode) if stored is not None else None
+            else:
+                outcome = await _outcome(
+                    session, scope, dialect, probe, column_node, literal, stored, mode
+                )
+            if outcome is None or outcome.kind != "none":
+                continue
+
+            runs = _word_runs(literal)
+            parts: list[str] = []
+            if runs and stored is not None:
+                wanted = set(runs)
+                parts = [v for v in dict.fromkeys(stored) if _fold(v) in wanted]
+            elif runs and not too_large:
+                src, col = _target(probe, column_node)
+                got = await session.run(
+                    _parts_query(src, col, runs, dialect), dialect, _MAX_CANDIDATES * 2
+                )
+                parts = [str(v) for v in got or () if v is not None]
+            target = _fold(literal)
+            near = [
+                v
+                for v in outcome.values
+                if v not in parts
+                and difflib.SequenceMatcher(None, target, _fold(v)).ratio() >= _NEAR_SPELLING
+            ]
+            candidates = tuple(
+                [*_in_literal_order(literal, parts), *_ranked(literal, near)][:_MAX_CANDIDATES]
+            )
+            found.append(
+                EmptyLiteral(
+                    table=table_node.name,
+                    column=column_node.name,
+                    literal=literal,
+                    candidates=candidates,
+                    position=positions.get(id(literal_node), -1),
+                )
+            )
+    finally:
+        session.close()
+    return found
+
+
+def with_literal(sql: str, dialect: str, position: int, value: str) -> str | None:
+    """*sql* with its string literal at *position* (as :func:`string_literals`
+    counts them) replaced by *value*; ``None`` if it cannot be done safely."""
+    try:
+        statement = sqlglot.parse_one(sql, read=dialect)
+        literals = string_literals(statement)
+        if not 0 <= position < len(literals):
+            return None
+        literals[position].set("this", value)
+        rendered = statement.sql(dialect=dialect)
+        again = [n.this for n in string_literals(sqlglot.parse_one(rendered, read=dialect))]
+    except Exception:  # noqa: BLE001
+        return None
+    expected = [n.this for n in literals]
+    return rendered if again == expected else None

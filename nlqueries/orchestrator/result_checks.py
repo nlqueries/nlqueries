@@ -256,6 +256,14 @@ def _filters(select: exp.Select) -> bool:
     return any(select.args.get(arg) is not None for arg in ("where", "having", "joins"))
 
 
+#: The note an empty result gets when nothing more specific can be said. Named
+#: so the follow-up that can say more (`empty_result`) replaces exactly it.
+EMPTY_RESULT_NOTE = (
+    "No rows matched. If you expected some, a filter may be narrower than "
+    "intended, for example a value spelled differently in the data."
+)
+
+
 def _empty_result(statement: exp.Expr | None, result: QueryResult) -> list[ResultConcern]:
     """No rows from a statement that filters. Often the true answer, so only
     noted: a value spelled differently in the data, or a filter stricter than
@@ -266,10 +274,7 @@ def _empty_result(statement: exp.Expr | None, result: QueryResult) -> list[Resul
     return [
         ResultConcern(
             kind="empty_result",
-            detail=(
-                "No rows matched. If you expected some, a filter may be narrower than "
-                "intended, for example a value spelled differently in the data."
-            ),
+            detail=EMPTY_RESULT_NOTE,
             repairable=False,
         )
     ]
