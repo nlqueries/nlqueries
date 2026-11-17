@@ -37,6 +37,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
+from nlqueries.orchestrator.empty_result import follow_up_empty_result
 from nlqueries.orchestrator.grain_check import check_grain
 from nlqueries.orchestrator.match_notes import (
     choices_for,
@@ -47,7 +48,12 @@ from nlqueries.orchestrator.match_notes import (
 from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
-from nlqueries.orchestrator.result_checks import check_result, is_whole_result, keeps_every_row
+from nlqueries.orchestrator.result_checks import (
+    EMPTY_RESULT_NOTE,
+    check_result,
+    is_whole_result,
+    keeps_every_row,
+)
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
@@ -653,6 +659,9 @@ class Orchestrator:
             # database.
             sql_table: dict[str, Any] = {}
             result_notes: list[str] = []
+            # Values to choose between that an empty result offered (see
+            # `empty_result`), beside those grounding left for the user.
+            empty_choices: list[Any] = []
             # A value the user is to choose (NLQ_AMBIGUITY=ask): nothing runs
             # until they have, since any value taken for them would be a guess.
             awaiting = choices_for(choices, result.sql, dialect)
@@ -812,6 +821,32 @@ class Orchestrator:
                             span.set_attribute("result_repaired", True)
                             result = checked
                             span.set_attribute("attempt_count", result.attempt_count)
+                        # No rows because a value the statement names is not
+                        # stored: the values it may mean, to choose between, run
+                        # with, or name in the note (owner feedback F19).
+                        if current_settings().result_checks:
+                            try:
+                                followup = await follow_up_empty_result(
+                                    result,
+                                    qr,
+                                    connector=connector,
+                                    kb=kb,
+                                    dialect=dialect,
+                                    lookups=lookups,
+                                    # Asked just before the rerun, after the
+                                    # lookups: see `follow_up_empty_result`.
+                                    budget=lambda: _correction_budget(timeout_seconds, deadline),
+                                )
+                            except Exception:  # noqa: BLE001 — advisory, like the checks
+                                _log.warning("Following up an empty result failed.", exc_info=True)
+                                followup = None
+                            if followup is not None:
+                                span.set_attribute("empty_result_followup", True)
+                                result, qr = followup.result, followup.qr
+                                result_notes = [
+                                    n for n in result_notes if n != EMPTY_RESULT_NOTE
+                                ] + followup.notes
+                                empty_choices = list(followup.choices)
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
@@ -846,8 +881,8 @@ class Orchestrator:
             told = notes_for(match_notes, result.sql, dialect)
             if told or result_notes:
                 frame["result_notes"] = [*told, *result_notes]
-            if awaiting:
-                frame["choices"] = [c.as_dict() for c in awaiting]
+            if awaiting or empty_choices:
+                frame["choices"] = [c.as_dict() for c in [*awaiting, *empty_choices]]
             yield json.dumps(frame, default=_json_default)
 
     def _load_knowledge_base(self, agent_id: str) -> dict[str, Any]:
