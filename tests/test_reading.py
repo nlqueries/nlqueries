@@ -94,9 +94,36 @@ def test_a_column_held_between_two_bounds_is_said(sql: str, said: list[str]) -> 
         ("SELECT * FROM f WHERE (a = 'BOS' AND b = 'DEN') OR (a = 'DEN' AND b = 'LAX')", []),
         ("SELECT * FROM f WHERE (a = 'BOS' AND b = 'BOS') OR (a = 'BOS' AND b = 'BOS')", []),
         ("SELECT * FROM f WHERE (a = 'BOS' AND b = 'DEN') OR (a = 'DEN' AND c = 'BOS')", []),
+        # A self-join: the same column name on two tables is two columns.
+        (
+            "SELECT * FROM f JOIN airport o ON f.o = o.id JOIN airport d ON f.d = d.id "
+            "WHERE (o.code = 'BOS' AND d.code = 'DEN') OR (o.code = 'DEN' AND d.code = 'BOS')",
+            ["either way between 'BOS' and 'DEN'"],
+        ),
     ],
 )
 def test_two_columns_matched_either_way_round_are_said(sql: str, said: list[str]) -> None:
+    assert _said(sql) == said
+
+
+@pytest.mark.parametrize(
+    ("sql", "said"),
+    [
+        # A bound on each of two tables' columns of one name is no range.
+        (
+            "SELECT * FROM o JOIN s ON o.id = s.id "
+            "WHERE o.created_at >= '2024-01-01' AND s.created_at < '2024-02-01'",
+            [],
+        ),
+        # Two ranges on columns of one name are each said with their table.
+        (
+            "SELECT * FROM o JOIN s ON o.id = s.id "
+            "WHERE o.d >= 1 AND o.d <= 5 AND s.d >= 2 AND s.d <= 3",
+            ["o.d from 1 to 5", "s.d from 2 to 3"],
+        ),
+    ],
+)
+def test_columns_of_one_name_on_two_tables_are_kept_apart(sql: str, said: list[str]) -> None:
     assert _said(sql) == said
 
 
@@ -114,6 +141,19 @@ def test_two_columns_matched_either_way_round_are_said(sql: str, said: list[str]
         ),
         # Ordering with no limit cuts nothing.
         ("SELECT * FROM t ORDER BY revenue DESC", "postgres", []),
+        # Rows skipped first are said: these are the 11th to the 20th.
+        (
+            "SELECT * FROM t ORDER BY fare DESC LIMIT 10 OFFSET 10",
+            "postgres",
+            ["top 10 by fare after the first 10"],
+        ),
+        (
+            "SELECT * FROM t LIMIT 10 OFFSET 20",
+            "mysql",
+            ["any 10 rows after the first 20, in no set order"],
+        ),
+        # An offset that is not a number cannot be said, so neither is the limit.
+        ("SELECT * FROM t ORDER BY fare DESC LIMIT 10 OFFSET :skip", "postgres", []),
     ],
 )
 def test_a_row_limit_is_said_with_the_ordering_it_cuts(

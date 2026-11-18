@@ -126,7 +126,10 @@ _FLIPPED = {"lower": "upper", "upper": "lower"}
 
 def _ranges(conds: list[exp.Expr], dialect: str) -> list[ReadingItem]:
     items: list[ReadingItem] = []
+    # Keyed by the column as written, table and all: `o.created_at` and
+    # `s.created_at` are two columns, and a bound on each is no range.
     bounds: dict[str, dict[str, tuple[str, bool]]] = {}
+    names: dict[str, str] = {}
     order: list[str] = []
     for cond in conds:
         if isinstance(cond, exp.Between) and isinstance(cond.this, exp.Column):
@@ -148,33 +151,38 @@ def _ranges(conds: list[exp.Expr], dialect: str) -> list[ReadingItem]:
         shown = _value(literal, dialect)
         if shown is None:
             continue
-        key = _name(column, dialect)
+        key = column.sql(dialect=dialect)
         if key not in bounds:
             bounds[key] = {}
+            names[key] = _name(column, dialect)
             order.append(key)
         bounds[key].setdefault(side, (shown, inclusive))
     for key in order:
         b = bounds[key]
         if "lower" in b and "upper" in b:
+            # Said by name alone, unless another column bounded here has it.
+            shared = sum(1 for k in order if names[k] == names[key]) > 1
+            said = key if shared else names[key]
             (low, low_in), (high, high_in) = b["lower"], b["upper"]
             if low_in and high_in:
-                items.append(ReadingItem("range", f"{key} from {low} to {high}"))
+                items.append(ReadingItem("range", f"{said} from {low} to {high}"))
             else:
                 lower = f"{'at least' if low_in else 'over'} {low}"
                 upper = f"{'at most' if high_in else 'under'} {high}"
-                items.append(ReadingItem("range", f"{key} {lower} and {upper}"))
+                items.append(ReadingItem("range", f"{said} {lower} and {upper}"))
     return items
 
 
 def _equalities(branch: exp.Expr) -> dict[str, str] | None:
-    """``{column: value}`` of a branch made only of column = text value."""
+    """``{column: value}`` of a branch made only of column = text value, the
+    column as written: in a self-join, `o.code` and `d.code` are two."""
     found: dict[str, str] = {}
     for cond in _conjuncts(branch):
         pair = _column_and_literal(cond) if isinstance(cond, exp.EQ) else None
         shown = _text(pair[1]) if pair else None
         if pair is None or shown is None:
             return None
-        found[pair[0].name] = shown
+        found[pair[0].sql()] = shown
     return found
 
 
@@ -186,7 +194,7 @@ def _both_directions(conds: list[exp.Expr]) -> list[ReadingItem]:
         one, two = _equalities(cond.left), _equalities(cond.right)
         if not one or not two or len(one) != 2 or set(one) != set(two):
             continue
-        a, b = sorted(one)
+        a, b = list(one)  # as the statement writes them
         if one[a] == two[b] and one[b] == two[a] and one[a] != one[b]:
             items.append(
                 ReadingItem("both_directions", f"either way between {one[a]} and {one[b]}")
@@ -200,14 +208,22 @@ def _limit(select: exp.Select, dialect: str) -> list[ReadingItem]:
     if not isinstance(count, exp.Literal) or count.is_string:
         return []
     n = count.this
+    # Rows skipped first: `LIMIT 10 OFFSET 10` is the 11th to the 20th.
+    after = ""
+    offset = select.args.get("offset")
+    if offset is not None:
+        skipped = offset.expression if isinstance(offset, exp.Offset) else None
+        if not isinstance(skipped, exp.Literal) or skipped.is_string:
+            return []
+        after = f" after the first {skipped.this}"
     order = select.args.get("order")
     keys = order.expressions if isinstance(order, exp.Order) else []
     if not keys:
-        return [ReadingItem("limit", f"any {n} rows, in no set order")]
+        return [ReadingItem("limit", f"any {n} rows{after}, in no set order")]
     first = keys[0]
     key = first.this if isinstance(first, exp.Ordered) else first
     word = "top" if isinstance(first, exp.Ordered) and first.args.get("desc") else "bottom"
-    return [ReadingItem("limit", f"{word} {n} by {_name(key, dialect)}")]
+    return [ReadingItem("limit", f"{word} {n} by {_name(key, dialect)}{after}")]
 
 
 def read_as(sql: str, dialect: str) -> list[ReadingItem]:
