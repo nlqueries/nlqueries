@@ -54,12 +54,12 @@ COUNT_TIMEOUT_SECONDS = 2.0
 DIALECTS = frozenset({"postgres", "mysql", "sqlite", "duckdb"})
 
 
-def _conditions(where: exp.Expression) -> list[exp.Expression]:
+def _conditions(where: exp.Expr) -> list[exp.Expr]:
     """The top-level ``AND`` conditions of *where*, in the order written."""
     node = where.this if isinstance(where, exp.Where) else where
-    out: list[exp.Expression] = []
+    out: list[exp.Expr] = []
 
-    def walk(e: exp.Expression) -> None:
+    def walk(e: exp.Expr) -> None:
         e = e.unnest()
         if isinstance(e, exp.And):
             walk(e.left)
@@ -71,7 +71,7 @@ def _conditions(where: exp.Expression) -> list[exp.Expression]:
     return out
 
 
-def _triable(condition: exp.Expression) -> bool:
+def _triable(condition: exp.Expr) -> bool:
     """Whether *condition* may be left out and named: it reads no subquery and
     no column whose values are personal."""
     if condition.find(exp.Subquery, exp.Select, exp.Exists) is not None:
@@ -79,7 +79,7 @@ def _triable(condition: exp.Expression) -> bool:
     return not any(is_pii_column(c.name) for c in condition.find_all(exp.Column))
 
 
-def _is_star(column: exp.Expression) -> bool:
+def _is_star(column: exp.Expr) -> bool:
     """Whether *column*, an output column, is ``*`` or ``t.*``."""
     e = column.unalias()
     return isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star))
@@ -96,7 +96,7 @@ def _plain(select: exp.Select) -> bool:
     )
 
 
-def _counted(select: exp.Select, kept: list[exp.Expression]) -> exp.Select:
+def _counted(select: exp.Select, kept: list[exp.Expr]) -> exp.Select:
     """A ``COUNT(*)`` of *select*'s rows with only the *kept* conditions.
 
     The statement is counted as a derived table, so ``DISTINCT`` and
@@ -118,7 +118,7 @@ def _counted(select: exp.Select, kept: list[exp.Expression]) -> exp.Select:
         inner.set("expressions", [exp.alias_(exp.Literal.number(1), "c1")])
     else:
         taken = {e.alias.lower() for e in inner.expressions if e.alias}
-        named: list[exp.Expression] = []
+        named: list[exp.Expr] = []
         for i, e in enumerate(inner.expressions, 1):
             if e.alias:
                 named.append(e.copy())
