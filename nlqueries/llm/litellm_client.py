@@ -177,10 +177,11 @@ def _streams_usage(model: str) -> bool:
     """Whether to ask *model*'s stream for its usage (``stream_options``).
 
     On OpenAI-compatible routes, as LiteLLM lists them, where LiteLLM says the
-    route accepts ``stream_options``; and for Claude on Bedrock, which LiteLLM
-    doesn't list as accepting it but answers with Bedrock's usage, cache reads
-    and writes included. Without it such a stream ends with no usage at all,
-    and the record has to be an estimate with no cache split.
+    route accepts ``stream_options``; and for Claude on Bedrock, which is not
+    such a route (and which some LiteLLM releases, 1.100 among them, do not
+    list as accepting the option) but answers it with Bedrock's usage, cache
+    reads and writes included. Without it such a stream ends with no usage at all, and the
+    record has to be an estimate with no cache split.
     """
     if _is_bedrock_claude(model):
         return True
