@@ -68,6 +68,7 @@ from nlqueries.orchestrator.provenance import (
     record_intent_confidence,
     record_route,
 )
+from nlqueries.orchestrator.reading import read_as
 from nlqueries.orchestrator.result_checks import EMPTY_RESULT_NOTE
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 from nlqueries.query_settings import current as current_settings
@@ -814,6 +815,12 @@ class MultiAgentOrchestrator:
                     _hit_chunk["sql_table"] = await _execute_cached_sql(
                         agent_id, _cached.sql, timeout_seconds, dialect, execution, _decision
                     )
+                    # Read from the statement alone, so a replay says what the
+                    # live answer said.
+                    if current_settings().reading_line and _hit_chunk["is_valid"]:
+                        _reading = read_as(_cached.sql, dialect)
+                        if _reading:
+                            _hit_chunk["reading"] = [item.as_dict() for item in _reading]
             elif _cached.agent_type == "document":
                 _hit_chunk["type"] = "citations"
                 _hit_chunk["citations"] = []

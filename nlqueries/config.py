@@ -64,6 +64,7 @@ QUERY_SETTING_VARS: tuple[str, ...] = (
     "NLQ_LITERAL_GROUNDING",
     "NLQ_LITERAL_GROUNDING_REPAIR",
     "NLQ_EMPTY_RESULT_EXPLAIN",
+    "NLQ_READING_LINE",
 )
 
 
@@ -628,6 +629,13 @@ condition without which rows come back, with the count. PostgreSQL, MySQL,
 MariaDB, SQLite and DuckDB only. Off by default; set
 NLQ_EMPTY_RESULT_EXPLAIN=true to turn it on (see
 :mod:`nlqueries.orchestrator.empty_explain`)."""
+
+READING_LINE: bool = os.getenv("NLQ_READING_LINE", "false").lower() in ("1", "true", "yes")
+"""Say, beside each answer, how the question was read: the values, ranges, two-way
+matches and row limit the final statement uses, from the statement alone, with no
+model call (``reading`` in the final frame and on ``AgentQueryResult``). Off by
+default; set NLQ_READING_LINE=true to turn it on (see
+:mod:`nlqueries.orchestrator.reading`)."""
 
 LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
     "1",

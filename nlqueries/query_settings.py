@@ -41,6 +41,7 @@ ENV_VARS: dict[str, str] = {
     "literal_grounding": "NLQ_LITERAL_GROUNDING",
     "literal_grounding_repair": "NLQ_LITERAL_GROUNDING_REPAIR",
     "empty_result_explain": "NLQ_EMPTY_RESULT_EXPLAIN",
+    "reading_line": "NLQ_READING_LINE",
 }
 
 
@@ -57,6 +58,7 @@ class QuerySettings:
     literal_grounding: bool = True
     literal_grounding_repair: bool = True
     empty_result_explain: bool = False
+    reading_line: bool = False
 
     def __post_init__(self) -> None:
         if self.match_mode not in config.MATCH_MODES:
@@ -91,6 +93,7 @@ class QuerySettings:
             literal_grounding=config.LITERAL_GROUNDING,
             literal_grounding_repair=config.LITERAL_GROUNDING_REPAIR,
             empty_result_explain=config.EMPTY_RESULT_EXPLAIN,
+            reading_line=config.READING_LINE,
         )
 
     def overridden(self, values: Mapping[str, Any]) -> QuerySettings:
@@ -152,6 +155,7 @@ _DESCRIPTIONS: dict[str, str] = {
     "empty_result_explain": (
         "After an empty result, name each condition without which rows come back, with the count."
     ),
+    "reading_line": "Say beside each answer how the question was read, from its statement.",
 }
 
 
