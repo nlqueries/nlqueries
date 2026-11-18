@@ -152,6 +152,17 @@ def test_columns_of_one_name_on_two_tables_are_kept_apart(sql: str, said: list[s
             "mysql",
             ["any 10 rows after the first 20, in no set order"],
         ),
+        # MySQL's and SQLite's `LIMIT offset, count`: the same rows skipped.
+        (
+            "SELECT * FROM t ORDER BY fare DESC LIMIT 10, 5",
+            "mysql",
+            ["top 5 by fare after the first 10"],
+        ),
+        (
+            "SELECT * FROM t LIMIT 10, 5",
+            "sqlite",
+            ["any 5 rows after the first 10, in no set order"],
+        ),
         # An offset that is not a number cannot be said, so neither is the limit.
         ("SELECT * FROM t ORDER BY fare DESC LIMIT 10 OFFSET :skip", "postgres", []),
     ],
