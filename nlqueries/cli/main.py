@@ -3688,6 +3688,7 @@ def query(
             "latency_ms": result.latency_ms,
             "session_id": result.session_id,
             "result_notes": result.result_notes,
+            "reading": result.reading,
             "choices": result.choices,
         }
         if result.provenance is not None:
@@ -3717,6 +3718,9 @@ def query(
                     f"[dim]{sql_result.row_count} row(s) "
                     f"in {sql_result.execution_time_ms:.1f} ms[/dim]"
                 )
+        if result.reading:
+            read = "; ".join(item["text"] for item in result.reading)
+            console.print(f"[bold]Read as    :[/bold] {escape(read)}")
         for note in result.result_notes:
             console.print(f"[yellow]Note       :[/yellow] {escape(note)}")
         for choice in result.choices:

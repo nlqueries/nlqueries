@@ -6,6 +6,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **An answer can say how the question was read.** With
+  `NLQ_READING_LINE=true` (`reading_line` in `QuerySettings`; off by
+  default), each answer carries `reading`: the text values, ranges, two-way
+  matches and row limit its final statement uses, each in a few words
+  (`origin 'SFO'; dep from 1130 to 1230; top 10 by revenue`). Read from the
+  statement alone, with no model call, so a cached answer replayed says the
+  same. `nlqueries query` and the MCP `query` tool show it as "Read as", and
+  `AgentQueryResult.reading` and `--json` carry it.
 - **An empty result can say which condition left it empty.** With
   `NLQ_EMPTY_RESULT_EXPLAIN=true` (`empty_result_explain` in
   `QuerySettings`; off by default), a statement that returns no rows, with

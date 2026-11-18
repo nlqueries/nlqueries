@@ -414,6 +414,10 @@ async def query(
         suffix = f"\n*(showing {shown} of {qr.row_count} rows)*" if qr.row_count > shown else ""
         parts.append(f"\n\n**Results**\n\n{header}\n{sep}\n{rows}{suffix}")
 
+    if result.reading:
+        read = "; ".join(item["text"] for item in result.reading)
+        parts.append(f"\n\n**Read as**: {read}")
+
     if result.result_notes:
         parts.append("\n\n**Note**")
         for note in result.result_notes:

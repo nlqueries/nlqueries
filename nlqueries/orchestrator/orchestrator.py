@@ -50,6 +50,7 @@ from nlqueries.orchestrator.plan_check import check_plan
 from nlqueries.orchestrator.previous_attempt import current_previous_attempt
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
+from nlqueries.orchestrator.reading import read_as
 from nlqueries.orchestrator.result_checks import (
     EMPTY_RESULT_NOTE,
     check_result,
@@ -948,6 +949,11 @@ class Orchestrator:
                 told = [*told, PREVIOUS_ATTEMPT_UNCHANGED_NOTE]
             if told or result_notes:
                 frame["result_notes"] = [*told, *result_notes]
+            # How the question was read, from the statement alone (F20).
+            if current_settings().reading_line and result.is_valid and result.sql:
+                reading = read_as(result.sql, dialect)
+                if reading:
+                    frame["reading"] = [item.as_dict() for item in reading]
             if awaiting or empty_choices:
                 frame["choices"] = [c.as_dict() for c in [*awaiting, *empty_choices]]
             yield json.dumps(frame, default=_json_default)

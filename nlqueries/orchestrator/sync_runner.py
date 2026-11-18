@@ -90,6 +90,9 @@ class AgentQueryResult:
     #: 100, no rows from a filter. The orchestrator already tried to correct what
     #: it could; these are what remain. Empty when there is nothing to say.
     result_notes: list[str] = field(default_factory=list)
+    #: How the question was read, ``{"kind", "text"}`` per item, when
+    #: ``reading_line`` is on (see :mod:`nlqueries.orchestrator.reading`).
+    reading: list[dict[str, str]] = field(default_factory=list)
     #: Values the user is asked to choose between before the question runs
     #: (``NLQ_AMBIGUITY=ask``), one dict each: ``key``, ``column``, ``asked``
     #: (the value as the question named it) and ``options`` (the stored values
@@ -413,6 +416,11 @@ async def run_query(
         from_cache=from_cache,
         provenance=prov,
         result_notes=[str(note) for note in chunk.get("result_notes") or []],
+        reading=[
+            {"kind": str(r.get("kind", "")), "text": str(r.get("text", ""))}
+            for r in chunk.get("reading") or []
+            if isinstance(r, dict)
+        ],
         choices=[dict(c) for c in chunk.get("choices") or [] if isinstance(c, dict)],
         validation_error=_text_or_none(chunk.get("validation_error")),
         validation_code=_text_or_none(chunk.get("validation_code")),
