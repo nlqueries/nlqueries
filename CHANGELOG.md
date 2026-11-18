@@ -213,6 +213,14 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **An empty answer that says why is no longer cached.** The semantic cache
+  keeps an answer's SQL and text, not its notes. An answer with no rows that
+  named the value that matched nothing, or the stored values it may have
+  meant, was cached; a replay ran the same statement and returned the same
+  empty result with nothing said, and a similar question could be given that
+  statement. Such an answer is now not written to the cache. An empty answer
+  with nothing to explain, and an answer with rows and notes, are cached as
+  before.
 - **Matching values works when the statement leaves out the schema.** The
   lookups that match a value the question names to what a column stores read
   the table exactly as the model first wrote it. When that draft named a bare

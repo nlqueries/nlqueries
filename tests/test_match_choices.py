@@ -241,6 +241,35 @@ def test_an_answer_with_nothing_to_choose_is_cached_as_before() -> None:
     _through_the_router({"type": "sql", "sql": "SELECT 1"}).assert_called_once()
 
 
+def _with_rows(row_count: int, notes: list[str] | None) -> dict[str, Any]:
+    frame: dict[str, Any] = {
+        "type": "sql",
+        "sql": "SELECT 1",
+        "sql_table": {"columns": ["n"], "rows": [[1]] * row_count, "row_count": row_count},
+    }
+    if notes is not None:
+        frame["result_notes"] = notes
+    return frame
+
+
+def test_an_empty_answer_with_notes_is_not_cached() -> None:
+    """A replay keeps the SQL and the text, not the notes: it would return the
+    same empty result without saying which value matched nothing."""
+    notes = [
+        "No rows matched: no stored region is 'NORTH WEST', and no stored value is close to it."
+    ]
+    _through_the_router(_with_rows(0, notes)).assert_not_called()
+
+
+def test_an_empty_answer_with_nothing_to_explain_is_cached_as_before() -> None:
+    _through_the_router(_with_rows(0, None)).assert_called_once()
+
+
+def test_an_answer_with_rows_and_notes_is_cached_as_before() -> None:
+    notes = ["'north' was taken as 'NORTH', the stored value."]
+    _through_the_router(_with_rows(2, notes)).assert_called_once()
+
+
 def _lookups(chosen: dict[str, str] | None) -> MagicMock:
     """The semantic cache's reads for one question through the router."""
     cache = MagicMock()

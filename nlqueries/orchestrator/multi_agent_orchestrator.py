@@ -261,6 +261,27 @@ def _asks_for_a_choice(tokens: list[str]) -> bool:
     return False
 
 
+def _empty_with_notes(tokens: list[str]) -> bool:
+    """Whether the SQL agent's final frame in *tokens* has no rows and says why.
+
+    Such an answer is not cached. The cache keeps the SQL and the answer text,
+    not the notes: a replay re-runs the statement and returns the same empty
+    result with nothing saying which value matched nothing, or what it may
+    have meant. And a similar question would be given the same statement. An
+    empty result with nothing to say about it (no orders today) is cached as
+    before.
+    """
+    for token in reversed(tokens):
+        if _is_final_chunk(token):
+            try:
+                frame = json.loads(token)
+            except (json.JSONDecodeError, ValueError):
+                return False
+            table = frame.get("sql_table") or {}
+            return bool(frame.get("result_notes")) and table.get("row_count") == 0
+    return False
+
+
 def _schedule_cache_write(
     cache: SemanticCache,
     key: str,
@@ -854,7 +875,13 @@ class MultiAgentOrchestrator:
                     yield token
             # Not an answer that waits on a choice, nor one worked out with values
             # the user chose: either replayed would skip asking the next user.
-            if use_cache and not any_chosen() and not _asks_for_a_choice(seen):
+            # Nor an empty one with notes, which a replay would give without them.
+            if (
+                use_cache
+                and not any_chosen()
+                and not _asks_for_a_choice(seen)
+                and not _empty_with_notes(seen)
+            ):
                 _schedule_cache_write(
                     _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
                 )
