@@ -67,6 +67,7 @@ from nlqueries.orchestrator.provenance import (
     record_intent_confidence,
     record_route,
 )
+from nlqueries.orchestrator.result_checks import EMPTY_RESULT_NOTE
 from nlqueries.orchestrator.result_merger import HybridQueryResult, merge_results
 from nlqueries.query_settings import current as current_settings
 from nlqueries.sql_policy import PolicyDecision, evaluate
@@ -262,14 +263,18 @@ def _asks_for_a_choice(tokens: list[str]) -> bool:
 
 
 def _empty_with_notes(tokens: list[str]) -> bool:
-    """Whether the SQL agent's final frame in *tokens* has no rows and says why.
+    """Whether the SQL agent's final frame in *tokens* has no rows and a note
+    saying something particular about it.
 
     Such an answer is not cached. The cache keeps the SQL and the answer text,
     not the notes: a replay re-runs the statement and returns the same empty
     result with nothing saying which value matched nothing, or what it may
-    have meant. And a similar question would be given the same statement. An
-    empty result with nothing to say about it (no orders today) is cached as
-    before.
+    have meant. And a similar question would be given the same statement.
+
+    The generic ``EMPTY_RESULT_NOTE``, which result checks attach to nearly any
+    filtered empty result as a hedge ("often the true answer"), does not count:
+    an empty answer with only that, or with no note at all, is cached as before
+    (from #414's review).
     """
     for token in reversed(tokens):
         if _is_final_chunk(token):
@@ -278,7 +283,8 @@ def _empty_with_notes(tokens: list[str]) -> bool:
             except (json.JSONDecodeError, ValueError):
                 return False
             table = frame.get("sql_table") or {}
-            return bool(frame.get("result_notes")) and table.get("row_count") == 0
+            particular = [n for n in frame.get("result_notes") or [] if n != EMPTY_RESULT_NOTE]
+            return bool(particular) and table.get("row_count") == 0
     return False
 
 
