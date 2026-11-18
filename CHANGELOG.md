@@ -6,6 +6,18 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **A caller can ask for a corrected statement (#408).** `run_query` takes
+  `previous_attempt={"sql", "reason", "kind"}`, the CLI's `query`
+  `--previous-sql`, `--previous-reason` and `--previous-kind`, and the MCP
+  `query` tool `previous_attempt`. The kind is `rejected` (the caller's own
+  check refused the statement), `error` (the database did) or `empty` (it
+  returned no rows). The question is then answered with one correction of
+  that statement, framed as the correction after a database error is, in
+  place of a fresh one. The reason is treated as data and capped. The
+  correction is validated as any statement is, runs only if the execution
+  policy allows, and is never read from or written to the semantic cache. A
+  correction that is the same statement is not run, whatever the policy, and
+  says so in a note.
 - **An empty answer says which value matched nothing, and what it may have
   meant.** When a statement returns no rows and a value it compares a text
   column with matches no stored value, the values it may mean are looked for:

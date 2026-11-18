@@ -3493,6 +3493,26 @@ def _ask_choices(choices: list[dict[str, Any]]) -> dict[str, str]:
     help="With NLQ_AMBIGUITY=ask, the stored value meant for a choice an earlier "
     "answer listed, by its key. Repeat for several.",
 )
+@click.option(
+    "--previous-sql",
+    default=None,
+    help="A statement you tried for this question that did not do: the answer is "
+    "then one correction of it, validated as any statement is. Needs --previous-reason.",
+)
+@click.option(
+    "--previous-reason",
+    default=None,
+    help="Why the --previous-sql statement did not do: your check's refusal, the "
+    "database's error, or what was wrong with the result.",
+)
+@click.option(
+    "--previous-kind",
+    type=click.Choice(["rejected", "error", "empty"]),
+    default="error",
+    show_default=True,
+    help="How the --previous-sql statement failed: refused by your own check, "
+    "refused by the database, or it returned no rows.",
+)
 def query(
     agent_id: str,
     question: str,
@@ -3504,6 +3524,9 @@ def query(
     explain: bool,
     paraphrase: bool,
     choose: tuple[tuple[str, str], ...],
+    previous_sql: str | None,
+    previous_reason: str | None,
+    previous_kind: str,
 ) -> None:
     """Run a synchronous agent query and print the result.
 
@@ -3523,7 +3546,19 @@ def query(
       nlqueries query my_agent "How many orders last month?"
       nlqueries query my_agent "Top customers by revenue" --no-execute
       nlqueries query my_agent "Top customers by revenue" --json
+      nlqueries query my_agent "Top customers by revenue" --no-execute \\
+        --previous-sql "SELECT ..." --previous-reason "refused: no SELECT *" \\
+        --previous-kind rejected
     """
+    if previous_sql is None and previous_reason is not None:
+        raise click.UsageError("--previous-reason needs --previous-sql.")
+    if previous_sql is not None and not (previous_reason or "").strip():
+        raise click.UsageError("--previous-sql needs --previous-reason: say why it did not do.")
+    previous_attempt = (
+        {"sql": previous_sql, "reason": previous_reason, "kind": previous_kind}
+        if previous_sql is not None
+        else None
+    )
     agent_id = _resolve_alias(agent_id)
     resolved_dialect = _resolve_dialect(agent_id, dialect)
 
@@ -3567,6 +3602,7 @@ def query(
             explain=explain,
             execution=execution,
             chosen_values=chosen,
+            previous_attempt=previous_attempt,
         )
 
     try:

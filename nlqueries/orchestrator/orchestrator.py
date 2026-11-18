@@ -26,7 +26,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -46,6 +46,7 @@ from nlqueries.orchestrator.match_notes import (
     notes_for,
 )
 from nlqueries.orchestrator.plan_check import check_plan
+from nlqueries.orchestrator.previous_attempt import current_previous_attempt
 from nlqueries.orchestrator.prompt_assembly import assemble_prompt_async
 from nlqueries.orchestrator.provenance import record_timing, record_validator_warning
 from nlqueries.orchestrator.result_checks import (
@@ -58,6 +59,7 @@ from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
     _extract_sql,
     _same_statement,
+    correct_previous_attempt,
     failure_code,
     repair_after_execution_error,
     repair_after_suspicious_result,
@@ -183,6 +185,19 @@ def _driver_message(error: str) -> str:
     """
     message = error.split(_SQLALCHEMY_ECHO, 1)[0]
     return "\n".join(ln for ln in message.splitlines() if not _ECHOED_LINE.match(ln))
+
+
+#: Said with an answer whose "correction" of the caller's previous attempt is
+#: that same statement: the model found nothing in it to change (issue #408).
+PREVIOUS_ATTEMPT_UNCHANGED_NOTE = (
+    "The statement is the one you tried: asked for a correction, the model found "
+    "nothing in it to change, so it was not run again."
+)
+
+
+async def _one_reply(text: str) -> AsyncIterator[str]:
+    """*text* as a stream of one token, for the code that reads the model's stream."""
+    yield text
 
 
 def _retry_after_error(
@@ -522,7 +537,23 @@ class Orchestrator:
             found_sql: bool = False
             all_tokens: list[str] = []
 
-            async for token in llm.astream(system, prompt.user_content()):
+            # A caller that tried a statement itself and says why it did not
+            # do (issue #408) gets a correction of it, in one call framed as
+            # the correction after a database error is, in place of a fresh
+            # statement. Its reply is read exactly as the stream is, so the
+            # statement in it goes through the same validation, grounding and
+            # checks as any first attempt, and runs only if the policy allows.
+            previous = current_previous_attempt()
+            if previous is not None:
+                span.set_attribute("previous_attempt", previous.kind)
+                reply = await correct_previous_attempt(
+                    previous, prompt.user_content(), dialect, llm, system
+                )
+                tokens: AsyncIterator[str] = _one_reply(reply)
+            else:
+                tokens = llm.astream(system, prompt.user_content())
+
+            async for token in tokens:
                 all_tokens.append(token)
 
                 if in_sql:
@@ -667,7 +698,15 @@ class Orchestrator:
             awaiting = choices_for(choices, result.sql, dialect)
             if awaiting:
                 span.set_attribute("choices_pending", len(awaiting))
-            if result.is_valid and execution.may_execute and not awaiting:
+            # A "correction" that is the caller's own statement is not run: it
+            # is what their check or their database already refused, or what
+            # already returned nothing, and running it again for them would
+            # override that refusal (and, after an error, only ask for a second
+            # correction of the same statement). It comes back with a note.
+            unchanged = previous is not None and _same_statement(result.sql, previous.sql, dialect)
+            if unchanged:
+                span.set_attribute("previous_attempt_unchanged", True)
+            if result.is_valid and execution.may_execute and not awaiting and not unchanged:
                 from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
 
                 connector = None
@@ -879,6 +918,9 @@ class Orchestrator:
             # How values the question named were matched, then what looks wrong
             # about the rows: both are for the user to weigh.
             told = notes_for(match_notes, result.sql, dialect)
+            if unchanged:
+                # Said, rather than handed back as if it were a correction.
+                told = [*told, PREVIOUS_ATTEMPT_UNCHANGED_NOTE]
             if told or result_notes:
                 frame["result_notes"] = [*told, *result_notes]
             if awaiting or empty_choices:

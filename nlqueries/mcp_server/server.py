@@ -239,6 +239,7 @@ async def query(
     explain: bool = False,
     paraphrase: bool = False,
     choices: dict[str, str] | None = None,
+    previous_attempt: dict[str, str] | None = None,
 ) -> str:
     """Ask a natural-language question to an NLQueries agent.
 
@@ -263,6 +264,12 @@ async def query(
                    meant for each, by the key that answer gave:
                    {"<key>": "<one of its options>"}. Ask the same question
                    again with it.
+        previous_attempt: A statement you tried for this question that did not
+                   do, and why: {"sql": "...", "reason": "...", "kind": ...},
+                   where kind is "rejected" (your own check refused it),
+                   "error" (the database refused it) or "empty" (it returned
+                   no rows). The answer is then one correction of that
+                   statement, validated and run as any statement is.
 
     Returns:
         Formatted string containing the natural-language answer, generated SQL
@@ -272,6 +279,7 @@ async def query(
     from nlqueries.connectors.base import short_cause, short_error_text  # noqa: PLC0415
     from nlqueries.connectors.loader import dialect_for_agent  # noqa: PLC0415
     from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+    from nlqueries.orchestrator.previous_attempt import PreviousAttemptError  # noqa: PLC0415
     from nlqueries.orchestrator.sync_runner import (  # noqa: PLC0415
         answer_types_for,
         run_query,
@@ -329,6 +337,7 @@ async def query(
                 timeout_seconds=_STATEMENT_BUDGET_SECONDS,
                 deadline=deadline,
                 chosen_values=choices or None,
+                previous_attempt=previous_attempt or None,
             )
     except TimeoutError:
         return (
@@ -342,6 +351,9 @@ async def query(
         )
     except FileNotFoundError:
         return _agent_not_found(agent_id)
+    except PreviousAttemptError as exc:
+        # The caller's input, said back plainly: nothing to log or refer to.
+        return f"Query not run: {exc}"
     except Exception as exc:  # noqa: BLE001
         reference = _reference()
         # The first line at ERROR, the traceback at DEBUG under the same

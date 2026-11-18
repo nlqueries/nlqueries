@@ -62,6 +62,7 @@ from nlqueries.orchestrator.followup_resolver import aresolve_followup
 from nlqueries.orchestrator.intent_classifier import IntentType, aclassify_intent, coerce_intent
 from nlqueries.orchestrator.match_notes import any_chosen
 from nlqueries.orchestrator.orchestrator import Orchestrator, _json_default, sql_table_chunk
+from nlqueries.orchestrator.previous_attempt import current_previous_attempt
 from nlqueries.orchestrator.provenance import (
     record_cache,
     record_intent_confidence,
@@ -765,7 +766,9 @@ class MultiAgentOrchestrator:
             # with one is never cached, and an entry from before the choice,
             # written for a statement the model filled in for itself, would
             # replay rows that have nothing to do with it.
-            if not use_cache or any_chosen():
+            # Nor is a correction of the caller's previous attempt (issue #408):
+            # it answers that attempt, not the question in general.
+            if not use_cache or any_chosen() or current_previous_attempt() is not None:
                 return vector, None
             # A cache that cannot be read is a miss, not a failed question: the
             # cache only saves work that a miss goes on to do anyway.
@@ -841,6 +844,10 @@ class MultiAgentOrchestrator:
         if len(available_types) == 1 and available_types[0] in ("sql", "document"):
             intent = IntentType(available_types[0])
             _log.debug("Intent classification skipped: single agent type %s", intent)
+        elif current_previous_attempt() is not None and "sql" in available_types:
+            # A correction of a statement the caller tried is the SQL agent's.
+            intent = IntentType.sql
+            _log.debug("Intent classification skipped: correcting a previous attempt")
         elif override_intent is not None:
             intent = override_intent
             _log.debug("Intent classification skipped: caller override %s", intent)
@@ -887,6 +894,7 @@ class MultiAgentOrchestrator:
                 and not any_chosen()
                 and not _asks_for_a_choice(seen)
                 and not _empty_with_notes(seen)
+                and current_previous_attempt() is None
             ):
                 _schedule_cache_write(
                     _cache, _cache_lookup_key, effective_question, "sql", seen, cache_context
