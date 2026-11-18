@@ -148,3 +148,28 @@ def test_cache_writes_are_recorded_apart_from_plain_input() -> None:
         0,
         1500,
     )
+
+
+def test_a_bedrock_stream_asks_for_usage_and_records_the_cache_split() -> None:
+    """Asked with stream_options, Bedrock ends a Claude stream with its usage,
+    cache reads and writes included; unasked, it ends with none, and the
+    record would be an estimate with no cache split."""
+    delta = SimpleNamespace(content="SELECT 1")
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=50,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=1500, cache_creation_tokens=0),
+    )
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason="stop")], usage=None),
+        SimpleNamespace(choices=[], usage=usage),
+    ]
+    completion = MagicMock(return_value=iter(chunks))
+    records: list[Any] = []
+    with patch.object(litellm_client.litellm, "completion", completion), use_usage_sink(records):
+        out = "".join(LiteLLMClient(model=_SONNET).stream(_BLOCKS, "q"))
+
+    assert out == "SELECT 1"
+    assert completion.call_args.kwargs["stream_options"] == {"include_usage": True}
+    (record,) = records
+    assert (record.estimated, record.input_tokens, record.cache_read_tokens) == (False, 500, 1500)
