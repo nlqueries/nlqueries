@@ -63,6 +63,7 @@ QUERY_SETTING_VARS: tuple[str, ...] = (
     "NLQ_PLAN_CHECK_MIN_ROW_READS",
     "NLQ_LITERAL_GROUNDING",
     "NLQ_LITERAL_GROUNDING_REPAIR",
+    "NLQ_EMPTY_RESULT_EXPLAIN",
 )
 
 
@@ -615,6 +616,18 @@ repeated exactly, a ranking headed by a row with no value, a percentage outside 
 100), correct it once where one is found, and return what still looks wrong as
 ``result_notes``. On by default; set NLQ_RESULT_CHECKS=false to return results as
 they ran, with no notes."""
+
+EMPTY_RESULT_EXPLAIN: bool = os.getenv("NLQ_EMPTY_RESULT_EXPLAIN", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""When a statement returns no rows and nothing more specific says why, leave out
+each condition of its ``WHERE`` in turn, count the rows, and name in a note each
+condition without which rows come back, with the count. PostgreSQL, MySQL,
+MariaDB, SQLite and DuckDB only. Off by default; set
+NLQ_EMPTY_RESULT_EXPLAIN=true to turn it on (see
+:mod:`nlqueries.orchestrator.empty_explain`)."""
 
 LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
     "1",
