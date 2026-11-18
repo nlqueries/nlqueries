@@ -15,7 +15,7 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   generic "No rows matched" note. Counts run on the request's own
   connection, 2 s each at most and within the caller's deadline. A condition
   on a personal-data column, or with a subquery, is never named. PostgreSQL,
-  MySQL, MariaDB, SQLite, DuckDB and SQL Server only.
+  MySQL, MariaDB, SQLite and DuckDB only.
 - **A caller can ask for a corrected statement (#408).** `run_query` takes
   `previous_attempt={"sql", "reason", "kind"}`, the CLI's `query`
   `--previous-sql`, `--previous-reason` and `--previous-kind`, and the MCP

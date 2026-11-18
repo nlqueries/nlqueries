@@ -184,8 +184,8 @@ def test_a_condition_on_personal_data_is_not_named(connector: _Recording) -> Non
     assert not any("email" in c for c, _ in count_statements(sql, "sqlite"))
 
 
-@pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
-def test_engines_that_bill_by_data_read_are_not_counted(
+@pytest.mark.parametrize("dialect", ["bigquery", "snowflake", "mssql", "tsql"])
+def test_engines_that_bill_by_data_read_or_ignore_the_timeout_are_not_counted(
     connector: _Recording, dialect: str
 ) -> None:
     assert _explain(LATE_NIGHT, connector, dialect=dialect) == []
@@ -200,15 +200,55 @@ def test_each_count_is_held_to_its_own_timeout_and_the_time_left(connector: _Rec
     assert timeouts == [COUNT_TIMEOUT_SECONDS] * 3 + [1.5] * 3
 
 
+def test_a_count_is_never_run_without_a_timeout(connector: _Recording) -> None:
+    """Zero or less is "no timeout" to the connectors: a caller that turned the
+    statement timeout off still gets counts held to theirs."""
+    _explain(LATE_NIGHT, connector, budget=(True, 0.0))
+    _explain(LATE_NIGHT, connector, budget=(True, -1.0))
+
+    assert [t for _, t in connector.statements] == [COUNT_TIMEOUT_SECONDS] * 6
+
+
 def test_with_no_time_left_nothing_is_counted(connector: _Recording) -> None:
     assert _explain(LATE_NIGHT, connector, budget=(False, None)) == []
     assert connector.statements == []
 
 
-def test_a_count_that_fails_is_skipped(connector: _Recording) -> None:
+def test_a_count_that_fails_is_skipped_and_said(
+    connector: _Recording, caplog: pytest.LogCaptureFixture
+) -> None:
     sql = "SELECT id FROM flights WHERE no_such_column = 1 AND night = 'MAYBE'"
 
-    assert _explain(sql, connector) == []
+    with caplog.at_level("WARNING", logger="nlqueries.orchestrator.empty_explain"):
+        assert _explain(sql, connector) == []
+
+    assert "Counting rows without one condition returned an error." in caplog.messages
+
+
+def test_a_grouped_statement_keeps_the_aliases_it_groups_and_filters_by(
+    connector: _Recording,
+) -> None:
+    sql = (
+        "SELECT origin AS o, COUNT(*) AS n FROM flights "
+        "WHERE night = 'YES' AND dep > 2000 GROUP BY o HAVING n > 1"
+    )
+
+    (note,) = _explain(sql, connector)
+
+    # Each count ran: one SFO group without the night condition, one BOS group
+    # without the time.
+    assert note == (
+        "No rows match every condition. Without night = 'YES', 1 row matches. "
+        "Without dep > 2000, 1 row matches."
+    )
+
+
+def test_a_column_with_no_alias_gets_a_name_no_other_column_has() -> None:
+    sql = "SELECT a AS c2, b, COUNT(*) FROM t WHERE x = 1 GROUP BY a, b"
+
+    ((_, statement),) = count_statements(sql, "postgres")
+
+    assert "SELECT a AS c2, b AS _c2, COUNT(*) AS c3 FROM t GROUP BY a, b" in statement
 
 
 # --- Through the orchestrator -------------------------------------------------------

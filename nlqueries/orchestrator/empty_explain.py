@@ -47,9 +47,11 @@ _log = logging.getLogger(__name__)
 MAX_CONDITIONS = 4
 #: The longest any one count may run.
 COUNT_TIMEOUT_SECONDS = 2.0
-#: Engines it runs on, as sqlglot names them. BigQuery and Snowflake bill by the
-#: data a query reads, and are left out.
-DIALECTS = frozenset({"postgres", "mysql", "sqlite", "duckdb", "tsql"})
+#: Engines it runs on, as sqlglot names them: those whose connector holds each
+#: statement to the timeout it is given. SQL Server's applies only its
+#: connection-wide timeout (see ``connectors/mssql.py``), so a count there could
+#: run for minutes. BigQuery and Snowflake bill by the data a query reads.
+DIALECTS = frozenset({"postgres", "mysql", "sqlite", "duckdb"})
 
 
 def _conditions(where: exp.Expression) -> list[exp.Expression]:
@@ -99,9 +101,11 @@ def _counted(select: exp.Select, kept: list[exp.Expression]) -> exp.Select:
 
     The statement is counted as a derived table, so ``DISTINCT`` and
     ``GROUP BY`` count what they return. Its ordering and row limit are left
-    out: one changes nothing counted, the other would cap the count. Each
-    output column is named, since SQL Server refuses a derived table with an
-    unnamed one; a plain statement counts ``1`` per row instead of its columns.
+    out: one changes nothing counted, the other would cap the count. A plain
+    statement counts ``1`` per row instead of its columns. Otherwise each column
+    keeps its alias, which ``GROUP BY`` or ``HAVING`` may name, and one with none
+    is given a name no other column has, so the derived table has no unnamed
+    column.
     A ``WITH`` moves to the outer statement, where every engine takes it.
     """
     inner = select.copy()
@@ -113,10 +117,18 @@ def _counted(select: exp.Select, kept: list[exp.Expression]) -> exp.Select:
     if _plain(inner):
         inner.set("expressions", [exp.alias_(exp.Literal.number(1), "c1")])
     else:
-        inner.set(
-            "expressions",
-            [exp.alias_(e.unalias().copy(), f"c{i}") for i, e in enumerate(inner.expressions, 1)],
-        )
+        taken = {e.alias.lower() for e in inner.expressions if e.alias}
+        named: list[exp.Expression] = []
+        for i, e in enumerate(inner.expressions, 1):
+            if e.alias:
+                named.append(e.copy())
+                continue
+            name = f"c{i}"
+            while name in taken:
+                name = f"_{name}"
+            taken.add(name)
+            named.append(exp.alias_(e.copy(), name))
+        inner.set("expressions", named)
     outer = exp.select(exp.Count(this=exp.Star())).from_(inner.subquery("nlq_counted"))
     if with_ is not None:
         outer.set("with_", with_)
@@ -184,13 +196,23 @@ async def explain_empty_result(
         runnable, timeout = budget()
         if not runnable:
             break
-        timeout = COUNT_TIMEOUT_SECONDS if timeout is None else min(timeout, COUNT_TIMEOUT_SECONDS)
+        # None, or zero and less, is "no timeout" to the connectors: never for a count.
+        timeout = (
+            COUNT_TIMEOUT_SECONDS
+            if timeout is None or timeout <= 0
+            else min(timeout, COUNT_TIMEOUT_SECONDS)
+        )
         try:
             qr = await asyncio.to_thread(connector.execute_query, statement, timeout)
         except Exception:  # noqa: BLE001 — advisory: that condition goes unnamed
             _log.warning("Counting rows without one condition failed.", exc_info=True)
             continue
-        if qr.error is not None or not qr.rows:
+        if qr.error is not None:
+            # Said, so a statement no count can be built for is seen.
+            _log.warning("Counting rows without one condition returned an error.")
+            _log.debug("The count's error: %s", qr.error)
+            continue
+        if not qr.rows:
             continue
         try:
             n = int(qr.rows[0][0])
