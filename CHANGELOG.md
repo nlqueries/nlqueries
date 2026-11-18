@@ -6,6 +6,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **An empty result can say which condition left it empty.** With
+  `NLQ_EMPTY_RESULT_EXPLAIN=true` (`empty_result_explain` in
+  `QuerySettings`; off by default), a statement that returns no rows, with
+  nothing more specific to say why, has each top-level condition of its
+  `WHERE` left out in turn, at most 4, and the rows counted. Each condition
+  without which rows come back is named, with the count, in place of the
+  generic "No rows matched" note. Counts run on the request's own
+  connection, 2 s each at most and within the caller's deadline. A condition
+  on a personal-data column, or with a subquery, is never named. PostgreSQL,
+  MySQL, MariaDB, SQLite, DuckDB and SQL Server only.
 - **A caller can ask for a corrected statement (#408).** `run_query` takes
   `previous_attempt={"sql", "reason", "kind"}`, the CLI's `query`
   `--previous-sql`, `--previous-reason` and `--previous-kind`, and the MCP

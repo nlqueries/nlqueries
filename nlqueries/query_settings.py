@@ -40,6 +40,7 @@ ENV_VARS: dict[str, str] = {
     "plan_check_min_row_reads": "NLQ_PLAN_CHECK_MIN_ROW_READS",
     "literal_grounding": "NLQ_LITERAL_GROUNDING",
     "literal_grounding_repair": "NLQ_LITERAL_GROUNDING_REPAIR",
+    "empty_result_explain": "NLQ_EMPTY_RESULT_EXPLAIN",
 }
 
 
@@ -55,6 +56,7 @@ class QuerySettings:
     plan_check_min_row_reads: int = 1_000_000_000
     literal_grounding: bool = True
     literal_grounding_repair: bool = True
+    empty_result_explain: bool = False
 
     def __post_init__(self) -> None:
         if self.match_mode not in config.MATCH_MODES:
@@ -88,6 +90,7 @@ class QuerySettings:
             plan_check_min_row_reads=config.PLAN_CHECK_MIN_ROW_READS,
             literal_grounding=config.LITERAL_GROUNDING,
             literal_grounding_repair=config.LITERAL_GROUNDING_REPAIR,
+            empty_result_explain=config.EMPTY_RESULT_EXPLAIN,
         )
 
     def overridden(self, values: Mapping[str, Any]) -> QuerySettings:
@@ -146,6 +149,9 @@ _DESCRIPTIONS: dict[str, str] = {
     "plan_check_min_row_reads": "Row reads at or above which the plan check asks for a rewrite.",
     "literal_grounding": "Replace a literal with the stored value it matches loosely.",
     "literal_grounding_repair": "Ask the model once to correct a literal no stored value matches.",
+    "empty_result_explain": (
+        "After an empty result, name each condition without which rows come back, with the count."
+    ),
 }
 
 

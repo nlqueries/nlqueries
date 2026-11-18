@@ -37,6 +37,7 @@ from nlqueries.execution import DEFAULT_POLICY, ExecutionPolicy
 if TYPE_CHECKING:  # import cycle: connectors.loader imports the orchestrator's config
     from nlqueries.connectors.base import QueryResult
 from nlqueries.llm import get_llm_client, output_budget, output_was_cut_off
+from nlqueries.orchestrator.empty_explain import explain_empty_result
 from nlqueries.orchestrator.empty_result import follow_up_empty_result
 from nlqueries.orchestrator.grain_check import check_grain
 from nlqueries.orchestrator.match_notes import (
@@ -863,6 +864,7 @@ class Orchestrator:
                         # No rows because a value the statement names is not
                         # stored: the values it may mean, to choose between, run
                         # with, or name in the note (owner feedback F19).
+                        followup = None
                         if current_settings().result_checks:
                             try:
                                 followup = await follow_up_empty_result(
@@ -886,6 +888,29 @@ class Orchestrator:
                                     n for n in result_notes if n != EMPTY_RESULT_NOTE
                                 ] + followup.notes
                                 empty_choices = list(followup.choices)
+                        # Still no rows, and nothing above said why: which
+                        # condition left them all out (owner feedback F20).
+                        if (
+                            current_settings().empty_result_explain
+                            and qr.error is None
+                            and not qr.rows
+                            and not (followup is not None and (followup.notes or followup.choices))
+                        ):
+                            try:
+                                explained = await explain_empty_result(
+                                    result.sql,
+                                    connector=connector,
+                                    dialect=dialect,
+                                    budget=lambda: _correction_budget(timeout_seconds, deadline),
+                                )
+                            except Exception:  # noqa: BLE001 — advisory, like the checks
+                                _log.warning("Explaining an empty result failed.", exc_info=True)
+                                explained = []
+                            if explained:
+                                span.set_attribute("empty_result_explained", True)
+                                result_notes = [
+                                    n for n in result_notes if n != EMPTY_RESULT_NOTE
+                                ] + explained
                         sql_table = sql_table_chunk(qr)
                         span.set_attribute("row_count", qr.row_count)
                 except Exception as exc:  # noqa: BLE001
