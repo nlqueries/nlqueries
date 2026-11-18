@@ -6,6 +6,20 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **An empty answer says which value matched nothing, and what it may have
+  meant.** When a statement returns no rows and a value it compares a text
+  column with matches no stored value, the values it may mean are looked for:
+  stored values that are whole-word parts of it (`'DALLAS'` and `'FORT WORTH'`
+  for `'DALLAS FORT WORTH'`), then stored values spelled nearly the same
+  (`'PITTSBURGH'` for `'PITSBURGH'`). With `NLQ_AMBIGUITY=ask` they come back
+  as choices, in the same shape as other choices, and the value chosen is used
+  on the next call. With `pick`, a single candidate is used and the statement
+  run once more, with a note saying so. Several are not guessed between; the
+  note names the value, the column and the candidates. Either way that note
+  replaces the generic "No rows matched" one, and a value with nothing near it
+  is named in the note. Only after an empty result, never on key or
+  personal-data columns, through the same connector and limits as the
+  lookups that match values, and with one extra run at most.
 - **Query settings in `query_config.env`, and exact matching
   (`NLQ_MATCH_MODE`).** How a value the question names is matched, and which
   checks shape an answer, can be kept in a file of their own: `./query_config.env`,
@@ -199,6 +213,23 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **An empty answer that says why is no longer cached.** The semantic cache
+  keeps an answer's SQL and text, not its notes. An answer with no rows that
+  named the value that matched nothing, or the stored values it may have
+  meant, was cached; a replay ran the same statement and returned the same
+  empty result with nothing said, and a similar question could be given that
+  statement. Such an answer is now not written to the cache. An empty answer
+  with no note, or with only the generic "No rows matched" hedge that result
+  checks add to most filtered empty results, is cached as before, and so is
+  an answer with rows and notes.
+- **Matching values works when the statement leaves out the schema.** The
+  lookups that match a value the question names to what a column stores read
+  the table exactly as the model first wrote it. When that draft named a bare
+  `city` and the connection's search path did not include its schema, every
+  lookup failed with "relation does not exist" and no value was matched,
+  though the statement that finally ran named the schema. The lookups now
+  read the table with the schema the knowledge base records for it, when the
+  statement names none and the knowledge base knows exactly one.
 - **An answer the output budget cut off is written again with more room, or
   fails saying so.** A reply that ran out of `LLM_MAX_OUTPUT_TOKENS` part-way
   through its SQL was repaired on the same budget, so a long statement was

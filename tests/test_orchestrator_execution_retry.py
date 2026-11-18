@@ -732,3 +732,29 @@ def test_the_prompt_is_unchanged_when_the_statement_ran_unchanged() -> None:
             )
         )
         assert llm.complete_calls[0][1] == _UNCHANGED_PROMPT, f"executed_sql={executed!r}"
+
+
+def test_a_repair_cut_off_inside_its_statement_is_not_run_with_its_filter_dropped() -> None:
+    """The part written before the cut parses: `SELECT o.id FROM orders o` stopped
+    just before its WHERE is valid SQL that answers another question. Taken as
+    the repair, it would run with the filter silently dropped (from #412's
+    review); the repair is a failed one instead."""
+    from nlqueries.orchestrator.sql_generation import repair_after_execution_error
+
+    llm = _LLM("Selecting per customer as before.\n<sql>\nSELECT o.id FROM orders o")
+
+    result = asyncio.run(
+        repair_after_execution_error(
+            "SELECT o.id FROM orders o WHERE o.total > 100",
+            "boom",
+            "Q",
+            _kb(),
+            "snowflake",
+            llm,  # type: ignore[arg-type]
+            "system",
+            1,
+        )
+    )
+
+    assert not result.is_valid
+    assert result.sql != "SELECT o.id FROM orders o"

@@ -666,6 +666,13 @@ def test_a_reply_that_finished_is_not_cut_off() -> None:
     assert _cut_off_passed_on(tokens, "end_turn") is False
 
 
+def test_a_reply_that_ends_inside_its_statement_is_cut_off_whatever_the_provider_said() -> None:
+    """An opening tag and no closing one is a statement cut short, even when the
+    provider reported an ordinary stop (F14, 2026-11-17)."""
+    tokens = ["select list is unchanged.\n", "<sql>\nSELECT id FROM orders WHERE total >"]
+    assert _cut_off_passed_on(tokens, "end_turn") is True
+
+
 class _OutOfRoomLLM(_FinishingLLM):
     """Streams a reply the budget cuts off mid-statement; its repair returns
     *repair*, cut off as well when *repair_cut_off*. Records each repair's

@@ -1169,18 +1169,107 @@ def test_a_repair_cut_off_after_its_statement_closed_is_kept() -> None:
 
 def test_a_fallback_repair_cut_off_says_so_too() -> None:
     """Self-consistency that returns no candidate falls back to one reply; that
-    reply is checked for a cut-off like any other."""
-    llm, _ = _recording_llm("<sql>SELECT id FROM orders", cut_off=True)
+    reply is checked for a cut-off like any other. Cut off twice, the first
+    statement comes back with its own error and the budgets that ran out
+    (owner decision, 2026-11-17), never the part the repair wrote."""
+    from nlqueries.llm import output_budget
+
+    llm, calls = _recording_llm("<sql>SELECT id FROM orders", cut_off=True)
     with patch(
         "nlqueries.orchestrator.candidates.generate_candidates", new=AsyncMock(return_value=[])
     ):
         result = _repair("SELECT * FROM ghost_table", llm, cut_off=False)
 
     assert not result.is_valid
-    assert result.sql == ""
-    assert result.failure == OUTPUT_BUDGET_EXHAUSTED
+    assert result.sql == "SELECT * FROM ghost_table"
+    assert result.failure is None
     assert result.validation_error is not None
+    assert "ghost_table" in result.validation_error
     assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
+    assert [c["max_tokens"] for c in calls] == [
+        output_budget("correction"),
+        output_budget("answer"),
+    ]
+
+
+def _exhausting_llm(*outcomes: str | None) -> tuple[MagicMock, list[int]]:
+    """An LLM whose calls return each of *outcomes* in turn; ``None`` raises
+    OutputBudgetExhausted, the way a reasoning model spends its whole allowance
+    before writing anything. Records each call's budget."""
+    from nlqueries.llm.client import OutputBudgetExhausted, note_finish
+
+    budgets: list[int] = []
+    queue = list(outcomes)
+    llm = MagicMock()
+    llm.supports_prompt_caching = False
+
+    async def _acomplete(system: Any, user: str, **kw: Any) -> str:
+        budgets.append(kw["max_tokens"])
+        reply = queue.pop(0)
+        if reply is None:
+            raise OutputBudgetExhausted("reasoning-model", kw["max_tokens"])
+        note_finish("end_turn", reply)
+        return reply
+
+    llm.acomplete = _acomplete
+    return llm, budgets
+
+
+def _correct(sql: str, llm: MagicMock) -> SQLGenerationResult:
+    async def _run() -> SQLGenerationResult:
+        return await validate_and_repair(sql, _make_kb(), "postgres", llm)
+
+    with patch("nlqueries.config.SELF_CONSISTENCY", "off"):
+        return asyncio.run(_run())
+
+
+def test_a_correction_that_runs_out_is_asked_again_with_the_whole_answer_budget() -> None:
+    """At LLM_MAX_OUTPUT_TOKENS=1024 the correction tier's 512 went on reasoning
+    and the whole question failed, though a statement already existed
+    (2026-11-14)."""
+    from nlqueries.llm import output_budget
+
+    llm, budgets = _exhausting_llm(None, "<sql>SELECT id FROM orders</sql>")
+
+    result = _correct("SELECT * FROM ghost_table", llm)
+
+    assert result.is_valid
+    assert "orders" in result.sql
+    assert budgets == [output_budget("correction"), output_budget("answer")]
+
+
+def test_a_correction_that_runs_out_twice_returns_the_first_statement_with_its_error() -> None:
+    """Something to show and a reason, instead of a failed question."""
+    from nlqueries.llm import output_budget
+
+    llm, budgets = _exhausting_llm(None, None)
+
+    result = _correct("SELECT * FROM ghost_table", llm)
+
+    assert not result.is_valid
+    assert result.sql == "SELECT * FROM ghost_table"
+    assert result.validation_error is not None
+    assert "ghost_table" in result.validation_error  # the statement's own error
+    correction, answer = output_budget("correction"), output_budget("answer")
+    assert f"{correction} and then {answer} tokens" in result.validation_error
+    assert "LLM_MAX_OUTPUT_TOKENS" in result.validation_error
+    assert budgets == [correction, answer]
+
+
+def test_a_cut_off_statement_whose_repair_runs_out_still_fails_the_question() -> None:
+    """No complete first statement to fall back on, and its repair already had
+    more room than the answer did: unchanged."""
+    from nlqueries.llm.client import OutputBudgetExhausted
+
+    llm, _ = _exhausting_llm(None)
+
+    async def _run() -> SQLGenerationResult:
+        return await validate_and_repair(
+            "SELECT id FROM orders WHERE", _make_kb(), "postgres", llm, cut_off=True
+        )
+
+    with pytest.raises(OutputBudgetExhausted):
+        asyncio.run(_run())
 
 
 #: A model map with one known model, so these tests pin what this code does
@@ -1262,3 +1351,90 @@ def test_retry_output_budget(
     llm._model = model
 
     assert retry_output_budget(llm, spent) == expected
+
+
+# ---------------------------------------------------------------------------
+# A reply cut off inside <sql>, and prose that begins with "select" (F14)
+# ---------------------------------------------------------------------------
+
+#: The three shapes seen in answers whose `sql` held the model's raw reply
+#: (2026-11-13/14): an explanation that happens to start with the word, then an
+#: opening tag, then a statement cut off before </sql>.
+_UNCLOSED_REPLIES = [
+    (
+        "SELECT.\n\n<sql>\nSELECT DISTINCT p.id\nFROM laboratory l\nJOIN patient p ON l.id = p.id\n"
+        "WHERE l.x >= 300\n</s",
+        "SELECT DISTINCT p.id\nFROM laboratory l\nJOIN patient p ON l.id = p.id\nWHERE l.x >= 300",
+    ),
+    (
+        "SELECT as that filter, Postgres could evaluate it before the filter. I moved the cast "
+        "into a CASE.\n\n<sql>\n"
+        "SELECT CASE WHEN v ~ '^[0-9]+$' THEN v::numeric END AS v\n  FROM th",
+        "SELECT CASE WHEN v ~ '^[0-9]+$' THEN v::numeric END AS v\n  FROM th",
+    ),
+    (
+        "select list is unchanged: the earliest circuit and the gap.\n\n<sql>\nWITH t AS (\n"
+        "  SELECT c.circuitref, r.time\n  FROM races r\n  JOIN circuits c ON c.id = r.cid",
+        "WITH t AS (\n  SELECT c.circuitref, r.time\n"
+        "  FROM races r\n  JOIN circuits c ON c.id = r.cid",
+    ),
+]
+
+
+@pytest.mark.parametrize(("reply", "expected"), _UNCLOSED_REPLIES)
+def test_an_unclosed_sql_tag_gives_what_follows_it(reply: str, expected: str) -> None:
+    """Never the raw reply: with no closing tag the keyword scan matched the
+    prose's first word and handed the whole reply on as the statement."""
+    assert _extract_sql(reply) == expected
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "SELECT as that filter, Postgres could evaluate it before the filter.",
+        "select list is unchanged: the earliest circuit, the latest circuit.",
+        "SELECT.",
+    ],
+)
+def test_prose_that_begins_with_select_is_not_sql(prose: str) -> None:
+    assert _extract_sql(prose) == ""
+
+
+def test_a_well_formed_reply_is_unchanged() -> None:
+    assert _extract_sql("Here it is.\n<sql>\nSELECT id FROM orders\n</sql>\nDone.") == (
+        "SELECT id FROM orders"
+    )
+
+
+def test_two_sql_blocks_give_the_first() -> None:
+    reply = "<sql>SELECT 1</sql> or, if you prefer, <sql>SELECT 2</sql>"
+    assert _extract_sql(reply) == "SELECT 1"
+
+
+def test_a_dialect_s_own_statement_still_comes_back_from_the_keyword_scan() -> None:
+    """The scan now asks that what it found parse as SQL, in some dialect: T-SQL's
+    TOP does not parse in sqlglot's default one."""
+    assert _extract_sql("Here you go:\nSELECT TOP 5 name FROM t") == "SELECT TOP 5 name FROM t"
+
+
+def test_a_repair_that_ends_inside_its_statement_counts_as_cut_off() -> None:
+    """Whatever the provider said about why it stopped: never the half-written
+    statement (F14)."""
+    llm, _ = _recording_llm("<sql>SELECT id FROM orders WHERE total >", cut_off=False)
+
+    result = _repair("SELECT id FROM orders WHERE", llm, cut_off=True)
+
+    assert result.sql == ""
+    assert result.failure == OUTPUT_BUDGET_EXHAUSTED
+
+
+def test_a_complete_statement_or_nothing_for_the_other_callers() -> None:
+    """The repairs and rewrites that accept whatever parses get nothing from a
+    reply that ended inside <sql> (from #412's review)."""
+    from nlqueries.orchestrator.sql_generation import _extract_complete_sql
+
+    assert _extract_complete_sql("<sql>SELECT o.id FROM orders o") == ""
+    assert (
+        _extract_complete_sql("<sql>SELECT o.id FROM orders o</sql>") == "SELECT o.id FROM orders o"
+    )
+    assert _extract_complete_sql("SELECT o.id FROM orders o") == "SELECT o.id FROM orders o"

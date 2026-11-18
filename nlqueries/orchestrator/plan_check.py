@@ -63,7 +63,7 @@ from nlqueries.orchestrator.literal_grounding import _row_counts
 from nlqueries.orchestrator.provenance import record_plan_rewrite
 from nlqueries.orchestrator.sql_generation import (
     SQLGenerationResult,
-    _extract_sql,
+    _extract_complete_sql,
     _same_statement,
     _validate_sql,
 )
@@ -474,7 +474,7 @@ async def rewrite_per_row_subqueries(
         "unchanged. Wrap the SQL in <sql>...</sql> markers."
     )
     raw = await llm.acomplete(system, user, max_tokens=output_budget("correction"))
-    rewritten = _extract_sql(raw)
+    rewritten = _extract_complete_sql(raw)
     error = _validate_sql(rewritten, knowledge_base, dialect)
     return SQLGenerationResult(
         sql=rewritten,

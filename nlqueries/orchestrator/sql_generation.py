@@ -30,6 +30,7 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 
 from nlqueries.llm import (
+    OutputBudgetExhausted,
     get_llm_client,
     output_budget,
     output_was_cut_off,
@@ -343,35 +344,77 @@ async def validate_and_repair(
         sc_mode == "all" or (sc_mode == "hard" and _is_hard(correction_user, knowledge_base))
     )
 
+    async def _ask(max_tokens: int) -> tuple[str, bool]:
+        """One correction call: the statement it wrote, and whether it was cut
+        off. Cut off before </sql>, the statement is incomplete even if it
+        parses, as the first one was. Asked after every single reply,
+        including the fallback below when no candidate came back."""
+        raw = await llm.acomplete(system, correction_user, max_tokens=max_tokens)
+        return _extract_sql(raw), _ends_inside_sql(raw) or (
+            output_was_cut_off() and _CLOSE_SQL not in raw
+        )
+
     repair_cut_off = False
-    if use_consistency:
-        candidates = await generate_candidates(llm, system, correction_user, n=3)
-        if candidates:
-            repaired_sql = select_best(candidates, knowledge_base, dialect)
+    # The model spent the whole allowance before writing anything at all.
+    exhausted: OutputBudgetExhausted | None = None
+    repaired_sql = ""
+    try:
+        if use_consistency:
+            candidates = await generate_candidates(llm, system, correction_user, n=3)
+            if candidates:
+                repaired_sql = select_best(candidates, knowledge_base, dialect)
+            else:
+                repaired_sql, repair_cut_off = await _ask(budget)
         else:
-            raw = await llm.acomplete(system, correction_user, max_tokens=budget)
-            repaired_sql = _extract_sql(raw)
-            repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
-    else:
-        raw = await llm.acomplete(system, correction_user, max_tokens=budget)
-        repaired_sql = _extract_sql(raw)
-        # Cut off before </sql>, the statement is incomplete even if it
-        # parses, as the first one was. Asked after every single reply,
-        # including the fallback above when no candidate came back.
-        repair_cut_off = output_was_cut_off() and _CLOSE_SQL not in raw
+            repaired_sql, repair_cut_off = await _ask(budget)
+    except OutputBudgetExhausted as exc:
+        exhausted = exc
+
+    # The correction tier's share is half the answer's, and a reasoning model
+    # can spend all of it before writing a word: at LLM_MAX_OUTPUT_TOKENS=1024
+    # that failed the whole question although a statement already existed
+    # (2026-11-14). So once more with the whole answer budget, and if that runs
+    # out too, the first statement with its own error -- something to show and
+    # a reason, instead of nothing (owner decision, 2026-11-17).
+    if not cut_off and (exhausted is not None or repair_cut_off):
+        tried = [budget]
+        if budget < answer_budget:
+            budget = answer_budget
+            tried.append(budget)
+            exhausted = None
+            try:
+                repaired_sql, repair_cut_off = await _ask(budget)
+            except OutputBudgetExhausted as exc:
+                exhausted = exc
+        if exhausted is not None or repair_cut_off:
+            budgets = " and then ".join(str(b) for b in tried)
+            note = (
+                f"A correction was attempted, and ran out of output budget ({budgets} "
+                "tokens) before it was complete. Raise LLM_MAX_OUTPUT_TOKENS to let it finish."
+            )
+            _log.warning("%s", note)
+            return await _finish(
+                SQLGenerationResult(
+                    sql=sql,
+                    is_valid=False,
+                    validation_error=f"{error} {note}",
+                    dialect=dialect,
+                    attempt_count=1 + len(tried),
+                )
+            )
+    if exhausted is not None:
+        # A cut-off statement has no complete first statement to fall back on,
+        # and its repair already had more room than the answer did.
+        raise exhausted
 
     if repair_cut_off:
-        if cut_off:
-            message = (
-                f"The answer was cut off at the output budget ({answer_budget} tokens) "
-                f"before the statement was complete, and a retry with {budget} tokens "
-                "was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
-            )
-        else:
-            message = (
-                f"The corrected statement was cut off at the output budget ({budget} "
-                "tokens) before it was complete. Raise LLM_MAX_OUTPUT_TOKENS."
-            )
+        # Only a cut-off statement reaches here: any other repair that was cut
+        # off was asked again above, and fell back to the first statement.
+        message = (
+            f"The answer was cut off at the output budget ({answer_budget} tokens) "
+            f"before the statement was complete, and a retry with {budget} tokens "
+            "was cut off too. Raise LLM_MAX_OUTPUT_TOKENS."
+        )
         return await _finish(_out_of_room(message, dialect, attempt_count=2))
     repair_error = _validate_sql(repaired_sql, knowledge_base, dialect)
     result = SQLGenerationResult(
@@ -439,7 +482,7 @@ async def _repair_literals(
     reason: str | None = None
     try:
         raw = await llm.acomplete(system, user, max_tokens=output_budget("correction"))
-        candidate = _extract_sql(raw).strip()
+        candidate = _extract_complete_sql(raw).strip()
         if (
             candidate
             and _validate_sql(candidate, knowledge_base, dialect) is None
@@ -651,7 +694,7 @@ async def repair_after_execution_error(
         "same statement unchanged. Wrap the SQL in <sql>...</sql> markers."
     )
     raw = await llm.acomplete(system, correction_user, max_tokens=output_budget("correction"))
-    repaired_sql = _extract_sql(raw)
+    repaired_sql = _extract_complete_sql(raw)
     error = _validate_sql(repaired_sql, knowledge_base, dialect)
     return SQLGenerationResult(
         sql=repaired_sql,
@@ -698,7 +741,7 @@ async def repair_after_suspicious_result(
         "answers the question above. Wrap the SQL in <sql>...</sql> markers."
     )
     raw = await llm.acomplete(system, correction_user, max_tokens=output_budget("correction"))
-    repaired_sql = _extract_sql(raw)
+    repaired_sql = _extract_complete_sql(raw)
     error = _validate_sql(repaired_sql, knowledge_base, dialect)
     return SQLGenerationResult(
         sql=repaired_sql,
@@ -749,7 +792,7 @@ def generate_sql(
 
     # Attempt 1 ---------------------------------------------------------------
     raw1 = llm.complete(system_prompt, question)
-    sql1 = _extract_sql(raw1)
+    sql1 = _extract_complete_sql(raw1)
     error1 = _validate_sql(sql1, knowledge_base, dialect)
 
     if error1 is None:
@@ -769,7 +812,7 @@ def generate_sql(
         "Output only the raw SQL, no explanation or markdown."
     )
     raw2 = llm.complete(system_prompt, correction_user)
-    sql2 = _extract_sql(raw2)
+    sql2 = _extract_complete_sql(raw2)
     error2 = _validate_sql(sql2, knowledge_base, dialect)
 
     return SQLGenerationResult(
@@ -1049,7 +1092,15 @@ def _extract_sql(text: str) -> str:
 
     1. ``<sql>…</sql>`` sentinels — the single-call streaming format.
     2. Markdown code fences (``\\`\\`\\`sql … \\`\\`\\``).
-    3. First ``SELECT`` / ``WITH`` keyword scan (plain-text fallback).
+    3. First ``SELECT`` / ``WITH`` keyword scan (plain-text fallback), kept only
+       when what it found parses as SQL in some dialect; otherwise ``""``.
+
+    An opening ``<sql>`` with no closing one is a reply cut off mid-statement:
+    what follows the tag is returned, less any half-written ``</sql>``, and the
+    two callers that know what to do with a cut-off statement -- the answer
+    stream and the correction call -- treat the reply as cut off
+    (:func:`_ends_inside_sql`). Every other caller goes through
+    :func:`_extract_complete_sql`, which returns nothing for such a reply.
     """
     text = text.strip()
 
@@ -1057,6 +1108,13 @@ def _extract_sql(text: str) -> str:
     sql_tag_match = re.search(r"<sql>\s*([\s\S]*?)\s*</sql>", text, re.IGNORECASE)
     if sql_tag_match:
         return sql_tag_match.group(1).strip()
+    # An opening tag and no closing one. Left to the scan below, the reply's
+    # first word decided: an explanation opening "SELECT." or "select list is
+    # unchanged" matched, and the whole reply -- prose, tag and all -- was
+    # handed on as the statement (2026-11-14).
+    open_match = re.search(r"<sql>", text, re.IGNORECASE)
+    if open_match:
+        return _PARTIAL_CLOSE.sub("", text[open_match.end() :]).strip()
 
     # 2. Markdown code fences
     if "```" in text:
@@ -1082,9 +1140,62 @@ def _extract_sql(text: str) -> str:
         candidates.append(cte_match.start())
 
     if candidates:
-        return text[min(candidates) :].strip()
+        found = text[min(candidates) :].strip()
+        # Prose can open with the keyword too ("select list is unchanged: ...").
+        # What the scan found is a statement only if some dialect can parse it;
+        # an extraction that finds none returns nothing, which validation then
+        # names ("Generated SQL is empty"), rather than prose passed off as SQL.
+        return found if _parses_as_sql(found) else ""
 
     return text
+
+
+#: A closing tag the reply was cut off in the middle of: ``<``, ``</s``, ...
+_PARTIAL_CLOSE = re.compile(r"\s*<(?:/(?:s(?:q(?:l)?)?)?)?\s*\Z", re.IGNORECASE)
+
+#: Dialects tried when deciding whether the keyword scan found a statement.
+#: sqlglot's default grammar refuses some dialects' own syntax (T-SQL's TOP),
+#: and :func:`_extract_sql` is not told which dialect the answer is in.
+_SCAN_DIALECTS: tuple[str | None, ...] = (
+    None,
+    "postgres",
+    "tsql",
+    "snowflake",
+    "bigquery",
+    "mysql",
+    "oracle",
+    "duckdb",
+)
+
+
+def _parses_as_sql(candidate: str) -> bool:
+    """Whether *candidate* parses as SQL in any of :data:`_SCAN_DIALECTS`."""
+    for dialect in _SCAN_DIALECTS:
+        try:
+            sqlglot.parse_one(candidate, read=dialect)
+        except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
+            continue
+        return True
+    return False
+
+
+def _extract_complete_sql(raw: str) -> str:
+    """The statement in *raw*, or ``""`` when the reply ended inside ``<sql>``.
+
+    For the repairs and rewrites that validate what comes back and accept it if
+    it parses: the part of a statement written before a cut can be valid SQL
+    that answers another question -- ``SELECT o.id FROM orders o`` stopped just
+    before its ``WHERE`` -- and would then run with the filter silently dropped
+    (from #412's review). Nothing is a failed repair, which each of them handles.
+    """
+    return "" if _ends_inside_sql(raw) else _extract_sql(raw)
+
+
+def _ends_inside_sql(raw: str) -> bool:
+    """Whether *raw* opened ``<sql>`` and never closed it: cut off mid-statement,
+    whatever the provider reported about why it stopped."""
+    lowered = raw.lower()
+    return "<sql>" in lowered and _CLOSE_SQL not in lowered
 
 
 #: How :func:`_validate_sql` opens an error that is the SQL policy's refusal,
