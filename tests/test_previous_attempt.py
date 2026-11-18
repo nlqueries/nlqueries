@@ -22,6 +22,7 @@ import yaml
 from nlqueries.connectors.sqlite import SQLiteConnector
 from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.previous_attempt import (
+    KINDS,
     REASON_MAX_CHARS,
     PreviousAttempt,
     PreviousAttemptError,
@@ -250,6 +251,36 @@ def test_a_correction_that_is_the_same_statement_says_so(
 
     assert frame["sql"] == CORRECTED
     assert PREVIOUS_ATTEMPT_UNCHANGED_NOTE in frame.get("result_notes", [])
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_correction_that_is_the_same_statement_is_not_run(
+    tmp_path: Path, connector: SQLiteConnector, kind: str
+) -> None:
+    """Under an executing policy too: running it would override the caller's
+    refusal, and after an error only ask for a second correction of it."""
+    from nlqueries.orchestrator.orchestrator import PREVIOUS_ATTEMPT_UNCHANGED_NOTE
+
+    llm = _Recording(reply=f"<sql>{CORRECTED}</sql>")
+    # Laid out differently from the reply: still the same statement.
+    previous = PreviousAttempt(
+        sql="select count(*) as n\n  from orders", reason="our policy refused this", kind=kind
+    )
+
+    with patch.object(connector, "execute_query", wraps=connector.execute_query) as ran:
+        frame = _answer(
+            tmp_path,
+            llm,
+            connector,
+            previous=previous,
+            execution=ExecutionPolicy.execute_read_only(),
+        )
+
+    assert ran.call_count == 0, "the refused statement is not run for the caller"
+    assert frame["sql"] == CORRECTED
+    assert frame.get("sql_table") is None
+    assert PREVIOUS_ATTEMPT_UNCHANGED_NOTE in frame.get("result_notes", [])
+    assert len(llm.completions) == 1, "no second correction is asked for"
 
 
 # --- The router and the cache --------------------------------------------------------

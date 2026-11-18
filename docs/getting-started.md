@@ -343,8 +343,9 @@ result = run_query_sync(
 
 The correction is validated as any statement is, and runs only if `execution`
 allows it. The reason is treated as data, not instructions, and capped at 1,000
-characters. A correction that is the same statement comes with a note saying the
-model found nothing to change. Such an answer is never read from or written to
+characters. A correction that is the same statement is not run, whatever
+`execution` allows, since it is the statement that was refused: it comes back
+with a note saying the model found nothing to change. Such an answer is never read from or written to
 the semantic cache. The CLI takes the same as `--previous-sql`,
 `--previous-reason` and `--previous-kind`, and the MCP `query` tool as
 `previous_attempt`.

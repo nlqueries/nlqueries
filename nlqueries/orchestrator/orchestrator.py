@@ -191,7 +191,7 @@ def _driver_message(error: str) -> str:
 #: that same statement: the model found nothing in it to change (issue #408).
 PREVIOUS_ATTEMPT_UNCHANGED_NOTE = (
     "The statement is the one you tried: asked for a correction, the model found "
-    "nothing in it to change."
+    "nothing in it to change, so it was not run again."
 )
 
 
@@ -698,7 +698,15 @@ class Orchestrator:
             awaiting = choices_for(choices, result.sql, dialect)
             if awaiting:
                 span.set_attribute("choices_pending", len(awaiting))
-            if result.is_valid and execution.may_execute and not awaiting:
+            # A "correction" that is the caller's own statement is not run: it
+            # is what their check or their database already refused, or what
+            # already returned nothing, and running it again for them would
+            # override that refusal (and, after an error, only ask for a second
+            # correction of the same statement). It comes back with a note.
+            unchanged = previous is not None and _same_statement(result.sql, previous.sql, dialect)
+            if unchanged:
+                span.set_attribute("previous_attempt_unchanged", True)
+            if result.is_valid and execution.may_execute and not awaiting and not unchanged:
                 from nlqueries.connectors.loader import open_connector_for_agent  # noqa: PLC0415
 
                 connector = None
@@ -910,7 +918,7 @@ class Orchestrator:
             # How values the question named were matched, then what looks wrong
             # about the rows: both are for the user to weigh.
             told = notes_for(match_notes, result.sql, dialect)
-            if previous is not None and _same_statement(result.sql, previous.sql, dialect):
+            if unchanged:
                 # Said, rather than handed back as if it were a correction.
                 told = [*told, PREVIOUS_ATTEMPT_UNCHANGED_NOTE]
             if told or result_notes:

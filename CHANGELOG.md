@@ -16,7 +16,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   place of a fresh one. The reason is treated as data and capped. The
   correction is validated as any statement is, runs only if the execution
   policy allows, and is never read from or written to the semantic cache. A
-  correction that is the same statement says so in a note.
+  correction that is the same statement is not run, whatever the policy, and
+  says so in a note.
 - **An empty answer says which value matched nothing, and what it may have
   meant.** When a statement returns no rows and a value it compares a text
   column with matches no stored value, the values it may mean are looked for:
