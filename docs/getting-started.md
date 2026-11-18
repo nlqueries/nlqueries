@@ -321,6 +321,34 @@ result = run_query_sync(
 print(result.sql, result.sql_result, result.agent_type)
 ```
 
+#### Asking for a corrected statement
+
+A caller that runs the SQL itself (the default, generate-only) often checks it
+first: its own SQL policy, a data-boundary rule. When that check refuses a
+statement, the database errors, or the result is empty when it should not be,
+pass the statement back with the reason as `previous_attempt`. The question is
+then answered with one correction of that statement, in place of a fresh one:
+
+```python
+result = run_query_sync(
+    question="How many orders last month?",
+    agent_id="postgres:localhost:mydb",
+    previous_attempt={
+        "sql": first.sql,
+        "reason": "refused by our policy: SELECT * is not allowed",
+        "kind": "rejected",  # or "error" (the database refused it), "empty" (no rows)
+    },
+)
+```
+
+The correction is validated as any statement is, and runs only if `execution`
+allows it. The reason is treated as data, not instructions, and capped at 1,000
+characters. A correction that is the same statement comes with a note saying the
+model found nothing to change. Such an answer is never read from or written to
+the semantic cache. The CLI takes the same as `--previous-sql`,
+`--previous-reason` and `--previous-kind`, and the MCP `query` tool as
+`previous_attempt`.
+
 ---
 
 ## Troubleshooting

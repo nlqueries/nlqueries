@@ -47,6 +47,10 @@ from nlqueries.orchestrator.multi_agent_orchestrator import (
     MultiAgentOrchestrator,
     drain_background_tasks,
 )
+from nlqueries.orchestrator.previous_attempt import (
+    PreviousAttempt,
+    use_previous_attempt,
+)
 from nlqueries.orchestrator.provenance import Provenance, use_provenance
 
 
@@ -272,6 +276,7 @@ async def run_query(
     deadline: float | None = None,
     use_cache: bool = True,
     chosen_values: Mapping[str, str] | None = None,
+    previous_attempt: PreviousAttempt | Mapping[str, Any] | None = None,
 ) -> AgentQueryResult:
     """Drive MultiAgentOrchestrator to completion, collecting all yielded
     tokens and the final structured chunk, then return an AgentQueryResult.
@@ -315,6 +320,17 @@ async def run_query(
                          so the answer is always generated (``nlqueries eval``).
         chosen_values:   The user's choices for a previous answer's
                          :attr:`AgentQueryResult.choices`, ``{key: value}``.
+        previous_attempt: A statement the caller tried and why it did not do:
+                         a :class:`~nlqueries.orchestrator.previous_attempt.PreviousAttempt`,
+                         or ``{"sql": ..., "reason": ..., "kind": ...}`` with
+                         *kind* ``rejected`` (the caller's own check refused
+                         it), ``error`` (the database did) or ``empty`` (it
+                         returned no rows). The question is then answered with
+                         one correction of that statement, validated as any
+                         statement is, and run only if *execution* allows; it
+                         is never read from or written to the semantic cache.
+                         Raises ``PreviousAttemptError`` for one with no SQL or
+                         an unknown kind.
 
     Returns:
         :class:`AgentQueryResult` with all streamed tokens joined and structured
@@ -336,7 +352,12 @@ async def run_query(
     orchestrator = MultiAgentOrchestrator()
     tokens: list[str] = []
     prov: Provenance | None = Provenance() if explain else None
-    with use_provenance(prov), use_chosen_values(chosen_values or {}):
+    previous = PreviousAttempt.from_value(previous_attempt)
+    with (
+        use_provenance(prov),
+        use_chosen_values(chosen_values or {}),
+        use_previous_attempt(previous),
+    ):
         async for token in orchestrator.handle_question(
             resolved_question,
             agent_id,

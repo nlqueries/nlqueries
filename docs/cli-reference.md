@@ -153,6 +153,21 @@ nlqueries query agent1 "pupils in schools" --choose "schools.soc:schools" "Juven
 
 ---
 
+## Correcting a statement you tried (`query --previous-sql`)
+
+When a statement for the question did not do (your own check refused it, the database errored, or it returned no rows), pass it back with the reason, and the answer is one correction of it rather than a fresh statement:
+
+```bash
+nlqueries query agent1 "Top customers by revenue" --no-execute \
+  --previous-sql "SELECT * FROM customers" \
+  --previous-reason "refused by our policy: SELECT * is not allowed" \
+  --previous-kind rejected
+```
+
+`--previous-kind` is `rejected`, `error` (the default) or `empty`. `--previous-sql` needs `--previous-reason`. The correction is validated as any statement is and runs unless `--no-execute` is given; it is never served from or written to the semantic cache.
+
+---
+
 ## query-config
 
 Shows the [query settings](configuration.md#query-settings-query_configenv) in effect: how a value the question names is matched, and which answer checks run. Each setting is listed with where its value came from: `query_config.env`, `environment` (the shell or `.env`) or `default`. The file's path is shown too.

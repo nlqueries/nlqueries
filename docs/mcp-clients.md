@@ -177,6 +177,12 @@ miss, how much knowledge was injected and the checks that ran. A `dialect`
 argument is accepted and ignored: the SQL is always written for the database
 the agent's connector points at.
 
+With `previous_attempt` (`{"sql": ..., "reason": ..., "kind": ...}`, with
+`kind` `rejected`, `error` or `empty`), the answer is one correction of a
+statement you tried for the question, told why it did not do, in place of a
+fresh statement. It is validated and run as any statement is. See
+[getting-started](getting-started.md#asking-for-a-corrected-statement).
+
 For an agent that lists document sources (`nlqueries agent docs add`, see
 [cli-reference](cli-reference.md#agent-document-sources)), `query` may answer
 from those documents, or from the database and the documents together, as the
