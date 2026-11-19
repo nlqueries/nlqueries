@@ -37,11 +37,18 @@ import contextlib
 import logging
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from nlqueries.knowledge.column_profiles import profile_notes
 from nlqueries.knowledge.concept_hierarchy import GlossaryHierarchy, build_glossary_hierarchy
+from nlqueries.orchestrator.prompt_values import (
+    MAX_LIST,
+    MAX_MATCHING,
+    column_key,
+    prompt_values_for,
+)
 from nlqueries.orchestrator.provenance import record_capsule, record_prompt_section
 from nlqueries.query_settings import current as current_settings
 
@@ -678,7 +685,8 @@ def assemble_prompt(
     Returns:
         :class:`AssembledPrompt`
     """
-    static_system = _build_static_system(knowledge_base)
+    stored = prompt_values_for(agent_id, question)
+    static_system = _build_static_system(knowledge_base, stored.lists)
 
     # Use caller-supplied vector when available (avoids a redundant embed_text
     # call when the multi-agent orchestrator has already embedded the question
@@ -696,6 +704,7 @@ def assemble_prompt(
         question, knowledge_base, top_k_capsules, collection, question_vector, agent_id
     )
     dynamic_context = _append_question_glossary(dynamic_context, question, knowledge_base)
+    dynamic_context = _append_index_matches(dynamic_context, stored.matching, knowledge_base)
     dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
 
     return AssembledPrompt(
@@ -744,7 +753,8 @@ async def assemble_prompt_async(
     Returns:
         :class:`AssembledPrompt`
     """
-    static_system = _build_static_system(knowledge_base)
+    stored = await asyncio.to_thread(prompt_values_for, agent_id, question)
+    static_system = _build_static_system(knowledge_base, stored.lists)
 
     question_vector: list[float] | None = vector
     if collection and question_vector is None:
@@ -759,6 +769,7 @@ async def assemble_prompt_async(
         question, knowledge_base, top_k_capsules, collection, question_vector, agent_id
     )
     dynamic_context = _append_question_glossary(dynamic_context, question, knowledge_base)
+    dynamic_context = _append_index_matches(dynamic_context, stored.matching, knowledge_base)
     dynamic_context = _append_extra_context(dynamic_context, extra_dynamic_context)
 
     return AssembledPrompt(
@@ -784,6 +795,51 @@ async def assemble_prompt_async(
 _PARTIAL_COLUMNS_NOTE = (
     "only the columns listed are available for this table; select them by name, never with *"
 )
+
+
+def _index_list(
+    lists: Mapping[tuple[str, str, str], tuple[str, ...]] | None,
+    table: dict[str, Any],
+    column: str,
+) -> list[str]:
+    """The value index's complete list for *column* of *table*, as shown:
+    each value that fits a prompt line, at most :data:`MAX_LIST`; empty when
+    the index offers none."""
+    if not lists:
+        return []
+    found = lists.get(column_key(table.get("schema"), table.get("name"), column)) or ()
+    return [v for v in found if _sample_fits(v)][:MAX_LIST]
+
+
+#: Heads the per-question values. Says they are the stored spellings, so the
+#: model compares with them rather than with the question's words.
+_INDEX_MATCHES_HEADING = "【Stored values matching the question】"
+
+
+def _append_index_matches(
+    dynamic_context: str,
+    matching: Mapping[tuple[str, str, str], tuple[str, ...]] | None,
+    knowledge_base: dict[str, Any],
+) -> str:
+    """*dynamic_context* with the value index's matches for this question:
+    for each column of the knowledge base it names, the stored values that
+    match words of the question, at most :data:`MAX_MATCHING`. A column the
+    knowledge base does not have is left out, so a provider cannot add one."""
+    if not matching:
+        return dynamic_context
+    lines: list[str] = []
+    for table in knowledge_base.get("schema", {}).get("tables", []):
+        for col in table.get("columns", []):
+            name = col.get("name", "")
+            found = matching.get(column_key(table.get("schema"), table.get("name"), name)) or ()
+            shown = [v for v in found if _sample_fits(v)][:MAX_MATCHING]
+            if shown:
+                values = ", ".join(_quote_sample(v) for v in shown)
+                lines.append(f"{_table_ref(table)}.{name}: {values}")
+    if not lines:
+        return dynamic_context
+    section = "\n".join([_INDEX_MATCHES_HEADING, *lines])
+    return f"{dynamic_context}\n\n{section}" if dynamic_context else section
 
 
 def _columns_omitted(table: dict[str, Any]) -> bool:
@@ -813,7 +869,10 @@ def _letters_and_digits(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum())
 
 
-def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
+def _render_m_schema(
+    knowledge_base: dict[str, Any],
+    lists: Mapping[tuple[str, str, str], tuple[str, ...]] | None = None,
+) -> str:
     """Render the KB as a compact M-Schema string (Phase 6B).
 
     Format::
@@ -873,7 +932,12 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
             # the whole schema rendering.
             samples: list[str] = col.get("samples") or []
             shown = [s for s in samples if _sample_fits(s)]
-            if shown:
+            indexed = _index_list(lists, table, col_name)
+            if indexed:
+                # The value index's list, read through the request's row
+                # filters, in place of the knowledge base's samples.
+                flags.append(f"values: [{', '.join(_quote_sample(v) for v in indexed)}]")
+            elif shown:
                 # "values" when they are every value the column holds, so the
                 # model can rely on the spelling; "samples" when they are a few.
                 # A complete list that lost an over-long value is no longer
@@ -913,8 +977,16 @@ def _render_m_schema(knowledge_base: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_static_system(knowledge_base: dict[str, Any]) -> str:
+def _build_static_system(
+    knowledge_base: dict[str, Any],
+    lists: Mapping[tuple[str, str, str], tuple[str, ...]] | None = None,
+) -> str:
     """Build the cacheable static system prompt from *knowledge_base*.
+
+    *lists* are the value index's complete lists of short columns
+    (:class:`~nlqueries.connectors.loader.PromptValues`), shown as each
+    column's values in place of its knowledge-base samples. They do not
+    depend on the question, so the block stays the same from one to the next.
 
     Contains: role preamble + ALL schema tables (deterministic KB order) +
     business context + SQL format rules.  No question-dependent content.
@@ -928,9 +1000,9 @@ def _build_static_system(knowledge_base: dict[str, Any]) -> str:
     parts: list[str] = [_ROLE_PREAMBLE, ""]
 
     if _cfg.SCHEMA_FORMAT == "verbose":
-        schema_section = _build_full_schema_section(knowledge_base)
+        schema_section = _build_full_schema_section(knowledge_base, lists)
     else:
-        schema_section = _render_m_schema(knowledge_base)
+        schema_section = _render_m_schema(knowledge_base, lists)
 
     if schema_section:
         parts.append(schema_section)
@@ -973,7 +1045,10 @@ def _table_ref(table: dict[str, Any]) -> str:
     return f"{schema}.{name}" if schema and name else name
 
 
-def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
+def _build_full_schema_section(
+    knowledge_base: dict[str, Any],
+    lists: Mapping[tuple[str, str, str], tuple[str, ...]] | None = None,
+) -> str:
     """Render ALL tables from the KB in deterministic (KB YAML) order."""
     tables: list[dict[str, Any]] = knowledge_base.get("schema", {}).get("tables", [])
     if not tables:
@@ -996,10 +1071,13 @@ def _build_full_schema_section(knowledge_base: dict[str, Any]) -> str:
             col_name = col.get("name", "")
             col_type = col.get("type", "")
             col_desc = _one_line(col.get("description", ""))
+            line = f"  - {col_name} ({col_type})"
             if col_desc:
-                lines.append(f"  - {col_name} ({col_type}): {col_desc}")
-            else:
-                lines.append(f"  - {col_name} ({col_type})")
+                line += f": {col_desc}"
+            indexed = _index_list(lists, table, col_name)
+            if indexed:
+                line += f"; values: [{', '.join(_quote_sample(v) for v in indexed)}]"
+            lines.append(line)
         # Both renderers carry the note, because `SCHEMA_FORMAT` chooses between
         # them at runtime: marking only the default would leave every `verbose`
         # deployment with the restriction unstated and no way to tell.
