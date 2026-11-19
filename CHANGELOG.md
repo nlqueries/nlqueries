@@ -38,7 +38,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   generic "No rows matched" note. Counts run on the request's own
   connection, 2 s each at most and within the caller's deadline. A condition
   on a personal-data column, or with a subquery, is never named. PostgreSQL,
-  MySQL, MariaDB, SQLite and DuckDB only.
+  MySQL, MariaDB, SQLite and DuckDB only. An answer with such a note is not
+  put in the semantic cache, since the counts change with the data: with the
+  cache on, asking the same empty question again is answered afresh, with a
+  generation and the counts, where an answer with only the generic note was
+  served from the cache.
 - **A caller can ask for a corrected statement (#408).** `run_query` takes
   `previous_attempt={"sql", "reason", "kind"}`, the CLI's `query`
   `--previous-sql`, `--previous-reason` and `--previous-kind`, and the MCP

@@ -627,7 +627,8 @@ EMPTY_RESULT_EXPLAIN: bool = os.getenv("NLQ_EMPTY_RESULT_EXPLAIN", "true").lower
 """When a statement returns no rows and nothing more specific says why, leave out
 each condition of its ``WHERE`` in turn, count the rows, and name in a note each
 condition without which rows come back, with the count. PostgreSQL, MySQL,
-MariaDB, SQLite and DuckDB only. On by default; set
+MariaDB, SQLite and DuckDB only. Such an answer is not cached, so a repeat of the
+question is answered afresh. On by default; set
 NLQ_EMPTY_RESULT_EXPLAIN=false to turn it off (see
 :mod:`nlqueries.orchestrator.empty_explain`)."""
 
