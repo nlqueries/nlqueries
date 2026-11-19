@@ -6,7 +6,8 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
-- **Literal grounding can read a value index before the database.**
+- **Literal grounding can read a value index before the database.** With
+  `NLQ_VALUE_INDEX=true` (`value_index` in `QuerySettings`; off by default),
   `LookupSource` takes `values`, a callable that returns, for a column and a
   literal, what an index holds (`IndexedValues`: the column's whole list, or
   the values found for the literal, and whether the index is current). For a
