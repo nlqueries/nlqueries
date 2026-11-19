@@ -6,16 +6,16 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
-- **Literal grounding can read a value index before the database.** With
-  `NLQ_VALUE_INDEX=true` (`value_index` in `QuerySettings`; off by default),
+- **Literal grounding can read a value index before the database.**
   `LookupSource` takes `values`, a callable that returns, for a column and a
   literal, what an index holds (`IndexedValues`: the column's whole list, or
-  the values found for the literal, and whether the index is current). For a
-  column it covers, grounding and the empty-result follow-up read it in place
-  of the stored list and the database, with the same matching rules; a stale
-  index costs one exact-match query. Core supplies no index, and a column the
-  index does not cover is looked up as before. A layer above core adds one by
-  wrapping `connectors.loader.lookup_source`.
+  the values found for the literal, and whether the index is current). With
+  `NLQ_VALUE_INDEX=true` (`value_index` in `QuerySettings`; off by default),
+  grounding and the empty-result follow-up read it, for a column it covers,
+  in place of the stored list and the database, with the same matching
+  rules; a stale index costs one exact-match query. Core supplies no index,
+  and a column the index does not cover is looked up as before. A layer above
+  core adds one by wrapping `connectors.loader.lookup_source`.
 - **A value that differs only in its accents is matched.** Where grounding
   compares a literal with a list (a column's complete list in the knowledge
   base, or a value index), 'Sao Paulo' now takes the stored 'São Paulo', as
