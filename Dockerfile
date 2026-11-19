@@ -8,7 +8,7 @@
 # This is the MULTI-ARCH INDEX digest, so pinning does not foreclose a
 # multi-arch build. To update, deliberately:
 #   docker buildx imagetools inspect python:3.11-slim-bookworm
-FROM python:3.11-slim-bookworm@sha256:f06d01d4ba3f8ad5af45a3ec87df19c1d317d8e8961edc0fabda61811af6f7cf
+FROM python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
 
 # No system packages are added to the base image. Nothing at runtime needs
 # curl: the healthcheck below is Python, which the image already carries, and
