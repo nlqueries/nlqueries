@@ -619,7 +619,7 @@ repeated exactly, a ranking headed by a row with no value, a percentage outside 
 ``result_notes``. On by default; set NLQ_RESULT_CHECKS=false to return results as
 they ran, with no notes."""
 
-EMPTY_RESULT_EXPLAIN: bool = os.getenv("NLQ_EMPTY_RESULT_EXPLAIN", "false").lower() in (
+EMPTY_RESULT_EXPLAIN: bool = os.getenv("NLQ_EMPTY_RESULT_EXPLAIN", "true").lower() in (
     "1",
     "true",
     "yes",
@@ -627,15 +627,15 @@ EMPTY_RESULT_EXPLAIN: bool = os.getenv("NLQ_EMPTY_RESULT_EXPLAIN", "false").lowe
 """When a statement returns no rows and nothing more specific says why, leave out
 each condition of its ``WHERE`` in turn, count the rows, and name in a note each
 condition without which rows come back, with the count. PostgreSQL, MySQL,
-MariaDB, SQLite and DuckDB only. Off by default; set
-NLQ_EMPTY_RESULT_EXPLAIN=true to turn it on (see
+MariaDB, SQLite and DuckDB only. On by default; set
+NLQ_EMPTY_RESULT_EXPLAIN=false to turn it off (see
 :mod:`nlqueries.orchestrator.empty_explain`)."""
 
-READING_LINE: bool = os.getenv("NLQ_READING_LINE", "false").lower() in ("1", "true", "yes")
+READING_LINE: bool = os.getenv("NLQ_READING_LINE", "true").lower() in ("1", "true", "yes")
 """Say, beside each answer, how the question was read: the values, ranges, two-way
 matches and row limit the final statement uses, from the statement alone, with no
-model call (``reading`` in the final frame and on ``AgentQueryResult``). Off by
-default; set NLQ_READING_LINE=true to turn it on (see
+model call (``reading`` in the final frame and on ``AgentQueryResult``). On by
+default; set NLQ_READING_LINE=false to turn it off (see
 :mod:`nlqueries.orchestrator.reading`)."""
 
 VALUE_INDEX: bool = os.getenv("NLQ_VALUE_INDEX", "false").lower() in ("1", "true", "yes")

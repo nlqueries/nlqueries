@@ -341,10 +341,18 @@ def test_the_answer_names_the_condition_in_place_of_the_generic_note(
     ]
 
 
-def test_off_by_default_the_answer_keeps_the_generic_note(
+def test_on_by_default(connector: _Recording, tmp_path: Path) -> None:
+    frame = _answer(LATE_NIGHT, connector, tmp_path, QuerySettings())
+
+    assert frame["result_notes"] == [
+        "No rows match every condition. Without f.night = 'YES', 23 rows match."
+    ]
+
+
+def test_turned_off_the_answer_keeps_the_generic_note(
     connector: _Recording, tmp_path: Path
 ) -> None:
-    frame = _answer(LATE_NIGHT, connector, tmp_path, QuerySettings())
+    frame = _answer(LATE_NIGHT, connector, tmp_path, QuerySettings(empty_result_explain=False))
 
     assert frame["result_notes"] == [EMPTY_RESULT_NOTE]
     assert not any(s.startswith("SELECT COUNT(*) FROM (") for s, _ in connector.statements)
@@ -384,7 +392,7 @@ def test_an_answer_with_the_note_is_not_cached(connector: _Recording, tmp_path: 
     from nlqueries.orchestrator.multi_agent_orchestrator import _empty_with_notes
 
     explained = _answer(LATE_NIGHT, connector, tmp_path, QuerySettings(empty_result_explain=True))
-    generic = _answer(LATE_NIGHT, connector, tmp_path, QuerySettings())
+    generic = _answer(LATE_NIGHT, connector, tmp_path, QuerySettings(empty_result_explain=False))
 
     assert _empty_with_notes([json.dumps(explained)])
     assert not _empty_with_notes([json.dumps(generic)])

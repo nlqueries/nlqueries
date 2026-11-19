@@ -265,8 +265,12 @@ def test_the_answer_says_how_the_question_was_read(tmp_path: Path) -> None:
     assert [item["text"] for item in frame["reading"]] == SAID
 
 
-def test_off_by_default_nothing_is_said(tmp_path: Path) -> None:
-    assert "reading" not in _answer(tmp_path, QuerySettings())
+def test_on_by_default(tmp_path: Path) -> None:
+    assert _answer(tmp_path, QuerySettings())["reading"]
+
+
+def test_turned_off_nothing_is_said(tmp_path: Path) -> None:
+    assert "reading" not in _answer(tmp_path, QuerySettings(reading_line=False))
 
 
 def test_a_statement_that_is_not_valid_is_not_read(tmp_path: Path) -> None:
@@ -319,7 +323,7 @@ def test_a_cached_answer_says_what_the_live_one_said() -> None:
 
     assert hit["from_cache"] is True
     assert [item["text"] for item in hit["reading"]] == SAID
-    assert "reading" not in _cache_hit(QuerySettings())
+    assert "reading" not in _cache_hit(QuerySettings(reading_line=False))
     # A statement the policy refuses is not run, and not read either.
     refused = "SELECT * FROM t WHERE a = 'x' AND pg_sleep(1) IS NULL"
     assert read_as(refused, "postgres"), "it would say something if it were read"

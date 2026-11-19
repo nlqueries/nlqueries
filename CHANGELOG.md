@@ -21,17 +21,17 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   base, or a value index), 'Sao Paulo' now takes the stored 'São Paulo', as
   'sao paulo' took 'Sao Paulo' before. The database lookups do not fold
   accents.
-- **An answer can say how the question was read.** With
-  `NLQ_READING_LINE=true` (`reading_line` in `QuerySettings`; off by
-  default), each answer carries `reading`: the text values, ranges, two-way
+- **An answer says how the question was read.** On by default
+  (`NLQ_READING_LINE`, `reading_line` in `QuerySettings`; set `false` to
+  turn it off), each answer carries `reading`: the text values, ranges, two-way
   matches and row limit its final statement uses, each in a few words
   (`origin 'SFO'; dep from 1130 to 1230; top 10 by revenue`). Read from the
   statement alone, with no model call, so a cached answer replayed says the
   same. `nlqueries query` and the MCP `query` tool show it as "Read as", and
   `AgentQueryResult.reading` and `--json` carry it.
-- **An empty result can say which condition left it empty.** With
-  `NLQ_EMPTY_RESULT_EXPLAIN=true` (`empty_result_explain` in
-  `QuerySettings`; off by default), a statement that returns no rows, with
+- **An empty result says which condition left it empty.** On by default
+  (`NLQ_EMPTY_RESULT_EXPLAIN`, `empty_result_explain` in `QuerySettings`;
+  set `false` to turn it off), a statement that returns no rows, with
   nothing more specific to say why, has each top-level condition of its
   `WHERE` left out in turn, at most 4, and the rows counted. Each condition
   without which rows come back is named, with the count, in place of the
