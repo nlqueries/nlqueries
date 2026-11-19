@@ -509,6 +509,29 @@ def credentials_for(connector_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class IndexedValues:
+    """What a value index holds for one literal compared with one column.
+
+    Returned by :attr:`LookupSource.values`. Literal grounding uses these values
+    under any row scope, so every one of them must be a value the request may
+    see: an index built through the same row filters the request runs under.
+    """
+
+    #: With :attr:`complete`, every value the column holds. Without, the stored
+    #: values the index finds for the literal, which must include every one
+    #: equal to it ignoring case, spacing, punctuation at either end and
+    #: accents, and every one that is a run of whole words of it ('DALLAS' for
+    #: 'DALLAS FORT WORTH'), and may add those containing it and the closest
+    #: spellings.
+    values: tuple[str, ...]
+    complete: bool = False
+    #: Whether the index is recent enough that a literal it does not hold is
+    #: not stored. When ``False``, one exact-match query checks the database
+    #: first, so a value added since the build is not taken for a miss.
+    current: bool = True
+
+
+@dataclass(frozen=True)
 class LookupSource:
     """A database to read stored values from, and how to reach it."""
 
@@ -519,6 +542,15 @@ class LookupSource:
     #: Opens the connector to read through, with read permission. Blocking.
     #: Closing what it returns is safe and releases nothing the pool holds.
     open: Callable[[], DatabaseConnector | None]
+    #: A value index to read before the database, or ``None`` to read the
+    #: database alone. Called with the catalog and the schema (each ``None``
+    #: when the statement and the knowledge base name none), table, column and
+    #: literal; returns what the index holds for them, or ``None`` when it does
+    #: not cover that column, in which case the column is looked up in the
+    #: database as without an index. Blocking, and called on a worker thread in the
+    #: request's context, within grounding's deadline. Core supplies none; a
+    #: layer above it adds one by wrapping :func:`lookup_source`.
+    values: Callable[[str | None, str | None, str, str, str], IndexedValues | None] | None = None
 
 
 def lookup_source(agent_id: str) -> LookupSource | None:

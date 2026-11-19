@@ -65,6 +65,7 @@ QUERY_SETTING_VARS: tuple[str, ...] = (
     "NLQ_LITERAL_GROUNDING_REPAIR",
     "NLQ_EMPTY_RESULT_EXPLAIN",
     "NLQ_READING_LINE",
+    "NLQ_VALUE_INDEX",
 )
 
 
@@ -636,6 +637,12 @@ matches and row limit the final statement uses, from the statement alone, with n
 model call (``reading`` in the final frame and on ``AgentQueryResult``). Off by
 default; set NLQ_READING_LINE=true to turn it on (see
 :mod:`nlqueries.orchestrator.reading`)."""
+
+VALUE_INDEX: bool = os.getenv("NLQ_VALUE_INDEX", "false").lower() in ("1", "true", "yes")
+"""Let literal grounding read a value index before the database, where the lookup
+source carries one (``LookupSource.values``; core supplies none, so alone it
+changes nothing). Off by default; set NLQ_VALUE_INDEX=true to turn it on (see
+:mod:`nlqueries.orchestrator.literal_grounding`)."""
 
 LITERAL_GROUNDING: bool = os.getenv("NLQ_LITERAL_GROUNDING", "true").lower() in (
     "1",
