@@ -74,7 +74,8 @@ larger than ``LITERAL_GROUNDING_MAX_ROWS`` rows is not looked up at all, and
 there a list is used alone. A table whose size is unknown is looked up.
 
 A source can carry a value index (:attr:`~nlqueries.connectors.loader.
-LookupSource.values`; core supplies none). For a column the index covers, it
+LookupSource.values`; core supplies none), read where ``NLQ_VALUE_INDEX``
+(``value_index``) is on. For a column the index covers, it
 answers in place of the stored list and the database: the same passes run over
 what it returns (:func:`_from_values`), under any row scope, since an index is
 built through the filters the request runs under. One the index marks as not
@@ -748,9 +749,10 @@ class _Session:
     ) -> IndexedValues | None:
         """What the source's value index holds for *literal* in *table*.*column*;
         ``None`` when the source has no index, the index does not cover the
-        column, the call failed or time ran out. Opens no connector."""
+        column, the call failed or time ran out, or ``value_index`` is off.
+        Opens no connector."""
         values = self._source.values
-        if values is None:
+        if values is None or not current_settings().value_index:
             return None
         call = functools.partial(
             values, table.catalog or None, table.db or None, table.name, column.name, literal

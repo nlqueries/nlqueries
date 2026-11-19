@@ -125,10 +125,15 @@ def _source(tmp_path: Path, name: str = "s.db", **answers: IndexedValues | None)
 
 
 def _ground(
-    sql: str, src: _Source, kb: dict[str, Any] = KB, mode: str = "loose"
+    sql: str, src: _Source, kb: dict[str, Any] = KB, mode: str = "loose", on: bool = True
 ) -> GroundingResult:
-    with use_query_settings(QuerySettings(match_mode=mode)):
+    with use_query_settings(QuerySettings(match_mode=mode, value_index=on)):
         return asyncio.run(ground_literals(sql, kb, "sqlite", src.source))
+
+
+def _empty_result(sql: str, src: _Source) -> list[Any]:
+    with use_query_settings(QuerySettings(value_index=True)):
+        return asyncio.run(empty_result_literals(sql, KB, "sqlite", src.source))
 
 
 def _complete(*values: str) -> IndexedValues:
@@ -140,6 +145,16 @@ def _partial(*values: str, current: bool = True) -> IndexedValues:
 
 
 # --- The index answers without the database ------------------------------------
+
+
+def test_with_value_index_off_the_index_is_never_asked(tmp_path: Path) -> None:
+    """Off by default: a supplied index is read only once the setting is on."""
+    assert QuerySettings().value_index is False
+    src = _source(tmp_path, status=_complete("LEGAL"))
+    result = _ground("SELECT id FROM schools WHERE status = 'legal'", src, on=False)
+    assert result.substitutions == [("schools", "status", "legal", "Legal")]
+    assert src.index is not None
+    assert src.index.calls == []
 
 
 def test_a_literal_the_index_holds_runs_as_written_and_opens_no_connector(
@@ -289,7 +304,7 @@ def test_a_stale_index_whose_check_fails_does_not_fail_the_question(tmp_path: Pa
     src = _Source(empty, _Index({"status": _partial("Legal", current=False)}))
     sql = "SELECT id FROM schools WHERE status = 'Closed'"
     assert _ground(sql, src).sql == sql
-    assert asyncio.run(empty_result_literals(sql, KB, "sqlite", src.source)) == []
+    assert _empty_result(sql, src) == []
     assert src.statements
 
 
@@ -365,11 +380,7 @@ def test_an_empty_result_offers_the_index_s_values_for_the_literal_s_words(
     tmp_path: Path,
 ) -> None:
     src = _source(tmp_path, city=_partial("Dallas", "Fort Worth", "Dalhart"))
-    found = asyncio.run(
-        empty_result_literals(
-            "SELECT id FROM schools WHERE city = 'Dallas Fort Worth'", KB, "sqlite", src.source
-        )
-    )
+    found = _empty_result("SELECT id FROM schools WHERE city = 'Dallas Fort Worth'", src)
     assert [(f.column, f.literal) for f in found] == [("city", "Dallas Fort Worth")]
     assert found[0].candidates[:2] == ("Dallas", "Fort Worth")
     assert src.statements == []
