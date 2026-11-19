@@ -1,7 +1,7 @@
 {
  "format": "nlq-rates-v1",
- "effective_from": "2026-11-18",
- "published": "2026-11-18",
+ "effective_from": "2026-11-19",
+ "published": "2026-11-19",
  "models": {
   "abliteration/abliterated-model": {
    "cache_read_input_token_cost": 1e-07,
@@ -2181,6 +2181,10 @@
    "input_cost_per_token": 1.1e-07,
    "output_cost_per_token": 0.0
   },
+  "azure/us-gov/gpt-4-turbo": {
+   "input_cost_per_token": 1.25e-05,
+   "output_cost_per_token": 3.75e-05
+  },
   "azure/us-gov/gpt-4.1": {
    "cache_read_input_token_cost": 6.88e-07,
    "input_cost_per_token": 2.75e-06,
@@ -2195,6 +2199,20 @@
    "cache_read_input_token_cost": 1.719e-06,
    "input_cost_per_token": 3.438e-06,
    "output_cost_per_token": 1.375e-05
+  },
+  "azure/us-gov/gpt-4o-2024-05-13": {
+   "input_cost_per_token": 6.25e-06,
+   "output_cost_per_token": 1.875e-05
+  },
+  "azure/us-gov/gpt-4o-2024-11-20": {
+   "cache_read_input_token_cost": 1.719e-06,
+   "input_cost_per_token": 3.438e-06,
+   "output_cost_per_token": 1.375e-05
+  },
+  "azure/us-gov/gpt-4o-mini": {
+   "cache_read_input_token_cost": 1.04e-07,
+   "input_cost_per_token": 2.07e-07,
+   "output_cost_per_token": 8.25e-07
   },
   "azure/us-gov/gpt-5.1": {
    "cache_read_input_token_cost": 1.71875e-07,
@@ -2232,6 +2250,11 @@
    "output_cost_per_token_above_272k_tokens": 2.475e-05
   },
   "azure/us-gov/o3-mini": {
+   "cache_read_input_token_cost": 7.57e-07,
+   "input_cost_per_token": 1.513e-06,
+   "output_cost_per_token": 6.05e-06
+  },
+  "azure/us-gov/o3-mini-2025-01-31": {
    "cache_read_input_token_cost": 7.57e-07,
    "input_cost_per_token": 1.513e-06,
    "output_cost_per_token": 6.05e-06
@@ -3479,6 +3502,39 @@
    "input_cost_per_token": 1.5e-07,
    "output_cost_per_token": 5e-07
   },
+  "bedrock/ap-east-2/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 3.01e-06
+  },
+  "bedrock/ap-northeast-1/amazon.nova-2-5-sonic": {
+   "input_cost_per_token": 3.96e-07,
+   "output_cost_per_token": 3.311e-06
+  },
+  "bedrock/ap-northeast-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.9e-08,
+   "input_cost_per_token": 3.96e-07,
+   "output_cost_per_token": 3.311e-06
+  },
+  "bedrock/ap-northeast-1/amazon.nova-2-sonic-v1:0": {
+   "input_cost_per_token": 3.96e-07,
+   "output_cost_per_token": 3.311e-06
+  },
+  "bedrock/ap-northeast-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.8e-08,
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock/ap-northeast-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.05e-08,
+   "input_cost_per_token": 4.2e-08,
+   "output_cost_per_token": 1.68e-07
+  },
+  "bedrock/ap-northeast-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.4e-07,
+   "input_cost_per_token": 9.6e-07,
+   "output_cost_per_token": 3.84e-06
+  },
   "bedrock/ap-northeast-1/anthropic.claude-instant-v1": {
    "input_cost_per_token": 2.23e-06,
    "output_cost_per_token": 7.55e-06
@@ -3491,9 +3547,43 @@
    "input_cost_per_token": 8e-06,
    "output_cost_per_token": 2.4e-05
   },
+  "bedrock/ap-northeast-1/apac.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.8e-08,
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock/ap-northeast-1/apac.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.4e-07,
+   "input_cost_per_token": 9.6e-07,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/ap-northeast-1/deepseek.v3-v1:0": {
+   "input_cost_per_token": 7.01666e-07,
+   "output_cost_per_token": 2.032411e-06
+  },
   "bedrock/ap-northeast-1/deepseek.v3.2": {
    "input_cost_per_token": 7.4e-07,
    "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/ap-northeast-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 3.01e-06
+  },
+  "bedrock/ap-northeast-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/ap-northeast-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.8e-07,
+   "output_cost_per_token": 4.6e-07
+  },
+  "bedrock/ap-northeast-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 1e-07
+  },
+  "bedrock/ap-northeast-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.45e-06
   },
   "bedrock/ap-northeast-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
@@ -3503,6 +3593,30 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/ap-northeast-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock/ap-northeast-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock/ap-northeast-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/ap-northeast-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock/ap-northeast-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock/ap-northeast-1/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
   "bedrock/ap-northeast-1/mistral.voxtral-mini-3b-2507": {
    "input_cost_per_token": 5e-08,
    "output_cost_per_token": 5e-08
@@ -3510,6 +3624,10 @@
   "bedrock/ap-northeast-1/mistral.voxtral-small-24b-2507": {
    "input_cost_per_token": 1.2e-07,
    "output_cost_per_token": 3.6e-07
+  },
+  "bedrock/ap-northeast-1/moonshot.kimi-k2-thinking": {
+   "input_cost_per_token": 7.3e-07,
+   "output_cost_per_token": 3.03e-06
   },
   "bedrock/ap-northeast-1/moonshotai.kimi-k2-thinking": {
    "input_cost_per_token": 7.3e-07,
@@ -3519,6 +3637,50 @@
    "input_cost_per_token": 7.2e-07,
    "output_cost_per_token": 3.6e-06
   },
+  "bedrock/ap-northeast-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/ap-northeast-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.9e-07
+  },
+  "bedrock/ap-northeast-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock/ap-northeast-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/ap-northeast-1/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/ap-northeast-1/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock/ap-northeast-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/ap-northeast-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/ap-northeast-1/qwen.qwen3-235b-a22b-2507-v1:0": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 1.06e-06
+  },
+  "bedrock/ap-northeast-1/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/ap-northeast-1/qwen.qwen3-coder-480b-a35b-v1:0": {
+   "input_cost_per_token": 5.4e-07,
+   "output_cost_per_token": 2.18e-06
+  },
   "bedrock/ap-northeast-1/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 1.44e-06
@@ -3527,9 +3689,103 @@
    "input_cost_per_token": 1.8e-07,
    "output_cost_per_token": 1.45e-06
   },
+  "bedrock/ap-northeast-1/qwen.qwen3-vl-235b-a22b": {
+   "input_cost_per_token": 6.4e-07,
+   "output_cost_per_token": 3.22e-06
+  },
+  "bedrock/ap-northeast-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/ap-northeast-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/ap-northeast-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/ap-northeast-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/ap-northeast-2/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.775e-08,
+   "input_cost_per_token": 7.1e-08,
+   "output_cost_per_token": 2.84e-07
+  },
+  "bedrock/ap-northeast-2/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.025e-08,
+   "input_cost_per_token": 4.1e-08,
+   "output_cost_per_token": 1.64e-07
+  },
+  "bedrock/ap-northeast-2/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.375e-07,
+   "input_cost_per_token": 9.5e-07,
+   "output_cost_per_token": 3.8e-06
+  },
+  "bedrock/ap-northeast-2/apac.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.775e-08,
+   "input_cost_per_token": 7.1e-08,
+   "output_cost_per_token": 2.84e-07
+  },
+  "bedrock/ap-northeast-2/apac.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.375e-07,
+   "input_cost_per_token": 9.5e-07,
+   "output_cost_per_token": 3.8e-06
+  },
+  "bedrock/ap-northeast-2/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 2.96e-06
+  },
+  "bedrock/ap-south-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.775e-08,
+   "input_cost_per_token": 7.1e-08,
+   "output_cost_per_token": 2.84e-07
+  },
+  "bedrock/ap-south-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.025e-08,
+   "input_cost_per_token": 4.1e-08,
+   "output_cost_per_token": 1.64e-07
+  },
+  "bedrock/ap-south-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.35e-07,
+   "input_cost_per_token": 9.4e-07,
+   "output_cost_per_token": 3.76e-06
+  },
+  "bedrock/ap-south-1/apac.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.775e-08,
+   "input_cost_per_token": 7.1e-08,
+   "output_cost_per_token": 2.84e-07
+  },
+  "bedrock/ap-south-1/apac.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.35e-07,
+   "input_cost_per_token": 9.4e-07,
+   "output_cost_per_token": 3.76e-06
+  },
+  "bedrock/ap-south-1/deepseek.v3-v1:0": {
+   "input_cost_per_token": 6.82424e-07,
+   "output_cost_per_token": 1.976678e-06
+  },
   "bedrock/ap-south-1/deepseek.v3.2": {
    "input_cost_per_token": 7.4e-07,
    "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/ap-south-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 2.95e-06
+  },
+  "bedrock/ap-south-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock/ap-south-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock/ap-south-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 9e-08
   },
   "bedrock/ap-south-1/meta.llama3-70b-instruct-v1:0": {
    "input_cost_per_token": 3.18e-06,
@@ -3539,6 +3795,10 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 7.2e-07
   },
+  "bedrock/ap-south-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 1.41e-06
+  },
   "bedrock/ap-south-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
@@ -3546,6 +3806,54 @@
   "bedrock/ap-south-1/minimax.minimax-m2.5": {
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
+  },
+  "bedrock/ap-south-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock/ap-south-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock/ap-south-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/ap-south-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock/ap-south-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock/ap-south-1/mistral.mistral-7b-instruct-v0:2": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/ap-south-1/mistral.mistral-large-2402-v1:0": {
+   "input_cost_per_token": 4.8e-06,
+   "output_cost_per_token": 1.44e-05
+  },
+  "bedrock/ap-south-1/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock/ap-south-1/mistral.mixtral-8x7b-instruct-v0:1": {
+   "input_cost_per_token": 5.4e-07,
+   "output_cost_per_token": 8.4e-07
+  },
+  "bedrock/ap-south-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock/ap-south-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/ap-south-1/moonshot.kimi-k2-thinking": {
+   "input_cost_per_token": 7.1e-07,
+   "output_cost_per_token": 2.94e-06
   },
   "bedrock/ap-south-1/moonshotai.kimi-k2-thinking": {
    "input_cost_per_token": 7.1e-07,
@@ -3555,6 +3863,50 @@
    "input_cost_per_token": 7.2e-07,
    "output_cost_per_token": 3.6e-06
   },
+  "bedrock/ap-south-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock/ap-south-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock/ap-south-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.7e-07
+  },
+  "bedrock/ap-south-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/ap-south-1/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock/ap-south-1/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/ap-south-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock/ap-south-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/ap-south-1/qwen.qwen3-235b-a22b-2507-v1:0": {
+   "input_cost_per_token": 2.6e-07,
+   "output_cost_per_token": 1.04e-06
+  },
+  "bedrock/ap-south-1/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock/ap-south-1/qwen.qwen3-coder-480b-a35b-v1:0": {
+   "input_cost_per_token": 5.3e-07,
+   "output_cost_per_token": 2.12e-06
+  },
   "bedrock/ap-south-1/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 1.44e-06
@@ -3563,9 +3915,101 @@
    "input_cost_per_token": 1.8e-07,
    "output_cost_per_token": 1.41e-06
   },
+  "bedrock/ap-south-1/qwen.qwen3-vl-235b-a22b": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.13e-06
+  },
+  "bedrock/ap-south-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/ap-south-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/ap-south-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/ap-south-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/ap-southeast-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 2.025e-08,
+   "input_cost_per_token": 8.1e-08,
+   "output_cost_per_token": 3.24e-07
+  },
+  "bedrock/ap-southeast-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.175e-08,
+   "input_cost_per_token": 4.7e-08,
+   "output_cost_per_token": 1.88e-07
+  },
+  "bedrock/ap-southeast-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.7e-07,
+   "input_cost_per_token": 1.08e-06,
+   "output_cost_per_token": 4.32e-06
+  },
+  "bedrock/ap-southeast-1/apac.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 2.025e-08,
+   "input_cost_per_token": 8.1e-08,
+   "output_cost_per_token": 3.24e-07
+  },
+  "bedrock/ap-southeast-1/apac.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.7e-07,
+   "input_cost_per_token": 1.08e-06,
+   "output_cost_per_token": 4.32e-06
+  },
+  "bedrock/ap-southeast-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 4.1e-07,
+   "output_cost_per_token": 3.39e-06
+  },
+  "bedrock/ap-southeast-2/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.575e-08,
+   "input_cost_per_token": 6.3e-08,
+   "output_cost_per_token": 2.52e-07
+  },
+  "bedrock/ap-southeast-2/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 9.25e-09,
+   "input_cost_per_token": 3.7e-08,
+   "output_cost_per_token": 1.48e-07
+  },
+  "bedrock/ap-southeast-2/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.1e-07,
+   "input_cost_per_token": 8.4e-07,
+   "output_cost_per_token": 3.36e-06
+  },
+  "bedrock/ap-southeast-2/deepseek.v3.2": {
+   "input_cost_per_token": 6.4e-07,
+   "output_cost_per_token": 1.91e-06
+  },
+  "bedrock/ap-southeast-2/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.2e-07,
+   "output_cost_per_token": 2.63e-06
+  },
+  "bedrock/ap-southeast-2/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 1.24e-06
+  },
   "bedrock/ap-southeast-2/minimax.minimax-m2.5": {
    "input_cost_per_token": 3.1e-07,
    "output_cost_per_token": 1.24e-06
+  },
+  "bedrock/ap-southeast-2/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.1e-07,
+   "output_cost_per_token": 2.06e-06
+  },
+  "bedrock/ap-southeast-2/mistral.mistral-7b-instruct-v0:2": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 2.6e-07
+  },
+  "bedrock/ap-southeast-2/mistral.mistral-large-2402-v1:0": {
+   "input_cost_per_token": 5.2e-06,
+   "output_cost_per_token": 1.56e-05
+  },
+  "bedrock/ap-southeast-2/mistral.mixtral-8x7b-instruct-v0:1": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 9.1e-07
   },
   "bedrock/ap-southeast-2/mistral.voxtral-mini-3b-2507": {
    "input_cost_per_token": 4.12e-08,
@@ -3575,13 +4019,49 @@
    "input_cost_per_token": 1.03e-07,
    "output_cost_per_token": 3.09e-07
   },
+  "bedrock/ap-southeast-2/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.09e-06
+  },
+  "bedrock/ap-southeast-2/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 6.7e-07
+  },
+  "bedrock/ap-southeast-2/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 5.2e-07,
+   "output_cost_per_token": 1.24e-06
+  },
   "bedrock/ap-southeast-2/qwen.qwen3-next-80b-a3b": {
    "input_cost_per_token": 1.545e-07,
    "output_cost_per_token": 1.236e-06
   },
+  "bedrock/ap-southeast-2/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock/ap-southeast-2/zai.glm-4.7": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 2.27e-06
+  },
+  "bedrock/ap-southeast-2/zai.glm-4.7-flash": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 4.1e-07
+  },
+  "bedrock/ap-southeast-2/zai.glm-5": {
+   "input_cost_per_token": 1.03e-06,
+   "output_cost_per_token": 3.3e-06
+  },
+  "bedrock/ap-southeast-3/deepseek.v3-v1:0": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.74e-06
+  },
   "bedrock/ap-southeast-3/deepseek.v3.2": {
    "input_cost_per_token": 7.4e-07,
    "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/ap-southeast-3/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.2e-07,
+   "output_cost_per_token": 2.64e-06
   },
   "bedrock/ap-southeast-3/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
@@ -3591,13 +4071,118 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/ap-southeast-3/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
   "bedrock/ap-southeast-3/moonshotai.kimi-k2.5": {
    "input_cost_per_token": 7.2e-07,
    "output_cost_per_token": 3.6e-06
   },
+  "bedrock/ap-southeast-3/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/ap-southeast-3/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock/ap-southeast-3/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 3.1e-07
+  },
+  "bedrock/ap-southeast-3/qwen.qwen3-235b-a22b-2507-v1:0": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.1e-07
+  },
+  "bedrock/ap-southeast-3/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock/ap-southeast-3/qwen.qwen3-coder-480b-a35b-v1:0": {
+   "input_cost_per_token": 4.7e-07,
+   "output_cost_per_token": 1.87e-06
+  },
   "bedrock/ap-southeast-3/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 1.44e-06
+  },
+  "bedrock/ap-southeast-3/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/ap-southeast-3/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/ap-southeast-3/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/ap-southeast-3/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/ap-southeast-4/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.625e-08,
+   "input_cost_per_token": 6.5e-08,
+   "output_cost_per_token": 2.6e-07
+  },
+  "bedrock/ap-southeast-4/amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2.175e-07,
+   "input_cost_per_token": 8.7e-07,
+   "output_cost_per_token": 3.48e-06
+  },
+  "bedrock/ap-southeast-4/apac.amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2.175e-07,
+   "input_cost_per_token": 8.7e-07,
+   "output_cost_per_token": 3.48e-06
+  },
+  "bedrock/ap-southeast-4/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.3e-07,
+   "output_cost_per_token": 2.71e-06
+  },
+  "bedrock/ap-southeast-5/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.8e-08,
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock/ap-southeast-5/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 4.1e-07,
+   "output_cost_per_token": 3.39e-06
+  },
+  "bedrock/ap-southeast-6/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.2e-07,
+   "output_cost_per_token": 2.63e-06
+  },
+  "bedrock/ap-southeast-7/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.8e-08,
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock/ap-southeast-7/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 4.1e-07,
+   "output_cost_per_token": 3.39e-06
+  },
+  "bedrock/ca-central-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.8e-08,
+   "input_cost_per_token": 3.52e-07,
+   "output_cost_per_token": 2.97e-06
+  },
+  "bedrock/ca-central-1/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.6e-08,
+   "input_cost_per_token": 6.4e-08,
+   "output_cost_per_token": 2.56e-07
+  },
+  "bedrock/ca-central-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.2e-07,
+   "output_cost_per_token": 2.67e-06
   },
   "bedrock/ca-central-1/meta.llama3-70b-instruct-v1:0": {
    "input_cost_per_token": 3.05e-06,
@@ -3606,6 +4191,28 @@
   "bedrock/ca-central-1/meta.llama3-8b-instruct-v1:0": {
    "input_cost_per_token": 3.5e-07,
    "output_cost_per_token": 6.9e-07
+  },
+  "bedrock/ca-central-1/mistral.mistral-7b-instruct-v0:2": {
+   "input_cost_per_token": 1.7e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock/ca-central-1/mistral.mistral-large-2402-v1:0": {
+   "input_cost_per_token": 4.6e-06,
+   "output_cost_per_token": 1.38e-05
+  },
+  "bedrock/ca-central-1/mistral.mixtral-8x7b-instruct-v0:1": {
+   "input_cost_per_token": 5.2e-07,
+   "output_cost_per_token": 8.1e-07
+  },
+  "bedrock/ca-west-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.35e-08,
+   "input_cost_per_token": 3.74e-07,
+   "output_cost_per_token": 3.091e-06
+  },
+  "bedrock/ca-west-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.4e-07,
+   "output_cost_per_token": 2.81e-06
   },
   "bedrock/claude_platform/claude-fable-5": {
    "cache_creation_input_token_cost": 1.25e-05,
@@ -3701,6 +4308,27 @@
    "input_cost_per_token": 2e-06,
    "output_cost_per_token": 1e-05
   },
+  "bedrock/eu-central-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.0725e-07,
+   "input_cost_per_token": 4.29e-07,
+   "output_cost_per_token": 3.597e-06
+  },
+  "bedrock/eu-central-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.95e-08,
+   "input_cost_per_token": 7.8e-08,
+   "output_cost_per_token": 3.12e-07
+  },
+  "bedrock/eu-central-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.15e-08,
+   "input_cost_per_token": 4.6e-08,
+   "output_cost_per_token": 1.84e-07
+  },
+  "bedrock/eu-central-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.625e-07,
+   "input_cost_per_token": 1.05e-06,
+   "output_cost_per_token": 4.2e-06
+  },
   "bedrock/eu-central-1/anthropic.claude-instant-v1": {
    "input_cost_per_token": 2.48e-06,
    "output_cost_per_token": 8.38e-06
@@ -3713,6 +4341,22 @@
    "input_cost_per_token": 8e-06,
    "output_cost_per_token": 2.4e-05
   },
+  "bedrock/eu-central-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/eu-central-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.9e-07,
+   "output_cost_per_token": 3.27e-06
+  },
+  "bedrock/eu-central-1/meta.llama3-2-1b-instruct-v1:0": {
+   "input_cost_per_token": 1.3e-07,
+   "output_cost_per_token": 1.3e-07
+  },
+  "bedrock/eu-central-1/meta.llama3-2-3b-instruct-v1:0": {
+   "input_cost_per_token": 1.9e-07,
+   "output_cost_per_token": 1.9e-07
+  },
   "bedrock/eu-central-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
@@ -3721,13 +4365,111 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/eu-central-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock/eu-central-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock/eu-central-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/eu-central-1/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock/eu-central-1/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 4e-07
+  },
+  "bedrock/eu-central-1/qwen.qwen3-235b-a22b-2507-v1:0": {
+   "input_cost_per_token": 2.9e-07,
+   "output_cost_per_token": 1.16e-06
+  },
+  "bedrock/eu-central-1/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
   "bedrock/eu-central-1/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/eu-central-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/eu-central-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/eu-central-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/eu-central-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/eu-north-1/amazon.nova-2-5-sonic": {
+   "input_cost_per_token": 3.63e-07,
+   "output_cost_per_token": 2.992e-06
+  },
+  "bedrock/eu-north-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.075e-08,
+   "input_cost_per_token": 3.63e-07,
+   "output_cost_per_token": 2.992e-06
+  },
+  "bedrock/eu-north-1/amazon.nova-2-sonic-v1:0": {
+   "input_cost_per_token": 3.63e-07,
+   "output_cost_per_token": 2.992e-06
+  },
+  "bedrock/eu-north-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.625e-08,
+   "input_cost_per_token": 6.5e-08,
+   "output_cost_per_token": 2.6e-07
+  },
+  "bedrock/eu-north-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 9.5e-09,
+   "input_cost_per_token": 3.8e-08,
+   "output_cost_per_token": 1.52e-07
+  },
+  "bedrock/eu-north-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.175e-07,
+   "input_cost_per_token": 8.7e-07,
+   "output_cost_per_token": 3.48e-06
+  },
   "bedrock/eu-north-1/deepseek.v3.2": {
    "input_cost_per_token": 7.4e-07,
    "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/eu-north-1/eu.amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.075e-08,
+   "input_cost_per_token": 3.63e-07,
+   "output_cost_per_token": 2.992e-06
+  },
+  "bedrock/eu-north-1/eu.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.625e-08,
+   "input_cost_per_token": 6.5e-08,
+   "output_cost_per_token": 2.6e-07
+  },
+  "bedrock/eu-north-1/eu.amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 9.5e-09,
+   "input_cost_per_token": 3.8e-08,
+   "output_cost_per_token": 1.52e-07
+  },
+  "bedrock/eu-north-1/eu.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.175e-07,
+   "input_cost_per_token": 8.7e-07,
+   "output_cost_per_token": 3.48e-06
+  },
+  "bedrock/eu-north-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.3e-07,
+   "output_cost_per_token": 2.72e-06
   },
   "bedrock/eu-north-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
@@ -3737,9 +4479,103 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/eu-north-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
   "bedrock/eu-north-1/moonshotai.kimi-k2.5": {
    "input_cost_per_token": 7.2e-07,
    "output_cost_per_token": 3.6e-06
+  },
+  "bedrock/eu-north-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/eu-north-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock/eu-north-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/eu-north-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/eu-north-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/eu-north-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/eu-south-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.32e-07,
+   "input_cost_per_token": 5.28e-07,
+   "output_cost_per_token": 4.411e-06
+  },
+  "bedrock/eu-south-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 2.4e-08,
+   "input_cost_per_token": 9.6e-08,
+   "output_cost_per_token": 3.84e-07
+  },
+  "bedrock/eu-south-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.4e-08,
+   "input_cost_per_token": 5.6e-08,
+   "output_cost_per_token": 2.24e-07
+  },
+  "bedrock/eu-south-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 3.2e-07,
+   "input_cost_per_token": 1.28e-06,
+   "output_cost_per_token": 5.21e-06
+  },
+  "bedrock/eu-south-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/eu-south-1/eu.amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.32e-07,
+   "input_cost_per_token": 5.28e-07,
+   "output_cost_per_token": 4.411e-06
+  },
+  "bedrock/eu-south-1/eu.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 2.4e-08,
+   "input_cost_per_token": 9.6e-08,
+   "output_cost_per_token": 3.84e-07
+  },
+  "bedrock/eu-south-1/eu.amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.4e-08,
+   "input_cost_per_token": 5.6e-08,
+   "output_cost_per_token": 2.24e-07
+  },
+  "bedrock/eu-south-1/eu.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 3.2e-07,
+   "input_cost_per_token": 1.28e-06,
+   "output_cost_per_token": 5.21e-06
+  },
+  "bedrock/eu-south-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 4.81e-07,
+   "output_cost_per_token": 4.1e-06
+  },
+  "bedrock/eu-south-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock/eu-south-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock/eu-south-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 9e-08
+  },
+  "bedrock/eu-south-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 1.41e-06
   },
   "bedrock/eu-south-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
@@ -3749,9 +4585,225 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/eu-south-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock/eu-south-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock/eu-south-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock/eu-south-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock/eu-south-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock/eu-south-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock/eu-south-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/eu-south-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock/eu-south-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock/eu-south-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock/eu-south-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.7e-07
+  },
+  "bedrock/eu-south-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/eu-south-1/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock/eu-south-1/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 4e-07
+  },
+  "bedrock/eu-south-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock/eu-south-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock/eu-south-1/qwen.qwen3-235b-a22b-2507-v1:0": {
+   "input_cost_per_token": 2.9e-07,
+   "output_cost_per_token": 1.16e-06
+  },
+  "bedrock/eu-south-1/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
   "bedrock/eu-south-1/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 1.44e-06
+  },
+  "bedrock/eu-south-1/qwen.qwen3-vl-235b-a22b": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.12e-06
+  },
+  "bedrock/eu-south-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/eu-south-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/eu-south-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/eu-south-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/eu-south-2/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.075e-08,
+   "input_cost_per_token": 3.63e-07,
+   "output_cost_per_token": 3.205e-06
+  },
+  "bedrock/eu-south-2/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.65e-08,
+   "input_cost_per_token": 6.6e-08,
+   "output_cost_per_token": 2.64e-07
+  },
+  "bedrock/eu-south-2/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 9.75e-09,
+   "input_cost_per_token": 3.9e-08,
+   "output_cost_per_token": 1.56e-07
+  },
+  "bedrock/eu-south-2/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.2e-07,
+   "input_cost_per_token": 8.8e-07,
+   "output_cost_per_token": 3.52e-06
+  },
+  "bedrock/eu-south-2/eu.amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.075e-08,
+   "input_cost_per_token": 3.63e-07,
+   "output_cost_per_token": 3.205e-06
+  },
+  "bedrock/eu-south-2/eu.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.65e-08,
+   "input_cost_per_token": 6.6e-08,
+   "output_cost_per_token": 2.64e-07
+  },
+  "bedrock/eu-south-2/eu.amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 9.75e-09,
+   "input_cost_per_token": 3.9e-08,
+   "output_cost_per_token": 1.56e-07
+  },
+  "bedrock/eu-south-2/eu.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.2e-07,
+   "input_cost_per_token": 8.8e-07,
+   "output_cost_per_token": 3.52e-06
+  },
+  "bedrock/eu-south-2/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.3e-07,
+   "output_cost_per_token": 2.75e-06
+  },
+  "bedrock/eu-west-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.35e-08,
+   "input_cost_per_token": 3.74e-07,
+   "output_cost_per_token": 3.157e-06
+  },
+  "bedrock/eu-west-1/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.725e-08,
+   "input_cost_per_token": 6.9e-08,
+   "output_cost_per_token": 2.76e-07
+  },
+  "bedrock/eu-west-1/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1e-08,
+   "input_cost_per_token": 4e-08,
+   "output_cost_per_token": 1.6e-07
+  },
+  "bedrock/eu-west-1/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.3e-07,
+   "input_cost_per_token": 9.2e-07,
+   "output_cost_per_token": 3.68e-06
+  },
+  "bedrock/eu-west-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock/eu-west-1/eu.amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 9.35e-08,
+   "input_cost_per_token": 3.74e-07,
+   "output_cost_per_token": 3.157e-06
+  },
+  "bedrock/eu-west-1/eu.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 1.725e-08,
+   "input_cost_per_token": 6.9e-08,
+   "output_cost_per_token": 2.76e-07
+  },
+  "bedrock/eu-west-1/eu.amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1e-08,
+   "input_cost_per_token": 4e-08,
+   "output_cost_per_token": 1.6e-07
+  },
+  "bedrock/eu-west-1/eu.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.3e-07,
+   "input_cost_per_token": 9.2e-07,
+   "output_cost_per_token": 3.68e-06
+  },
+  "bedrock/eu-west-1/eu.meta.llama3-2-1b-instruct-v1:0": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 1.1e-07
+  },
+  "bedrock/eu-west-1/eu.meta.llama3-2-3b-instruct-v1:0": {
+   "input_cost_per_token": 1.7e-07,
+   "output_cost_per_token": 1.7e-07
+  },
+  "bedrock/eu-west-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.4e-07,
+   "output_cost_per_token": 2.87e-06
+  },
+  "bedrock/eu-west-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock/eu-west-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock/eu-west-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 9e-08
+  },
+  "bedrock/eu-west-1/meta.llama3-2-1b-instruct-v1:0": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 1.1e-07
+  },
+  "bedrock/eu-west-1/meta.llama3-2-3b-instruct-v1:0": {
+   "input_cost_per_token": 1.7e-07,
+   "output_cost_per_token": 1.7e-07
   },
   "bedrock/eu-west-1/meta.llama3-70b-instruct-v1:0": {
    "input_cost_per_token": 2.86e-06,
@@ -3761,6 +4813,10 @@
    "input_cost_per_token": 3.2e-07,
    "output_cost_per_token": 6.5e-07
   },
+  "bedrock/eu-west-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 1.41e-06
+  },
   "bedrock/eu-west-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
@@ -3768,6 +4824,86 @@
   "bedrock/eu-west-1/minimax.minimax-m2.5": {
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
+  },
+  "bedrock/eu-west-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock/eu-west-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock/eu-west-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock/eu-west-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock/eu-west-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock/eu-west-1/mistral.mistral-7b-instruct-v0:2": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 2.2e-07
+  },
+  "bedrock/eu-west-1/mistral.mistral-large-2402-v1:0": {
+   "input_cost_per_token": 4.3e-06,
+   "output_cost_per_token": 1.3e-05
+  },
+  "bedrock/eu-west-1/mistral.mixtral-8x7b-instruct-v0:1": {
+   "input_cost_per_token": 4.9e-07,
+   "output_cost_per_token": 7.6e-07
+  },
+  "bedrock/eu-west-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock/eu-west-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/eu-west-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock/eu-west-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock/eu-west-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock/eu-west-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.7e-07
+  },
+  "bedrock/eu-west-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/eu-west-1/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock/eu-west-1/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/eu-west-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock/eu-west-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock/eu-west-1/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
   },
   "bedrock/eu-west-1/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
@@ -3777,6 +4913,62 @@
    "input_cost_per_token": 1.8e-07,
    "output_cost_per_token": 1.41e-06
   },
+  "bedrock/eu-west-1/qwen.qwen3-vl-235b-a22b": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.12e-06
+  },
+  "bedrock/eu-west-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/eu-west-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/eu-west-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/eu-west-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/eu-west-2/amazon.nova-lite-v1:0": {
+   "input_cost_per_token": 8.4e-08,
+   "output_cost_per_token": 3.36e-07
+  },
+  "bedrock/eu-west-2/amazon.nova-micro-v1:0": {
+   "input_cost_per_token": 4.9e-08,
+   "output_cost_per_token": 1.96e-07
+  },
+  "bedrock/eu-west-2/amazon.nova-pro-v1:0": {
+   "input_cost_per_token": 1.13e-06,
+   "output_cost_per_token": 4.52e-06
+  },
+  "bedrock/eu-west-2/deepseek.v3-v1:0": {
+   "input_cost_per_token": 8.99985e-07,
+   "output_cost_per_token": 2.606853e-06
+  },
+  "bedrock/eu-west-2/deepseek.v3.2": {
+   "input_cost_per_token": 9.61e-07,
+   "output_cost_per_token": 2.8675e-06
+  },
+  "bedrock/eu-west-2/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 4.2e-07,
+   "output_cost_per_token": 3.52e-06
+  },
+  "bedrock/eu-west-2/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.4e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock/eu-west-2/google.gemma-3-27b-it": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 5.9e-07
+  },
+  "bedrock/eu-west-2/google.gemma-3-4b-it": {
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 1.2e-07
+  },
   "bedrock/eu-west-2/meta.llama3-70b-instruct-v1:0": {
    "input_cost_per_token": 3.45e-06,
    "output_cost_per_token": 4.55e-06
@@ -3784,6 +4976,10 @@
   "bedrock/eu-west-2/meta.llama3-8b-instruct-v1:0": {
    "input_cost_per_token": 3.9e-07,
    "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/eu-west-2/minimax.minimax-m2": {
+   "input_cost_per_token": 4.7e-07,
+   "output_cost_per_token": 1.86e-06
   },
   "bedrock/eu-west-2/minimax.minimax-m2.1": {
    "input_cost_per_token": 4.7e-07,
@@ -3793,6 +4989,38 @@
    "input_cost_per_token": 4.7e-07,
    "output_cost_per_token": 1.86e-06
   },
+  "bedrock/eu-west-2/mistral.devstral-2-123b": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.1e-06
+  },
+  "bedrock/eu-west-2/mistral.magistral-small-2509": {
+   "input_cost_per_token": 7.8e-07,
+   "output_cost_per_token": 2.33e-06
+  },
+  "bedrock/eu-west-2/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 3.1e-07
+  },
+  "bedrock/eu-west-2/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 1.6e-07
+  },
+  "bedrock/eu-west-2/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock/eu-west-2/mistral.mistral-7b-instruct-v0:2": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 2.6e-07
+  },
+  "bedrock/eu-west-2/mistral.mistral-large-2402-v1:0": {
+   "input_cost_per_token": 5.2e-06,
+   "output_cost_per_token": 1.56e-05
+  },
+  "bedrock/eu-west-2/mistral.mixtral-8x7b-instruct-v0:1": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 9.1e-07
+  },
   "bedrock/eu-west-2/mistral.voxtral-mini-3b-2507": {
    "input_cost_per_token": 6e-08,
    "output_cost_per_token": 6e-08
@@ -3801,9 +5029,53 @@
    "input_cost_per_token": 1.6e-07,
    "output_cost_per_token": 4.7e-07
   },
+  "bedrock/eu-west-2/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 9.3e-07,
+   "output_cost_per_token": 4.65e-06
+  },
+  "bedrock/eu-west-2/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock/eu-west-2/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 3.7e-07
+  },
+  "bedrock/eu-west-2/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 3.6e-07
+  },
   "bedrock/eu-west-2/nvidia.nemotron-super-3-120b": {
    "input_cost_per_token": 2.3e-07,
    "output_cost_per_token": 1.01e-06
+  },
+  "bedrock/eu-west-2/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock/eu-west-2/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 4.7e-07
+  },
+  "bedrock/eu-west-2/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock/eu-west-2/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.1e-07
+  },
+  "bedrock/eu-west-2/qwen.qwen3-235b-a22b-2507-v1:0": {
+   "input_cost_per_token": 3.4e-07,
+   "output_cost_per_token": 1.37e-06
+  },
+  "bedrock/eu-west-2/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock/eu-west-2/qwen.qwen3-coder-480b-a35b-v1:0": {
+   "input_cost_per_token": 7e-07,
+   "output_cost_per_token": 2.79e-06
   },
   "bedrock/eu-west-2/qwen.qwen3-coder-next": {
    "input_cost_per_token": 7.8e-07,
@@ -3812,6 +5084,84 @@
   "bedrock/eu-west-2/qwen.qwen3-next-80b-a3b": {
    "input_cost_per_token": 2.3e-07,
    "output_cost_per_token": 1.86e-06
+  },
+  "bedrock/eu-west-2/qwen.qwen3-vl-235b-a22b": {
+   "input_cost_per_token": 8.2e-07,
+   "output_cost_per_token": 4.12e-06
+  },
+  "bedrock/eu-west-2/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock/eu-west-2/zai.glm-4.7": {
+   "input_cost_per_token": 9.3e-07,
+   "output_cost_per_token": 3.41e-06
+  },
+  "bedrock/eu-west-2/zai.glm-4.7-flash": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock/eu-west-2/zai.glm-5": {
+   "input_cost_per_token": 1.55e-06,
+   "output_cost_per_token": 4.96e-06
+  },
+  "bedrock/eu-west-3/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.21e-07,
+   "input_cost_per_token": 4.84e-07,
+   "output_cost_per_token": 4.059e-06
+  },
+  "bedrock/eu-west-3/amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 2.2e-08,
+   "input_cost_per_token": 8.8e-08,
+   "output_cost_per_token": 3.52e-07
+  },
+  "bedrock/eu-west-3/amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.3e-08,
+   "input_cost_per_token": 5.2e-08,
+   "output_cost_per_token": 2.08e-07
+  },
+  "bedrock/eu-west-3/amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.95e-07,
+   "input_cost_per_token": 1.18e-06,
+   "output_cost_per_token": 4.72e-06
+  },
+  "bedrock/eu-west-3/eu.amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.21e-07,
+   "input_cost_per_token": 4.84e-07,
+   "output_cost_per_token": 4.059e-06
+  },
+  "bedrock/eu-west-3/eu.amazon.nova-lite-v1:0": {
+   "cache_read_input_token_cost": 2.2e-08,
+   "input_cost_per_token": 8.8e-08,
+   "output_cost_per_token": 3.52e-07
+  },
+  "bedrock/eu-west-3/eu.amazon.nova-micro-v1:0": {
+   "cache_read_input_token_cost": 1.3e-08,
+   "input_cost_per_token": 5.2e-08,
+   "output_cost_per_token": 2.08e-07
+  },
+  "bedrock/eu-west-3/eu.amazon.nova-pro-v1:0": {
+   "cache_read_input_token_cost": 2.95e-07,
+   "input_cost_per_token": 1.18e-06,
+   "output_cost_per_token": 4.72e-06
+  },
+  "bedrock/eu-west-3/eu.meta.llama3-2-3b-instruct-v1:0": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 2e-07
+  },
+  "bedrock/eu-west-3/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 4.4e-07,
+   "output_cost_per_token": 3.69e-06
+  },
+  "bedrock/eu-west-3/meta.llama3-2-1b-instruct-v1:0": {
+   "input_cost_per_token": 1.3e-07,
+   "output_cost_per_token": 1.3e-07
+  },
+  "bedrock/eu-west-3/meta.llama3-2-3b-instruct-v1:0": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 2e-07
   },
   "bedrock/eu-west-3/mistral.mistral-7b-instruct-v0:2": {
    "input_cost_per_token": 2e-07,
@@ -3824,6 +5174,40 @@
   "bedrock/eu-west-3/mistral.mixtral-8x7b-instruct-v0:1": {
    "input_cost_per_token": 5.9e-07,
    "output_cost_per_token": 9.1e-07
+  },
+  "bedrock/il-central-1/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.875e-08,
+   "input_cost_per_token": 7.5e-08,
+   "output_cost_per_token": 3e-07
+  },
+  "bedrock/il-central-1/amazon.nova-micro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.1e-08,
+   "input_cost_per_token": 4.4e-08,
+   "output_cost_per_token": 1.76e-07
+  },
+  "bedrock/il-central-1/amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2.5e-07,
+   "input_cost_per_token": 1e-06,
+   "output_cost_per_token": 4e-06
+  },
+  "bedrock/il-central-1/apac.amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.875e-08,
+   "input_cost_per_token": 7.5e-08,
+   "output_cost_per_token": 3e-07
+  },
+  "bedrock/il-central-1/apac.amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2.5e-07,
+   "input_cost_per_token": 1e-06,
+   "output_cost_per_token": 4e-06
+  },
+  "bedrock/il-central-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.8e-07,
+   "output_cost_per_token": 3.13e-06
   },
   "bedrock/invoke/anthropic.claude-3-5-sonnet-20240620-v1:0": {
    "input_cost_per_token": 3e-06,
@@ -3842,16 +5226,6 @@
    "cache_read_input_token_cost": 1.1e-07,
    "input_cost_per_token": 1.1e-06,
    "output_cost_per_token": 5.5e-06
-  },
-  "bedrock/mantle/anthropic.claude-haiku-5-5": {
-   "input_cost_per_token_above_100k_tokens": 5.5e-07,
-   "output_cost_per_token_above_100k_tokens": 2.75e-06,
-   "cache_creation_input_token_cost_above_100k_tokens": 6.875e-07,
-   "cache_read_input_token_cost_above_100k_tokens": 5.5e-08,
-   "cache_creation_input_token_cost": 1.375e-07,
-   "cache_read_input_token_cost": 1.1e-08,
-   "input_cost_per_token": 1.1e-07,
-   "output_cost_per_token": 5.5e-07
   },
   "bedrock/mantle/anthropic.claude-mythos-5": {
    "cache_creation_input_token_cost": 1.375e-05,
@@ -3889,11 +5263,29 @@
    "input_cost_per_token": 2.2e-06,
    "output_cost_per_token": 1.1e-05
   },
-  "bedrock/mantle/anthropic.claude-sonnet-5-5": {
-   "cache_creation_input_token_cost": 2.75e-06,
-   "cache_read_input_token_cost": 1.1e-07,
-   "input_cost_per_token": 2.2e-06,
-   "output_cost_per_token": 1.1e-05
+  "bedrock/me-central-1/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.5e-08,
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/me-central-1/amazon.nova-micro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.75e-09,
+   "input_cost_per_token": 3.5e-08,
+   "output_cost_per_token": 1.4e-07
+  },
+  "bedrock/me-central-1/amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 8e-07,
+   "output_cost_per_token": 3.2e-06
+  },
+  "bedrock/me-central-1/apac.amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 8e-07,
+   "output_cost_per_token": 3.2e-06
   },
   "bedrock/moonshotai.kimi-k2-thinking": {
    "input_cost_per_token": 6e-07,
@@ -3907,6 +5299,18 @@
    "input_cost_per_token": 7.4e-07,
    "output_cost_per_token": 2.22e-06
   },
+  "bedrock/sa-east-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock/sa-east-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.8e-07,
+   "output_cost_per_token": 4.6e-07
+  },
+  "bedrock/sa-east-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 1e-07
+  },
   "bedrock/sa-east-1/meta.llama3-70b-instruct-v1:0": {
    "input_cost_per_token": 4.45e-06,
    "output_cost_per_token": 5.88e-06
@@ -3914,6 +5318,10 @@
   "bedrock/sa-east-1/meta.llama3-8b-instruct-v1:0": {
    "input_cost_per_token": 5e-07,
    "output_cost_per_token": 1.01e-06
+  },
+  "bedrock/sa-east-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.45e-06
   },
   "bedrock/sa-east-1/minimax.minimax-m2.1": {
    "input_cost_per_token": 3.6e-07,
@@ -3923,6 +5331,54 @@
    "input_cost_per_token": 3.6e-07,
    "output_cost_per_token": 1.44e-06
   },
+  "bedrock/sa-east-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock/sa-east-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock/sa-east-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/sa-east-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock/sa-east-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock/sa-east-1/mistral.mistral-7b-instruct-v0:2": {
+   "input_cost_per_token": 2.5e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock/sa-east-1/mistral.mistral-large-2402-v1:0": {
+   "input_cost_per_token": 6.7e-06,
+   "output_cost_per_token": 2.02e-05
+  },
+  "bedrock/sa-east-1/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock/sa-east-1/mistral.mixtral-8x7b-instruct-v0:1": {
+   "input_cost_per_token": 7.6e-07,
+   "output_cost_per_token": 1.18e-06
+  },
+  "bedrock/sa-east-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock/sa-east-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock/sa-east-1/moonshot.kimi-k2-thinking": {
+   "input_cost_per_token": 7.3e-07,
+   "output_cost_per_token": 3.03e-06
+  },
   "bedrock/sa-east-1/moonshotai.kimi-k2-thinking": {
    "input_cost_per_token": 7.3e-07,
    "output_cost_per_token": 3.03e-06
@@ -3931,6 +5387,42 @@
    "input_cost_per_token": 7.2e-07,
    "output_cost_per_token": 3.6e-06
   },
+  "bedrock/sa-east-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/sa-east-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.9e-07
+  },
+  "bedrock/sa-east-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock/sa-east-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock/sa-east-1/openai.gpt-oss-120b-1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/sa-east-1/openai.gpt-oss-20b-1:0": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock/sa-east-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock/sa-east-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/sa-east-1/qwen.qwen3-32b-v1:0": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
   "bedrock/sa-east-1/qwen.qwen3-coder-next": {
    "input_cost_per_token": 6e-07,
    "output_cost_per_token": 1.44e-06
@@ -3938,6 +5430,50 @@
   "bedrock/sa-east-1/qwen.qwen3-next-80b-a3b": {
    "input_cost_per_token": 1.8e-07,
    "output_cost_per_token": 1.45e-06
+  },
+  "bedrock/sa-east-1/qwen.qwen3-vl-235b-a22b": {
+   "input_cost_per_token": 6.4e-07,
+   "output_cost_per_token": 3.22e-06
+  },
+  "bedrock/sa-east-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock/sa-east-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock/sa-east-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock/sa-east-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock/us-east-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.25e-08,
+   "input_cost_per_token": 3.3e-07,
+   "output_cost_per_token": 2.75e-06
+  },
+  "bedrock/us-east-1/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.5e-08,
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/us-east-1/amazon.nova-micro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.75e-09,
+   "input_cost_per_token": 3.5e-08,
+   "output_cost_per_token": 1.4e-07
+  },
+  "bedrock/us-east-1/amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 8e-07,
+   "output_cost_per_token": 3.2e-06
   },
   "bedrock/us-east-1/anthropic.claude-instant-v1": {
    "input_cost_per_token": 8e-07,
@@ -3997,6 +5533,30 @@
   },
   "bedrock/us-east-1/zai.glm-5": {
    "input_cost_per_token": 1e-06,
+   "output_cost_per_token": 3.2e-06
+  },
+  "bedrock/us-east-2/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.25e-08,
+   "input_cost_per_token": 3.3e-07,
+   "output_cost_per_token": 2.75e-06
+  },
+  "bedrock/us-east-2/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.5e-08,
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/us-east-2/amazon.nova-micro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.75e-09,
+   "input_cost_per_token": 3.5e-08,
+   "output_cost_per_token": 1.4e-07
+  },
+  "bedrock/us-east-2/amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 8e-07,
    "output_cost_per_token": 3.2e-06
   },
   "bedrock/us-east-2/deepseek.v3.2": {
@@ -4331,6 +5891,24 @@
    "input_cost_per_token": 8.4e-08,
    "output_cost_per_token": 3.6e-07
   },
+  "bedrock/us-west-1/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.0725e-07,
+   "input_cost_per_token": 4.29e-07,
+   "output_cost_per_token": 3.351e-06
+  },
+  "bedrock/us-west-1/amazon.nova-lite-v1:0": {
+   "input_cost_per_token": 7.7e-08,
+   "output_cost_per_token": 3.08e-07
+  },
+  "bedrock/us-west-1/amazon.nova-pro-v1:0": {
+   "input_cost_per_token": 1.03e-06,
+   "output_cost_per_token": 4.12e-06
+  },
+  "bedrock/us-west-1/global.amazon.nova-2-lite-v1:0": {
+   "input_cost_per_token": 3.9e-07,
+   "output_cost_per_token": 3.21e-06
+  },
   "bedrock/us-west-1/meta.llama3-70b-instruct-v1:0": {
    "input_cost_per_token": 2.65e-06,
    "output_cost_per_token": 3.5e-06
@@ -4338,6 +5916,52 @@
   "bedrock/us-west-1/meta.llama3-8b-instruct-v1:0": {
    "input_cost_per_token": 3e-07,
    "output_cost_per_token": 6e-07
+  },
+  "bedrock/us-west-1/us.amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.0725e-07,
+   "input_cost_per_token": 4.29e-07,
+   "output_cost_per_token": 3.351e-06
+  },
+  "bedrock/us-west-1/us.amazon.nova-lite-v1:0": {
+   "input_cost_per_token": 7.7e-08,
+   "output_cost_per_token": 3.08e-07
+  },
+  "bedrock/us-west-1/us.amazon.nova-pro-v1:0": {
+   "input_cost_per_token": 1.03e-06,
+   "output_cost_per_token": 4.12e-06
+  },
+  "bedrock/us-west-2/amazon.nova-2-5-sonic": {
+   "input_cost_per_token": 3.19e-07,
+   "output_cost_per_token": 2.651e-06
+  },
+  "bedrock/us-west-2/amazon.nova-2-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.25e-08,
+   "input_cost_per_token": 3.3e-07,
+   "output_cost_per_token": 2.75e-06
+  },
+  "bedrock/us-west-2/amazon.nova-2-sonic-v1:0": {
+   "input_cost_per_token": 3.19e-07,
+   "output_cost_per_token": 2.651e-06
+  },
+  "bedrock/us-west-2/amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.5e-08,
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock/us-west-2/amazon.nova-micro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 8.75e-09,
+   "input_cost_per_token": 3.5e-08,
+   "output_cost_per_token": 1.4e-07
+  },
+  "bedrock/us-west-2/amazon.nova-pro-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 8e-07,
+   "output_cost_per_token": 3.2e-06
   },
   "bedrock/us-west-2/anthropic.claude-instant-v1": {
    "input_cost_per_token": 8e-07,
@@ -4461,6 +6085,594 @@
    "input_cost_per_token": 2.2e-06,
    "output_cost_per_token": 1.1e-05
   },
+  "bedrock_mantle/ap-northeast-1/deepseek.v3.1": {
+   "input_cost_per_token": 7.01666e-07,
+   "output_cost_per_token": 2.032411e-06
+  },
+  "bedrock_mantle/ap-northeast-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock_mantle/ap-northeast-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/ap-northeast-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.8e-07,
+   "output_cost_per_token": 4.6e-07
+  },
+  "bedrock_mantle/ap-northeast-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 1e-07
+  },
+  "bedrock_mantle/ap-northeast-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.45e-06
+  },
+  "bedrock_mantle/ap-northeast-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-northeast-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock_mantle/ap-northeast-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/ap-northeast-1/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 7.3e-07,
+   "output_cost_per_token": 3.03e-06
+  },
+  "bedrock_mantle/ap-northeast-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock_mantle/ap-northeast-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/ap-northeast-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.9e-07
+  },
+  "bedrock_mantle/ap-northeast-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock_mantle/ap-northeast-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/ap-northeast-1/openai.gpt-oss-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/ap-northeast-1/openai.gpt-oss-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/ap-northeast-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/ap-northeast-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 1.06e-06
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-32b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-coder-480b-a35b-instruct": {
+   "input_cost_per_token": 5.4e-07,
+   "output_cost_per_token": 2.18e-06
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-northeast-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.4e-07,
+   "output_cost_per_token": 3.22e-06
+  },
+  "bedrock_mantle/ap-northeast-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/ap-northeast-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock_mantle/ap-northeast-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/ap-northeast-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock_mantle/ap-south-1/deepseek.v3.1": {
+   "input_cost_per_token": 6.82424e-07,
+   "output_cost_per_token": 1.976678e-06
+  },
+  "bedrock_mantle/ap-south-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock_mantle/ap-south-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock_mantle/ap-south-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock_mantle/ap-south-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 9e-08
+  },
+  "bedrock_mantle/ap-south-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 1.41e-06
+  },
+  "bedrock_mantle/ap-south-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-south-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-south-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/ap-south-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock_mantle/ap-south-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/ap-south-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/ap-south-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/ap-south-1/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock_mantle/ap-south-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock_mantle/ap-south-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/ap-south-1/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 7.1e-07,
+   "output_cost_per_token": 2.94e-06
+  },
+  "bedrock_mantle/ap-south-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock_mantle/ap-south-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock_mantle/ap-south-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock_mantle/ap-south-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.7e-07
+  },
+  "bedrock_mantle/ap-south-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/ap-south-1/openai.gpt-oss-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock_mantle/ap-south-1/openai.gpt-oss-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/ap-south-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock_mantle/ap-south-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.6e-07,
+   "output_cost_per_token": 1.04e-06
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-32b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.1e-07
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-coder-480b-a35b-instruct": {
+   "input_cost_per_token": 5.3e-07,
+   "output_cost_per_token": 2.12e-06
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-south-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.13e-06
+  },
+  "bedrock_mantle/ap-south-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/ap-south-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock_mantle/ap-south-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/ap-south-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock_mantle/ap-southeast-2/deepseek.v3.1": {
+   "input_cost_per_token": 5.974e-07,
+   "output_cost_per_token": 1.7304e-06
+  },
+  "bedrock_mantle/ap-southeast-2/deepseek.v3.2": {
+   "input_cost_per_token": 6.4e-07,
+   "output_cost_per_token": 1.91e-06
+  },
+  "bedrock_mantle/ap-southeast-2/google.gemma-3-12b-it": {
+   "input_cost_per_token": 9.27e-08,
+   "output_cost_per_token": 2.987e-07
+  },
+  "bedrock_mantle/ap-southeast-2/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.369e-07,
+   "output_cost_per_token": 3.914e-07
+  },
+  "bedrock_mantle/ap-southeast-2/google.gemma-3-4b-it": {
+   "input_cost_per_token": 4.12e-08,
+   "output_cost_per_token": 8.24e-08
+  },
+  "bedrock_mantle/ap-southeast-2/minimax.minimax-m2": {
+   "input_cost_per_token": 3.09e-07,
+   "output_cost_per_token": 1.236e-06
+  },
+  "bedrock_mantle/ap-southeast-2/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 1.24e-06
+  },
+  "bedrock_mantle/ap-southeast-2/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 1.24e-06
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.1e-07,
+   "output_cost_per_token": 2.06e-06
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.15e-07,
+   "output_cost_per_token": 1.545e-06
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.06e-07,
+   "output_cost_per_token": 2.06e-07
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.03e-07,
+   "output_cost_per_token": 1.03e-07
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.545e-07,
+   "output_cost_per_token": 1.545e-07
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 5.15e-07,
+   "output_cost_per_token": 1.545e-06
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 4.12e-08,
+   "output_cost_per_token": 4.12e-08
+  },
+  "bedrock_mantle/ap-southeast-2/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.03e-07,
+   "output_cost_per_token": 3.09e-07
+  },
+  "bedrock_mantle/ap-southeast-2/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 6.18e-07,
+   "output_cost_per_token": 2.575e-06
+  },
+  "bedrock_mantle/ap-southeast-2/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.09e-06
+  },
+  "bedrock_mantle/ap-southeast-2/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.06e-07,
+   "output_cost_per_token": 6.18e-07
+  },
+  "bedrock_mantle/ap-southeast-2/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 6.18e-08,
+   "output_cost_per_token": 2.472e-07
+  },
+  "bedrock_mantle/ap-southeast-2/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 6.18e-08,
+   "output_cost_per_token": 2.369e-07
+  },
+  "bedrock_mantle/ap-southeast-2/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 6.7e-07
+  },
+  "bedrock_mantle/ap-southeast-2/openai.gpt-oss-120b": {
+   "input_cost_per_token": 1.545e-07,
+   "output_cost_per_token": 6.18e-07
+  },
+  "bedrock_mantle/ap-southeast-2/openai.gpt-oss-20b": {
+   "input_cost_per_token": 7.21e-08,
+   "output_cost_per_token": 3.09e-07
+  },
+  "bedrock_mantle/ap-southeast-2/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.545e-07,
+   "output_cost_per_token": 6.18e-07
+  },
+  "bedrock_mantle/ap-southeast-2/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 7.21e-08,
+   "output_cost_per_token": 2.06e-07
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.266e-07,
+   "output_cost_per_token": 9.064e-07
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-32b": {
+   "input_cost_per_token": 1.545e-07,
+   "output_cost_per_token": 6.18e-07
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 1.545e-07,
+   "output_cost_per_token": 6.18e-07
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-coder-480b-a35b-instruct": {
+   "input_cost_per_token": 4.635e-07,
+   "output_cost_per_token": 1.854e-06
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 5.2e-07,
+   "output_cost_per_token": 1.24e-06
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.442e-07,
+   "output_cost_per_token": 1.236e-06
+  },
+  "bedrock_mantle/ap-southeast-2/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 5.459e-07,
+   "output_cost_per_token": 2.7398e-06
+  },
+  "bedrock_mantle/ap-southeast-2/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.5e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock_mantle/ap-southeast-2/zai.glm-4.7": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 2.27e-06
+  },
+  "bedrock_mantle/ap-southeast-2/zai.glm-4.7-flash": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 4.1e-07
+  },
+  "bedrock_mantle/ap-southeast-2/zai.glm-5": {
+   "input_cost_per_token": 1.03e-06,
+   "output_cost_per_token": 3.3e-06
+  },
+  "bedrock_mantle/ap-southeast-3/deepseek.v3.1": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.74e-06
+  },
+  "bedrock_mantle/ap-southeast-3/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock_mantle/ap-southeast-3/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.08e-07,
+   "output_cost_per_token": 3.48e-07
+  },
+  "bedrock_mantle/ap-southeast-3/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.76e-07,
+   "output_cost_per_token": 4.56e-07
+  },
+  "bedrock_mantle/ap-southeast-3/google.gemma-3-4b-it": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 9.6e-08
+  },
+  "bedrock_mantle/ap-southeast-3/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-southeast-3/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-southeast-3/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.8e-06
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 4.8e-08
+  },
+  "bedrock_mantle/ap-southeast-3/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/ap-southeast-3/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3e-06
+  },
+  "bedrock_mantle/ap-southeast-3/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock_mantle/ap-southeast-3/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock_mantle/ap-southeast-3/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.76e-07
+  },
+  "bedrock_mantle/ap-southeast-3/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/ap-southeast-3/openai.gpt-oss-120b": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/openai.gpt-oss-20b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 3.1e-07
+  },
+  "bedrock_mantle/ap-southeast-3/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8.4e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.1e-07
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-32b": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-coder-480b-a35b-instruct": {
+   "input_cost_per_token": 4.7e-07,
+   "output_cost_per_token": 1.87e-06
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/ap-southeast-3/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.36e-07,
+   "output_cost_per_token": 3.192e-06
+  },
+  "bedrock_mantle/ap-southeast-3/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/ap-southeast-3/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock_mantle/ap-southeast-3/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/ap-southeast-3/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
   "bedrock_mantle/deepseek.v3.1": {
    "input_cost_per_token": 5.8e-07,
    "output_cost_per_token": 1.68e-06
@@ -4468,6 +6680,626 @@
   "bedrock_mantle/deepseek.v3.2": {
    "input_cost_per_token": 6.2e-07,
    "output_cost_per_token": 1.85e-06
+  },
+  "bedrock_mantle/eu-central-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.08e-07,
+   "output_cost_per_token": 3.48e-07
+  },
+  "bedrock_mantle/eu-central-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.76e-07,
+   "output_cost_per_token": 4.56e-07
+  },
+  "bedrock_mantle/eu-central-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 9.6e-08
+  },
+  "bedrock_mantle/eu-central-1/google.gemma-4-26b-a4b": {
+   "input_cost_per_token": 1.56e-07,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/eu-central-1/google.gemma-4-31b": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/eu-central-1/google.gemma-4-e2b": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 9.6e-08
+  },
+  "bedrock_mantle/eu-central-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-central-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-central-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-central-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/eu-central-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.8e-06
+  },
+  "bedrock_mantle/eu-central-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/eu-central-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/eu-central-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/eu-central-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 4.8e-08
+  },
+  "bedrock_mantle/eu-central-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/eu-central-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-central-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock_mantle/eu-central-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.76e-07
+  },
+  "bedrock_mantle/eu-central-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/eu-central-1/openai.gpt-oss-120b": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock_mantle/eu-central-1/openai.gpt-oss-20b": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 4e-07
+  },
+  "bedrock_mantle/eu-central-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-central-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8.4e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/eu-central-1/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.9e-07,
+   "output_cost_per_token": 1.16e-06
+  },
+  "bedrock_mantle/eu-central-1/qwen.qwen3-32b": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock_mantle/eu-central-1/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock_mantle/eu-central-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-central-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-central-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.36e-07,
+   "output_cost_per_token": 3.192e-06
+  },
+  "bedrock_mantle/eu-central-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-central-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/eu-north-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock_mantle/eu-north-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.08e-07,
+   "output_cost_per_token": 3.48e-07
+  },
+  "bedrock_mantle/eu-north-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.76e-07,
+   "output_cost_per_token": 4.56e-07
+  },
+  "bedrock_mantle/eu-north-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 9.6e-08
+  },
+  "bedrock_mantle/eu-north-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-north-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-north-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-north-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/eu-north-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.8e-06
+  },
+  "bedrock_mantle/eu-north-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/eu-north-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/eu-north-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/eu-north-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 4.8e-08,
+   "output_cost_per_token": 4.8e-08
+  },
+  "bedrock_mantle/eu-north-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/eu-north-1/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3e-06
+  },
+  "bedrock_mantle/eu-north-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock_mantle/eu-north-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-north-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.88e-07
+  },
+  "bedrock_mantle/eu-north-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7.2e-08,
+   "output_cost_per_token": 2.76e-07
+  },
+  "bedrock_mantle/eu-north-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/eu-north-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-north-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8.4e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/eu-north-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-north-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-north-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.36e-07,
+   "output_cost_per_token": 3.192e-06
+  },
+  "bedrock_mantle/eu-north-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-north-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock_mantle/eu-north-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/eu-north-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
+  "bedrock_mantle/eu-south-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock_mantle/eu-south-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock_mantle/eu-south-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 9e-08
+  },
+  "bedrock_mantle/eu-south-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 1.41e-06
+  },
+  "bedrock_mantle/eu-south-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-south-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-south-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/eu-south-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock_mantle/eu-south-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock_mantle/eu-south-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/eu-south-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/eu-south-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock_mantle/eu-south-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/eu-south-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-south-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock_mantle/eu-south-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.7e-07
+  },
+  "bedrock_mantle/eu-south-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/eu-south-1/openai.gpt-oss-120b": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock_mantle/eu-south-1/openai.gpt-oss-20b": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 4e-07
+  },
+  "bedrock_mantle/eu-south-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-south-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock_mantle/eu-south-1/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.9e-07,
+   "output_cost_per_token": 1.16e-06
+  },
+  "bedrock_mantle/eu-south-1/qwen.qwen3-32b": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock_mantle/eu-south-1/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 2e-07,
+   "output_cost_per_token": 7.9e-07
+  },
+  "bedrock_mantle/eu-south-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-south-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-south-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.12e-06
+  },
+  "bedrock_mantle/eu-south-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-south-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/eu-west-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.4e-07
+  },
+  "bedrock_mantle/eu-west-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.7e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock_mantle/eu-west-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 9e-08
+  },
+  "bedrock_mantle/eu-west-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.5e-07,
+   "output_cost_per_token": 1.41e-06
+  },
+  "bedrock_mantle/eu-west-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-west-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-west-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/eu-west-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 5.9e-07,
+   "output_cost_per_token": 1.76e-06
+  },
+  "bedrock_mantle/eu-west-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock_mantle/eu-west-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/eu-west-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/eu-west-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock_mantle/eu-west-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/eu-west-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-west-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock_mantle/eu-west-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.7e-07
+  },
+  "bedrock_mantle/eu-west-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/eu-west-1/openai.gpt-oss-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-west-1/openai.gpt-oss-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/eu-west-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-west-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock_mantle/eu-west-1/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.64e-07,
+   "output_cost_per_token": 1.056e-06
+  },
+  "bedrock_mantle/eu-west-1/qwen.qwen3-32b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-west-1/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7e-07
+  },
+  "bedrock_mantle/eu-west-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-west-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/eu-west-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.12e-06
+  },
+  "bedrock_mantle/eu-west-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/eu-west-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/eu-west-2/deepseek.v3.1": {
+   "input_cost_per_token": 8.99985e-07,
+   "output_cost_per_token": 2.606853e-06
+  },
+  "bedrock_mantle/eu-west-2/deepseek.v3.2": {
+   "input_cost_per_token": 9.61e-07,
+   "output_cost_per_token": 2.8675e-06
+  },
+  "bedrock_mantle/eu-west-2/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.4e-07,
+   "output_cost_per_token": 4.5e-07
+  },
+  "bedrock_mantle/eu-west-2/google.gemma-3-27b-it": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 5.9e-07
+  },
+  "bedrock_mantle/eu-west-2/google.gemma-3-4b-it": {
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/eu-west-2/minimax.minimax-m2": {
+   "input_cost_per_token": 4.7e-07,
+   "output_cost_per_token": 1.86e-06
+  },
+  "bedrock_mantle/eu-west-2/minimax.minimax-m2.1": {
+   "input_cost_per_token": 4.7e-07,
+   "output_cost_per_token": 1.86e-06
+  },
+  "bedrock_mantle/eu-west-2/minimax.minimax-m2.5": {
+   "input_cost_per_token": 4.7e-07,
+   "output_cost_per_token": 1.86e-06
+  },
+  "bedrock_mantle/eu-west-2/mistral.devstral-2-123b": {
+   "input_cost_per_token": 6.2e-07,
+   "output_cost_per_token": 3.1e-06
+  },
+  "bedrock_mantle/eu-west-2/mistral.magistral-small-2509": {
+   "input_cost_per_token": 7.8e-07,
+   "output_cost_per_token": 2.33e-06
+  },
+  "bedrock_mantle/eu-west-2/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 3.1e-07
+  },
+  "bedrock_mantle/eu-west-2/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 1.6e-07
+  },
+  "bedrock_mantle/eu-west-2/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 2.3e-07
+  },
+  "bedrock_mantle/eu-west-2/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 6e-08,
+   "output_cost_per_token": 6e-08
+  },
+  "bedrock_mantle/eu-west-2/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.6e-07,
+   "output_cost_per_token": 4.7e-07
+  },
+  "bedrock_mantle/eu-west-2/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 9.3e-07,
+   "output_cost_per_token": 3.875e-06
+  },
+  "bedrock_mantle/eu-west-2/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 9.3e-07,
+   "output_cost_per_token": 4.65e-06
+  },
+  "bedrock_mantle/eu-west-2/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 3.1e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock_mantle/eu-west-2/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 3.7e-07
+  },
+  "bedrock_mantle/eu-west-2/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 9e-08,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/eu-west-2/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 1.01e-06
+  },
+  "bedrock_mantle/eu-west-2/openai.gpt-oss-120b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock_mantle/eu-west-2/openai.gpt-oss-20b": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 4.7e-07
+  },
+  "bedrock_mantle/eu-west-2/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock_mantle/eu-west-2/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.1e-07
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 3.4e-07,
+   "output_cost_per_token": 1.37e-06
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-32b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-coder-480b-a35b-instruct": {
+   "input_cost_per_token": 7e-07,
+   "output_cost_per_token": 2.79e-06
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 7.8e-07,
+   "output_cost_per_token": 1.86e-06
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 2.17e-07,
+   "output_cost_per_token": 1.86e-06
+  },
+  "bedrock_mantle/eu-west-2/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 8.2e-07,
+   "output_cost_per_token": 4.12e-06
+  },
+  "bedrock_mantle/eu-west-2/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 2.3e-07,
+   "output_cost_per_token": 9.3e-07
+  },
+  "bedrock_mantle/eu-west-2/zai.glm-4.7": {
+   "input_cost_per_token": 9.3e-07,
+   "output_cost_per_token": 3.41e-06
+  },
+  "bedrock_mantle/eu-west-2/zai.glm-4.7-flash": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 6.2e-07
+  },
+  "bedrock_mantle/eu-west-2/zai.glm-5": {
+   "input_cost_per_token": 1.55e-06,
+   "output_cost_per_token": 4.96e-06
   },
   "bedrock_mantle/google.gemma-3-12b-it": {
    "input_cost_per_token": 9e-08,
@@ -4737,6 +7569,154 @@
    "input_cost_per_token": 5.3e-07,
    "output_cost_per_token": 2.66e-06
   },
+  "bedrock_mantle/sa-east-1/deepseek.v3.1": {
+   "input_cost_per_token": 6.96e-07,
+   "output_cost_per_token": 2.016e-06
+  },
+  "bedrock_mantle/sa-east-1/deepseek.v3.2": {
+   "input_cost_per_token": 7.4e-07,
+   "output_cost_per_token": 2.22e-06
+  },
+  "bedrock_mantle/sa-east-1/google.gemma-3-12b-it": {
+   "input_cost_per_token": 1.1e-07,
+   "output_cost_per_token": 3.5e-07
+  },
+  "bedrock_mantle/sa-east-1/google.gemma-3-27b-it": {
+   "input_cost_per_token": 2.8e-07,
+   "output_cost_per_token": 4.6e-07
+  },
+  "bedrock_mantle/sa-east-1/google.gemma-3-4b-it": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 1e-07
+  },
+  "bedrock_mantle/sa-east-1/minimax.minimax-m2": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.45e-06
+  },
+  "bedrock_mantle/sa-east-1/minimax.minimax-m2.1": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/sa-east-1/minimax.minimax-m2.5": {
+   "input_cost_per_token": 3.6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/sa-east-1/mistral.devstral-2-123b": {
+   "input_cost_per_token": 4.8e-07,
+   "output_cost_per_token": 2.4e-06
+  },
+  "bedrock_mantle/sa-east-1/mistral.magistral-small-2509": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock_mantle/sa-east-1/mistral.ministral-3-14b-instruct": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/sa-east-1/mistral.ministral-3-3b-instruct": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 1.2e-07
+  },
+  "bedrock_mantle/sa-east-1/mistral.ministral-3-8b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 1.8e-07
+  },
+  "bedrock_mantle/sa-east-1/mistral.mistral-large-3-675b-instruct": {
+   "input_cost_per_token": 6.1e-07,
+   "output_cost_per_token": 1.82e-06
+  },
+  "bedrock_mantle/sa-east-1/mistral.voxtral-mini-3b-2507": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 5e-08
+  },
+  "bedrock_mantle/sa-east-1/mistral.voxtral-small-24b-2507": {
+   "input_cost_per_token": 1.2e-07,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/sa-east-1/moonshotai.kimi-k2-thinking": {
+   "input_cost_per_token": 7.3e-07,
+   "output_cost_per_token": 3.03e-06
+  },
+  "bedrock_mantle/sa-east-1/moonshotai.kimi-k2.5": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 3.6e-06
+  },
+  "bedrock_mantle/sa-east-1/nvidia.nemotron-nano-12b-v2": {
+   "input_cost_per_token": 2.4e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/sa-east-1/nvidia.nemotron-nano-3-30b": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.9e-07
+  },
+  "bedrock_mantle/sa-east-1/nvidia.nemotron-nano-9b-v2": {
+   "input_cost_per_token": 7e-08,
+   "output_cost_per_token": 2.8e-07
+  },
+  "bedrock_mantle/sa-east-1/nvidia.nemotron-super-3-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.8e-07
+  },
+  "bedrock_mantle/sa-east-1/openai.gpt-oss-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/sa-east-1/openai.gpt-oss-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 3.6e-07
+  },
+  "bedrock_mantle/sa-east-1/openai.gpt-oss-safeguard-120b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/sa-east-1/openai.gpt-oss-safeguard-20b": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 2.4e-07
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-235b-a22b-2507": {
+   "input_cost_per_token": 2.64e-07,
+   "output_cost_per_token": 1.056e-06
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-32b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-coder-30b-a3b-instruct": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.3e-07
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-coder-480b-a35b-instruct": {
+   "input_cost_per_token": 5.4e-07,
+   "output_cost_per_token": 2.16e-06
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-coder-next": {
+   "input_cost_per_token": 6e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-next-80b-a3b-instruct": {
+   "input_cost_per_token": 1.68e-07,
+   "output_cost_per_token": 1.44e-06
+  },
+  "bedrock_mantle/sa-east-1/qwen.qwen3-vl-235b-a22b-instruct": {
+   "input_cost_per_token": 6.4e-07,
+   "output_cost_per_token": 3.22e-06
+  },
+  "bedrock_mantle/sa-east-1/writer.palmyra-vision-7b": {
+   "input_cost_per_token": 1.8e-07,
+   "output_cost_per_token": 7.2e-07
+  },
+  "bedrock_mantle/sa-east-1/zai.glm-4.7": {
+   "input_cost_per_token": 7.2e-07,
+   "output_cost_per_token": 2.64e-06
+  },
+  "bedrock_mantle/sa-east-1/zai.glm-4.7-flash": {
+   "input_cost_per_token": 8e-08,
+   "output_cost_per_token": 4.8e-07
+  },
+  "bedrock_mantle/sa-east-1/zai.glm-5": {
+   "input_cost_per_token": 1.2e-06,
+   "output_cost_per_token": 3.84e-06
+  },
   "bedrock_mantle/us-gov-east-1/nvidia.nemotron-nano-12b-v2": {
    "input_cost_per_token": 2.4e-07,
    "output_cost_per_token": 7.2e-07
@@ -4764,6 +7744,26 @@
    "input_cost_per_token": 1.6875e-05,
    "output_cost_per_token": 0.00010125
   },
+  "bedrock_mantle/us-gov-east-1/openai.gpt-5.6-luna": {
+   "input_cost_per_token": 2.64e-07,
+   "input_cost_per_token_above_272k_tokens": 5.28e-07,
+   "cache_creation_input_token_cost": 3.3e-07,
+   "cache_creation_input_token_cost_above_272k_tokens": 6.6e-07,
+   "cache_read_input_token_cost": 2.64e-08,
+   "cache_read_input_token_cost_above_272k_tokens": 5.28e-08,
+   "output_cost_per_token": 1.584e-06,
+   "output_cost_per_token_above_272k_tokens": 2.376e-06
+  },
+  "bedrock_mantle/us-gov-east-1/openai.gpt-5.6-terra": {
+   "input_cost_per_token": 2.64e-06,
+   "input_cost_per_token_above_272k_tokens": 5.28e-06,
+   "cache_creation_input_token_cost": 3.3e-06,
+   "cache_creation_input_token_cost_above_272k_tokens": 6.6e-06,
+   "cache_read_input_token_cost": 2.64e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 5.28e-07,
+   "output_cost_per_token": 1.584e-05,
+   "output_cost_per_token_above_272k_tokens": 2.376e-05
+  },
   "bedrock_mantle/us-gov-east-1/openai.gpt-oss-120b": {
    "input_cost_per_token": 1.8e-07,
    "output_cost_per_token": 7.2e-07
@@ -4782,6 +7782,12 @@
    "input_cost_per_token": 2.64e-06,
    "output_cost_per_token": 7.92e-06
   },
+  "bedrock_mantle/us-gov-west-1/anthropic.claude-fable-5-1": {
+   "cache_creation_input_token_cost": 1.5e-05,
+   "cache_read_input_token_cost": 3e-07,
+   "input_cost_per_token": 1.2e-05,
+   "output_cost_per_token": 6e-05
+  },
   "bedrock_mantle/us-gov-west-1/anthropic.claude-haiku-5-5": {
    "input_cost_per_token_above_100k_tokens": 6e-07,
    "output_cost_per_token_above_100k_tokens": 3e-06,
@@ -4792,11 +7798,29 @@
    "input_cost_per_token": 1.2e-07,
    "output_cost_per_token": 6e-07
   },
+  "bedrock_mantle/us-gov-west-1/anthropic.claude-opus-4-8": {
+   "cache_creation_input_token_cost": 7.5e-06,
+   "cache_read_input_token_cost": 6e-07,
+   "input_cost_per_token": 6e-06,
+   "output_cost_per_token": 3e-05
+  },
+  "bedrock_mantle/us-gov-west-1/anthropic.claude-opus-5": {
+   "cache_creation_input_token_cost": 7.5e-06,
+   "cache_read_input_token_cost": 6e-07,
+   "input_cost_per_token": 6e-06,
+   "output_cost_per_token": 3e-05
+  },
   "bedrock_mantle/us-gov-west-1/anthropic.claude-opus-5-5": {
    "cache_creation_input_token_cost": 6e-06,
    "cache_read_input_token_cost": 2.4e-07,
    "input_cost_per_token": 4.8e-06,
    "output_cost_per_token": 2.4e-05
+  },
+  "bedrock_mantle/us-gov-west-1/anthropic.claude-sonnet-5": {
+   "cache_creation_input_token_cost": 3e-06,
+   "cache_read_input_token_cost": 2.4e-07,
+   "input_cost_per_token": 2.4e-06,
+   "output_cost_per_token": 1.2e-05
   },
   "bedrock_mantle/us-gov-west-1/anthropic.claude-sonnet-5-5": {
    "cache_creation_input_token_cost": 3e-06,
@@ -4941,6 +7965,28 @@
   "c4ai-aya-expanse-32b": {
    "input_cost_per_token": 5e-07,
    "output_cost_per_token": 1.5e-06
+  },
+  "ca.amazon.nova-lite-v1:0": {
+   "cache_creation_input_token_cost": 0.0,
+   "cache_read_input_token_cost": 1.6e-08,
+   "input_cost_per_token": 6.4e-08,
+   "output_cost_per_token": 2.56e-07
+  },
+  "ca.anthropic.claude-haiku-5-5": {
+   "cache_creation_input_token_cost": 1.375e-07,
+   "cache_creation_input_token_cost_above_100k_tokens": 6.875e-07,
+   "cache_read_input_token_cost": 1.1e-08,
+   "cache_read_input_token_cost_above_100k_tokens": 5.5e-08,
+   "input_cost_per_token": 1.1e-07,
+   "input_cost_per_token_above_100k_tokens": 5.5e-07,
+   "output_cost_per_token": 5.5e-07,
+   "output_cost_per_token_above_100k_tokens": 2.75e-06
+  },
+  "ca.anthropic.claude-sonnet-5-5": {
+   "cache_creation_input_token_cost": 2.75e-06,
+   "cache_read_input_token_cost": 1.1e-07,
+   "input_cost_per_token": 2.2e-06,
+   "output_cost_per_token": 1.1e-05
   },
   "cerebras/gemma-4-31b": {
    "input_cost_per_token": 9.9e-07,
@@ -5419,6 +8465,18 @@
    "output_cost_per_token": 1e-05
   },
   "command-a-plus-05-2026": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "command-a-reasoning-08-2025": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "command-a-translate-08-2025": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "command-a-vision-07-2025": {
    "input_cost_per_token": 0.0,
    "output_cost_per_token": 0.0
   },
@@ -6218,6 +9276,26 @@
    "cache_read_input_token_cost": 1.5e-06,
    "input_cost_per_token": 1.5e-06,
    "output_cost_per_token": 7.5e-06
+  },
+  "databricks/system.ai.gpt-6-2-astra": {
+   "cache_creation_input_token_cost": 9.99999e-06,
+   "cache_creation_input_token_cost_above_272k_tokens": 1.999998e-05,
+   "cache_read_input_token_cost": 3.9998e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 8.0003e-07,
+   "input_cost_per_token": 8.00002e-06,
+   "input_cost_per_token_above_272k_tokens": 1.599997e-05,
+   "output_cost_per_token": 4.000003e-05,
+   "output_cost_per_token_above_272k_tokens": 5.99998e-05
+  },
+  "databricks/system.ai.gpt-6-2-sol": {
+   "cache_creation_input_token_cost": 2.49998e-06,
+   "cache_creation_input_token_cost_above_272k_tokens": 5.00003e-06,
+   "cache_read_input_token_cost": 1.0003e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 1.9999e-07,
+   "input_cost_per_token": 1.99997e-06,
+   "input_cost_per_token_above_272k_tokens": 4.00001e-06,
+   "output_cost_per_token": 9.99999e-06,
+   "output_cost_per_token_above_272k_tokens": 1.500002e-05
   },
   "davinci-002": {
    "input_cost_per_token": 2e-06,
@@ -8976,9 +12054,9 @@
    "output_cost_per_token": 2.25e-05
   },
   "fireworks_ai/accounts/fireworks/routers/kimi-latest": {
-   "cache_read_input_token_cost": 3e-07,
-   "input_cost_per_token": 3e-06,
-   "output_cost_per_token": 1.5e-05
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 2e-06,
+   "output_cost_per_token": 1e-05
   },
   "fireworks_ai/accounts/fireworks/routers/minimax-latest": {
    "cache_read_input_token_cost": 6e-08,
@@ -9695,6 +12773,11 @@
    "input_cost_per_token": 1.5e-06,
    "output_cost_per_token": 7.5e-06
   },
+  "gemini/gemini-4-neon": {
+   "cache_read_input_token_cost": 1.5e-07,
+   "input_cost_per_token": 3e-06,
+   "output_cost_per_token": 1.5e-05
+  },
   "gemini/gemini-decision-1": {
    "input_cost_per_token": 1e-07,
    "output_cost_per_token": 0.0
@@ -9954,6 +13037,11 @@
    "cache_read_input_token_cost": 7.5e-08,
    "input_cost_per_token": 1.5e-06,
    "output_cost_per_token": 7.5e-06
+  },
+  "github_copilot/gemini-4-neon": {
+   "cache_read_input_token_cost": 1.5e-07,
+   "input_cost_per_token": 3e-06,
+   "output_cost_per_token": 1.5e-05
   },
   "github_copilot/gpt-5-mini": {
    "cache_read_input_token_cost": 2.5e-08,
@@ -11472,11 +14560,11 @@
   "gpt-6-rosalind": {
    "cache_creation_input_token_cost": 1.875e-05,
    "cache_creation_input_token_cost_above_272k_tokens": 3.75e-05,
-   "cache_read_input_token_cost": 1.5e-06,
+   "cache_read_input_token_cost": 1e-06,
    "cache_read_input_token_cost_above_272k_tokens": 3e-06,
-   "input_cost_per_token": 1.5e-05,
+   "input_cost_per_token": 1e-05,
    "input_cost_per_token_above_272k_tokens": 3e-05,
-   "output_cost_per_token": 7.5e-05,
+   "output_cost_per_token": 5e-05,
    "output_cost_per_token_above_272k_tokens": 0.0001125
   },
   "gpt-6-sol": {
@@ -11793,6 +14881,18 @@
    "input_cost_per_token": 2e-07,
    "output_cost_per_token": 2e-07
   },
+  "in.anthropic.claude-opus-5": {
+   "cache_creation_input_token_cost": 6.875e-06,
+   "cache_read_input_token_cost": 5.5e-07,
+   "input_cost_per_token": 5.5e-06,
+   "output_cost_per_token": 2.75e-05
+  },
+  "in.anthropic.claude-sonnet-5": {
+   "cache_creation_input_token_cost": 2.75e-06,
+   "cache_read_input_token_cost": 2.2e-07,
+   "input_cost_per_token": 2.2e-06,
+   "output_cost_per_token": 1.1e-05
+  },
   "in.moonshotai.kimi-k3": {
    "cache_creation_input_token_cost": 4.125e-06,
    "cache_read_input_token_cost": 3.3e-07,
@@ -11804,6 +14904,26 @@
    "cache_read_input_token_cost": 2.2e-07,
    "input_cost_per_token": 4.4e-06,
    "output_cost_per_token": 2.2e-05
+  },
+  "in.openai.gpt-5.6-luna": {
+   "cache_creation_input_token_cost": 2.75e-07,
+   "cache_creation_input_token_cost_above_272k_tokens": 5.5e-07,
+   "cache_read_input_token_cost": 2.2e-08,
+   "cache_read_input_token_cost_above_272k_tokens": 4.4e-08,
+   "input_cost_per_token": 2.2e-07,
+   "input_cost_per_token_above_272k_tokens": 4.4e-07,
+   "output_cost_per_token": 1.32e-06,
+   "output_cost_per_token_above_272k_tokens": 1.98e-06
+  },
+  "in.openai.gpt-5.6-terra": {
+   "cache_creation_input_token_cost": 2.75e-06,
+   "cache_creation_input_token_cost_above_272k_tokens": 5.5e-06,
+   "cache_read_input_token_cost": 2.2e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 4.4e-07,
+   "input_cost_per_token": 2.2e-06,
+   "input_cost_per_token_above_272k_tokens": 4.4e-06,
+   "output_cost_per_token": 1.32e-05,
+   "output_cost_per_token_above_272k_tokens": 1.98e-05
   },
   "inception/mercury-2": {
    "cache_read_input_token_cost": 2.5e-08,
@@ -12029,6 +15149,22 @@
   "jamba-mini-1.7": {
    "input_cost_per_token": 2e-07,
    "output_cost_per_token": 4e-07
+  },
+  "jina-embeddings-v5-omni-nano": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "jina-embeddings-v5-omni-small": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 0.0
+  },
+  "jina-embeddings-v5-text-nano": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "jina-embeddings-v5-text-small": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 0.0
   },
   "jina-reranker-m0": {
    "input_cost_per_token": 5e-08,
@@ -13078,9 +16214,9 @@
    "output_cost_per_token": 2.1e-06
   },
   "mistral/mistral-large-latest": {
-   "cache_read_input_token_cost": 5e-08,
-   "input_cost_per_token": 5e-07,
-   "output_cost_per_token": 1.5e-06
+   "cache_read_input_token_cost": 7e-08,
+   "input_cost_per_token": 7e-07,
+   "output_cost_per_token": 2.1e-06
   },
   "mistral/mistral-medium": {
    "cache_read_input_token_cost": 1.5e-07,
@@ -14983,6 +18119,98 @@
    "input_cost_per_token": 5e-06,
    "output_cost_per_token": 1.5e-07
   },
+  "openrouter/anthropic/claude-fable-5.2": {
+   "cache_creation_input_token_cost": 1e-05,
+   "cache_read_input_token_cost": 2e-07,
+   "input_cost_per_token": 8e-06,
+   "output_cost_per_token": 4e-05
+  },
+  "openrouter/cloudflare/clef": {
+   "input_cost_per_token": 1.92e-07,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/cloudflare/clef-flash": {
+   "input_cost_per_token": 1.9e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/google/gemini-4-hydrogen": {
+   "cache_creation_input_token_cost": 8.33333333333333e-08,
+   "cache_read_input_token_cost": 7.5e-08,
+   "input_cost_per_token": 1.5e-06,
+   "output_cost_per_token": 7.5e-06
+  },
+  "openrouter/inception/mercury-decide": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/inception/mercury-decide:free": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/jaredpalmer/kev-4b": {
+   "input_cost_per_token": 4.2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/liquid/d1": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/openai/gpt-6-luna-decisions": {
+   "input_cost_per_token": 1e-07,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/openai/gpt-6.2-astra": {
+   "cache_creation_input_token_cost": 1e-05,
+   "cache_creation_input_token_cost_above_272k_tokens": 2e-05,
+   "cache_read_input_token_cost": 4e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 8e-07,
+   "input_cost_per_token": 8e-06,
+   "input_cost_per_token_above_272k_tokens": 1.6e-05,
+   "output_cost_per_token": 4e-05,
+   "output_cost_per_token_above_272k_tokens": 6e-05
+  },
+  "openrouter/openai/gpt-6.2-sol": {
+   "cache_creation_input_token_cost": 2.5e-06,
+   "cache_creation_input_token_cost_above_272k_tokens": 5e-06,
+   "cache_read_input_token_cost": 1e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 2e-07,
+   "input_cost_per_token": 2e-06,
+   "input_cost_per_token_above_272k_tokens": 4e-06,
+   "output_cost_per_token": 1e-05,
+   "output_cost_per_token_above_272k_tokens": 1.5e-05
+  },
+  "openrouter/perplexity/pplx-decider-v1.1-27b": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/respan/span-01": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/respan/span-01-lite": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/respan/span-01-lite:free": {
+   "input_cost_per_token": 0.0,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/togethercomputer/tev1-4b-experimental": {
+   "input_cost_per_token": 4.2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/upstage/solar-decide": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/upstage/solar-decide-flash": {
+   "input_cost_per_token": 5e-08,
+   "output_cost_per_token": 0.0
+  },
+  "openrouter/~typesafe/jev-latest": {
+   "input_cost_per_token": 4.2e-08,
+   "output_cost_per_token": 0.0
+  },
   "ovhcloud/DeepSeek-R1-Distill-Llama-70B": {
    "input_cost_per_token": 6.7e-07,
    "output_cost_per_token": 6.7e-07
@@ -15402,6 +18630,10 @@
    "input_cost_per_token": 1e-08,
    "output_cost_per_token": 0.0
   },
+  "perplexity/pplx-decider-flash-v1.3": {
+   "input_cost_per_token": 1e-08,
+   "output_cost_per_token": 0.0
+  },
   "perplexity/pplx-decider-latest": {
    "input_cost_per_token": 2e-08,
    "output_cost_per_token": 0.0
@@ -15415,6 +18647,10 @@
    "output_cost_per_token": 0.0
   },
   "perplexity/pplx-decider-v1.2": {
+   "input_cost_per_token": 2e-08,
+   "output_cost_per_token": 0.0
+  },
+  "perplexity/pplx-decider-v1.3": {
    "input_cost_per_token": 2e-08,
    "output_cost_per_token": 0.0
   },
@@ -16384,6 +19620,41 @@
    "input_cost_per_token": 0.0,
    "output_cost_per_token": 0.0
   },
+  "sarvam/deepseekv4.1-flash-1017": {
+   "cache_read_input_token_cost": 2.659574468e-09,
+   "input_cost_per_token": 1.489361702e-07,
+   "output_cost_per_token": 5.85106383e-07
+  },
+  "sarvam/deepseekv4.1-flash-1017-interactive": {
+   "cache_read_input_token_cost": 5.319148936e-09,
+   "input_cost_per_token": 2.659574468e-07,
+   "output_cost_per_token": 1.117021277e-06
+  },
+  "sarvam/gemma4": {
+   "cache_read_input_token_cost": 1.063829787e-07,
+   "input_cost_per_token": 3.723404255e-07,
+   "output_cost_per_token": 9.574468085e-07
+  },
+  "sarvam/glm5.3": {
+   "cache_read_input_token_cost": 2.127659574e-07,
+   "input_cost_per_token": 1.340425532e-06,
+   "output_cost_per_token": 4.14893617e-06
+  },
+  "sarvam/glm5.3-flash": {
+   "cache_read_input_token_cost": 2.659574468e-08,
+   "input_cost_per_token": 1.436170213e-07,
+   "output_cost_per_token": 4.787234043e-07
+  },
+  "sarvam/sarvam-105b": {
+   "cache_read_input_token_cost": 2.659574468e-09,
+   "input_cost_per_token": 1.063829787e-07,
+   "output_cost_per_token": 2.659574468e-07
+  },
+  "sarvam/sarvam-105b-conversations": {
+   "cache_read_input_token_cost": 2.659574468e-09,
+   "input_cost_per_token": 1.063829787e-07,
+   "output_cost_per_token": 2.659574468e-07
+  },
   "sarvam/sarvam-m": {
    "cache_creation_input_token_cost": 0,
    "cache_read_input_token_cost": 0,
@@ -16519,6 +19790,48 @@
    "cache_read_input_token_cost": 1e-07,
    "cache_creation_input_token_cost": 1.25e-06
   },
+  "snowflake/claude-haiku-5-5": {
+   "input_cost_per_token": 1e-07,
+   "output_cost_per_token": 5e-07,
+   "cache_read_input_token_cost": 1e-08,
+   "cache_creation_input_token_cost": 1.26e-07
+  },
+  "snowflake/claude-opus-4-5": {
+   "input_cost_per_token": 5e-06,
+   "output_cost_per_token": 2.5e-05,
+   "cache_read_input_token_cost": 5e-07,
+   "cache_creation_input_token_cost": 6.25e-06
+  },
+  "snowflake/claude-opus-4-6": {
+   "input_cost_per_token": 5e-06,
+   "output_cost_per_token": 2.5e-05,
+   "cache_read_input_token_cost": 5e-07,
+   "cache_creation_input_token_cost": 6.25e-06
+  },
+  "snowflake/claude-opus-4-7": {
+   "input_cost_per_token": 5e-06,
+   "output_cost_per_token": 2.5e-05,
+   "cache_read_input_token_cost": 5e-07,
+   "cache_creation_input_token_cost": 6.25e-06
+  },
+  "snowflake/claude-opus-4-8": {
+   "input_cost_per_token": 5e-06,
+   "output_cost_per_token": 2.5e-05,
+   "cache_read_input_token_cost": 5e-07,
+   "cache_creation_input_token_cost": 6.25e-06
+  },
+  "snowflake/claude-opus-5": {
+   "input_cost_per_token": 5e-06,
+   "output_cost_per_token": 2.5e-05,
+   "cache_read_input_token_cost": 5e-07,
+   "cache_creation_input_token_cost": 6.25e-06
+  },
+  "snowflake/claude-opus-5-5": {
+   "input_cost_per_token": 4e-06,
+   "output_cost_per_token": 2e-05,
+   "cache_read_input_token_cost": 2e-07,
+   "cache_creation_input_token_cost": 5e-06
+  },
   "snowflake/claude-sonnet-4-5": {
    "input_cost_per_token": 3e-06,
    "output_cost_per_token": 1.5e-05,
@@ -16530,6 +19843,18 @@
    "output_cost_per_token": 1.5e-05,
    "cache_read_input_token_cost": 3e-07,
    "cache_creation_input_token_cost": 3.75e-06
+  },
+  "snowflake/claude-sonnet-5": {
+   "input_cost_per_token": 2e-06,
+   "output_cost_per_token": 1e-05,
+   "cache_read_input_token_cost": 2e-07,
+   "cache_creation_input_token_cost": 2.5e-06
+  },
+  "snowflake/claude-sonnet-5-5": {
+   "input_cost_per_token": 2e-06,
+   "output_cost_per_token": 1e-05,
+   "cache_read_input_token_cost": 1e-07,
+   "cache_creation_input_token_cost": 2.5e-06
   },
   "snowflake/deepseek-r1": {
    "input_cost_per_token": 1.35e-06,
@@ -17232,9 +20557,9 @@
    "output_cost_per_token": 4.7e-07
   },
   "together_ai/Qwen/Qwen4-Max": {
-   "cache_read_input_token_cost": 7.125e-08,
-   "input_cost_per_token": 1.425e-06,
-   "output_cost_per_token": 4.275e-06
+   "cache_read_input_token_cost": 5.25e-08,
+   "input_cost_per_token": 1.05e-06,
+   "output_cost_per_token": 3.15e-06
   },
   "together_ai/reflection/Beam-1.0-501B-A23B": {
    "cache_read_input_token_cost": 4e-08,
@@ -17399,6 +20724,31 @@
   "us-gov.nvidia.nemotron-super-3-120b": {
    "input_cost_per_token": 1.8e-07,
    "output_cost_per_token": 7.8e-07
+  },
+  "us-gov.openai.gpt-5.4": {
+   "input_cost_per_token": 3.3e-06,
+   "cache_read_input_token_cost": 3.3e-07,
+   "output_cost_per_token": 1.98e-05
+  },
+  "us-gov.openai.gpt-5.6-luna": {
+   "input_cost_per_token": 2.64e-07,
+   "input_cost_per_token_above_272k_tokens": 5.28e-07,
+   "cache_creation_input_token_cost": 3.3e-07,
+   "cache_creation_input_token_cost_above_272k_tokens": 6.6e-07,
+   "cache_read_input_token_cost": 2.64e-08,
+   "cache_read_input_token_cost_above_272k_tokens": 5.28e-08,
+   "output_cost_per_token": 1.584e-06,
+   "output_cost_per_token_above_272k_tokens": 2.376e-06
+  },
+  "us-gov.openai.gpt-5.6-terra": {
+   "input_cost_per_token": 2.64e-06,
+   "input_cost_per_token_above_272k_tokens": 5.28e-06,
+   "cache_creation_input_token_cost": 3.3e-06,
+   "cache_creation_input_token_cost_above_272k_tokens": 6.6e-06,
+   "cache_read_input_token_cost": 2.64e-07,
+   "cache_read_input_token_cost_above_272k_tokens": 5.28e-07,
+   "output_cost_per_token": 1.584e-05,
+   "output_cost_per_token_above_272k_tokens": 2.376e-05
   },
   "us-gov.openai.gpt-oss-120b-1:0": {
    "input_cost_per_token": 1.8e-07,
@@ -18801,6 +22151,11 @@
    "cache_read_input_token_cost": 7.5e-08,
    "input_cost_per_token": 1.5e-06,
    "output_cost_per_token": 7.5e-06
+  },
+  "vertex_ai/gemini-4-neon": {
+   "cache_read_input_token_cost": 1.5e-07,
+   "input_cost_per_token": 3e-06,
+   "output_cost_per_token": 1.5e-05
   },
   "vertex_ai/gemini-embedding-2": {
    "input_cost_per_token": 2e-07,
