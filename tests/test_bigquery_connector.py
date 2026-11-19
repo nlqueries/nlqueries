@@ -975,3 +975,32 @@ def test_other_connectors_give_no_estimate_and_the_wrapper_passes_it_through() -
     # Not gated by the policy: an estimate runs nothing.
     wrapped = PermittedConnector(_with_client(client), ExecutionPolicy.generate_only())
     assert wrapped.estimate_scan_bytes("SELECT a FROM t") == 42
+
+
+def _dry_run(processed: int | None, accuracy: str | None = None) -> MagicMock:
+    job = MagicMock(total_bytes_processed=processed)
+    query = {} if accuracy is None else {"totalBytesProcessedAccuracy": accuracy}
+    job._properties = {"statistics": {"query": query}}
+    return job
+
+
+@pytest.mark.parametrize(
+    ("processed", "accuracy", "expected"),
+    [
+        (500, None, 500),
+        (500, "PRECISE", 500),
+        (None, None, None),
+        (0, "LOWER_BOUND", None),
+        (900, "UPPER_BOUND", None),
+        (900, "UNKNOWN", None),
+    ],
+    ids=["no-accuracy", "precise", "no-figure", "lower-bound", "upper-bound", "unknown"],
+)
+def test_only_a_precise_figure_is_an_estimate(
+    processed: int | None, accuracy: str | None, expected: int | None
+) -> None:
+    """No figure, or only a bound (external tables report a LOWER_BOUND, often
+    0), is no estimate: a budget must not take it as free (#423's review)."""
+    client = MagicMock()
+    client.query.return_value = _dry_run(processed, accuracy)
+    assert _with_client(client).estimate_scan_bytes("SELECT a FROM t") == expected
