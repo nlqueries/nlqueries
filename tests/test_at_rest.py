@@ -61,6 +61,7 @@ def _clean_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Non
     monkeypatch.setattr(at_rest, "_gave_up_waiting", False)
     yield
     at_rest._cipher.cache_clear()
+    at_rest._digest_key.cache_clear()
 
 
 def _encrypt_with(monkeypatch: pytest.MonkeyPatch, key: str | None = "first key") -> None:
@@ -608,3 +609,40 @@ def test_with_encryption_off_chunks_are_stored_as_before(qdrant) -> None:
     qdrant_store.upsert_chunks("doc_policy_chunks", [_chunk(CHUNK)])
     (payload,) = _payloads(qdrant, "doc_policy_chunks")
     assert payload["text"] == CHUNK
+
+
+# --- Digests -------------------------------------------------------------------
+
+
+def test_a_digest_is_equal_for_equal_text_and_purpose_and_reveals_neither(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(at_rest.KEY_ENV, "one key for this test, long enough")
+    first = at_rest.digest("paris", b"value index")
+    assert first == at_rest.digest("paris", b"value index")
+    assert first.startswith(at_rest.DIGEST_MARKER)
+    assert "paris" not in first
+    assert first != at_rest.digest("lyon", b"value index")
+    assert first != at_rest.digest("paris", b"another purpose")
+    # Not a plain hash anyone could compute.
+    assert hashlib.sha256(b"paris").hexdigest() not in first
+
+
+def test_a_digest_depends_on_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(at_rest.KEY_ENV, "the first key, long enough to use")
+    first = at_rest.digest("paris", b"value index")
+    monkeypatch.setenv(at_rest.KEY_ENV, "the second key, long enough to use")
+    assert at_rest.digest("paris", b"value index") != first
+
+
+def test_the_digest_key_is_not_the_cipher_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(at_rest.KEY_ENV, "one key for this test, long enough")
+    material = at_rest._configured()
+    assert material is not None
+    from cryptography.hazmat.primitives import hashes  # noqa: PLC0415
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF  # noqa: PLC0415
+
+    cipher_key = HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None, info=at_rest._HKDF_INFO
+    ).derive(material)
+    assert at_rest._digest_key(material) != cipher_key
