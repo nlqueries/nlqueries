@@ -268,6 +268,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   `nlqueries/core` that installs packages gets pip back with `python -m
   ensurepip`, which installs the base image's pip 24.0; upgrade it before
   installing anything.
+- **The base image moves to the current `python:3.11-slim-bookworm`**
+  (`sha256:a83ba18a…`, published 2026-11-05). It carries OpenSSL
+  `3.0.22-1~deb12u2` (CVE-2026-84782, an information disclosure in DTLS) and
+  apt `2.6.2` (CVE-2026-109518, remote code execution via hard-link reuse),
+  both reported against the image, and Python 3.11.18 in place of 3.11.17.
 
 ### Fixed
 
