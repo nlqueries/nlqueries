@@ -23,6 +23,15 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   rules; a stale index costs one exact-match query. Core supplies no index,
   and a column the index does not cover is looked up as before. A layer above
   core adds one by wrapping `connectors.loader.lookup_source`.
+- **A value index can add to the prompt.** `LookupSource` takes
+  `prompt_values`, a callable given the question that returns
+  `PromptValues`: each short column's every value, and a longer column's
+  values matching the question. With `NLQ_VALUE_INDEX=true`, the lists are
+  shown with the schema as the column's `values`, in place of its samples, and
+  stay the same from question to question, so a provider's prompt cache keeps
+  them; the matches go in the per-question part. Capped at 100 values a list
+  and 20 matches a column, for columns the knowledge base has; a provider that
+  takes over 1 s or fails leaves the prompt as without it. Core supplies none.
 - **A value that differs only in its accents is matched.** Where grounding
   compares a literal with a list (a column's complete list in the knowledge
   base, or a value index), 'Sao Paulo' now takes the stored 'São Paulo', as
