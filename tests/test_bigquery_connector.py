@@ -935,3 +935,72 @@ def test_doctor_reports_an_unreadable_cap(monkeypatch):
 
     assert result.status == "warn"
     assert "BIGQUERY_MAX_BYTES_BILLED must be a whole number of bytes" in result.detail
+
+
+# --- Estimating a scan --------------------------------------------------------
+
+
+def _with_client(client: MagicMock) -> BigQueryConnector:
+    connector = BigQueryConnector()
+    connector._client = client
+    return connector
+
+
+def test_a_scan_is_estimated_by_a_dry_run_that_runs_nothing() -> None:
+    client = MagicMock()
+    client.query.return_value = MagicMock(total_bytes_processed=123_456)
+    assert _with_client(client).estimate_scan_bytes("SELECT DISTINCT a FROM t") == 123_456
+    (sql,) = client.query.call_args.args
+    job_config = client.query.call_args.kwargs["job_config"]
+    assert sql == "SELECT DISTINCT a FROM t"
+    assert job_config.dry_run is True
+    assert job_config.use_query_cache is False
+
+
+def test_a_dry_run_that_fails_raises() -> None:
+    client = MagicMock()
+    client.query.side_effect = RuntimeError("Not found: Table x")
+    with pytest.raises(RuntimeError):
+        _with_client(client).estimate_scan_bytes("SELECT a FROM x")
+
+
+def test_other_connectors_give_no_estimate_and_the_wrapper_passes_it_through() -> None:
+    from nlqueries.connectors.base import PermittedConnector  # noqa: PLC0415
+    from nlqueries.connectors.sqlite import SQLiteConnector  # noqa: PLC0415
+    from nlqueries.execution import ExecutionPolicy  # noqa: PLC0415
+
+    assert SQLiteConnector().estimate_scan_bytes("SELECT 1") is None
+    client = MagicMock()
+    client.query.return_value = MagicMock(total_bytes_processed=42)
+    # Not gated by the policy: an estimate runs nothing.
+    wrapped = PermittedConnector(_with_client(client), ExecutionPolicy.generate_only())
+    assert wrapped.estimate_scan_bytes("SELECT a FROM t") == 42
+
+
+def _dry_run(processed: int | None, accuracy: str | None = None) -> MagicMock:
+    job = MagicMock(total_bytes_processed=processed)
+    query = {} if accuracy is None else {"totalBytesProcessedAccuracy": accuracy}
+    job._properties = {"statistics": {"query": query}}
+    return job
+
+
+@pytest.mark.parametrize(
+    ("processed", "accuracy", "expected"),
+    [
+        (500, None, 500),
+        (500, "PRECISE", 500),
+        (None, None, None),
+        (0, "LOWER_BOUND", None),
+        (900, "UPPER_BOUND", None),
+        (900, "UNKNOWN", None),
+    ],
+    ids=["no-accuracy", "precise", "no-figure", "lower-bound", "upper-bound", "unknown"],
+)
+def test_only_a_precise_figure_is_an_estimate(
+    processed: int | None, accuracy: str | None, expected: int | None
+) -> None:
+    """No figure, or only a bound (external tables report a LOWER_BOUND, often
+    0), is no estimate: a budget must not take it as free (#423's review)."""
+    client = MagicMock()
+    client.query.return_value = _dry_run(processed, accuracy)
+    assert _with_client(client).estimate_scan_bytes("SELECT a FROM t") == expected

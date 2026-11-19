@@ -11,6 +11,13 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   derived from the at-rest key material (`NLQ_CACHE_ENCRYPTION_KEY`) for this
   use alone, so a store can keep it beside a value `seal` encrypted and look
   the value up by equality without decrypting. Only equality survives.
+- **A connector can estimate a scan without running it.**
+  `DatabaseConnector.estimate_scan_bytes(sql)` returns the bytes a statement
+  would read, as the database estimates them, or `None` where it gives no
+  estimate. BigQuery answers from a dry run, which runs nothing and is not
+  billed; every other connector gives `None`. `PermittedConnector` passes it
+  through whatever its policy, since an estimate runs nothing. For a caller
+  that must keep reads on a warehouse within a byte budget.
 - **Literal grounding can read a value index before the database.**
   `LookupSource` takes `values`, a callable that returns, for a column and a
   literal, what an index holds (`IndexedValues`: the column's whole list, or

@@ -440,6 +440,35 @@ class BigQueryConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
+    def estimate_scan_bytes(self, sql: str) -> int | None:
+        """The bytes *sql* would process, from a dry run: BigQuery plans the
+        job, reports its size and runs nothing, and a dry run is not billed.
+
+        None -- no estimate -- when the dry run gives no figure, or only a
+        bound on it: over external or federated tables BigQuery reports its
+        figure as a ``LOWER_BOUND``, often 0, and a caller keeping reads within
+        a budget must not take that as free (from #423's review). Raises when
+        the dry run fails, as for a statement BigQuery cannot plan.
+        """
+        client = self._require_client()
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                dry_run=True, use_query_cache=False, use_legacy_sql=False
+            ),
+        )
+        processed = job.total_bytes_processed
+        if processed is None:
+            return None
+        # Not exposed by the client library as a property: read from the job's
+        # resource, where an absent value means the figure is exact.
+        properties = getattr(job, "_properties", None)
+        statistics = properties.get("statistics", {}) if isinstance(properties, dict) else {}
+        accuracy = (statistics.get("query") or {}).get("totalBytesProcessedAccuracy")
+        if accuracy not in (None, "PRECISE"):
+            return None
+        return int(processed)
+
     def _execute_query(
         self,
         sql: str,
