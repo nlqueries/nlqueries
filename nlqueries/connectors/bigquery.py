@@ -440,6 +440,20 @@ class BigQueryConnector(DatabaseConnector):
     # execute_query
     # ------------------------------------------------------------------
 
+    def estimate_scan_bytes(self, sql: str) -> int | None:
+        """The bytes *sql* would process, from a dry run: BigQuery plans the
+        job, reports its size and runs nothing, and a dry run is not billed.
+        Raises when the dry run fails, as for a statement BigQuery cannot plan.
+        """
+        client = self._require_client()
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                dry_run=True, use_query_cache=False, use_legacy_sql=False
+            ),
+        )
+        return int(job.total_bytes_processed or 0)
+
     def _execute_query(
         self,
         sql: str,

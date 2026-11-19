@@ -465,6 +465,17 @@ class DatabaseConnector(ABC):
             if release:
                 self._release()
 
+    def estimate_scan_bytes(self, sql: str) -> int | None:
+        """How many bytes *sql* would scan, as the database estimates it
+        without running it, or None where it gives no such estimate.
+
+        For a caller that must keep a read within a budget on a warehouse that
+        bills by the data a query reads. Never runs the statement. None here,
+        and on every connector but BigQuery, which answers from a dry run. An
+        estimate that fails raises.
+        """
+        return None
+
     def close(self) -> None:
         """Release whatever this connector holds open.
 
@@ -813,6 +824,12 @@ class PermittedConnector(DatabaseConnector):
     def list_security_policies(self) -> SecurityPolicyReport:
         with self._active() as inner:
             return inner.list_security_policies()
+
+    def estimate_scan_bytes(self, sql: str) -> int | None:
+        # Not gated by the policy: an estimate runs nothing, whatever the
+        # statement, so it reads no rows and writes none.
+        with self._active() as inner:
+            return inner.estimate_scan_bytes(sql)
 
     def close(self) -> None:
         """Intentionally a no-op.
