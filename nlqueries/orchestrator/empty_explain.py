@@ -23,8 +23,8 @@ with a subquery, whose rows would be counted along with it. Only the top-level
 :data:`MAX_CONDITIONS`, one after another, each with a timeout of at most
 :data:`COUNT_TIMEOUT_SECONDS` and within the request's deadline.
 
-Off unless ``NLQ_EMPTY_RESULT_EXPLAIN`` (``empty_result_explain``) turns it on,
-and then only on the engines in :data:`DIALECTS`: on a warehouse that bills by
+On unless ``NLQ_EMPTY_RESULT_EXPLAIN`` (``empty_result_explain``) turns it off,
+and only on the engines in :data:`DIALECTS`: on a warehouse that bills by
 the data a query reads, each count costs as much as the statement.
 """
 

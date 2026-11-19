@@ -26,7 +26,7 @@ conditions:
   (``(a = 'X' AND b = 'Y') OR (a = 'Y' AND b = 'X')``);
 - ``limit``: a row limit, with the ordering it cuts, or the lack of one.
 
-Off unless ``NLQ_READING_LINE`` (``reading_line``) turns it on.
+On unless ``NLQ_READING_LINE`` (``reading_line``) turns it off.
 """
 
 from __future__ import annotations

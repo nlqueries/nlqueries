@@ -58,8 +58,8 @@ class QuerySettings:
     plan_check_min_row_reads: int = 1_000_000_000
     literal_grounding: bool = True
     literal_grounding_repair: bool = True
-    empty_result_explain: bool = False
-    reading_line: bool = False
+    empty_result_explain: bool = True
+    reading_line: bool = True
     value_index: bool = False
 
     def __post_init__(self) -> None:

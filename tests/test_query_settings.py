@@ -50,6 +50,7 @@ def _load_in_a_fresh_process(
         "'file': str(c.QUERY_CONFIG_FILE), 'match': c.MATCH_MODE, 'grain': c.GRAIN_CHECK, "
         "'results': c.RESULT_CHECKS, 'applied': c.QUERY_CONFIG_APPLIED, "
         "'ignored': c.QUERY_CONFIG_IGNORED, "
+        "'reading': c.READING_LINE, 'empty': c.EMPTY_RESULT_EXPLAIN, "
         "'key': __import__('os').environ.get('OPENAI_API_KEY')}))"
     )
     clean = {k: v for k, v in os.environ.items() if k not in config.QUERY_SETTING_VARS}
@@ -125,6 +126,18 @@ def test_an_unknown_ambiguity_is_reported_and_pick_used(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert out.stdout.strip().splitlines()[-1] == "pick"
+
+
+def test_the_reading_line_and_empty_result_counts_are_on_unless_turned_off(
+    tmp_path: Path,
+) -> None:
+    on = _load_in_a_fresh_process(tmp_path, {})
+    off = _load_in_a_fresh_process(
+        tmp_path, {"NLQ_READING_LINE": "false", "NLQ_EMPTY_RESULT_EXPLAIN": "false"}
+    )
+    assert (on["reading"], on["empty"]) == (True, True)
+    assert (off["reading"], off["empty"]) == (False, False)
+    assert (QuerySettings().reading_line, QuerySettings().empty_result_explain) == (True, True)
 
 
 def test_an_unknown_match_mode_is_reported_and_loose_used(tmp_path: Path) -> None:

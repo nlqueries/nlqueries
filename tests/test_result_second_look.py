@@ -24,6 +24,7 @@ from nlqueries.connectors.base import QueryResult
 from nlqueries.execution import ExecutionPolicy
 from nlqueries.orchestrator.orchestrator import Orchestrator
 from nlqueries.orchestrator.sql_generation import SQLGenerationResult
+from nlqueries.query_settings import QuerySettings, use_query_settings
 
 FIRST_SQL = "SELECT c.name FROM customers c JOIN orders o ON o.customer_id = c.id"
 CORRECTED_SQL = "SELECT DISTINCT c.name FROM customers c JOIN orders o ON o.customer_id = c.id"
@@ -236,7 +237,10 @@ def test_a_doubt_a_rule_cannot_judge_is_only_noted() -> None:
     """No rows is often the answer: no correction is asked for."""
     llm = _LLM("<sql>SELECT 1</sql>")
     sql = "SELECT id FROM orders WHERE status = 'lost'"
-    frame, connector = _run(llm, [_rows()], first_sql=sql)
+    # Without the condition counts, which would otherwise explain the empty
+    # result in place of this note.
+    with use_query_settings(QuerySettings(empty_result_explain=False)):
+        frame, connector = _run(llm, [_rows()], first_sql=sql)
 
     assert llm.corrections == []
     assert _executed(connector) == [sql]
