@@ -801,14 +801,20 @@ def _index_list(
     lists: Mapping[tuple[str, str, str], tuple[str, ...]] | None,
     table: dict[str, Any],
     column: str,
-) -> list[str]:
-    """The value index's complete list for *column* of *table*, as shown:
-    each value that fits a prompt line, at most :data:`MAX_LIST`; empty when
-    the index offers none."""
+) -> tuple[list[str], str]:
+    """The value index's list for *column* of *table*, as shown, and its label.
+
+    Each value that fits a prompt line, at most :data:`MAX_LIST`. Labelled
+    ``values`` when that is the whole list the index gave, so the model may
+    rely on it being every value; ``samples`` when anything was left out, as
+    the knowledge base's own complete lists are (from #422's review). Empty
+    when the index offers none.
+    """
     if not lists:
-        return []
+        return [], ""
     found = lists.get(column_key(table.get("schema"), table.get("name"), column)) or ()
-    return [v for v in found if _sample_fits(v)][:MAX_LIST]
+    shown = [v for v in found if _sample_fits(v)][:MAX_LIST]
+    return shown, "values" if len(shown) == len(found) else "samples"
 
 
 #: Heads the per-question values. Says they are the stored spellings, so the
@@ -932,11 +938,11 @@ def _render_m_schema(
             # the whole schema rendering.
             samples: list[str] = col.get("samples") or []
             shown = [s for s in samples if _sample_fits(s)]
-            indexed = _index_list(lists, table, col_name)
+            indexed, label = _index_list(lists, table, col_name)
             if indexed:
                 # The value index's list, read through the request's row
                 # filters, in place of the knowledge base's samples.
-                flags.append(f"values: [{', '.join(_quote_sample(v) for v in indexed)}]")
+                flags.append(f"{label}: [{', '.join(_quote_sample(v) for v in indexed)}]")
             elif shown:
                 # "values" when they are every value the column holds, so the
                 # model can rely on the spelling; "samples" when they are a few.
@@ -1074,9 +1080,9 @@ def _build_full_schema_section(
             line = f"  - {col_name} ({col_type})"
             if col_desc:
                 line += f": {col_desc}"
-            indexed = _index_list(lists, table, col_name)
+            indexed, label = _index_list(lists, table, col_name)
             if indexed:
-                line += f"; values: [{', '.join(_quote_sample(v) for v in indexed)}]"
+                line += f"; {label}: [{', '.join(_quote_sample(v) for v in indexed)}]"
             lines.append(line)
         # Both renderers carry the note, because `SCHEMA_FORMAT` chooses between
         # them at runtime: marking only the default would leave every `verbose`

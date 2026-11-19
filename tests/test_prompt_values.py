@@ -139,6 +139,9 @@ def test_what_is_shown_is_capped_and_kept_to_a_line(provide: Any) -> None:
     )
     with _on():
         prompt = _prompt()
+    # Trimmed, so no longer every value: shown as samples (from #422's review).
+    assert "region:TEXT, samples: ['r0'" in prompt.static_system
+    assert "region:TEXT, values:" not in prompt.static_system
     assert f"'r{pv.MAX_LIST - 1}'" in prompt.static_system
     assert f"'r{pv.MAX_LIST}'" not in prompt.static_system
     assert long not in prompt.static_system
@@ -226,3 +229,16 @@ def test_without_an_agent_or_a_provider_nothing_is_asked(
     )
     with _on():
         assert pv.prompt_values_for("agent-1", "q") is pv.EMPTY
+
+
+def test_a_list_that_loses_a_value_too_long_for_a_line_is_shown_as_samples(
+    provide: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nlqueries import config  # noqa: PLC0415
+
+    provide(lambda _q: PromptValues(lists={REGION: ("EU", "x" * 500)}))
+    with _on():
+        assert "region:TEXT, samples: ['EU']" in _prompt().static_system
+    monkeypatch.setattr(config, "SCHEMA_FORMAT", "verbose")
+    with _on():
+        assert "  - region (TEXT); samples: ['EU']" in _prompt().static_system
