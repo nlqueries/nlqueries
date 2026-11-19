@@ -17,8 +17,8 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
@@ -532,6 +532,23 @@ class IndexedValues:
 
 
 @dataclass(frozen=True)
+class PromptValues:
+    """Stored values a value index offers the prompt for one question.
+
+    Returned by :attr:`LookupSource.prompt_values`, keyed by ``(schema, table,
+    column)`` -- the schema ``""`` where the knowledge base names none, every
+    part lower-cased. Every value must be one the request may see: an index
+    built through the row filters the request runs under.
+    """
+
+    #: Each short column's every value. The same for every question, so it is
+    #: shown with the schema, in the part of the prompt a provider caches.
+    lists: Mapping[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
+    #: For a longer column, the values matching words of the question.
+    matching: Mapping[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class LookupSource:
     """A database to read stored values from, and how to reach it."""
 
@@ -551,6 +568,13 @@ class LookupSource:
     #: request's context, within grounding's deadline. Core supplies none; a
     #: layer above it adds one by wrapping :func:`lookup_source`.
     values: Callable[[str | None, str | None, str, str, str], IndexedValues | None] | None = None
+    #: The values a value index offers the prompt for a question, or ``None``
+    #: to offer none. Called with the question, once per prompt, where the
+    #: request's ``value_index`` setting is on; returns :class:`PromptValues`.
+    #: Blocking, called on a worker thread in the request's context, and given
+    #: up on after :data:`~nlqueries.orchestrator.prompt_values.TIMEOUT_S`.
+    #: Core supplies none.
+    prompt_values: Callable[[str], PromptValues | None] | None = None
 
 
 def lookup_source(agent_id: str) -> LookupSource | None:
