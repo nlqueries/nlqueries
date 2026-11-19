@@ -6,6 +6,11 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **`at_rest.digest`: a keyed hash for finding sealed values by equality.**
+  `digest(text, purpose)` returns an HMAC-SHA256 of the text under a key
+  derived from the at-rest key material (`NLQ_CACHE_ENCRYPTION_KEY`) for this
+  use alone, so a store can keep it beside a value `seal` encrypted and look
+  the value up by equality without decrypting. Only equality survives.
 - **A connector can estimate a scan without running it.**
   `DatabaseConnector.estimate_scan_bytes(sql)` returns the bytes a statement
   would read, as the database estimates them, or `None` where it gives no

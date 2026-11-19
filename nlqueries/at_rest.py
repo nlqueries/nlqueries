@@ -35,6 +35,7 @@ import base64
 import binascii
 import contextlib
 import functools
+import hmac
 import logging
 import os
 import secrets
@@ -274,6 +275,35 @@ def seal(text: str, purpose: bytes) -> str:
     nonce = os.urandom(_NONCE_BYTES)
     sealed = _cipher(material).encrypt(nonce, text.encode("utf-8"), purpose)
     return MARKER + base64.urlsafe_b64encode(nonce + sealed).decode("ascii")
+
+
+#: HKDF info for the digest key: derived from the same material as the cipher
+#: key, never equal to it.
+_DIGEST_INFO = b"nlqueries at-rest digest v1"
+
+#: Starts every digest, so one is never taken for plaintext or a sealed value.
+DIGEST_MARKER = "nlqdig:v1:"
+
+
+@functools.lru_cache(maxsize=4)
+def _digest_key(material: bytes) -> bytes:
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=_DIGEST_INFO).derive(material)
+
+
+def digest(text: str, purpose: bytes) -> str:
+    """A keyed hash of *text* for *purpose*: equal for equal text and purpose,
+    and telling nothing about the text to anyone without the key.
+
+    For finding a sealed value by equality: a store keeps the digest beside the
+    sealed value, and a lookup digests what it looks for and compares. Only
+    equality survives -- no prefix, containment or similarity search. Keyed by
+    the same material as :func:`seal`, through a key derived for this use
+    alone, and computed whatever the setting: a caller digests only what it
+    seals. Raises ``RuntimeError`` when no key can be had.
+    """
+    material = _configured() or _stored() or _generated()
+    mac = hmac.new(_digest_key(material), purpose + b"\x00" + text.encode("utf-8"), "sha256")
+    return DIGEST_MARKER + mac.hexdigest()
 
 
 def unseal(value: str, purpose: bytes) -> str | None:
