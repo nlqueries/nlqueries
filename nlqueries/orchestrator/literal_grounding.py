@@ -752,7 +752,9 @@ class _Session:
         values = self._source.values
         if values is None:
             return None
-        call = functools.partial(values, table.db or None, table.name, column.name, literal)
+        call = functools.partial(
+            values, table.catalog or None, table.db or None, table.name, column.name, literal
+        )
         try:
             found = await self._in_thread(call)
         except Exception:  # noqa: BLE001
@@ -1109,7 +1111,8 @@ async def _from_index(
 ) -> tuple[_Outcome | None, IndexedValues] | None:
     """What the source's value index says *table*.*column* holds for *literal*,
     with what the index returned; ``None`` when there is no index for the
-    column, so the caller looks it up as it would without one. The outcome is
+    column, or the check a stale index needs failed, so the caller looks it up
+    as it would without one. The outcome is
     ``None`` when the exact-match check ran out of time.
 
     An index answers without the database. Only one that is not
@@ -1130,7 +1133,13 @@ async def _from_index(
             .from_(source)
             .where(exp.EQ(this=col, expression=exp.Literal.string(literal)))
         )
-        found = await session.run(exact.limit(1), dialect, max_rows=1)
+        try:
+            found = await session.run(exact.limit(1), dialect, max_rows=1)
+        except Exception:  # noqa: BLE001
+            # A failed check is no reason to fail the question: the column is
+            # looked up as it would be without an index, which is guarded.
+            _log.debug("Literal grounding skipped the index: the check failed.", exc_info=True)
+            return None
         if found is None:
             return None, indexed
         if found:

@@ -79,14 +79,14 @@ class _Index:
 
     def __init__(self, answers: dict[str, IndexedValues | None] | None = None) -> None:
         self.answers = answers or {}
-        self.calls: list[tuple[str | None, str, str, str]] = []
+        self.calls: list[tuple[str | None, str | None, str, str, str]] = []
         self.error: Exception | None = None
         self.delay = 0.0
 
     def __call__(
-        self, schema: str | None, table: str, column: str, literal: str
+        self, catalog: str | None, schema: str | None, table: str, column: str, literal: str
     ) -> IndexedValues | None:
-        self.calls.append((schema, table, column, literal))
+        self.calls.append((catalog, schema, table, column, literal))
         if self.delay:
             time.sleep(self.delay)
         if self.error is not None:
@@ -168,7 +168,15 @@ def test_the_index_is_asked_with_the_schema_the_knowledge_base_records(tmp_path:
     src = _source(tmp_path, status=_complete("Legal"))
     _ground("SELECT id FROM schools WHERE status = 'legal'", src)
     assert src.index is not None
-    assert src.index.calls == [("main", "schools", "status", "legal")]
+    assert src.index.calls == [(None, "main", "schools", "status", "legal")]
+
+
+def test_the_index_is_asked_with_the_catalog_a_three_part_name_gives(tmp_path: Path) -> None:
+    """Two tables of one schema and name in different databases are told apart."""
+    src = _source(tmp_path, status=_complete("Legal"))
+    _ground("SELECT id FROM warehouse.main.schools WHERE status = 'legal'", src)
+    assert src.index is not None
+    assert src.index.calls == [("warehouse", "main", "schools", "status", "legal")]
 
 
 def test_the_index_answers_under_a_row_scope_whose_lookups_are_not_cached(
@@ -270,6 +278,19 @@ def test_a_current_index_runs_no_check(tmp_path: Path) -> None:
     src = _source(tmp_path, status=_partial("Legal", "Active", "Close"))
     _ground("SELECT id FROM schools WHERE status = 'Closed'", src)
     assert src.statements == []
+
+
+def test_a_stale_index_whose_check_fails_does_not_fail_the_question(tmp_path: Path) -> None:
+    """The check's query errors (here the table is missing): grounding skips
+    the literal as it does any lookup that fails, and an empty result's
+    follow-up finds nothing to offer, rather than either raising."""
+    empty = tmp_path / "empty.db"
+    sqlite3.connect(empty).close()
+    src = _Source(empty, _Index({"status": _partial("Legal", current=False)}))
+    sql = "SELECT id FROM schools WHERE status = 'Closed'"
+    assert _ground(sql, src).sql == sql
+    assert asyncio.run(empty_result_literals(sql, KB, "sqlite", src.source)) == []
+    assert src.statements
 
 
 def test_a_table_too_large_to_scan_runs_no_check_even_when_the_index_is_stale(

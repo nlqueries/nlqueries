@@ -543,14 +543,14 @@ class LookupSource:
     #: Closing what it returns is safe and releases nothing the pool holds.
     open: Callable[[], DatabaseConnector | None]
     #: A value index to read before the database, or ``None`` to read the
-    #: database alone. Called with the schema (``None`` when the statement and
-    #: the knowledge base name none), table, column and literal; returns what
-    #: the index holds for them, or ``None`` when it does not cover that
-    #: column, in which case the column is looked up in the database as
-    #: without an index. Blocking, and called on a worker thread in the
+    #: database alone. Called with the catalog and the schema (each ``None``
+    #: when the statement and the knowledge base name none), table, column and
+    #: literal; returns what the index holds for them, or ``None`` when it does
+    #: not cover that column, in which case the column is looked up in the
+    #: database as without an index. Blocking, and called on a worker thread in the
     #: request's context, within grounding's deadline. Core supplies none; a
     #: layer above it adds one by wrapping :func:`lookup_source`.
-    values: Callable[[str | None, str, str, str], IndexedValues | None] | None = None
+    values: Callable[[str | None, str | None, str, str, str], IndexedValues | None] | None = None
 
 
 def lookup_source(agent_id: str) -> LookupSource | None:
