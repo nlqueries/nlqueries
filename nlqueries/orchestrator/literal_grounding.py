@@ -72,6 +72,14 @@ the filter as before. Without a list, a literal that matches nothing costs up
 to four queries, most of them scans, so a table the knowledge base records as
 larger than ``LITERAL_GROUNDING_MAX_ROWS`` rows is not looked up at all, and
 there a list is used alone. A table whose size is unknown is looked up.
+
+A source can carry a value index (:attr:`~nlqueries.connectors.loader.
+LookupSource.values`; core supplies none). For a column the index covers, it
+answers in place of the stored list and the database: the same passes run over
+what it returns (:func:`_from_values`), under any row scope, since an index is
+built through the filters the request runs under. One the index marks as not
+current costs a single exact-match query first. A column it does not cover is
+looked up as above.
 """
 
 from __future__ import annotations
@@ -85,6 +93,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -95,6 +104,7 @@ import sqlglot.expressions as exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from nlqueries.connectors.base import PermittedConnector
+from nlqueries.connectors.loader import IndexedValues
 from nlqueries.knowledge.kb_generator import is_pii_column
 from nlqueries.orchestrator.match_notes import Choice, choice_key, chosen_value
 from nlqueries.query_settings import current as current_settings
@@ -266,6 +276,23 @@ async def ground_literals(
             # Too large to scan for every question: a stored list, if there is
             # one, is all there is to go on.
             too_large = cap > 0 and rows is not None and rows > cap
+            # A value index, where the source has one for this column, answers
+            # before the stored list and the database do.
+            indexed = await _from_index(
+                session,
+                dialect,
+                _qualified(table_node, schemas),
+                column_node,
+                literal,
+                mode,
+                too_large,
+            )
+            if indexed is not None:
+                if indexed[0] is not None:
+                    changed |= _apply(
+                        result, indexed[0], table_node, column_node, literal_node, flagged
+                    )
+                continue
             if too_large and stored is None:
                 continue
             try:
@@ -716,6 +743,23 @@ class _Session:
         rows = await self._in_thread(functools.partial(self._execute, sql, max_rows))
         return None if rows is _ABANDONED else rows
 
+    async def indexed(
+        self, table: exp.Table, column: exp.Column, literal: str
+    ) -> IndexedValues | None:
+        """What the source's value index holds for *literal* in *table*.*column*;
+        ``None`` when the source has no index, the index does not cover the
+        column, the call failed or time ran out. Opens no connector."""
+        values = self._source.values
+        if values is None:
+            return None
+        call = functools.partial(values, table.db or None, table.name, column.name, literal)
+        try:
+            found = await self._in_thread(call)
+        except Exception:  # noqa: BLE001
+            _log.debug("Literal grounding could not read the value index.", exc_info=True)
+            return None
+        return found if isinstance(found, IndexedValues) else None
+
     async def cache_scope(self) -> str | None:
         """The row scope this session's outcomes may be cached under, or
         ``None`` when they must not be. Opens the connector to find out."""
@@ -999,14 +1043,22 @@ def _add_similar(found: list[str], literal: str, values: list[str]) -> None:
             found.append(by_lower[close])
 
 
-def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outcome:
+def _from_values(
+    literal: str, values: list[str], mode: str = "loose", complete: bool = True
+) -> _Outcome:
     """What a column whose complete list is *values* holds for *literal*, which
     is not among them: the passes of :func:`_look_up` after the exact match,
     run over the list instead of the database. One value equal ignoring case
-    and surrounding spaces, or failing that also punctuation at either end, is
-    the match; several are left to the repair; none gives the nearby values,
-    or every value of a short list. With *mode* ``contains``, one value the
-    literal is part of is the match too."""
+    and surrounding spaces, or failing that also punctuation at either end, or
+    failing that also accents, is the match; several are left to the repair;
+    none gives the nearby values, or every value of a short list. With *mode*
+    ``contains``, one value the literal is part of is the match too.
+
+    With *complete* ``False``, *values* is what a value index found for the
+    literal rather than the whole column (see
+    :class:`~nlqueries.connectors.loader.IndexedValues`): a short list is not
+    every value the column holds, and one value containing the literal is not
+    the only one there is, so neither is read as if it were."""
     distinct = list(dict.fromkeys(values))
     loose = [v for v in distinct if v.strip().lower() == literal.strip().lower()]
     needle = literal.strip().lower()
@@ -1014,24 +1066,77 @@ def _from_values(literal: str, values: list[str], mode: str = "loose") -> _Outco
     if not loose and len(folded) >= _MIN_FOLDED_CHARS:
         loose = [v for v in distinct if _fold(v) == folded]
         needle = folded
+    # Accents last, and in Python only: the database lookups cannot fold them
+    # the same way on every dialect, but a list can be compared here.
+    if not loose and len(folded) >= _MIN_FOLDED_CHARS:
+        plain = _unaccented(folded)
+        loose = [v for v in distinct if _unaccented(_fold(v)) == plain]
     if len(loose) == 1:
         return _Outcome("one", (loose[0],))
     if loose:
         return _Outcome(
             "variants", tuple(loose[:_MAX_VARIANTS]), complete=len(loose) <= _MAX_VARIANTS
         )
-    if mode == "contains" and len(folded) >= _MIN_FOLDED_CHARS:
+    if mode == "contains" and complete and len(folded) >= _MIN_FOLDED_CHARS:
         inside = [v for v in distinct if folded in v.lower()]
         if len(inside) == 1:
             return _Outcome("one", (inside[0],))
         # More than the database path compares are left to the repair, as there.
         if 1 < len(inside) <= _MAX_CONTAINING:
             return _Outcome("many", _ranked(literal, inside))
-    if 0 < len(distinct) <= _MAX_COMPLETE_LIST:
+    if complete and 0 < len(distinct) <= _MAX_COMPLETE_LIST:
         return _Outcome("none", tuple(distinct), complete=True)
     found = [v for v in distinct if needle in v.lower()][:_MAX_NEARBY]
     _add_similar(found, literal, distinct)
     return _Outcome("none", tuple(found[:_MAX_NEARBY]))
+
+
+def _unaccented(value: str) -> str:
+    """*value* with its accents and other combining marks taken off: 'são
+    paulo' gives 'sao paulo'."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+async def _from_index(
+    session: _Session,
+    dialect: str,
+    table: exp.Table,
+    column: exp.Column,
+    literal: str,
+    mode: str,
+    too_large: bool,
+) -> tuple[_Outcome | None, IndexedValues] | None:
+    """What the source's value index says *table*.*column* holds for *literal*,
+    with what the index returned; ``None`` when there is no index for the
+    column, so the caller looks it up as it would without one. The outcome is
+    ``None`` when the exact-match check ran out of time.
+
+    An index answers without the database. Only one that is not
+    :attr:`~nlqueries.connectors.loader.IndexedValues.current` costs a query,
+    the exact match, and not on a table too large to scan for every question,
+    where the index is all there is to go on, as a stored list is. Not cached:
+    the index is already the cheap answer, and a cached outcome would outlive
+    a rebuild."""
+    indexed = await session.indexed(table, column, literal)
+    if indexed is None:
+        return None
+    if literal in indexed.values:
+        return _Outcome("found"), indexed
+    if not indexed.current and not too_large:
+        source, col = _target(table, column)
+        exact = (
+            exp.select("1")
+            .from_(source)
+            .where(exp.EQ(this=col, expression=exp.Literal.string(literal)))
+        )
+        found = await session.run(exact.limit(1), dialect, max_rows=1)
+        if found is None:
+            return None, indexed
+        if found:
+            return _Outcome("found"), indexed
+    outcome = _from_values(literal, list(indexed.values), mode, complete=indexed.complete)
+    return outcome, indexed
 
 
 def _compare_with_each(literal_node: exp.Literal, values: tuple[str, ...]) -> bool:
@@ -1217,21 +1322,30 @@ async def empty_result_literals(
                 continue
             rows = row_counts.get(table_node.name.lower())
             too_large = cap > 0 and rows is not None and rows > cap
-            if too_large and stored is None:
-                continue
-            try:
-                scope = await session.cache_scope()
-            except Exception:  # noqa: BLE001
-                break
-            if scope != "":
-                stored = None
             probe = _qualified(table_node, schemas)
-            if too_large:
-                outcome = _from_values(literal, stored, mode) if stored is not None else None
+            indexed = await _from_index(
+                session, dialect, probe, column_node, literal, mode, too_large
+            )
+            outcome: _Outcome | None
+            if indexed is not None:
+                # The index holds the stored values that are runs of the
+                # literal's words (see IndexedValues), so they are read from it.
+                outcome, stored = indexed[0], list(indexed[1].values)
             else:
-                outcome = await _outcome(
-                    session, scope, dialect, probe, column_node, literal, stored, mode
-                )
+                if too_large and stored is None:
+                    continue
+                try:
+                    scope = await session.cache_scope()
+                except Exception:  # noqa: BLE001
+                    break
+                if scope != "":
+                    stored = None
+                if too_large:
+                    outcome = _from_values(literal, stored, mode) if stored is not None else None
+                else:
+                    outcome = await _outcome(
+                        session, scope, dialect, probe, column_node, literal, stored, mode
+                    )
             if outcome is None or outcome.kind != "none":
                 continue
 
