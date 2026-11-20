@@ -545,13 +545,57 @@ class Orchestrator:
             # statement. Its reply is read exactly as the stream is, so the
             # statement in it goes through the same validation, grounding and
             # checks as any first attempt, and runs only if the policy allows.
+            #
+            # With candidate selection on, several candidates checked by running
+            # them stand in for the one streamed answer (see
+            # `candidate_selection`), and the chosen one's reply is read here as
+            # a correction's is, already validated. Not for a correction, which
+            # is one statement's; not where the request's policy forbids
+            # running anything, since checking a candidate means running the
+            # model's statement; and not for an agent with no registered
+            # connector, which has nowhere to run them.
+            from nlqueries.connectors.loader import lookup_source  # noqa: PLC0415
+
+            lookups = None
+            chosen = None
             previous = current_previous_attempt()
+            candidate_source = None
+            if (
+                previous is None
+                and execution.may_execute
+                and current_settings().candidate_selection
+            ):
+                try:
+                    candidate_source = await asyncio.to_thread(lookup_source, agent_id)
+                except Exception:  # noqa: BLE001
+                    _log.debug("No connector for candidate selection.", exc_info=True)
             if previous is not None:
                 span.set_attribute("previous_attempt", previous.kind)
                 reply = await correct_previous_attempt(
                     previous, prompt.user_content(), dialect, llm, system
                 )
                 tokens: AsyncIterator[str] = _one_reply(reply)
+            elif candidate_source is not None:
+                from nlqueries.orchestrator.candidate_selection import (  # noqa: PLC0415
+                    choose_first_answer,
+                )
+
+                if current_settings().grounds_literals:
+                    lookups = candidate_source
+                chosen = await choose_first_answer(
+                    prompt=prompt,
+                    knowledge_base=kb,
+                    llm=llm,
+                    dialect=dialect,
+                    question=question,
+                    source=candidate_source,
+                    lookups=lookups,
+                    cache=llm.supports_prompt_caching,
+                    timeout_seconds=timeout_seconds,
+                    deadline=deadline,
+                )
+                span.set_attribute("candidate_selection", True)
+                tokens = _one_reply(chosen.text)
             else:
                 tokens = llm.astream(system, prompt.user_content())
 
@@ -633,26 +677,34 @@ class Orchestrator:
             # wrapper such as a row filter applies to them too; see
             # `lookup_source`. An agent with no registered connector gets none,
             # and nothing is logged for it.
+            #
+            # A chosen candidate was validated, grounded and repaired already,
+            # in its own collections; only its records are taken.
             # ------------------------------------------------------------------
-            from nlqueries.connectors.loader import lookup_source  # noqa: PLC0415
-
-            lookups = None
-            if current_settings().grounds_literals:
+            if chosen is None and current_settings().grounds_literals:
                 try:
                     lookups = await asyncio.to_thread(lookup_source, agent_id)
                 except Exception:  # noqa: BLE001
                     _log.debug("No lookups for literal grounding.", exc_info=True)
             with collect_match_notes() as match_notes, collect_choices() as choices:
-                result = await validate_and_repair(
-                    sql_buf.strip(),
-                    kb,
-                    dialect,
-                    llm,
-                    system,
-                    lookups=lookups,
-                    question=question,
-                    cut_off=cut_off,
-                )
+                if chosen is not None and chosen.result is not None:
+                    from nlqueries.orchestrator.candidate_selection import (  # noqa: PLC0415
+                        adopt,
+                    )
+
+                    adopt(chosen)
+                    result = chosen.result
+                else:
+                    result = await validate_and_repair(
+                        sql_buf.strip(),
+                        kb,
+                        dialect,
+                        llm,
+                        system,
+                        lookups=lookups,
+                        question=question,
+                        cut_off=cut_off,
+                    )
             # The statement checked against the plan line the model wrote
             # before it, which says what one row is and what is counted; a
             # disagreement gets one repair. See `grain_check`. Before execution,

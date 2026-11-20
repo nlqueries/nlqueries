@@ -80,6 +80,10 @@ class Provenance:
     # {"plan": str, "mismatches": [...], "attempted": bool, "changed": bool,
     # "reason": str | None}, or None when they agreed or there was no plan line.
     grain_check: dict[str, Any] | None = None
+    # How the first answer was chosen when CANDIDATE_SELECTION is on: {"count",
+    # "executed", "groups", "chosen", "reason", "candidates": [{"variant", "sql",
+    # "status", "rows" or "error"}]}, or None.
+    candidate_selection: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +118,14 @@ class Provenance:
                 None
                 if self.grain_check is None
                 else {**self.grain_check, "mismatches": list(self.grain_check["mismatches"])}
+            ),
+            "candidate_selection": (
+                None
+                if self.candidate_selection is None
+                else {
+                    **self.candidate_selection,
+                    "candidates": [dict(c) for c in self.candidate_selection["candidates"]],
+                }
             ),
         }
 
@@ -185,6 +197,13 @@ def record_timing(key: str, ms: float) -> None:
     p = _collector.get()
     if p is not None:
         p.timings[key] = float(ms)
+
+
+def record_candidate_selection(record: dict[str, Any]) -> None:
+    """How the first answer was chosen from its candidates."""
+    p = _collector.get()
+    if p is not None:
+        p.candidate_selection = record
 
 
 def record_literal_repair(changed: bool, notes: list[str], reason: str | None = None) -> None:

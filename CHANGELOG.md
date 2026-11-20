@@ -6,6 +6,43 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Added
 
+- **Execution-verified candidate selection for the first answer
+  (`NLQ_CANDIDATE_SELECTION`, the `candidate_selection` query setting; off by
+  default).** With it on, the first answer is chosen from
+  `NLQ_CANDIDATE_COUNT` (3) candidates instead of being one streamed call.
+  - **Different prompts, not temperatures.** Claude 5 models ignore
+    temperature, so each candidate comes from a prompt variant: the plain
+    prompt, the schema without sample values, and the plain prompt asking for
+    the tables and columns before the SQL. The calls run concurrently.
+  - **Each one as a lone answer.** Every candidate goes through validation,
+    repair, literal grounding and literal repair, with its own provenance,
+    match notes and choices; only the chosen one's reach the answer.
+  - **Checked by running it.** Every valid candidate runs read-only on a
+    connector of its own, opened as literal grounding's lookups are, so a row
+    filter bound for the request applies; within
+    `NLQ_CANDIDATE_EXEC_TIMEOUT_S` (10 s), the request's statement timeout
+    and half the time left before its deadline, whichever is least; with
+    under a second, none is run. Its rows are compared as a set, sorted and
+    capped at `NLQ_CANDIDATE_MAX_ROWS` (1000); a result the connector cut
+    short at its fetch limit is not compared. A candidate that leaves a value
+    for the user to choose (`NLQ_AMBIGUITY=ask`) is not run.
+  - **The answer.** A member of the largest group of candidates with the same
+    rows; ties go to a non-empty result, then a candidate valid without
+    repair, then the shortest SQL. A run that fails or times out never wins;
+    with nothing run, the first candidate. Recorded in provenance as
+    `candidate_selection`, with each candidate's variant, SQL and outcome.
+  - **Where it applies.** Only where the request may run its statement (not
+    generate-only), the agent has a registered connector, and the question is
+    not a correction of a previous attempt; anything else gets the single
+    call. The answer is not streamed: the chosen candidate's reasoning arrives
+    in one piece.
+  - **Measured: no gain, but a confidence signal.** About three times the
+    output tokens of one call. The candidates agreed on most questions and
+    were often wrong together, so choosing among them changed little; how far
+    they agree predicts whether the answer is right (unanimous 68% right,
+    split 29%), which the provenance record keeps. It is a query setting so
+    that a program serving several users can try it per request.
+
 - **`at_rest.digest`: a keyed hash for finding sealed values by equality.**
   `digest(text, purpose)` returns an HMAC-SHA256 of the text under a key
   derived from the at-rest key material (`NLQ_CACHE_ENCRYPTION_KEY`) for this

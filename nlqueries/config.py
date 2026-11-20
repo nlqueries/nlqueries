@@ -66,6 +66,7 @@ QUERY_SETTING_VARS: tuple[str, ...] = (
     "NLQ_EMPTY_RESULT_EXPLAIN",
     "NLQ_READING_LINE",
     "NLQ_VALUE_INDEX",
+    "NLQ_CANDIDATE_SELECTION",
 )
 
 
@@ -1290,6 +1291,29 @@ SCHEMA_FORMAT: str = os.getenv("NLQ_SCHEMA_FORMAT", "compact").lower()
   compact  — M-Schema format (【Table】 ...) — fewer tokens, default
   verbose  — Full markdown format (### Table: ...) — backward compatible
 """
+
+CANDIDATE_SELECTION: bool = os.getenv("NLQ_CANDIDATE_SELECTION", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+"""Execution-verified candidate selection for the first answer. Off by default;
+set NLQ_CANDIDATE_SELECTION=true to turn it on. CANDIDATE_COUNT candidates come
+from different prompt variants, each validated and repaired as a lone answer
+would be, and each valid one is run read-only on a connector of its own; the
+answer comes from the largest group that returned the same rows. Only where the
+request may run its statement and the agent has a registered connector (see
+:mod:`nlqueries.orchestrator.candidate_selection`). A query setting, so a layer
+above core can switch it per request."""
+
+CANDIDATE_COUNT: int = int(os.getenv("NLQ_CANDIDATE_COUNT", "3"))
+"""Candidates generated when CANDIDATE_SELECTION is on."""
+
+CANDIDATE_EXEC_TIMEOUT_S: float = float(os.getenv("NLQ_CANDIDATE_EXEC_TIMEOUT_S", "10"))
+"""Seconds a candidate may run before it is abandoned and counted as a timeout."""
+
+CANDIDATE_MAX_ROWS: int = int(os.getenv("NLQ_CANDIDATE_MAX_ROWS", "1000"))
+"""Rows of a candidate's result compared, the first ones after sorting."""
 
 SELF_CONSISTENCY: str = os.getenv("NLQ_SELF_CONSISTENCY", "off").lower()
 """Self-consistency mode for hard SQL queries. Values: off | hard | all.
