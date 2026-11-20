@@ -104,7 +104,7 @@ import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
-from nlqueries.connectors.base import PermittedConnector
+from nlqueries.connectors.base import PermittedConnector, QueryResult
 from nlqueries.connectors.loader import IndexedValues
 from nlqueries.knowledge.kb_generator import is_pii_column
 from nlqueries.orchestrator.match_notes import Choice, choice_key, chosen_value
@@ -791,13 +791,14 @@ class _Session:
         scope = getattr(connector, "cache_scope", None)
         return scope if isinstance(scope, str) else None
 
-    async def run_sql(self, sql: str, max_rows: int | None = None) -> list[tuple[Any, ...]] | None:
-        """Every column of *sql*'s rows; ``None`` when out of time. Raises when
-        the database refuses the statement."""
+    async def run_sql(self, sql: str, max_rows: int | None = None) -> QueryResult | None:
+        """*sql*'s whole result, every column of its rows and whether the
+        connector cut it short; ``None`` when out of time. Raises when the
+        database refuses the statement."""
         if not await self._opened():
             return None
-        rows = await self._in_thread(functools.partial(self._execute_rows, sql, max_rows))
-        return None if rows is _ABANDONED else rows
+        result = await self._in_thread(functools.partial(self._execute_result, sql, max_rows))
+        return None if result is _ABANDONED else result
 
     async def _opened(self) -> bool:
         """Open the connector if it is not; ``False`` when out of time."""
@@ -856,13 +857,15 @@ class _Session:
         return True
 
     def _execute(self, sql: str, max_rows: int) -> list[Any]:
-        return [row[0] for row in self._execute_rows(sql, max_rows)]
+        return [row[0] for row in self._execute_result(sql, max_rows).rows]
 
-    def _execute_rows(self, sql: str, max_rows: int | None) -> list[tuple[Any, ...]]:
-        result = self._connector.execute_query(sql, self._statement_timeout_s, max_rows=max_rows)
+    def _execute_result(self, sql: str, max_rows: int | None) -> QueryResult:
+        result: QueryResult = self._connector.execute_query(
+            sql, self._statement_timeout_s, max_rows=max_rows
+        )
         if result.error:
             raise RuntimeError(result.error)
-        return [tuple(row) for row in result.rows]
+        return result
 
     def _release(self) -> None:
         with self._lock:

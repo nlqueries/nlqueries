@@ -20,9 +20,12 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
   - **Checked by running it.** Every valid candidate runs read-only on a
     connector of its own, opened as literal grounding's lookups are, so a row
     filter bound for the request applies; within
-    `NLQ_CANDIDATE_EXEC_TIMEOUT_S` (10 s). Its rows are compared as a set,
-    sorted and capped at `NLQ_CANDIDATE_MAX_ROWS` (1000). A candidate that
-    leaves a value for the user to choose (`NLQ_AMBIGUITY=ask`) is not run.
+    `NLQ_CANDIDATE_EXEC_TIMEOUT_S` (10 s), the request's statement timeout
+    and half the time left before its deadline, whichever is least; with
+    under a second, none is run. Its rows are compared as a set, sorted and
+    capped at `NLQ_CANDIDATE_MAX_ROWS` (1000); a result the connector cut
+    short at its fetch limit is not compared. A candidate that leaves a value
+    for the user to choose (`NLQ_AMBIGUITY=ask`) is not run.
   - **The answer.** A member of the largest group of candidates with the same
     rows; ties go to a non-empty result, then a candidate valid without
     repair, then the shortest SQL. A run that fails or times out never wins;

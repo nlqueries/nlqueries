@@ -591,6 +591,8 @@ class Orchestrator:
                     source=candidate_source,
                     lookups=lookups,
                     cache=llm.supports_prompt_caching,
+                    timeout_seconds=timeout_seconds,
+                    deadline=deadline,
                 )
                 span.set_attribute("candidate_selection", True)
                 tokens = _one_reply(chosen.text)

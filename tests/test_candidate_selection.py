@@ -11,6 +11,7 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -136,7 +137,12 @@ class _LLM:
 
 
 def _choose(
-    llm: _LLM, src: _Source, lookups: LookupSource | None = None
+    llm: _LLM,
+    src: _Source,
+    lookups: LookupSource | None = None,
+    *,
+    timeout_seconds: float | None = None,
+    deadline: float | None = None,
 ) -> tuple[Candidate, dict[str, Any]]:
     prompt = AssembledPrompt(
         static_system=_build_static_system(KB), dynamic_context="", user_question=QUESTION
@@ -154,6 +160,8 @@ def _choose(
                 source=src.source,
                 lookups=lookups,
                 cache=True,
+                timeout_seconds=timeout_seconds,
+                deadline=deadline,
             )
 
     chosen = asyncio.run(run())
@@ -240,7 +248,7 @@ def test_a_candidate_that_runs_past_its_deadline_never_wins(
     db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("nlqueries.config.CANDIDATE_COUNT", 2)
-    monkeypatch.setattr("nlqueries.config.CANDIDATE_EXEC_TIMEOUT_S", 0.5)
+    monkeypatch.setattr("nlqueries.config.CANDIDATE_EXEC_TIMEOUT_S", 1.0)
     release = threading.Event()
     real = _Source(db)
 
@@ -530,6 +538,7 @@ def test_only_the_chosen_candidates_notes_and_choices_reach_the_request(
 
 def test_adopt_records_the_chosen_ones_grounding_choices_and_repair() -> None:
     chosen = Candidate(index=0, variant="prompt")
+    chosen.provenance.validator.append("repaired after: not allowed")
     chosen.provenance.literals_grounded.append(
         {"table": "t", "column": "name", "before": "A", "after": "a"}
     )
@@ -547,6 +556,7 @@ def test_adopt_records_the_chosen_ones_grounding_choices_and_repair() -> None:
     with use_provenance(collected), collect_match_notes() as notes, collect_choices() as choices:
         adopt(chosen)
 
+    assert collected.validator == ["repaired after: not allowed"]
     assert collected.literals_grounded == chosen.provenance.literals_grounded
     assert collected.literal_repair is not None
     assert (collected.literal_repair["changed"], collected.literal_repair["notes"]) == (True, ["n"])
@@ -603,6 +613,8 @@ def _drive(
     execution: ExecutionPolicy,
     *,
     previous: PreviousAttempt | None = None,
+    deadline: float | None = None,
+    timeout_seconds: float | None = None,
 ) -> tuple[dict[str, Any], Provenance, MagicMock, str]:
     from nlqueries.orchestrator.orchestrator import Orchestrator
 
@@ -648,7 +660,12 @@ def _drive(
             async def collect() -> None:
                 with use_provenance(collected):
                     async for token in Orchestrator().handle_question(
-                        QUESTION, "shop", dialect="sqlite", execution=execution
+                        QUESTION,
+                        "shop",
+                        dialect="sqlite",
+                        execution=execution,
+                        deadline=deadline,
+                        timeout_seconds=timeout_seconds,
                     ):
                         if token.startswith("{") and '"type": "sql"' in token:
                             frames.append(json.loads(token))
@@ -780,3 +797,113 @@ def test_the_chosen_candidates_match_note_is_said_with_the_answer(
 
     assert frame["sql"] == sqls["no_samples"]
     assert frame["result_notes"] == ["note from no_samples"]
+
+
+# --- Bounded by the request -------------------------------------------------------------
+
+
+class _Timed(SQLiteConnector):
+    """Records the statement timeout each query is given."""
+
+    seen: list[float] = []
+
+    def execute_query(self, sql: str, timeout_seconds: float = 0, **kw: Any) -> QueryResult:
+        _Timed.seen.append(timeout_seconds)
+        return super().execute_query(sql, timeout_seconds, **kw)
+
+
+def _timed_source(db: Path) -> _Source:
+    src = _Source(db)
+
+    def _open() -> _Timed:
+        connector = _Timed()
+        connector.connect({"database": str(db)})
+        connector.bind_execution_policy(ExecutionPolicy.execute_read_only())
+        return connector
+
+    src.source = LookupSource(key="timed", open=_open)
+    return src
+
+
+def test_each_run_is_bounded_by_the_requests_statement_timeout(db: Path) -> None:
+    _Timed.seen = []
+    llm = _LLM({v.name: "SELECT name FROM t" for v in VARIANTS})
+
+    _choose(llm, _timed_source(db), timeout_seconds=3.0)
+
+    assert _Timed.seen == [3.0, 3.0, 3.0]
+
+
+def test_a_request_with_no_statement_timeout_keeps_the_setting(db: Path) -> None:
+    """Zero is the connectors' "no timeout", not a budget of nothing."""
+    _Timed.seen = []
+    llm = _LLM({v.name: "SELECT name FROM t" for v in VARIANTS})
+
+    _choose(llm, _timed_source(db), timeout_seconds=0)
+
+    assert _Timed.seen == [10.0, 10.0, 10.0]
+
+
+def test_the_runs_take_at_most_half_the_time_left_before_the_deadline(db: Path) -> None:
+    _Timed.seen = []
+    llm = _LLM({v.name: "SELECT name FROM t" for v in VARIANTS})
+
+    _choose(llm, _timed_source(db), deadline=time.monotonic() + 8.0)
+
+    assert len(_Timed.seen) == 3 and all(3.0 < t <= 4.0 for t in _Timed.seen), _Timed.seen
+
+
+def test_with_too_little_time_left_no_candidate_runs(db: Path) -> None:
+    src = _Source(db)
+    llm = _LLM(_DIFFERING)
+
+    chosen, record = _choose(llm, src, deadline=time.monotonic() + 1.5)
+
+    assert src.opened == []
+    assert chosen.index == 0
+    assert [c["status"] for c in record["candidates"]] == ["not_run"] * 3
+    assert record["reason"].startswith("no candidate executed")
+
+
+def test_the_orchestrator_hands_its_deadline_to_the_runs(db: Path) -> None:
+    src = _Source(db)
+    llm = _LLM(_DIFFERING)
+
+    frame, collected, _, _ = _drive(
+        True, llm, src, ExecutionPolicy.execute_read_only(), deadline=time.monotonic() + 1.5
+    )
+
+    assert src.opened == []
+    assert collected.candidate_selection is not None
+    assert {c["status"] for c in collected.candidate_selection["candidates"]} == {"not_run"}
+    assert frame["sql"] == _DIFFERING["prompt"]
+
+
+def test_a_result_the_connector_cut_short_is_not_compared(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cut at the fetch limit in each statement's own order, two candidates
+    with the same rows hold different prefixes."""
+    monkeypatch.setattr("nlqueries.config.CONNECTOR_MAX_FETCH_ROWS", 2)
+    llm = _LLM(
+        {
+            "prompt": "SELECT name FROM t ORDER BY name",
+            "no_samples": "SELECT name FROM t ORDER BY name DESC",
+            "tables_first": "SELECT name FROM t WHERE score > 50",
+        }
+    )
+
+    chosen, record = _choose(llm, _Source(db))
+
+    assert [c["status"] for c in record["candidates"]] == ["truncated", "truncated", "ok"]
+    assert "more rows than the connector fetches" in record["candidates"][0]["error"]
+    assert chosen.index == 2
+
+
+def test_the_orchestrator_hands_its_statement_timeout_to_the_runs(db: Path) -> None:
+    _Timed.seen = []
+    llm = _LLM({v.name: "SELECT name FROM t" for v in VARIANTS})
+
+    _drive(True, llm, _timed_source(db), ExecutionPolicy.execute_read_only(), timeout_seconds=2.0)
+
+    assert _Timed.seen == [2.0, 2.0, 2.0]

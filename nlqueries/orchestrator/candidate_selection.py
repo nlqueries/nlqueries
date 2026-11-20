@@ -54,6 +54,7 @@ from nlqueries.orchestrator.provenance import (
     record_candidate_selection,
     record_literal_grounded,
     record_literal_repair,
+    record_validator_warning,
     use_provenance,
 )
 from nlqueries.orchestrator.sql_generation import (
@@ -117,8 +118,8 @@ class Candidate:
     #: The match notes and choices its grounding left, for :func:`adopt`.
     notes: list[_Note] = field(default_factory=list)
     choices: list[Choice] = field(default_factory=list)
-    #: "no_reply", "invalid", "valid", "awaiting_choice", "ok", "error" or
-    #: "timeout".
+    #: "no_reply", "invalid", "valid", "awaiting_choice", "not_run", "ok",
+    #: "error", "timeout" or "truncated".
     status: str = "no_reply"
     rows: frozenset[tuple[Any, ...]] | None = None
     row_count: int | None = None
@@ -135,8 +136,15 @@ async def choose_first_answer(
     source: LookupSource,
     lookups: LookupSource | None,
     cache: bool,
+    timeout_seconds: float | None = None,
+    deadline: float | None = None,
 ) -> Candidate:
     """Generate, validate, run and choose; see the module docstring.
+
+    The runs are bounded by the request as well as by
+    ``CANDIDATE_EXEC_TIMEOUT_S`` (see :func:`_run_budget`): each by its
+    ``timeout_seconds``, and all of them by half the time left before its
+    *deadline*, so the answer's own run keeps the other half.
 
     Records ``candidate_selection`` in provenance. The chosen candidate's own
     grounding records are left for :func:`adopt`, which the caller makes where
@@ -170,7 +178,15 @@ async def choose_first_answer(
     if all(c.status == "no_reply" for c in candidates):
         raise next(e for e in errors if e is not None)
 
-    await asyncio.gather(*(_execute(c, source, dialect) for c in candidates if c.status == "valid"))
+    budget = _run_budget(timeout_seconds, deadline)
+    if budget is None:
+        for c in candidates:
+            if c.status == "valid":
+                c.status, c.error = "not_run", "too little time left before the deadline"
+    else:
+        await asyncio.gather(
+            *(_execute(c, source, dialect, budget) for c in candidates if c.status == "valid")
+        )
 
     chosen, reason, groups = _pick(candidates, dialect)
     record_candidate_selection(
@@ -187,10 +203,13 @@ async def choose_first_answer(
 
 
 def adopt(chosen: Candidate) -> None:
-    """Record what the chosen candidate's grounding recorded for itself, as a
-    lone answer would have: its literals grounded and literal repair into the
-    request's provenance, its match notes and choices into the collections
+    """Record what the chosen candidate's validation recorded for itself, as a
+    lone answer would have: its validator warnings (such as a replacement of a
+    statement the policy refused), literals grounded and literal repair into
+    the request's provenance, its match notes and choices into the collections
     open where this is called."""
+    for warning in chosen.provenance.validator:
+        record_validator_warning(warning)
     for entry in chosen.provenance.literals_grounded:
         record_literal_grounded(**entry)
     if chosen.provenance.literal_repair is not None:
@@ -216,6 +235,27 @@ def _without_values(knowledge_base: dict[str, Any]) -> dict[str, Any]:
         for table in schema.get("tables", [])
     ]
     return {**knowledge_base, "schema": {**schema, "tables": tables}}
+
+
+#: Below this many seconds for the runs, no candidate is run: the first one
+#: is the answer, as without selection.
+MIN_RUN_SECONDS = 1.0
+
+
+def _run_budget(timeout_seconds: float | None, deadline: float | None) -> float | None:
+    """Seconds each candidate may run, or ``None`` to run none.
+
+    The least of ``CANDIDATE_EXEC_TIMEOUT_S``, the request's
+    ``timeout_seconds`` (zero or less is the connectors' "no timeout", so no
+    bound), and half the time left before *deadline*: the candidates run
+    concurrently, and the answer's own statement still has to run after them.
+    """
+    budget = config.CANDIDATE_EXEC_TIMEOUT_S
+    if timeout_seconds is not None and timeout_seconds > 0:
+        budget = min(budget, timeout_seconds)
+    if deadline is not None:
+        budget = min(budget, (deadline - time.monotonic()) / 2)
+    return budget if budget >= MIN_RUN_SECONDS else None
 
 
 def _cut_off(text: str) -> bool:
@@ -274,7 +314,9 @@ async def _answer(
     return None
 
 
-async def _execute(candidate: Candidate, source: LookupSource, dialect: str) -> None:
+async def _execute(
+    candidate: Candidate, source: LookupSource, dialect: str, timeout: float
+) -> None:
     """Run the candidate on a connector of its own, released when it is done.
 
     Not one that leaves a value for the user to choose: nothing runs until
@@ -284,21 +326,27 @@ async def _execute(candidate: Candidate, source: LookupSource, dialect: str) -> 
     if choices_for(candidate.choices, candidate.result.sql, dialect):
         candidate.status = "awaiting_choice"
         return
-    timeout = config.CANDIDATE_EXEC_TIMEOUT_S
     session = _Session(source, time.monotonic() + timeout, statement_timeout_s=timeout)
     try:
-        rows = await session.run_sql(candidate.result.sql)
+        result = await session.run_sql(candidate.result.sql)
     except Exception as exc:  # noqa: BLE001 - recorded; an error never wins
         candidate.status, candidate.error = "error", str(exc)[:500]
         return
     finally:
         session.close()
-    if rows is None:
+    if result is None:
         candidate.status, candidate.error = "timeout", f"no result within {timeout:g} s"
         return
-    # Ordered before the cap, so two candidates returning the same large set in
+    if result.truncated:
+        # The connector stopped at its fetch limit in the statement's own
+        # order, so two candidates with the same rows in other orders hold
+        # different prefixes: not comparable, and it never wins.
+        candidate.status = "truncated"
+        candidate.error = f"more rows than the connector fetches ({result.row_count} kept)"
+        return
+    # Ordered before the cap, so two candidates returning the same set in
     # different orders are compared on the same rows.
-    kept = sorted(rows, key=repr)[: config.CANDIDATE_MAX_ROWS]
+    kept = sorted((tuple(row) for row in result.rows), key=repr)[: config.CANDIDATE_MAX_ROWS]
     candidate.rows, candidate.row_count, candidate.status = frozenset(kept), len(kept), "ok"
 
 
@@ -314,8 +362,9 @@ def _pick(candidates: list[Candidate], dialect: str) -> tuple[Candidate, str, li
 
     The largest group wins; ties go to a non-empty result over an empty one, then
     to a group holding a candidate that was valid without any repair, then to
-    the shortest normalised SQL. A candidate whose run failed or timed out, or
-    that was not run, is in no group and never wins. With no candidate run, the
+    the shortest normalised SQL. A candidate whose run failed, timed out or
+    was cut short by the connector, or that was not run, is in no group and
+    never wins. With no candidate run, the
     first one that got a reply, as without selection.
     """
     executed = [c for c in candidates if c.status == "ok"]
