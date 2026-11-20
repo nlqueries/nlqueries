@@ -43,6 +43,7 @@ ENV_VARS: dict[str, str] = {
     "empty_result_explain": "NLQ_EMPTY_RESULT_EXPLAIN",
     "reading_line": "NLQ_READING_LINE",
     "value_index": "NLQ_VALUE_INDEX",
+    "candidate_selection": "NLQ_CANDIDATE_SELECTION",
 }
 
 
@@ -61,6 +62,7 @@ class QuerySettings:
     empty_result_explain: bool = True
     reading_line: bool = True
     value_index: bool = False
+    candidate_selection: bool = False
 
     def __post_init__(self) -> None:
         if self.match_mode not in config.MATCH_MODES:
@@ -97,6 +99,7 @@ class QuerySettings:
             empty_result_explain=config.EMPTY_RESULT_EXPLAIN,
             reading_line=config.READING_LINE,
             value_index=config.VALUE_INDEX,
+            candidate_selection=config.CANDIDATE_SELECTION,
         )
 
     def overridden(self, values: Mapping[str, Any]) -> QuerySettings:
@@ -160,6 +163,10 @@ _DESCRIPTIONS: dict[str, str] = {
     ),
     "reading_line": "Say beside each answer how the question was read, from its statement.",
     "value_index": "Read a value index, where one is supplied, before looking values up.",
+    "candidate_selection": (
+        "Choose the first answer from several candidates, checked by running them "
+        "(about three times the model cost)."
+    ),
 }
 
 

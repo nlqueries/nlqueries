@@ -720,12 +720,22 @@ class _Session:
     released by whichever comes last, :meth:`close` or the last call returning,
     so never under a statement still running on it; for the pooled connector
     the loader returns, releasing closes nothing the pool holds.
+
+    Candidate selection runs whole statements through one too
+    (:meth:`run_sql`), with its own deadline and statement budget, for the same
+    reasons: a connector nothing else shares, and no wait past the deadline.
     """
 
-    def __init__(self, source: LookupSource, deadline: float) -> None:
+    def __init__(
+        self,
+        source: LookupSource,
+        deadline: float,
+        statement_timeout_s: float = _LOOKUP_TIMEOUT_S,
+    ) -> None:
         self.key = source.key
         self._source = source
         self._deadline = deadline
+        self._statement_timeout_s = statement_timeout_s
         self._connector: Any = None
         self._lock = threading.Lock()
         self._running = 0
@@ -780,6 +790,14 @@ class _Session:
             return ""
         scope = getattr(connector, "cache_scope", None)
         return scope if isinstance(scope, str) else None
+
+    async def run_sql(self, sql: str, max_rows: int | None = None) -> list[tuple[Any, ...]] | None:
+        """Every column of *sql*'s rows; ``None`` when out of time. Raises when
+        the database refuses the statement."""
+        if not await self._opened():
+            return None
+        rows = await self._in_thread(functools.partial(self._execute_rows, sql, max_rows))
+        return None if rows is _ABANDONED else rows
 
     async def _opened(self) -> bool:
         """Open the connector if it is not; ``False`` when out of time."""
@@ -838,10 +856,13 @@ class _Session:
         return True
 
     def _execute(self, sql: str, max_rows: int) -> list[Any]:
-        result = self._connector.execute_query(sql, _LOOKUP_TIMEOUT_S, max_rows=max_rows)
+        return [row[0] for row in self._execute_rows(sql, max_rows)]
+
+    def _execute_rows(self, sql: str, max_rows: int | None) -> list[tuple[Any, ...]]:
+        result = self._connector.execute_query(sql, self._statement_timeout_s, max_rows=max_rows)
         if result.error:
             raise RuntimeError(result.error)
-        return [row[0] for row in result.rows]
+        return [tuple(row) for row in result.rows]
 
     def _release(self) -> None:
         with self._lock:
