@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import threading
+import time
 from typing import Any
 
 import nlqueries.connectors as connectors
@@ -159,3 +161,85 @@ def test_a_missing_driver_found_at_load_is_quiet_and_no_longer_offered(
         assert reg.get("gone") is None
     assert "gone" not in reg
     assert not [r for r in caplog.records if "could not be loaded" in r.getMessage()]
+
+
+def test_a_lookup_during_a_slow_load_on_another_thread_waits_for_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Snowflake driver's import takes seconds, and connectors are opened
+    on worker threads: a second lookup meanwhile must find the connector, not
+    report it unregistered (from #426's review)."""
+    reg = _ConnectorRegistry({})
+    reg.defer("slow", __name__, "_Fake")
+    started, release = threading.Event(), threading.Event()
+    real = connectors.importlib.import_module
+    imports: list[str] = []
+
+    def slow(name: str, *args: Any) -> Any:
+        imports.append(name)
+        started.set()
+        assert release.wait(10)
+        return real(name, *args)
+
+    monkeypatch.setattr(connectors.importlib, "import_module", slow)
+    found: dict[str, Any] = {}
+    first = threading.Thread(target=lambda: found.__setitem__("first", reg.get("slow")))
+    first.start()
+    assert started.wait(10)
+    # Mid-import: still listed, by membership and by listing.
+    assert "slow" in reg
+    assert list(reg) == ["slow"]
+    second = threading.Thread(target=lambda: found.__setitem__("second", reg.get("slow")))
+    second.start()
+    time.sleep(0.2)  # the second is now waiting on the first's load
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert found == {"first": _Fake, "second": _Fake}
+    assert imports == [__name__]  # loaded once
+
+
+def test_update_setdefault_and_or_assign_replace_a_pending_connector(
+    registry: _ConnectorRegistry,
+) -> None:
+    registry.update({"fake": DatabaseConnector})  # type: ignore[dict-item]
+    assert registry["fake"] is DatabaseConnector
+    assert "fake" not in registry._pending  # not loaded over it later
+    del registry["fake"]
+    registry.defer("fake", __name__, "_Fake")
+    registry |= {"fake": DatabaseConnector}  # type: ignore[dict-item]
+    assert registry["fake"] is DatabaseConnector
+    assert "fake" not in registry._pending
+    assert registry.loads == []  # type: ignore[attr-defined]
+
+    registry.defer("other", __name__, "_Fake")
+    assert registry.setdefault("other", DatabaseConnector) is _Fake  # type: ignore[arg-type]
+    assert registry.setdefault("new", DatabaseConnector) is DatabaseConnector  # type: ignore[arg-type]
+    assert registry["new"] is DatabaseConnector
+
+
+def test_pop_and_clear_include_pending_connectors(registry: _ConnectorRegistry) -> None:
+    assert registry.pop("fake") is _Fake
+    assert "fake" not in registry
+    assert registry.pop("fake", None) is None
+    with pytest.raises(KeyError):
+        registry.pop("fake")
+
+    registry.defer("fake", __name__, "_Fake")
+    registry.clear()
+    assert len(registry) == 0 and "fake" not in registry and list(registry) == []
+
+
+def test_copying_the_registry_holds_only_connectors_that_load(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """dict(registry) and {**registry} read keys() and then each key: a
+    listed connector that then failed to load would raise KeyError."""
+    for copy_of in (dict, lambda reg: {**reg}, lambda reg: reg.copy()):
+        reg = _ConnectorRegistry({"postgres": _Fake})
+        reg.defer("fake", __name__, "_Fake")
+        reg.defer("broken", __name__, "NoSuchClass")
+        with caplog.at_level(logging.WARNING, logger="nlqueries.connectors"):
+            assert copy_of(reg) == {"postgres": _Fake, "fake": _Fake}
+        assert "broken" not in reg

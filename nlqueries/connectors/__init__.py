@@ -5,6 +5,7 @@ import copy
 import importlib
 import importlib.util
 import logging
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from types import MappingProxyType
 from typing import Any
@@ -57,14 +58,26 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
 
     It is still a dict, so ``in``, iteration, ``sorted`` and ``len`` list the
     pending connectors without loading them, ``get`` and ``[]`` load the one
-    asked for, and ``items``, ``values`` and ``copy`` load them all. Assigning
-    a name (as tests do) replaces whatever was there, pending or loaded.
+    asked for, and ``keys``, ``items``, ``values``, ``copy``, ``pop`` and
+    ``popitem`` load them all first -- so ``dict(registry)`` and
+    ``{**registry}`` see only connectors that loaded. Assigning a name, by
+    ``[]``, ``update``, ``setdefault`` or ``|=``, replaces whatever was there,
+    pending or loaded; ``clear`` empties both.
+
+    A load holds a lock, and a connector stays pending until its import has
+    finished: a lookup from another thread during a slow import (the
+    Snowflake driver's takes seconds) waits for it, rather than finding the
+    connector in neither place and reporting it unregistered (from #426's
+    review). Lookups are concurrent in practice: the connector loader
+    resolves a class on the threads ``asyncio.to_thread`` runs it on.
     """
 
     def __init__(self, eager: Mapping[str, "type[DatabaseConnector]"]) -> None:
         super().__init__(eager)
         #: name -> (module, class), for connectors not yet loaded.
         self._pending: dict[str, tuple[str, str]] = {}
+        # Reentrant: a connector module's import may look the registry up.
+        self._lock = threading.RLock()
 
     def defer(self, name: str, module: str, cls: str) -> None:
         """Offer *name*, to be imported from *module* when first looked up."""
@@ -72,25 +85,37 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
             self._pending[name] = (module, cls)
 
     def _load(self, name: str) -> bool:
-        """Import a pending connector. A missing driver is ordinary and says
-        nothing; any other failure is logged rather than left to vanish and be
-        reported later as an unknown type. Either way it is no longer offered."""
-        module, cls = self._pending.pop(name)
-        try:
-            loaded = getattr(importlib.import_module(module), cls)
-        except Exception as exc:  # noqa: BLE001
-            if not (isinstance(exc, ImportError) and _names_another_package(exc)):
-                logger.warning("The %s connector could not be loaded: %s", name, exc)
-            return False
-        dict.__setitem__(self, name, loaded)
-        return True
+        """Import a pending connector, under the lock; whether it is now loaded.
+
+        A missing driver is ordinary and says nothing; any other failure is
+        logged rather than left to vanish and be reported later as an unknown
+        type. Either way it is then no longer offered. It stays pending until
+        the import has finished, so another thread asking meanwhile waits on
+        the lock instead of finding it nowhere."""
+        with self._lock:
+            if dict.__contains__(self, name):
+                return True  # loaded by the thread this one waited for
+            spec = self._pending.get(name)
+            if spec is None:
+                return False
+            module, cls = spec
+            try:
+                loaded = getattr(importlib.import_module(module), cls)
+            except Exception as exc:  # noqa: BLE001
+                self._pending.pop(name, None)
+                if not (isinstance(exc, ImportError) and _names_another_package(exc)):
+                    logger.warning("The %s connector could not be loaded: %s", name, exc)
+                return False
+            dict.__setitem__(self, name, loaded)
+            self._pending.pop(name, None)
+            return True
 
     def _load_all(self) -> None:
         for name in list(self._pending):
             self._load(name)
 
     def __missing__(self, key: str) -> "type[DatabaseConnector]":
-        if key in self._pending and self._load(key):
+        if self._load(key):
             return dict.__getitem__(self, key)
         raise KeyError(key)
 
@@ -103,15 +128,23 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
     def __contains__(self, key: object) -> bool:
         return dict.__contains__(self, key) or key in self._pending
 
+    def _names(self) -> list[str]:
+        # Copies, each taken whole: a load on another thread moves a name from
+        # one to the other, and walking either live while it does would fail.
+        loaded, pending = list(dict.keys(self)), list(self._pending)
+        return loaded + [name for name in pending if name not in set(loaded)]
+
     def __iter__(self) -> Iterator[str]:
-        yield from dict.__iter__(self)
-        yield from (name for name in self._pending if not dict.__contains__(self, name))
+        return iter(self._names())
 
     def __len__(self) -> int:
-        return len(set(dict.keys(self)) | set(self._pending))
+        return len(self._names())
 
     def keys(self) -> list[str]:  # type: ignore[override]
-        return list(self)
+        # Loaded first, so dict(registry) and {**registry}, which read keys()
+        # and then each one, never meet a listed connector that cannot load.
+        self._load_all()
+        return list(dict.keys(self))
 
     def items(self) -> Any:
         self._load_all()
@@ -126,15 +159,61 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
         return dict(dict.items(self))
 
     def __setitem__(self, key: str, value: "type[DatabaseConnector]") -> None:
-        self._pending.pop(key, None)
-        dict.__setitem__(self, key, value)
+        with self._lock:
+            self._pending.pop(key, None)
+            dict.__setitem__(self, key, value)
 
     def __delitem__(self, key: str) -> None:
-        was_pending = self._pending.pop(key, None) is not None
-        if dict.__contains__(self, key):
-            dict.__delitem__(self, key)
-        elif not was_pending:
-            raise KeyError(key)
+        with self._lock:
+            was_pending = self._pending.pop(key, None) is not None
+            if dict.__contains__(self, key):
+                dict.__delitem__(self, key)
+            elif not was_pending:
+                raise KeyError(key)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def setdefault(  # type: ignore[override]
+        self, key: str, default: "type[DatabaseConnector]"
+    ) -> "type[DatabaseConnector]":
+        with self._lock:
+            try:
+                return self[key]
+            except KeyError:
+                self[key] = default
+                return default
+
+    def __ior__(self, other: Any) -> "_ConnectorRegistry":  # type: ignore[override,misc]
+        self.update(other)
+        return self
+
+    def __or__(self, other: Any) -> dict[str, "type[DatabaseConnector]"]:  # type: ignore[override]
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def pop(self, key: str, *default: Any) -> Any:  # type: ignore[override]
+        with self._lock:
+            try:
+                value = self[key]
+            except KeyError:
+                if default:
+                    return default[0]
+                raise
+            del self[key]
+            return value
+
+    def popitem(self) -> tuple[str, "type[DatabaseConnector]"]:
+        with self._lock:
+            self._load_all()
+            return dict.popitem(self)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._pending.clear()
+            dict.clear(self)
 
     def __repr__(self) -> str:
         loaded = ", ".join(sorted(dict.keys(self)))
