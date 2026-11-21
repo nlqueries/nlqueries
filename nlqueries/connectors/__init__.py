@@ -119,7 +119,7 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
             return dict.__getitem__(self, key)
         raise KeyError(key)
 
-    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+    def get(self, key: str, default: Any = None) -> Any:
         try:
             return self[key]
         except KeyError:
@@ -131,7 +131,11 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
     def _names(self) -> list[str]:
         # Copies, each taken whole: a load on another thread moves a name from
         # one to the other, and walking either live while it does would fail.
-        loaded, pending = list(dict.keys(self)), list(self._pending)
+        # Pending first: a load stores the class before it drops the name from
+        # pending, so a name missing from this copy is already stored and is
+        # in the next one (from #426's review).
+        pending = list(self._pending)
+        loaded = list(dict.keys(self))
         return loaded + [name for name in pending if name not in set(loaded)]
 
     def __iter__(self) -> Iterator[str]:
@@ -171,13 +175,11 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
             elif not was_pending:
                 raise KeyError(key)
 
-    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+    def update(self, *args: Any, **kwargs: Any) -> None:
         for key, value in dict(*args, **kwargs).items():
             self[key] = value
 
-    def setdefault(  # type: ignore[override]
-        self, key: str, default: "type[DatabaseConnector]"
-    ) -> "type[DatabaseConnector]":
+    def setdefault(self, key: str, default: "type[DatabaseConnector]") -> "type[DatabaseConnector]":
         with self._lock:
             try:
                 return self[key]
@@ -185,7 +187,7 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
                 self[key] = default
                 return default
 
-    def __ior__(self, other: Any) -> "_ConnectorRegistry":  # type: ignore[override,misc]
+    def __ior__(self, other: Any) -> "_ConnectorRegistry":  # type: ignore[override]
         self.update(other)
         return self
 
@@ -194,7 +196,7 @@ class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
         merged.update(other)
         return merged
 
-    def pop(self, key: str, *default: Any) -> Any:  # type: ignore[override]
+    def pop(self, key: str, *default: Any) -> Any:
         with self._lock:
             try:
                 value = self[key]
