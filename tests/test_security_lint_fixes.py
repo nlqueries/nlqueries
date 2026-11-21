@@ -213,8 +213,10 @@ def test_an_optional_connector_that_fails_for_another_reason_is_reported(
 
     import nlqueries.connectors as connectors
 
-    registry: dict[str, Any] = {}
+    registry = connectors._ConnectorRegistry({})
     monkeypatch.setattr(connectors, "CONNECTOR_REGISTRY", registry)
+    # Offered whether or not the driver is installed here, so the load is tried.
+    monkeypatch.setattr(connectors, "_driver_installed", lambda _package: True)
     real_import = importlib.import_module
 
     def import_module(name: str, *args: Any) -> Any:
@@ -225,6 +227,8 @@ def test_an_optional_connector_that_fails_for_another_reason_is_reported(
     monkeypatch.setattr(connectors.importlib, "import_module", import_module)
     with caplog.at_level(logging.WARNING, logger="nlqueries.connectors"):
         connectors._register_optional_connectors()
+        # Loaded, and so failing, on first use rather than at registration.
+        assert registry.get("snowflake") is None
 
     assert "snowflake" not in registry
     reported = [

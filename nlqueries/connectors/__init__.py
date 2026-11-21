@@ -3,8 +3,10 @@
 
 import copy
 import importlib
+import importlib.util
 import logging
-from collections.abc import Callable, Mapping
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from types import MappingProxyType
 from typing import Any
 
@@ -27,52 +29,251 @@ from nlqueries.connectors.sqlite import SQLiteConnector
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Connector registry
 #
 # Maps a db-type identifier (as used by the CLI / connector configs) to its
 # DatabaseConnector implementation. New connectors register themselves here.
 #
-# Connectors with optional driver dependencies are registered lazily below so
-# that a missing optional extra never prevents the core package from importing.
+# Connectors with optional driver dependencies are offered when their driver is
+# installed and imported on first use (see _ConnectorRegistry), so a missing
+# optional extra never prevents the core package from importing, and no
+# driver's native library is loaded until something connects with it.
 # The generic SQLAlchemy connector needs no extra (SQLAlchemy is a base dep), so
 # it's registered here; the URL's own driver is what must be installed at use.
 # ---------------------------------------------------------------------------
-CONNECTOR_REGISTRY: dict[str, type[DatabaseConnector]] = {
-    "postgres": PostgresConnector,
-    "sqlalchemy": SQLAlchemyConnector,
-    # SQLite ships with Python (stdlib ``sqlite3``), so it's always available —
-    # registered eagerly like postgres rather than behind an optional extra.
-    "sqlite": SQLiteConnector,
-}
+class _ConnectorRegistry(dict[str, "type[DatabaseConnector]"]):
+    """The db-type -> connector class map, loading optional connectors on first use.
+
+    A connector behind an optional extra is *pending* until it is looked up:
+    its module, and the driver it imports, are imported then, not when this
+    package is. A driver's native library loaded before a process forks is
+    shared with the child, and some cannot survive that. Celery's prefork
+    worker imports this package in its parent before forking its task
+    children, and with the Snowflake driver loaded there, a child's
+    Snowflake login brought the parent down -- the worker exited with no
+    error, every time (2026-11-20). Loaded on first use, a driver lives only
+    in the process that uses it.
+
+    It is still a dict, so ``in``, iteration, ``sorted`` and ``len`` list the
+    pending connectors without loading them, ``get`` and ``[]`` load the one
+    asked for, and ``keys``, ``items``, ``values``, ``copy``, ``pop`` and
+    ``popitem`` load them all first -- so ``dict(registry)`` and
+    ``{**registry}`` see only connectors that loaded. Assigning a name, by
+    ``[]``, ``update``, ``setdefault`` or ``|=``, replaces whatever was there,
+    pending or loaded; ``clear`` empties both.
+
+    A load holds a lock, and a connector stays pending until its import has
+    finished: a lookup from another thread during a slow import (the
+    Snowflake driver's takes seconds) waits for it, rather than finding the
+    connector in neither place and reporting it unregistered (from #426's
+    review). Lookups are concurrent in practice: the connector loader
+    resolves a class on the threads ``asyncio.to_thread`` runs it on.
+    """
+
+    def __init__(self, eager: Mapping[str, "type[DatabaseConnector]"]) -> None:
+        super().__init__(eager)
+        #: name -> (module, class), for connectors not yet loaded.
+        self._pending: dict[str, tuple[str, str]] = {}
+        # Reentrant: a connector module's import may look the registry up.
+        self._lock = threading.RLock()
+
+    def defer(self, name: str, module: str, cls: str) -> None:
+        """Offer *name*, to be imported from *module* when first looked up."""
+        if not dict.__contains__(self, name):
+            self._pending[name] = (module, cls)
+
+    def _load(self, name: str) -> bool:
+        """Import a pending connector, under the lock; whether it is now loaded.
+
+        A missing driver is ordinary and says nothing; any other failure is
+        logged rather than left to vanish and be reported later as an unknown
+        type. Either way it is then no longer offered. It stays pending until
+        the import has finished, so another thread asking meanwhile waits on
+        the lock instead of finding it nowhere."""
+        with self._lock:
+            if dict.__contains__(self, name):
+                return True  # loaded by the thread this one waited for
+            spec = self._pending.get(name)
+            if spec is None:
+                return False
+            module, cls = spec
+            try:
+                loaded = getattr(importlib.import_module(module), cls)
+            except Exception as exc:  # noqa: BLE001
+                self._pending.pop(name, None)
+                if not (isinstance(exc, ImportError) and _names_another_package(exc)):
+                    logger.warning("The %s connector could not be loaded: %s", name, exc)
+                return False
+            dict.__setitem__(self, name, loaded)
+            self._pending.pop(name, None)
+            return True
+
+    def _load_all(self) -> None:
+        for name in list(self._pending):
+            self._load(name)
+
+    def __missing__(self, key: str) -> "type[DatabaseConnector]":
+        if self._load(key):
+            return dict.__getitem__(self, key)
+        raise KeyError(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or key in self._pending
+
+    def _names(self) -> list[str]:
+        # Copies, each taken whole: a load on another thread moves a name from
+        # one to the other, and walking either live while it does would fail.
+        # Pending first: a load stores the class before it drops the name from
+        # pending, so a name missing from this copy is already stored and is
+        # in the next one (from #426's review).
+        pending = list(self._pending)
+        loaded = list(dict.keys(self))
+        return loaded + [name for name in pending if name not in set(loaded)]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names())
+
+    def __len__(self) -> int:
+        return len(self._names())
+
+    def keys(self) -> list[str]:  # type: ignore[override]
+        # Loaded first, so dict(registry) and {**registry}, which read keys()
+        # and then each one, never meet a listed connector that cannot load.
+        self._load_all()
+        return list(dict.keys(self))
+
+    def items(self) -> Any:
+        self._load_all()
+        return dict.items(self)
+
+    def values(self) -> Any:
+        self._load_all()
+        return dict.values(self)
+
+    def copy(self) -> dict[str, "type[DatabaseConnector]"]:
+        self._load_all()
+        return dict(dict.items(self))
+
+    def __setitem__(self, key: str, value: "type[DatabaseConnector]") -> None:
+        with self._lock:
+            self._pending.pop(key, None)
+            dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key: str) -> None:
+        with self._lock:
+            was_pending = self._pending.pop(key, None) is not None
+            if dict.__contains__(self, key):
+                dict.__delitem__(self, key)
+            elif not was_pending:
+                raise KeyError(key)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def setdefault(self, key: str, default: "type[DatabaseConnector]") -> "type[DatabaseConnector]":
+        with self._lock:
+            try:
+                return self[key]
+            except KeyError:
+                self[key] = default
+                return default
+
+    def __ior__(self, other: Any) -> "_ConnectorRegistry":  # type: ignore[override]
+        self.update(other)
+        return self
+
+    def __or__(self, other: Any) -> dict[str, "type[DatabaseConnector]"]:  # type: ignore[override]
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def pop(self, key: str, *default: Any) -> Any:
+        with self._lock:
+            try:
+                value = self[key]
+            except KeyError:
+                if default:
+                    return default[0]
+                raise
+            del self[key]
+            return value
+
+    def popitem(self) -> tuple[str, "type[DatabaseConnector]"]:
+        with self._lock:
+            self._load_all()
+            return dict.popitem(self)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._pending.clear()
+            dict.clear(self)
+
+    def __repr__(self) -> str:
+        loaded = ", ".join(sorted(dict.keys(self)))
+        pending = ", ".join(sorted(self._pending))
+        return f"<ConnectorRegistry loaded=[{loaded}] pending=[{pending}]>"
+
+
+CONNECTOR_REGISTRY: _ConnectorRegistry = _ConnectorRegistry(
+    {
+        "postgres": PostgresConnector,
+        "sqlalchemy": SQLAlchemyConnector,
+        # SQLite ships with Python (stdlib ``sqlite3``), so it's always available --
+        # registered eagerly like postgres rather than behind an optional extra.
+        "sqlite": SQLiteConnector,
+    }
+)
+
+#: Connectors behind optional driver extras: (db-type, module, class, the driver
+#: package the module imports when it is imported, or ``None`` for a module that
+#: imports its driver only when it connects and so is always offered).
+_OPTIONAL_CONNECTORS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("snowflake", "nlqueries.connectors.snowflake", "SnowflakeConnector", "snowflake.connector"),
+    ("bigquery", "nlqueries.connectors.bigquery", "BigQueryConnector", "google.cloud.bigquery"),
+    ("redshift", "nlqueries.connectors.redshift", "RedshiftConnector", None),
+    ("mssql", "nlqueries.connectors.mssql", "MSSQLConnector", None),
+    ("duckdb", "nlqueries.connectors.duckdb", "DuckDBConnector", None),
+)
+
+
+def _driver_installed(package: str) -> bool:
+    """Whether *package* can be imported, found without importing it: finding a
+    module imports its parent packages, never the module, so no driver's native
+    library is loaded by the check."""
+    try:
+        return importlib.util.find_spec(package) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _register_optional_connectors() -> None:
-    """Register connectors that require optional driver extras.
+    """Offer the connectors behind optional extras whose driver is installed,
+    to be loaded on first use (see :class:`_ConnectorRegistry`).
 
     A driver that is not installed is the ordinary reason one is missing, and
     says nothing. Anything else -- a connector module that fails to import for
-    another reason -- is logged, rather than leaving the connector to vanish
-    and be reported later as an unknown type.
+    another reason -- is logged when the connector is first looked up, rather
+    than leaving the connector to vanish and be reported later as an unknown
+    type.
 
     An import that fails inside this package is not a missing driver, though
     it raises ImportError too: a renamed name, or a circular import. So the
     quiet case is the one that names a module outside it. One that names no
     module at all is reported, since it cannot be told apart.
     """
-    for name, module, cls in (
-        ("snowflake", "nlqueries.connectors.snowflake", "SnowflakeConnector"),
-        ("bigquery", "nlqueries.connectors.bigquery", "BigQueryConnector"),
-        ("redshift", "nlqueries.connectors.redshift", "RedshiftConnector"),
-        ("mssql", "nlqueries.connectors.mssql", "MSSQLConnector"),
-        ("duckdb", "nlqueries.connectors.duckdb", "DuckDBConnector"),
-    ):
-        try:
-            CONNECTOR_REGISTRY[name] = getattr(importlib.import_module(module), cls)
-        except Exception as exc:  # noqa: BLE001
-            if isinstance(exc, ImportError) and _names_another_package(exc):
-                continue  # the extra is not installed
-            logger.warning("The %s connector could not be loaded: %s", name, exc)
+    for name, module, cls, driver in _OPTIONAL_CONNECTORS:
+        if driver is not None and not _driver_installed(driver):
+            continue  # the extra is not installed
+        CONNECTOR_REGISTRY.defer(name, module, cls)
 
 
 def _names_another_package(exc: ImportError) -> bool:

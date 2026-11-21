@@ -325,6 +325,19 @@ All notable changes to `nlqueries-core` are documented here. Format loosely foll
 
 ### Fixed
 
+- **A forked worker no longer dies when a task uses Snowflake.** Importing
+  `nlqueries.connectors` imported every optional driver it found, so a
+  process that only imported the registry -- such as a Celery prefork
+  worker's parent, which imports its tasks before forking its children --
+  carried the Snowflake driver's native library into every child. When a
+  child then logged in to Snowflake, the parent crashed with a segmentation
+  fault and the worker exited without an error. The optional connectors
+  (Snowflake, BigQuery, Redshift, SQL Server, DuckDB) are now offered when
+  their driver is installed and imported on first use, so a driver lives only
+  in the process that uses it. `CONNECTOR_REGISTRY` still lists them for
+  `in`, iteration and `sorted()` without loading them; `get` and `[]` load the
+  one asked for, and `items()`, `values()` and `copy()` load them all.
+
 - **An empty answer that says why is no longer cached.** The semantic cache
   keeps an answer's SQL and text, not its notes. An answer with no rows that
   named the value that matched nothing, or the stored values it may have
